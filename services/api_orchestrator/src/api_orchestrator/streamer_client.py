@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Internal HTTP client for the webrtc_streamer service.
 
 The orchestrator does not proxy the streamer's media/signaling (the frontend

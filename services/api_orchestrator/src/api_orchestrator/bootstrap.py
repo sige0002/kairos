@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Bringing the capture store up: identity, invariants, rebuild, resume.
 
 Contract §8 (rebuild) and §7 (startup delete-resume). Startup is where the

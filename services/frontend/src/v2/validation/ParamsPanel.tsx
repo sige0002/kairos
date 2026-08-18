@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Params column (inner-left, 300px): the REAL schema-driven PipelineForm and
 // capture picker, submitting an actual /jobs POST, plus the real one-click
 // presets (GET /validation/presets) — each runs its pipeline over exactly the
@@ -9,12 +11,12 @@
 // operator finds out WHY it cannot be validated from here.
 import type { JSONSchema } from '../../schema/jsonSchema';
 import type {
-  BatchSummary,
+  Batch,
   CaptureListItem,
   ValidationOption,
   ValidationPreset,
 } from '../../api/types';
-import { availabilityOf, isCapturePresent } from '../captures/availability';
+import { availabilityOf } from '../captures/availability';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { formatBatchLabel } from '../episodeChips';
 import { PipelineForm } from '../../features/validation/PipelineForm';
@@ -28,12 +30,14 @@ export const ALL_CAPTURES = '__all__';
 export const BATCH_VALUE_PREFIX = 'batch:';
 
 const SELECT_CLASS =
-  'rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none';
+  'rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-600 focus:outline-none';
 
 /** What to call a capture on screen. `run_id` is display-only (§1) and can be
  *  absent — a capture pulled from another host may have none — in which case
  *  the capture_id it is actually keyed by is shown rather than invented. */
-export function captureLabel(capture: Pick<CaptureListItem, 'capture_id' | 'run_id'>): string {
+export function captureLabel(
+  capture: Pick<CaptureListItem, 'capture_id' | 'run_id'>,
+): string {
   return capture.run_id || capture.capture_id;
 }
 
@@ -55,12 +59,16 @@ export function ParamsPanel({
   captures,
   capturesLoading,
   catalogTruncated,
+  capturePage,
+  canPreviousCapturePage,
+  canNextCapturePage,
+  onCapturePageChange,
   batches,
-  batchCaptureCount,
   targetId,
   onTargetChange,
   selectedCapture,
   targetNote,
+  selectionMessage,
   onRun,
   canRun,
   running,
@@ -76,6 +84,8 @@ export function ParamsPanel({
   submitError,
   submitFailures,
   captureLabel,
+  onRetryFailures,
+  retryBusy,
 }: {
   schema: JSONSchema;
   params: Record<string, unknown>;
@@ -89,16 +99,20 @@ export function ParamsPanel({
   /** True when the capture sweep stopped before the end of the catalog, so the
    *  options below — and their counts — are of what was fetched. */
   catalogTruncated?: boolean;
+  capturePage: number;
+  canPreviousCapturePage: boolean;
+  canNextCapturePage: boolean;
+  onCapturePageChange: (direction: 'previous' | 'next') => void;
   /** Batches with at least one capture (newest first). */
-  batches: BatchSummary[];
-  /** How many of a batch's captures are on this host (validatable) — 0 disables. */
-  batchCaptureCount: (b: BatchSummary) => number;
+  batches: Batch[];
   targetId: string;
   onTargetChange: (id: string) => void;
   /** The capture `targetId` names, when it names one (not "all" or a batch). */
   selectedCapture: CaptureListItem | null;
   /** Why the selected target cannot be validated from this host, when it can't. */
   targetNote?: string;
+  /** Result of creating a server-side All/Batch selection. */
+  selectionMessage?: string | null;
   onRun: () => void;
   canRun: boolean;
   running: boolean;
@@ -121,23 +135,25 @@ export function ParamsPanel({
    *  question the operator actually has. */
   submitFailures?: { captureId: string; reason: string }[];
   captureLabel?: (captureId: string) => string;
+  /** Durable runs retry only server-recorded submission failures. */
+  onRetryFailures?: () => void;
+  retryBusy?: boolean;
 }) {
-  const presentCount = captures.filter(isCapturePresent).length;
-
   return (
     <div className="flex flex-col gap-3 overflow-auto border-r border-gray-100 px-[18px] py-4">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         Parameters
-      </span>
+      </h3>
 
-      <label className="flex flex-col gap-1 text-sm">
-        <span className="flex items-center gap-2">
+      <div className="flex flex-col gap-1 text-sm">
+        <label htmlFor="validation-target" className="flex items-center gap-2">
           <span className="text-[11px] font-medium text-gray-500">Target</span>
           {selectedCapture && (
             <AvailabilityChip capture={selectedCapture} testId="target-availability" />
           )}
-        </span>
+        </label>
         <select
+          id="validation-target"
           aria-label="target"
           value={targetId}
           onChange={(e) => onTargetChange(e.target.value)}
@@ -152,8 +168,8 @@ export function ParamsPanel({
               </option>
             ) : (
               <>
-                <option value={ALL_CAPTURES} disabled={presentCount === 0}>
-                  — All captures on this host ({presentCount}) —
+                <option value={ALL_CAPTURES}>
+                  — All captures on this host (server selection) —
                 </option>
                 {captures.map((c) => (
                   <option key={c.capture_id} value={c.capture_id}>
@@ -170,15 +186,10 @@ export function ParamsPanel({
               </option>
             ) : (
               batches.map((b) => {
-                const n = batchCaptureCount(b);
                 return (
-                  <option
-                    key={b.batch_id}
-                    value={`${BATCH_VALUE_PREFIX}${b.batch_id}`}
-                    disabled={n === 0}
-                  >
+                  <option key={b.batch_id} value={`${BATCH_VALUE_PREFIX}${b.batch_id}`}>
                     {formatBatchLabel(b.batch_seq, b.created_at)} · {b.task}
-                    {n === 0 ? ' (none on this host)' : ` (${n} on this host)`}
+                    {' (server selection)'}
                   </option>
                 );
               })
@@ -193,24 +204,55 @@ export function ParamsPanel({
             {targetNote}
           </span>
         )}
-        {/* The sweep stopped before the end of the catalog, so an older
-            recording may simply not be in the list above, and the counts on
-            these options are of what was fetched. Said beside the picker,
-            because that is where they are read as totals. */}
+        {selectionMessage && (
+          <span
+            role="alert"
+            data-testid="validation-selection-message"
+            className="rounded-control border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800"
+          >
+            {selectionMessage}
+          </span>
+        )}
+        {/* This picker is one page. All/Batch execution is a server snapshot;
+            only individual capture choices are page-scoped. */}
         {catalogTruncated && (
           <span
             data-testid="catalog-truncated"
             className="rounded-control border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800"
           >
-            This is not the whole catalog — there are more recordings than one
-            sweep fetches, so the oldest are not offered here and every count
-            above is of what was fetched.
+            This is page {capturePage}. Older individual captures are not offered here
+            until you move to the next page; All and Batch create a server selection
+            instead.
           </span>
         )}
-        <span className="text-[11px] text-gray-400">
+        <div
+          data-testid="validation-capture-pagination"
+          className="flex items-center gap-2 text-[11px] text-gray-500"
+        >
+          <button
+            type="button"
+            data-testid="validation-captures-previous"
+            disabled={!canPreviousCapturePage || running}
+            onClick={() => onCapturePageChange('previous')}
+            className="rounded-chip border border-gray-200 px-2 py-0.5 font-semibold hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span aria-live="polite">Page {capturePage}</span>
+          <button
+            type="button"
+            data-testid="validation-captures-next"
+            disabled={!canNextCapturePage || running}
+            onClick={() => onCapturePageChange('next')}
+            className="rounded-chip border border-gray-200 px-2 py-0.5 font-semibold hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
+        <span className="text-[11px] text-gray-500">
           Validation only — reviewing and dataset membership live in their own screens.
         </span>
-      </label>
+      </div>
 
       <PipelineForm
         schema={schema}
@@ -225,9 +267,9 @@ export function ParamsPanel({
       <div className="flex flex-col gap-1.5">
         <span className="text-xs font-semibold text-gray-700">One-click presets</span>
         {presetsLoading ? (
-          <p className="text-[11px] text-gray-400">Loading presets…</p>
+          <p className="text-[11px] text-gray-500">Loading presets…</p>
         ) : presets.length === 0 ? (
-          <p className="text-[11px] leading-relaxed text-gray-400">
+          <p className="text-[11px] leading-relaxed text-gray-500">
             No presets configured. Add{' '}
             <span className="font-mono">
               config/&lt;robot&gt;/validation_presets.yaml
@@ -249,7 +291,7 @@ export function ParamsPanel({
                 <span className="block truncate text-[13px] font-medium text-gray-700">
                   {p.name}
                 </span>
-                <span className="block truncate font-mono text-[10.5px] text-gray-400">
+                <span className="block truncate font-mono text-[10.5px] text-gray-500">
                   {p.pipeline}
                 </span>
               </span>
@@ -279,6 +321,17 @@ export function ParamsPanel({
             </li>
           ))}
         </ul>
+      )}
+      {onRetryFailures && (
+        <button
+          type="button"
+          data-testid="retry-validation-run"
+          disabled={retryBusy}
+          onClick={onRetryFailures}
+          className="h-[34px] rounded-[10px] border border-amber-300 bg-amber-50 text-[12.5px] font-semibold text-amber-900 hover:border-amber-400 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          {retryBusy ? 'Retrying failures…' : 'Retry failed captures'}
+        </button>
       )}
 
       {cancelError && (
@@ -333,7 +386,7 @@ export function ParamsPanel({
           type="button"
           disabled={!canRun}
           onClick={onRun}
-          className="h-[42px] rounded-[10px] bg-teal-600 text-[13.5px] font-bold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+          className="h-[42px] rounded-[10px] bg-teal-700 text-[13.5px] font-bold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
         >
           Run on selection
         </button>

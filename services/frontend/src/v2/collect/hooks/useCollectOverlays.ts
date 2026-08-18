@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Open/closed state of every Collect overlay this hook family owns (pickers,
 // modals, the batch menu, the shortcuts sheet), extracted from
 // useBatchMachine.ts. Pure UI state: no API calls, no machine dispatches.
@@ -16,7 +18,6 @@ export function useCollectOverlays({
   const [projPickerOpen, setProjPickerOpen] = useState(false);
   const [taskPickerOpen, setTaskPickerOpen] = useState(false);
   const [endModalOpen, setEndModalOpen] = useState(false);
-  const [issueModalOpen, setIssueModalOpen] = useState(false);
   const [robotPickerOpen, setRobotPickerOpen] = useState(false);
   const [condModalOpen, setCondModalOpen] = useState(false);
   const [resetModalOpen, setResetModalOpen] = useState(false);
@@ -65,10 +66,6 @@ export function useCollectOverlays({
     setEndModalOpen(true);
     setBatchMenuOpen(false);
   }, []);
-  const openIssueModal = useCallback(() => {
-    setIssueModalOpen(true);
-    setBatchMenuOpen(false);
-  }, []);
   const openResetModal = useCallback(() => {
     setResetModalOpen(true);
     setBatchMenuOpen(false);
@@ -84,7 +81,6 @@ export function useCollectOverlays({
     projPickerOpen,
     taskPickerOpen,
     endModalOpen,
-    issueModalOpen,
     robotPickerOpen,
     condModalOpen,
     resetModalOpen,
@@ -96,7 +92,6 @@ export function useCollectOverlays({
     openTaskPicker,
     openCondModal,
     openEndModal,
-    openIssueModal,
     openResetModal,
     openTargetModal,
     openShortcuts,
@@ -106,7 +101,6 @@ export function useCollectOverlays({
     setProjPickerOpen,
     setTaskPickerOpen,
     setEndModalOpen,
-    setIssueModalOpen,
     setCondModalOpen,
     setResetModalOpen,
     setTargetModalOpen,

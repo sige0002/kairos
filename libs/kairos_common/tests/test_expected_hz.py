@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """expected_hz resolver: first-match-wins glob, None for omitted/unmatched."""
 
 from __future__ import annotations

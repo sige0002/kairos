@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Single SSE subscription (GET /api/v1/events) that fans events into the
 // TanStack Query cache. Components read the cache (useQuery with the same keys)
 // and re-render. Reconnection is handled by the browser-native EventSource,
@@ -122,6 +124,24 @@ function isStaleRecordStatus(
 }
 
 function applyRecordStatus(qc: QueryClient, data: RecordStatusEvent): void {
+  // A failing status POLL may not be overwritten by an event (S3-5).
+  // `setQueryData` records a success — it clears the query's error and stamps
+  // `dataUpdatedAt: now` — which is exactly the pair `useRecordStatus` derives
+  // `reachable`/`lastGoodAt` from. An SSE frame is the orchestrator speaking
+  // (and after a reconnect, possibly a REPLAYED frame minutes old); it is not
+  // a successful recorder poll, and letting it pose as one unfroze the
+  // last-known clock and revived stale `live_capture_ids` liveness. While the
+  // poll is failing, the honest display is the failure; the next real poll
+  // brings the truth, and the event is still logged below.
+  const pollState = qc.getQueryState(queryKeys.recordStatus);
+  if (pollState?.error != null) {
+    appendLog(
+      qc,
+      'record_status',
+      `${summarizeRecordStatus(data)} (status poll failing — not applied)`,
+    );
+    return;
+  }
   // Merge onto the previous cache entry rather than replacing it. The arming
   // snapshot (OL-①.4) rides only on the post-arming `recording` event; a later
   // counters-only event omits it, so spreading `prev` first preserves the
@@ -194,14 +214,34 @@ function applyMetrics(qc: QueryClient, data: MetricsSnapshot): void {
 }
 
 function applyAlert(qc: QueryClient, data: AlertSnapshot): void {
-  // The `alert` event carries a snapshot { ts, alerts: [...] }, not a single
-  // alert. Prepend the current alerts (skip empty snapshots).
+  // The `alert` event carries a COMPLETE snapshot of current incidents —
+  // firing ones plus cleared ones inside the monitor's retention window —
+  // not a delta (the monitor re-sends every incident's current state each
+  // tick). Prepend it into the rolling buffer, and RECONCILE: an incident
+  // whose newest buffered state still renders as firing but which the
+  // snapshot no longer mentions has cleared while this client wasn't
+  // looking (an SSE gap or restart swallowed the cleared ticks, or the
+  // monitor restarted). Without materializing that implied recovery, the
+  // row stays "firing" forever — nothing later ever names it again.
   const incoming = data?.alerts ?? [];
-  if (incoming.length === 0) return;
-  qc.setQueryData<AlertEvent[]>(queryKeys.alerts, (prev) =>
-    [...incoming, ...(prev ?? [])].slice(0, MAX_ALERTS),
-  );
-  appendLog(qc, 'alert', summarizeAlertSnapshot(incoming));
+  qc.setQueryData<AlertEvent[]>(queryKeys.alerts, (prev) => {
+    const buffer = prev ?? [];
+    const present = new Set(incoming.map((a) => `${a.topic}|${a.metric}`));
+    const newestByKey = new Map<string, AlertEvent>();
+    for (const a of buffer) {
+      const key = `${a.topic}|${a.metric}`;
+      if (!newestByKey.has(key)) newestByKey.set(key, a); // buffer is newest-first
+    }
+    const implied: AlertEvent[] = [];
+    for (const [key, a] of newestByKey) {
+      if (a.state !== 'cleared' && !present.has(key)) {
+        implied.push({ ...a, state: 'cleared', value: null, since: data?.ts ?? a.since });
+      }
+    }
+    if (incoming.length === 0 && implied.length === 0) return buffer; // true no-op
+    return [...incoming, ...implied, ...buffer].slice(0, MAX_ALERTS);
+  });
+  if (incoming.length > 0) appendLog(qc, 'alert', summarizeAlertSnapshot(incoming));
 }
 
 function applyJob(qc: QueryClient, data: JobStatus): void {

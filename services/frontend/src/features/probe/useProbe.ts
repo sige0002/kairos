@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Data hooks for the Probe tab: topic list + per-topic field introspection
 // (TanStack Query), and a multi-series live stream — one SSE per distinct topic
 // (each carrying that topic's fields), merged into one time-aligned buffer so an

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """lifecycle.jsonl v2: what may be written, what reads back, and the ENOSPC exit."""
 
 from __future__ import annotations
@@ -345,7 +347,7 @@ def test_dataset_events_come_back_in_order(tmp_path: Path) -> None:
     ]
 
 
-# -- the dataset archive pair (§6.x) ------------------------------------------
+# -- the dataset archive lifecycle (§6.x) -------------------------------------
 
 
 def _started_payload(**overrides):
@@ -408,6 +410,45 @@ def test_a_dataset_archive_run_reads_back_start_to_seal(tmp_path: Path) -> None:
 
     # Not tombstones: the recordings still exist, just not here.
     assert ledger.tombstones(tmp_path) == {}
+
+
+def test_a_dataset_archive_cancellation_reads_back_and_validates(
+    tmp_path: Path,
+) -> None:
+    started = _append(
+        tmp_path,
+        "dataset_archive_started",
+        payload=_started_payload(),
+    )
+    _append(
+        tmp_path,
+        "dataset_archive_canceled",
+        payload={
+            "dataset_id": "d1",
+            "destination": "/mnt/nas/exports/yuki/pick/ds1",
+            "started_event_id": started["event_id"],
+            "reason": "operator_requested",
+        },
+    )
+
+    assert [event["kind"] for event in ledger.dataset_events(tmp_path)] == [
+        "dataset_archive_started",
+        "dataset_archive_canceled",
+    ]
+    assert ledger.tombstones(tmp_path) == {}
+
+    for key in ("dataset_id", "destination", "started_event_id"):
+        with pytest.raises(ValueError, match=key):
+            _append(
+                tmp_path,
+                "dataset_archive_canceled",
+                payload={
+                    "dataset_id": "d1",
+                    "destination": "/mnt/nas/exports/yuki/pick/ds1",
+                    "started_event_id": started["event_id"],
+                    key: "",
+                },
+            )
 
 
 def test_a_dataset_archive_start_must_freeze_its_members(tmp_path: Path) -> None:
@@ -729,3 +770,43 @@ def test_the_file_record_shape_matches_the_manifest(tmp_path: Path) -> None:
         payload={"destination": "/mnt/nas", "files": [entry]},
     )
     assert event["files"] == [entry]
+
+
+class TestDatasetExported:
+    """§6.2: the output is exactly ``exports/<safe-name>`` — no traversal."""
+
+    def _payload(self, **overrides):
+        payload = {
+            "dataset_id": "ds1",
+            "export_id": "e1",
+            "output": "exports/alice_full_beta1",
+            "captures": [{"capture_id": new_capture_id(), "dir": "001"}],
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_a_well_formed_export_is_accepted(self, tmp_path: Path) -> None:
+        event = _append(tmp_path, "dataset_exported", payload=self._payload())
+        assert event["output"] == "exports/alice_full_beta1"
+
+    def test_an_absolute_output_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError):
+            _append(
+                tmp_path,
+                "dataset_exported",
+                payload=self._payload(output="/abs/exports/x"),
+            )
+
+    def test_traversal_in_the_output_is_rejected(self, tmp_path: Path) -> None:
+        # The old validator only rejected a leading '/', so these slipped by.
+        for bad in ("../outside", "exports/../escape", "exports/a/b", "other/x"):
+            with pytest.raises(ValueError):
+                _append(
+                    tmp_path,
+                    "dataset_exported",
+                    payload=self._payload(output=bad),
+                )
+
+    def test_a_captureless_export_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError):
+            _append(tmp_path, "dataset_exported", payload=self._payload(captures=[]))

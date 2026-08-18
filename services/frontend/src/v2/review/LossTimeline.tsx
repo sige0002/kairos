@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Aggregated integrity timeline for the Review "Data integrity" section: ONE
 // lane on the episode-global axis directly under the synced video, acting as an
 // annotated scrubber. Each bin is the WORST condition across every topic at
@@ -57,10 +59,10 @@ export function LossTimeline({
   return (
     <div data-testid="review-loss-timeline" className="flex flex-col gap-1">
       <div className="flex items-center justify-between">
-        <span className="text-[10px] font-semibold uppercase tracking-[0.04em] text-gray-400">
+        <h3 className="text-[10px] font-semibold uppercase tracking-[0.04em] text-gray-500">
           Integrity timeline
-        </span>
-        <span className="font-mono text-[10px] text-gray-400">
+        </h3>
+        <span className="font-mono text-[10px] text-gray-500">
           span {formatSecondsShort(spanNs)}
         </span>
       </div>
@@ -92,7 +94,7 @@ export function LossTimeline({
           />
         )}
       </div>
-      <span className="text-[10px] text-gray-400">
+      <span className="text-[10px] text-gray-500">
         green ok · amber minor loss · red major loss / silent · gray no topic active
         {seekEnabled ? ' — click to seek the video' : ''}
       </span>

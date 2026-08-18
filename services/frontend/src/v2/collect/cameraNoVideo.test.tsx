@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // E-37, the half that was still open: a stream that NEVER connects.
 //
 // MEASURED, not theorised (Batch D, real browser against the real stack with

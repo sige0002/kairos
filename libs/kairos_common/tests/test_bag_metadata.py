@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Topic signature derived from a bag's rosbag2 ``metadata.yaml``.
 
 These pin the properties a catalog consumer relies on: the signature is stable

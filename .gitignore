@@ -30,7 +30,8 @@ config/local/*
 .claude/settings.local.json
 
 # UI/UX Pro Max skill (installed via `uipro init --ai claude`, not committed)
-.claude/skills/ui-ux-pro-max/
+.agents/skills/ui-ux-pro-max/
+.claude/skills/ui-ux-pro-max
 
 # Claude Code session worktrees (live git worktrees, never committed)
 .claude/worktrees/
@@ -130,6 +131,12 @@ log/
 !/deploy/msgs_overlay/robot/
 /deploy/msgs_overlay/robot/*
 !/deploy/msgs_overlay/robot/.gitkeep
+
+# LeRobot converter (optional feature, capture_store §6.2): the rosbag2lerobot
+# source tree is SITE-PROVIDED, not vendored — each site (or a company fork)
+# supplies it, so kairos updates never reset it. Only the README with the
+# setup instructions is tracked. See deploy/lerobot/README.md.
+/deploy/lerobot/converter/
 
 # 参考フォルダ
 /ref

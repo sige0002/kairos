@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The per-capture mutex the review, delete and archive paths share.
 
 The per-capture mutex is deliberately *not* the store's connection lock. §4.1

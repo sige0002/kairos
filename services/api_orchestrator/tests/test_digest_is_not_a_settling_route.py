@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The digest adopts a terminal manifest but never settles — and may not have to.
 
 E-38's rule is that every route which adopts a terminal manifest also schedules

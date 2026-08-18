@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // "Data integrity" section of the Review detail (RunInspection). Runs the dora
 // `signal_report` pipeline (per-topic message timing over episode time) and
 // answers the reviewer's actual question — is this episode's data whole? — with
@@ -14,18 +16,12 @@
 // the whole episode onto its first frames, which would lie.
 
 import { useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import { INSPECTION_JOB_POLL_MS } from '../pollingPolicy';
-import type {
-  JobResult,
-  JobStatus,
-  CaptureTopic,
-  VideoCheckSummary,
-} from '../../api/types';
+import type { JobStatus, CaptureTopic, VideoCheckSummary } from '../../api/types';
 import { JobErrorNote, isTombstoneError } from '../captures/JobErrorNote';
-import { TERMINAL, VideoPlayer, cameraTopics } from '../captures/inspect';
+import { VideoPlayer, cameraTopics, useJobCompletion } from '../captures/inspect';
 import {
   episodeSpanNs,
   formatContinuity,
@@ -65,49 +61,16 @@ function useSignalReport(captureId: string) {
     },
   });
 
-  useQuery({
-    queryKey: queryKeys.job(jobId ?? ''),
-    queryFn: async ({ signal }) => {
-      const status = await apiGet<JobStatus>(
-        `/jobs/${encodeURIComponent(jobId ?? '')}/status`,
-        { signal },
-      );
-      if (jobId && TERMINAL.has(status.state)) {
-        if (status.state === 'succeeded') {
-          const result = await apiGet<JobResult>(
-            `/jobs/${encodeURIComponent(jobId)}/result`,
-            { signal },
-          );
-          setReport(result.summary as unknown as SignalReportExt);
-        } else {
-          // failed/canceled: surface the terminal error (dora_runner nests the
-          // ApiError under summary.error(.error)) instead of spinning forever.
-          let message = `Integrity report ${status.state}.`;
-          try {
-            const result = await apiGet<JobResult>(
-              `/jobs/${encodeURIComponent(jobId)}/result`,
-              { signal },
-            );
-            const err = (result.summary as Record<string, unknown>)?.error as
-              | { code?: string; message?: string; error?: { code?: string; message?: string } }
-              | undefined;
-            const code = err?.error?.code ?? err?.code;
-            const msg = err?.error?.message ?? err?.message;
-            if (msg) message = code ? `${msg} (${code})` : msg;
-          } catch {
-            // keep the generic message
-          }
-          setJobError(message);
-        }
-        setJobId(null);
-      }
-      return status;
-    },
-    enabled: !!jobId,
-    refetchInterval: (q) => {
-      const state = q.state.data?.state;
-      return state && TERMINAL.has(state) ? false : INSPECTION_JOB_POLL_MS;
-    },
+  // Terminal handling lives OUTSIDE the status queryFn (S3-4): with two tabs
+  // sharing the query cache, whichever observer fetched last used to be the
+  // only one whose setState ran — the other spun on "Generating…" forever.
+  useJobCompletion({
+    jobId,
+    label: 'Integrity report',
+    onSuccess: (result) =>
+      setReport(result.summary as unknown as SignalReportExt),
+    onError: setJobError,
+    onSettled: () => setJobId(null),
   });
 
   return {
@@ -176,7 +139,7 @@ export function SignalSection({
   return (
     <section data-testid="review-signals">
       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-[12.5px] font-medium text-gray-700">Data integrity</h4>
+        <h3 className="text-[12.5px] font-medium text-gray-700">Data integrity</h3>
         <button
           type="button"
           data-testid="review-run-signal"
@@ -193,12 +156,43 @@ export function SignalSection({
         </button>
       </div>
 
-      <JobErrorNote error={sig.error} testId="review-signal-submit-error" />
-      {sig.jobError && (
-        <p role="alert" className="text-[11.5px] text-red-600" data-testid="review-signal-error">
-          {sig.jobError}
-        </p>
-      )}
+      {/* ONE note, for the LATEST attempt. The two channels do not clear each
+          other — `jobError` is only reset when a submission succeeds — so a run
+          that failed inside the pipeline and was then re-run into a dead
+          network left both set, and the section rendered two identical alerts
+          with two identical Retry buttons describing different attempts. A
+          submit error is always the more recent of the two: reaching a job at
+          all clears it, so if it is set, nothing has been accepted since.
+
+          A failed submission also leaves the previous report on screen
+          untouched (`report` is cleared only once a new job is accepted), so
+          that branch says which of the two the reader is looking at — the #9
+          defect in its second location — and carries the way to try again. */}
+      {sig.error ? (
+        <JobErrorNote
+          error={sig.error}
+          testId="review-signal-submit-error"
+          staleNote={
+            report
+              ? 'The integrity report below is the last completed run, not this attempt.'
+              : undefined
+          }
+          onRetry={sig.run}
+          retryDisabled={sig.running || !!blockedReason}
+          retryLabel="Retry integrity report"
+        />
+      ) : sig.jobError ? (
+        // A job that ran and failed, rather than one that could not be started.
+        // No stale note: an accepted job clears the previous report, so there is
+        // nothing left beside this to confuse it with.
+        <JobErrorNote
+          error={sig.jobError}
+          testId="review-signal-error"
+          onRetry={sig.run}
+          retryDisabled={sig.running || !!blockedReason}
+          retryLabel="Retry integrity report"
+        />
+      ) : null}
 
       {!report && !sig.running && !sig.jobError && !sig.error && (
         <p className="text-[11.5px] text-gray-500">
@@ -226,9 +220,9 @@ export function SignalSection({
           {cameras.length > 0 && (
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-400">
+                <h3 className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-500">
                   Synced video
-                </span>
+                </h3>
                 <select
                   aria-label="sync camera topic"
                   data-testid="review-signal-camera"
@@ -289,7 +283,7 @@ export function SignalSection({
             data-testid="review-topic-summary"
           >
             <thead>
-              <tr className="text-left text-[10px] uppercase tracking-[0.03em] text-gray-400">
+              <tr className="text-left text-[10px] uppercase tracking-[0.03em] text-gray-500">
                 <th className="py-0.5 pr-2 font-medium">Topic</th>
                 <th className="py-0.5 pr-2 font-medium">Messages</th>
                 <th className="py-0.5 pr-2 font-medium">Continuity</th>
@@ -326,7 +320,7 @@ export function SignalSection({
                         majors > 0
                           ? 'font-semibold text-red-600'
                           : events.length > 0
-                            ? 'text-amber-600'
+                            ? 'text-amber-700'
                             : 'text-gray-500'
                       }`}
                     >
@@ -348,7 +342,7 @@ export function SignalSection({
                 {Object.entries(report.skipped_topics).map(([t, reason]) => (
                   <li key={t} className="font-mono">
                     <span className="text-gray-600">{t}</span>
-                    <span className="text-gray-400"> — {reason}</span>
+                    <span className="text-gray-500"> — {reason}</span>
                   </li>
                 ))}
               </ul>

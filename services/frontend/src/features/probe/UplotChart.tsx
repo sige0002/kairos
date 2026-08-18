@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Thin uPlot wrapper for the Probe overlay: a time-series chart with axis ticks,
 // a legend, hover crosshair, and multiple overlaid series — the things the
 // hand-rolled SVG charts lacked (axis numbers + overlay). Guarded so a

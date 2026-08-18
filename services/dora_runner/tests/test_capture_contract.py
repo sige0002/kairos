@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The job contract: a capture_id names the source, the outputs and the row.
 
 Contract §10.5. These are the assertions that stop the run_id-keyed layout from
@@ -201,7 +203,9 @@ def test_a_v1_jobs_table_is_recreated_not_migrated(tmp_path: Path) -> None:
     conn.close()
     assert "capture_id" in columns
     assert "run_id" not in columns
-    assert version == 2
+    # v3 adds durable idempotency keys and execution-active status to the
+    # recreated capture-id keyed jobs table.
+    assert version == 3
 
 
 def test_recreating_the_jobs_table_keeps_validation_templates(tmp_path: Path) -> None:

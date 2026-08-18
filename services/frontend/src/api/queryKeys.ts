@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Centralized TanStack Query keys so SSE dispatch and components agree on the
 // cache locations they read/write.
 //
@@ -20,6 +22,8 @@ export const queryKeys = {
   // follow-the-cursor sweep) without colliding with a plain list.
   captures: ['captures'] as const,
   captureList: (scope: string) => ['captures', 'list', scope] as const,
+  captureSearch: (scope: string, query: unknown) =>
+    ['captures', 'search', scope, query] as const,
   capture: (id: string) => ['captures', 'detail', id] as const,
   pipelines: ['pipelines'] as const,
   validationPresets: ['validation', 'presets'] as const,
@@ -30,10 +34,26 @@ export const queryKeys = {
   // Logical datasets (§6): identity is dataset_id, never a directory string.
   datasets: ['datasets'] as const,
   dataset: (datasetId: string) => ['datasets', 'detail', datasetId] as const,
+  datasetMembershipBulkRun: (datasetId: string, runId: string) =>
+    ['datasets', datasetId, 'membership-bulk-runs', runId] as const,
+  validationRuns: ['validation', 'runs'] as const,
+  validationRun: (runId: string) => ['validation', 'runs', runId] as const,
   // The archive run's progress (§6.x). Its own key, not dataset(id): it is
   // polled every second while a run executes, and invalidating the detail
   // subtree at that rate would rerender the whole screen once a second.
   datasetArchive: (datasetId: string) => ['datasets', 'archive', datasetId] as const,
+  // The dataset's LeRobot export (§6.2). Its own key for the same reason the
+  // archive run has one: polled every second while a conversion runs.
+  datasetExport: (datasetId: string) => ['datasets', 'export', datasetId] as const,
+  // What a conversion WOULD do. Keyed by everything that changes the answer —
+  // the dataset, the profile, and the memo (it is the output name's last
+  // segment) — so the dialog's preview follows what is typed instead of
+  // showing a cached reply for a different name.
+  exportPreflight: (datasetId: string, profile: string, memo: string) =>
+    ['datasets', 'export-preflight', datasetId, profile, memo] as const,
+  // Whether this installation can convert at all (exporter overlay present +
+  // a non-empty profile library). Read before any Convert control is drawn.
+  exportsConfig: ['exports', 'config'] as const,
   // Whether this deployment offers archiving at all, and to which roots
   // (KAIROS_ARCHIVE_ROOTS). Read before any archive control is rendered.
   // Scalar, not per-capture: the endpoint is addressed by a capture id but

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
@@ -11,6 +13,8 @@ import {
   getPlans,
   setPlans,
 } from '../plans';
+import { __resetStopConfirmMs, __setStopConfirmMs } from '../captures/stopConfirm';
+import { expectScreenHeadingOutline } from '../../test/headingOutline';
 
 // Runtime config (GET /api/v1/config): the ACTIVE robot's read-only values that
 // the Robots form surfaces (ROS_DOMAIN_ID + recorded topics).
@@ -67,6 +71,19 @@ const OPTIONS = {
 const RECORDING = {
   config: { robot_name: 'hsr', default_topics: ['/hsrb/odom'], expected_hz_patterns: [] },
   path: '/config/airoa_hsr/recording/default.yaml',
+};
+
+// GET /api/v1/config/stream — the Collect camera-pane layout editor's source.
+// `path: null` (a robot without a config dir) and `error` (a present-but-
+// broken file) are flipped per-test.
+let streamPayload: {
+  config: Record<string, unknown> | null;
+  path: string | null;
+  error: string | null;
+} = {
+  config: { columns: 2, panes: [{ topic: '/cam/a' }, { topic: '/cam/b' }] },
+  path: '/config/airoa_hsr/stream/default.yaml',
+  error: null,
 };
 
 // GET /api/v1/config/robots/{robot} — read-only view of a non-active robot.
@@ -183,6 +200,15 @@ function mockFetch() {
       }
       return Promise.resolve(jsonResponse(RECORDING));
     }
+    if (url.includes('/config/stream')) {
+      if (method === 'PUT') {
+        const body = JSON.parse(String((init as RequestInit).body));
+        return Promise.resolve(
+          jsonResponse({ config: body.config, path: streamPayload.path, error: null }),
+        );
+      }
+      return Promise.resolve(jsonResponse(streamPayload));
+    }
     if (url.includes('/config/select')) {
       const body = JSON.parse(String((init as RequestInit).body));
       return Promise.resolve(jsonResponse(echoSelect(body)));
@@ -244,6 +270,11 @@ beforeEach(() => {
   setApiBase('/api/v1');
   recordState = 'created';
   liveReported = true;
+  streamPayload = {
+    config: { columns: 2, panes: [{ topic: '/cam/a' }, { topic: '/cam/b' }] },
+    path: '/config/airoa_hsr/stream/default.yaml',
+    error: null,
+  };
   serverPlans = { projects: null, failure_reasons: null, operators: null, updated_at: null };
   plansGate = null;
   plansPutFails = false;
@@ -253,7 +284,10 @@ beforeEach(() => {
   __resetPlansStore();
   mockFetch();
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  __resetStopConfirmMs();
+  vi.restoreAllMocks();
+});
 
 test('lists the real robots and marks the active one', async () => {
   renderWithClient(<SettingsScreen />);
@@ -346,6 +380,77 @@ test('activating a robot while recording confirms first, then stops and switches
   await waitFor(() =>
     expect(selectPosts()).toContainEqual({ category: 'robot', id: 'template' }),
   );
+  // The switch is disclosed as PARTIAL: the ROS services keep their startup
+  // configs until restarted (S1-3) — pretending otherwise is how a
+  // mixed-config recording gets made.
+  const note = await screen.findByTestId('robot-switch-note');
+  expect(note).toHaveTextContent(/until they are restarted/);
+  expect(note).toHaveTextContent('make restart monitor streamer probe');
+});
+
+// S2-5 (timing sweep 2026-08-07): "stop answered 200" is not "stopped". A
+// recorder that is still flushing keeps the config out of reach — switching
+// while it drains would hot-swap the recording's config mid-write. The switch
+// must ride the same confirmation poll Collect's SAVING gate uses.
+test('stop & switch waits out a flushing recorder before selecting', async () => {
+  __setStopConfirmMs(5000, 5);
+  recordState = 'recording';
+  renderWithClient(<SettingsScreen />);
+  fireEvent.click(await screen.findByTestId('robot-row-1'));
+  fireEvent.click(screen.getByTestId('activate-robot'));
+  await screen.findByRole('dialog');
+
+  // From here the recorder acknowledges the stop but keeps flushing for two
+  // more status reads; everything else falls through to the standard mock.
+  const base = globalThis.fetch;
+  let stopped = false;
+  let statusAfterStop = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes('/record/stop')) {
+      stopped = true;
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run_x',
+          capture_id: 'cap_x',
+          state: 'stopping',
+          live_capture_ids: ['cap_x'],
+        }),
+      );
+    }
+    if (stopped && url.includes('/record/status')) {
+      statusAfterStop += 1;
+      if (statusAfterStop <= 2) {
+        return Promise.resolve(
+          jsonResponse({
+            run_id: 'run_x',
+            capture_id: 'cap_x',
+            state: 'stopping',
+            live_capture_ids: ['cap_x'],
+          }),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse({
+          run_id: 'run_x',
+          capture_id: 'cap_x',
+          state: 'completed',
+          live_capture_ids: [],
+        }),
+      );
+    }
+    return (base as typeof fetch)(input as RequestInfo, init);
+  });
+
+  fireEvent.click(screen.getByRole('button', { name: 'Stop & switch' }));
+  // While the recorder still reports the flush, the select must not have fired.
+  await waitFor(() => expect(statusAfterStop).toBeGreaterThanOrEqual(1));
+  expect(selectPosts()).toHaveLength(0);
+  // Once the recorder settles, the switch goes through.
+  await waitFor(() =>
+    expect(selectPosts()).toContainEqual({ category: 'robot', id: 'template' }),
+  );
+  expect(statusAfterStop).toBeGreaterThanOrEqual(3);
 });
 
 // §10 rev.2.4: a status response with no live_capture_ids means the recorder
@@ -445,6 +550,83 @@ test('saving the recording editor PUTs the edited config', async () => {
     expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ config: edited });
   });
   expect(await screen.findByText('Saved')).toBeInTheDocument();
+});
+
+test('saving the stream editor PUTs the edited layout and reports immediate apply', async () => {
+  renderWithClient(<SettingsScreen />);
+  const editor = (await screen.findByLabelText('stream config json')) as HTMLTextAreaElement;
+  await waitFor(() => expect(editor.value).toContain('"/cam/a"'));
+
+  const edited = { columns: 3, panes: [{ topic: '/cam/a' }] };
+  fireEvent.change(editor, { target: { value: JSON.stringify(edited, null, 2) } });
+  fireEvent.click(screen.getByTestId('stream-config-save'));
+
+  await waitFor(() => {
+    const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+    const put = calls.find(
+      (c) =>
+        String(c[0]).includes('/config/stream') &&
+        ((c[1] as RequestInit)?.method ?? 'GET') === 'PUT',
+    );
+    expect(put).toBeDefined();
+    expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ config: edited });
+  });
+  // The saved note states the immediate apply (no restart caveat — honest:
+  // the layout is served per-request by GET /api/v1/config).
+  expect(await screen.findByTestId('stream-saved-note')).toHaveTextContent(
+    /applies immediately/i,
+  );
+});
+
+test('invalid JSON in the stream editor disables Save before the server sees it', async () => {
+  renderWithClient(<SettingsScreen />);
+  const editor = (await screen.findByLabelText('stream config json')) as HTMLTextAreaElement;
+  await waitFor(() => expect(editor.value).toContain('"/cam/a"'));
+
+  fireEvent.change(editor, { target: { value: '{ not json' } });
+  expect(await screen.findByText(/Invalid JSON/)).toBeInTheDocument();
+  expect(screen.getByTestId('stream-config-save')).toBeDisabled();
+  // No PUT went out.
+  const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
+  const put = calls.find(
+    (c) =>
+      String(c[0]).includes('/config/stream') &&
+      ((c[1] as RequestInit)?.method ?? 'GET') === 'PUT',
+  );
+  expect(put).toBeUndefined();
+});
+
+test('a robot without a config dir gets an explanation, not an editor', async () => {
+  streamPayload = { config: null, path: null, error: null };
+  renderWithClient(<SettingsScreen />);
+  expect(await screen.findByTestId('stream-config-absent')).toHaveTextContent(
+    /has no stream config to edit/i,
+  );
+  expect(screen.queryByLabelText('stream config json')).not.toBeInTheDocument();
+});
+
+test('a present-but-broken stream file is disclosed before a save can replace it', async () => {
+  streamPayload = {
+    config: null,
+    path: '/config/airoa_hsr/stream/default.yaml',
+    error: 'Stream config is not valid YAML: mapping values are not allowed here',
+  };
+  renderWithClient(<SettingsScreen />);
+  const warning = await screen.findByTestId('stream-load-error');
+  expect(warning).toHaveTextContent(/exists but failed to load/i);
+  expect(warning).toHaveTextContent(/saving REPLACES the broken file/i);
+  // The editor stays usable as the recovery path, seeded empty.
+  const editor = (await screen.findByLabelText('stream config json')) as HTMLTextAreaElement;
+  expect(editor.value).toBe('{}');
+});
+
+test('the read-only robot view explains an absent stream config', async () => {
+  renderWithClient(<SettingsScreen />);
+  // Preview the non-active `template` robot (aspects.stream is null there).
+  fireEvent.click(await screen.findByTestId('robot-row-1'));
+  await screen.findByTestId('robot-readonly-banner');
+  expect(await screen.findByText(/has no stream config/i)).toBeInTheDocument();
+  expect(screen.queryByTestId('robot-readonly-stream-config')).not.toBeInTheDocument();
 });
 
 test('menu switches Robots → Plans → Recording (real, not a placeholder) → back', async () => {
@@ -775,14 +957,14 @@ test('Plans: a PARTIAL shrink never leaves an enabled control that does nothing'
   const addCondition = screen.getByText('+ Add condition');
   expect(addCondition).toBeDisabled();
   fireEvent.click(addCondition);
-  expect(getPlans()[1]!.tasks[0]!.conditions).toEqual(['x']); // nothing added
+  expect(getPlans()[1]!.tasks[0]!.conditions.map((condition) => condition.name)).toEqual(['x']); // nothing added
 
   // Re-confirming by picking a task restores the control, and it WORKS.
   fireEvent.click(within(screen.getByTestId('plan-task-0')).getByText('B1'));
   expect(screen.queryByTestId('plan-task-selection-lost')).not.toBeInTheDocument();
   expect(screen.getByText('+ Add condition')).toBeEnabled();
   fireEvent.click(screen.getByText('+ Add condition'));
-  expect(getPlans()[1]!.tasks[0]!.conditions).toEqual(['x', 'added condition']);
+  expect(getPlans()[1]!.tasks[0]!.conditions.map((condition) => condition.name)).toEqual(['x', 'added condition']);
   expectNoRenderCrash(errorSpy);
 });
 
@@ -948,3 +1130,11 @@ test('a catalog edit that DOES reach the server raises no such note', async () =
   });
   expect(screen.queryByTestId('plans-unsynced')).not.toBeInTheDocument();
 });
+
+// #14 — heading structure. This screen must title itself exactly once and
+// descend one heading level at a time, so a screen-reader user can navigate it
+// by heading instead of reading it as one flat run of text.
+test('titles itself with a single h1 and skips no heading level', async () => {
+  renderWithClient(<SettingsScreen />);
+  await expectScreenHeadingOutline('Settings');
+}, 20000);

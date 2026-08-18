@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Recording lifecycle: prepare, start, stop, status — and what stop settles.
 
 The orchestrator drives the recorder and files the result as a capture. Under v2
@@ -58,6 +60,7 @@ from api_orchestrator.models import (
     Capture,
     CaptureError,
     CaptureTopic,
+    CollectionContextSnapshot,
     Quality,
     RecordPrepareResponse,
     RecordStartRequest,
@@ -66,7 +69,7 @@ from api_orchestrator.models import (
     coerce_error,
 )
 from api_orchestrator.monitor_client import MonitorClient
-from api_orchestrator.recorder_client import RecorderClient
+from api_orchestrator.recorder_client import START_TIMEOUT_S, RecorderClient
 from api_orchestrator.settlement import (
     MonitorBaseline,
     SettlementRunner,
@@ -86,11 +89,27 @@ _MAX_RUN_ID_ATTEMPTS = 50
 # recording needs repairing.
 _MANIFEST_CORRUPT = "manifest_corrupt"
 
+# The config-independent share of a recorder start's worst case, for
+# _start_budget_s: subprocess spawn + output-dir wait (3 s) + the resume
+# service round-trips (~15 s bounded) + slack for the UNBOUNDED rclpy/DDS
+# participant init the arming gate performs before any of its timed waits.
+# Floor + the default config waits (2 + 5 + 0) reproduces the long-standing
+# 25 s budget exactly.
+_START_BUDGET_FLOOR_S = 18.0
+
 # Recorder states that mean a session is genuinely in progress.
 _ACTIVE_RECORDER_STATES = {
     CaptureState.recording.value,
     CaptureState.stopping.value,
 }
+
+# How long _final_state keeps re-reading the recorder's status after it
+# answered that it is STILL recording/stopping, before falling back to the
+# manifest. The recorder's own stop has already run its full escalation by the
+# time this is consulted, so a still-active answer here is a finaliser writing
+# its last few files — seconds, not the 65 s SIGINT/SIGTERM/SIGKILL chain.
+_FINAL_STATE_POLL_INTERVAL_S = 0.5
+_FINAL_STATE_POLL_BUDGET_S = 10.0
 
 
 def allocate_run_id(now: datetime | None = None) -> str:
@@ -156,6 +175,11 @@ class RecordService:
         # cannot interleave and diverge from the recorder's single session.
         self._lifecycle_lock = asyncio.Lock()
         self._prepared: _PreparedEntry | None = None
+        # Instance copies of the _final_state poll knobs so a test can run the
+        # confirmation in milliseconds (the poll-count seam, same idea as the
+        # frontend's __setStopConfirmMs).
+        self._final_state_poll_interval_s = _FINAL_STATE_POLL_INTERVAL_S
+        self._final_state_poll_budget_s = _FINAL_STATE_POLL_BUDGET_S
 
     @property
     def _record_baselines(self) -> dict[str, MonitorBaseline]:
@@ -211,10 +235,13 @@ class RecordService:
 
         A successful prepare creates no capture row: the recorder holds the
         armed session, and an abandoned prepare auto-disarms on its own
-        timeout. A recorder rejection is filed as a ``failed`` row first (the
-        recorder wrote ``objects/<id>.failed.json`` before rejecting, so the
-        store already contains the failure) and then propagates — the caller
-        armed nothing and must know.
+        timeout. A recorder rejection propagates WITHOUT filing a ``failed``
+        row: the recorder does not mint a ``.failed.json`` for a failed
+        pre-arm probe either (S2-7) — a background keep-alive that cannot arm
+        (topic mismatch, disk full) must not deposit a failed capture every
+        30 s while nothing tells the operator. The console surfaces the
+        failing pre-arm live instead; an operator ``start`` against the same
+        blocker still files normally.
         """
         # Before the recorder is told anything. These labels reach views/ as
         # path components whenever a dataset leaves its own unset
@@ -227,13 +254,9 @@ class RecordService:
         async with self._lifecycle_lock:
             run_id = self._allocate_run_id()
             payload = self._build_recorder_payload(run_id, topics, req)
-            try:
-                body = await self._recorder.prepare(payload)
-            except ApiError as exc:
-                self._file_failed_start_row(
-                    run_id, req, exc, _capture_id_of(exc.details or {})
-                )
-                raise
+            body = await self._recorder.prepare(
+                payload, timeout_s=self._start_budget_s()
+            )
             # A matching re-prepare extends the already-armed session and
             # returns THAT session's ids — adopt them, or a later start would
             # claim ids the recorder never armed.
@@ -255,16 +278,23 @@ class RecordService:
                 disarm_at=body.get("disarm_at"),
             )
 
-    @staticmethod
     def _prepare_match_key(
-        topics: list[str] | str, req: RecordStartRequest
+        self, topics: list[str] | str, req: RecordStartRequest
     ) -> tuple[Any, ...]:
         """What decides whether a ``start`` matches an outstanding ``prepare``.
 
         Mirrors the recorder's own comparison. Session metadata is deliberately
         excluded: operator and task do not change what gets recorded, only how
-        it is labelled afterwards.
+        it is labelled afterwards. The LIVE config's QoS patterns are included
+        because they ride in both payloads (S1-3): a config switched between
+        prepare and start must fall through to a fresh spawn, not resume an
+        armed session materialised under the previous config's QoS.
         """
+        config_patterns = (
+            tuple(o.model_dump_json() for o in self._config.topic_qos_overrides)
+            if self._config is not None
+            else None
+        )
         return (
             topics if isinstance(topics, str) else tuple(topics),
             req.compression.value,
@@ -276,6 +306,7 @@ class RecordService:
                     for name, qos in (req.qos_overrides or {}).items()
                 )
             ),
+            config_patterns,
         )
 
     def _consume_matching_prepared(
@@ -311,6 +342,7 @@ class RecordService:
         reject_unusable_labels(operator=req.operator, task=req.task)
         req.operator = default_meta(req.operator, UNKNOWN_OPERATOR)
         req.task = default_meta(req.task, UNKNOWN_TASK)
+        self._freeze_collection_context(req)
         topics = self._resolve_topics(req.topics)
         async with self._lifecycle_lock:
             await self._verify_no_active_recording()
@@ -321,7 +353,9 @@ class RecordService:
 
             payload = self._build_recorder_payload(run_id, topics, req)
             try:
-                body = await self._recorder.start(payload)
+                body = await self._recorder.start(
+                    payload, timeout_s=self._start_budget_s()
+                )
             except ApiError as exc:
                 return self._record_failed_start(run_id, req, exc, prepared)
 
@@ -382,6 +416,12 @@ class RecordService:
             operator=req.operator,
             task=req.task,
             robot=self._robot_name(),
+            batch_id=(
+                req.collection_context.batch_id
+                if req.collection_context is not None
+                else None
+            ),
+            collection_context=req.collection_context,
         )
         try:
             return self._store.create_capture(capture)
@@ -457,6 +497,96 @@ class RecordService:
                 error=CaptureError(code=exc.code, message=exc.message),
             )
 
+    def _freeze_collection_context(self, req: RecordStartRequest) -> None:
+        """Resolve and validate a batch snapshot before the recorder starts."""
+        context = req.collection_context
+        if context is None:
+            return
+        if context.operator is not None and context.operator != req.operator:
+            raise ApiError(
+                status_code=409,
+                code="collection_context_operator_mismatch",
+                message=(
+                    "The collection context operator differs from the recording "
+                    "operator; reload before recording."
+                ),
+            )
+        if context.task is not None and context.task != req.task:
+            raise ApiError(
+                status_code=409,
+                code="collection_context_task_mismatch",
+                message=(
+                    "The collection context task differs from the recording task; "
+                    "reload before recording."
+                ),
+            )
+        # The active robot is server authority. A browser cannot start a
+        # capture under the robot it displayed before a concurrent switch.
+        context.robot = self._robot_name()
+        if context.batch_id is None:
+            return
+        batch = self._store.get_batch(context.batch_id)
+        if batch is None:
+            raise ApiError(
+                status_code=409,
+                code="batch_not_found",
+                message="The requested batch does not exist; reload before recording.",
+                details={"batch_id": context.batch_id},
+            )
+        if batch.status != "active":
+            raise ApiError(
+                status_code=409,
+                code="batch_not_active",
+                message="The requested batch is not active; start a new batch first.",
+                details={"batch_id": context.batch_id, "status": batch.status},
+            )
+        expected = {
+            "batch_seq": context.batch_seq,
+            "project_id": context.project_id,
+            "task_id": context.task_id,
+            "condition_id": context.condition_id,
+            "project": context.project,
+            "task": context.task,
+            "condition": context.condition,
+            "robot": context.robot,
+            "operator": context.operator,
+        }
+        actual = {
+            "batch_seq": batch.batch_seq,
+            "project_id": batch.project_id,
+            "task_id": batch.task_id,
+            "condition_id": batch.condition_id,
+            "project": batch.project,
+            "task": batch.task,
+            "condition": batch.condition,
+            "robot": batch.robot,
+            "operator": batch.operator,
+        }
+        # ID-less contexts are pre-canonical/Custom snapshots. Their labels
+        # still have to match exactly, but an old recorder cannot prove an ID
+        # that did not exist when it started; rejecting it would strand a
+        # legitimate later review association during a rolling deploy.
+        for name in ("project_id", "task_id", "condition_id"):
+            if expected[name] is None:
+                expected.pop(name)
+                actual.pop(name)
+        if expected != actual:
+            mismatch = next(name for name in expected if expected[name] != actual[name])
+            raise ApiError(
+                status_code=409,
+                code=f"batch_{mismatch}_mismatch",
+                message=(
+                    f"The requested batch {mismatch} no longer matches the "
+                    "server; reload before recording."
+                ),
+                details={
+                    "batch_id": context.batch_id,
+                    "field": mismatch,
+                    "expected": expected[mismatch],
+                    "actual": actual[mismatch],
+                },
+            )
+
     def _allocate_run_id(self) -> str:
         """A display name free of collisions with existing rows."""
         base = allocate_run_id()
@@ -492,6 +622,35 @@ class RecordService:
             )
         return default
 
+    def _start_budget_s(self) -> float:
+        """Round-trip budget for recorder ``/record/start`` and ``/record/prepare``.
+
+        The recorder blocks through its config's own bounded waits before it
+        answers — ``start_delay_s`` (pre-spawn ramp-up), the subscription
+        readiness gate, and ``post_discovery_delay_s`` — so a FIXED budget is a
+        booby trap: the flat 25 s left a 0.5 s margin against the default
+        waits, and a documented config choice (``start_delay_s: 10`` for camera
+        warm-up) pushed every cold start into a 503 whose ``_record_failed_start``
+        stamped a ``failed`` row onto a recording that was actually coming up
+        (timing sweep S2-3). Derive the budget from the LIVE config instead —
+        the same config whose QoS patterns ride the start payload — plus a
+        floor for the config-independent parts (spawn + output-dir wait +
+        resume round-trips + the unbounded rclpy/DDS init). Never below
+        :data:`START_TIMEOUT_S`, which stays correct for the defaults. A
+        recorder still running an older config after a select can exceed a
+        SMALLER derived budget, but never this max().
+        """
+        if self._config is None:
+            return START_TIMEOUT_S
+        tuning = self._config.recording
+        derived = (
+            _START_BUDGET_FLOOR_S
+            + tuning.start_delay_s
+            + tuning.subscription_ready_timeout_s
+            + tuning.post_discovery_delay_s
+        )
+        return max(START_TIMEOUT_S, derived)
+
     def _build_recorder_payload(
         self, run_id: str, topics: list[str] | str, req: RecordStartRequest
     ) -> dict[str, Any]:
@@ -522,6 +681,20 @@ class RecordService:
             payload["qos_overrides"] = {
                 name: qos.model_dump() for name, qos in req.qos_overrides.items()
             }
+        if req.collection_context is not None:
+            payload["collection_context"] = req.collection_context.model_dump(
+                mode="json"
+            )
+        # The LIVE config's pattern QoS overrides ride along on every start:
+        # the recorder's own copy was loaded at ITS startup, so after a robot
+        # switch (config hot-swap, §config select) the recorder would otherwise
+        # keep recording with the previous robot's QoS while labelling captures
+        # with the new robot's name (timing sweep S1-3). Sent even when empty —
+        # "the live config has no overrides" must also supersede a stale file.
+        if self._config is not None:
+            payload["qos_override_patterns"] = [
+                o.model_dump(mode="json") for o in self._config.topic_qos_overrides
+            ]
         # The console half of the two-host provenance stamp: the recorder
         # writes it, together with its own build/config identity, into the
         # capture manifest — so a bad capture is traceable to the exact pair
@@ -640,8 +813,41 @@ class RecordService:
             except ApiError:
                 recorder_state = None
 
+        if recorder_state in _ACTIVE_RECORDER_STATES:
+            # The recorder ANSWERED, and the answer was "still writing". This
+            # used to fall through to the ``completed`` return below — the one
+            # reading that answer can never justify: "nobody answered" got the
+            # careful manifest branch while "I am not done yet" was sealed as a
+            # good take. A finaliser normally clears this in seconds (the
+            # recorder's stop has already escalated by now), so give it a short
+            # poll; whatever it says last decides which branch below runs.
+            recorder_state = await self._await_recorder_settled()
+
         if recorder_state in TERMINAL_STATES:
             return CaptureState(recorder_state), recorder_error
+        if recorder_state in _ACTIVE_RECORDER_STATES:
+            # Still writing after the whole poll budget. The row must go
+            # terminal here (stop() has to commit), and the one state that
+            # cannot be true is ``completed``. The manifest is authoritative:
+            # sealed terminal → that state; anything else → ``interrupted``,
+            # with an error naming what actually happened so the operator sees
+            # "the recorder never confirmed this stop" instead of a good take.
+            read = read_object_manifest(self._layout.capture_dir(capture.capture_id))
+            if (
+                read.status is SidecarStatus.ok
+                and read.manifest is not None
+                and read.manifest.state in TERMINAL_STATES
+            ):
+                return CaptureState(read.manifest.state), coerce_error(
+                    read.manifest.error
+                )
+            return CaptureState.interrupted, CaptureError(
+                code="stop_not_confirmed",
+                message=(
+                    f"the recorder still reported '{recorder_state}' after the "
+                    "stop; the recording was not confirmed stopped"
+                ),
+            )
         if recorder_state is None:
             # We could not ask AT ALL — the recorder answered the stop and then
             # went away, or died before it could answer. "Nobody is left to
@@ -688,6 +894,32 @@ class RecordService:
             return CaptureState.interrupted, None
         # The recorder answered and is idle or completed: a normal stop.
         return CaptureState.completed, recorder_error
+
+    async def _await_recorder_settled(self) -> str | None:
+        """Re-read the recorder's status until it stops answering "active".
+
+        Returns the last state the recorder reported — terminal, some other
+        no-session answer, still-active when the budget ran out — or ``None``
+        when it stopped answering entirely. A single failed read is NOT treated
+        as "gone": the recorder's status route shares its finalise lock, so a
+        timeout mid-flush is the busy recorder this poll exists to wait for
+        (the same lesson as the console's stop confirmation).
+        """
+        deadline = time.monotonic() + self._final_state_poll_budget_s
+        state: str | None = CaptureState.stopping.value
+        answered_recently = True
+        while time.monotonic() < deadline:
+            await asyncio.sleep(self._final_state_poll_interval_s)
+            try:
+                status = await self._recorder.status()
+            except ApiError:
+                answered_recently = False
+                continue
+            answered_recently = True
+            state = status.get("state")
+            if state not in _ACTIVE_RECORDER_STATES:
+                return state
+        return state if answered_recently else None
 
     def _active_capture(self) -> Capture | None:
         """The single capture currently recording/stopping, if any.
@@ -799,6 +1031,18 @@ class RecordService:
                 task=manifest.task,
                 robot=manifest.robot,
                 topics=[CaptureTopic.model_validate(t) for t in manifest.topics],
+                batch_id=(
+                    manifest.collection_context.batch_id
+                    if manifest.collection_context is not None
+                    else None
+                ),
+                collection_context=(
+                    CollectionContextSnapshot.model_validate(
+                        manifest.collection_context.to_json()
+                    )
+                    if manifest.collection_context is not None
+                    else None
+                ),
             )
         )
         self._store.upsert_replica(
@@ -1029,6 +1273,20 @@ class RecordService:
                 error=CaptureError(code=code, message=exc.message),
             )
         fields = self._metadata_to_fields(meta)
+        context = fields.get("collection_context")
+        if context is not None and context.batch_id is not None:
+            current = self._store.get_capture(capture_id)
+            if current is not None and current.batch_id is None:
+                fields["batch_id"] = context.batch_id
+            elif current is not None and current.batch_id != context.batch_id:
+                logger.warning(
+                    "manifest collection context disagrees with catalog batch",
+                    extra={
+                        "capture_id": capture_id,
+                        "catalog_batch_id": current.batch_id,
+                        "manifest_batch_id": context.batch_id,
+                    },
+                )
         fields["error"] = None  # a successful sync clears any prior sync error
         return self._store.update_capture(capture_id, **fields)
 
@@ -1064,6 +1322,10 @@ class RecordService:
             fields["compression"] = Compression(manifest["compression"])
         if manifest.get("split"):
             fields["split"] = Split.model_validate(manifest["split"])
+        if manifest.get("collection_context") is not None:
+            fields["collection_context"] = CollectionContextSnapshot.model_validate(
+                manifest["collection_context"]
+            )
         return fields
 
     @staticmethod

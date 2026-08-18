@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Windowed metric math: Hz / bandwidth / gap / late / stamp_delay from samples.
 
 Drives :class:`~topic_monitor.metrics.TopicWindow` and

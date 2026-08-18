@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """``instance.json``: this installation's identity, minted once and never again.
 
 Contract §1. ``source_instance_id`` is what a replica row is keyed by — it is the

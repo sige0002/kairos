@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-3: the review that lost the CAS must not outlive the winner on disk.
 
 ``record.json`` is authoritative and ``kairos.db`` is a disposable index (§4.1-4,

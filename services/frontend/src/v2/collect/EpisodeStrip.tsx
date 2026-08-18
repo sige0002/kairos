@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Bottom-right episode strip: N / target counter + a horizontally scrollable
 // row of `targetEpisodes` chips (done / review / fail / current / future) +
 // running totals. The chip count follows the batch's own target (editable via
@@ -59,7 +61,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
       const styles: Record<Bucket, string> = {
         good: 'bg-green-100 text-green-700',
         review: 'bg-amber-100 text-amber-700',
-        taskFailed: 'bg-red-50 text-red-600',
+        taskFailed: 'bg-red-50 text-red-700',
       };
       const glyphs: Record<Bucket, string> = {
         good: '✓',
@@ -101,7 +103,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
           className={cn(
             'flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border-2 font-mono text-[11px]',
             recording
-              ? 'border-red-600 bg-red-50 text-red-600'
+              ? 'border-red-600 bg-red-50 text-red-700'
               : 'border-teal-600 bg-white text-teal-700',
           )}
         >
@@ -116,7 +118,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
         <span
           key={n}
           title={`Episode ${n} — recorded earlier; no longer listed (exported or deleted in Review)`}
-          className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border border-dashed border-gray-300 bg-white font-mono text-[10.5px] text-gray-400"
+          className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border border-dashed border-gray-300 bg-white font-mono text-[10.5px] text-gray-500"
         >
           {n}
         </span>
@@ -126,7 +128,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
       <span
         key={n}
         title={`Episode ${n} — not recorded`}
-        className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-gray-100 font-mono text-[10.5px] text-gray-300"
+        className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-gray-100 font-mono text-[10.5px] text-gray-600"
       >
         {n}
       </span>
@@ -134,7 +136,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
   });
 
   return (
-    <Card className="flex shrink-0 items-center gap-2.5 px-4 py-2.5 [@media(max-height:860px)]:py-1.5">
+    <Card className="flex shrink-0 items-center gap-2.5 overflow-x-auto px-4 py-2.5 [@media(max-height:860px)]:py-1.5">
       <span
         data-testid="episode-strip-count"
         className="font-mono text-[13px] font-semibold text-gray-900"
@@ -169,7 +171,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
           +{unplaced.length} unplaced
         </span>
       )}
-      <span className="shrink-0 text-[11px] text-gray-400">
+      <span className="shrink-0 text-[11px] text-gray-500">
         ✓ {stats.nGood} · ! {stats.nReview} · ✕ {stats.nTaskFailed}
       </span>
     </Card>

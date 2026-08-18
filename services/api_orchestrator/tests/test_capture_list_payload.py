@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-27: the capture list must not carry what the list does not render.
 
 Every row of ``GET /api/v1/captures`` used to carry that capture's full topic

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """EventHub monitor-bridge connectivity (EVENT_BRIDGE) tests.
 
 The hub's monitor SSE legs publish an aggregated ``bridge`` event on up/down

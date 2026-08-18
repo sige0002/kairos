@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Request/response models and the run state enum for rosbag2_recorder.
 
 The shapes here are the recorder's *internal* API (called by ``api_orchestrator``,
@@ -13,7 +15,12 @@ from enum import StrEnum
 from typing import Annotated, Any, Literal
 
 from kairos_common import ApiError, Compression, Durability, Reliability
-from pydantic import BaseModel, Field
+from kairos_common.capture_sidecars import (
+    CollectionContextSnapshotV1,
+    collection_context_snapshot_from_json,
+)
+from kairos_common.recording_config import TopicQosOverride
+from pydantic import BaseModel, Field, field_validator
 
 # run_id charset guard, per the spec / config.md. Since v2 the run_id is a
 # DISPLAY NAME only — ``objects/<capture_id>`` is the path — so this no longer
@@ -94,16 +101,35 @@ class RecordStartRequest(BaseModel):
     split: SplitConfig | None = None
     qos_default: QosProfile | None = None
     qos_overrides: dict[str, QosProfile] | None = None
+    # Pattern -> QoS overrides from the ORCHESTRATOR'S live recording config.
+    # They take precedence over this process's own ``topic_qos_overrides``,
+    # which were loaded at startup: the orchestrator hot-swaps configs on a
+    # robot switch, while the recorder only re-reads its file on restart — so
+    # without this field a switched robot recorded with the previous robot's
+    # QoS (timing sweep S1-3). Same shape as ``recording.yaml``'s entries.
+    qos_override_patterns: list[TopicQosOverride] | None = None
     # Optional session metadata; written to the capture's object_manifest.json.
     operator: str | None = None
     task: str | None = None
     # Which robot produced this capture. Omitted -> the recorder falls back to
     # its RECORDING_CONFIG ``robot_name``, so a standalone call still names one.
     robot: str | None = None
+    # Batch labels captured at actual start. This is intentionally separate
+    # from the top-level compatibility metadata above.
+    collection_context: CollectionContextSnapshotV1 | None = None
     # Console-side identity (orchestrator git sha etc.), stamped verbatim into
     # the capture manifest's `stamp.console` — half of the two-host provenance.
     # Absent on direct recorder calls: the stamp then honestly has no console.
     console_stamp: dict[str, Any] | None = None
+
+    @field_validator("collection_context", mode="before")
+    @classmethod
+    def _parse_collection_context(
+        cls, value: Any
+    ) -> CollectionContextSnapshotV1 | None:
+        if value is None or isinstance(value, CollectionContextSnapshotV1):
+            return value
+        return collection_context_snapshot_from_json(value)
 
 
 class TopicEntry(BaseModel):

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """loss_report pipeline tests.
 
 ``estimate_topic_loss`` is pure (operates on a list of message times), so the
@@ -16,6 +18,7 @@ from pathlib import Path
 
 import pytest
 from dora_runner.loss_report import (
+    detect_gap_events,
     estimate_topic_loss,
     gap_exceeded,
     run_loss_report,
@@ -101,6 +104,38 @@ def test_gap_exceeded_flag_uses_multiplier() -> None:
     assert gap_exceeded(est, 20.0) is False
     # Missing data is never flagged.
     assert gap_exceeded({"gap_max_ms": None, "median_interval_ms": None}, 1.0) is False
+
+
+def test_detect_gap_events_reports_when_and_how_many_are_estimated_missing() -> None:
+    analysis_times = [0, 100 * _MS, 200 * _MS, 800 * _MS, 900 * _MS]
+    # The report timeline is recorder log time, offset from the capture's first
+    # logged message. It stays comparable across topics even when cadence uses
+    # publisher time.
+    timeline_times = [10 * _MS, 110 * _MS, 210 * _MS, 810 * _MS, 910 * _MS]
+
+    events = detect_gap_events(
+        analysis_times,
+        timeline_times,
+        timeline_origin_ns=10 * _MS,
+        multiplier=3.0,
+    )
+
+    assert events == [
+        {
+            "start_offset_ms": 200.0,
+            "end_offset_ms": 800.0,
+            "gap_ms": 600.0,
+            "expected_interval_ms": 100.0,
+            "estimated_missing": 5,
+            "gap_ratio": 6.0,
+        }
+    ]
+
+
+def test_detect_gap_events_needs_a_cadence_and_matching_timeline() -> None:
+    assert detect_gap_events([0, 100], [0, 100], 0, 2.0) == []
+    with pytest.raises(ValueError, match="same length"):
+        detect_gap_events([0, 100, 200], [0, 100], 0, 2.0)
 
 
 def test_coerce_target_topics_accepts_string_or_list() -> None:
@@ -191,6 +226,66 @@ def test_run_loss_report_filters_target_topics(
     assert filtered["summary"]["params"]["target_topics"] == ["/hsrb/*"]
     # gap_exceeded is present on every reported topic (additive field).
     assert all("gap_exceeded" in t for t in filtered["summary"]["topics"])
+
+
+def test_run_loss_report_adds_capture_relative_gap_events(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
+    data_dir = tmp_path / "data"
+    capture_id, capture_dir = make_capture(data_dir)
+    pairs = [
+        (0, 0),
+        (100 * _MS, 100 * _MS),
+        (200 * _MS, 200 * _MS),
+        (800 * _MS, 800 * _MS),
+        (900 * _MS, 900 * _MS),
+    ]
+    _write_mcap_with_times(capture_dir / "run_x_0.mcap", "/joint_states", pairs)
+
+    summary = run_loss_report(
+        capture_id=capture_id,
+        data_dir=data_dir,
+        gap_threshold_multiplier=3.0,
+    )["summary"]
+
+    assert summary["version"] == "1.2.0"
+    assert summary["events"] == [
+        {
+            "topic": "/joint_states",
+            "time_source": "log_time",
+            "start_offset_ms": 200.0,
+            "end_offset_ms": 800.0,
+            "gap_ms": 600.0,
+            "expected_interval_ms": 100.0,
+            "estimated_missing": 5,
+            "gap_ratio": 6.0,
+        }
+    ]
+    assert summary["topics"][0]["gap_events"] == [
+        {
+            key: value
+            for key, value in summary["events"][0].items()
+            if key not in {"topic", "time_source"}
+        }
+    ]
+
+
+def test_run_loss_report_stops_at_the_cancellation_checkpoint(
+    tmp_path: Path, make_capture: Callable[[Path], tuple[str, Path]]
+) -> None:
+    """A set cancel event stops the MCAP scan instead of running it out."""
+    import threading
+
+    from dora_runner.models import JobCanceled
+
+    data_dir = tmp_path / "data"
+    capture_id, capture_dir = make_capture(data_dir)
+    _write_minimal_mcap(capture_dir / "run_x_0.mcap", {"/hsrb/joint_states": 10})
+
+    cancel = threading.Event()
+    cancel.set()
+    with pytest.raises(JobCanceled):
+        run_loss_report(capture_id=capture_id, data_dir=data_dir, cancel=cancel)
 
 
 def _write_mcap_with_times(

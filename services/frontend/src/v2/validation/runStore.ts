@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The current validation run, parked in module scope.
 //
 // App.tsx renders only the active tab, so the Validation screen is UNMOUNTED
@@ -53,6 +55,8 @@ export interface JobProbeUpdate {
   state: JobState;
   progress: number;
   terminal: boolean;
+  /** A cancel is in flight but the work has not stopped yet (still running). */
+  cancelRequested?: boolean;
   summary?: Summary;
   artifacts?: string[];
   resultErrored: boolean;
@@ -132,6 +136,7 @@ export function recordJobUpdate(update: JobProbeUpdate): void {
     cur.state === update.state &&
     cur.progress === update.progress &&
     cur.terminal === update.terminal &&
+    cur.cancelRequested === update.cancelRequested &&
     cur.summary === update.summary
   ) {
     return;

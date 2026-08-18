@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Copying and hashing bytes we are about to become responsible for.
 
 Both callers here are irreversible in the same way: :func:`copy_tree_verified`
@@ -17,6 +19,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from kairos_common.atomic_io import fsync_dir
 
 # 4 MiB: large enough that the syscall overhead disappears against a multi-GB
 # bag, small enough to stay off the large-object heap and out of the way of a
@@ -135,4 +139,25 @@ def copy_tree_verified(
         if progress is not None:
             progress(result.bytes)
     result.entries.sort(key=lambda entry: entry["path"])
+    # Durability of the ENTRIES, not just the bytes (atomic_io's rule 4).
+    # Every file above was fsynced, but a directory entry that is not fsynced
+    # can vanish in a crash — and this function's `move`-mode caller deletes
+    # the SOURCE on the strength of this result, which made this the one write
+    # path in the tree that skipped the rule while destroying its fallback
+    # (timing sweep S4/D4).
+    directories = {target}
+    for entry in result.entries:
+        parent = (target / entry["path"]).parent
+        while parent != target and target in parent.parents:
+            directories.add(parent)
+            parent = parent.parent
+    for directory in sorted(directories):
+        try:
+            fsync_dir(directory)
+        except OSError:
+            # Some network filesystems refuse directory fsync; the file bytes
+            # are already synced and nothing can be made MORE durable from
+            # here, so the copy stands rather than failing an archive that a
+            # local disk would have passed.
+            continue
     return result

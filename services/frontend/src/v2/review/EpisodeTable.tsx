@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Episodes column: header (counts, bulk controls, search, transfer-all) + the
 // scrollable row list. Captures in, decorated with the operator's in-flight
 // choice (useReviewState); Quality/Task result render the *effective* value,
@@ -70,14 +72,20 @@ function transferBadge(row: DecoratedEpisode): { tone: Tone; label: string } {
 // past the last data column would sit inside the row element with no column
 // of its own, and a click anywhere in it (e.g. dead-center of the row) would
 // resolve to whichever adjacent column happens to be nearest, not "nothing".
-// The `minmax(0,1fr)` track absorbs that space so the trailing action column
-// stays pinned to the right edge instead of floating mid-row.
+// The `minmax(96px,1fr)` track absorbs that space so the trailing action column
+// stays pinned to the right edge instead of floating mid-row. The 96px MINIMUM
+// is load-bearing: this flexible track also HOLDS the right-aligned Status
+// chip, and with `minmax(0,…)` a narrow card squeezed the track below the
+// chip's width — the chip (nowrap, un-clipped by the grid) then slid left over
+// the Data column. 96px covers the widest lane label (NEEDS CHECK), so the
+// shared horizontal scroll (E-25) engages instead of an overlap.
 // (Tailwind's arbitrary-value classes must appear as complete literal strings
 // in the source for its scanner to pick them up — hence two full strings
 // rather than building one via interpolation.)
-const GRID_COLS = 'grid-cols-[56px_48px_108px_96px_72px_80px_96px_minmax(0,1fr)_28px]';
+const GRID_COLS =
+  'grid-cols-[56px_48px_108px_96px_72px_80px_96px_minmax(96px,1fr)_28px]';
 const GRID_COLS_SPLIT =
-  'grid-cols-[56px_48px_108px_96px_72px_80px_96px_84px_minmax(0,1fr)_28px]';
+  'grid-cols-[56px_48px_108px_96px_72px_80px_96px_84px_minmax(96px,1fr)_28px]';
 
 function Row({
   row,
@@ -99,7 +107,7 @@ function Row({
         'grid cursor-pointer items-center gap-2 border-t border-gray-50 px-[18px] py-2 text-sm transition-colors first:border-t-0 hover:bg-gray-50',
         rv.splitMode ? GRID_COLS_SPLIT : GRID_COLS,
         isSelected && 'border-l-[3px] border-l-teal-600 bg-teal-50 pl-[15px]',
-        row.isExcluded && 'bg-red-50 opacity-50',
+        row.isExcluded && 'bg-red-50 opacity-90',
       )}
     >
       <span className="font-mono text-[13px] font-semibold text-gray-900">
@@ -122,20 +130,20 @@ function Row({
             'w-fit rounded-chip px-1 text-left font-mono text-[12.5px]',
             rv.batchFilter === row.batchId
               ? 'bg-teal-100 font-semibold text-teal-800'
-              : 'text-gray-500 hover:bg-gray-100 hover:text-gray-700',
+              : 'text-gray-600 hover:bg-gray-100 hover:text-gray-700',
           )}
         >
           {row.batch}
         </button>
       ) : (
-        <span className="font-mono text-[12.5px] text-gray-500">{row.batch}</span>
+        <span className="font-mono text-[12.5px] text-gray-600">{row.batch}</span>
       )}
       <QualityCell row={row} />
       <TaskResultChip task={row.effectiveTask} reason={row.failReason} />
-      <span className="font-mono text-xs text-gray-500">
+      <span className="font-mono text-xs text-gray-600">
         {formatHms(row.durationMs)}
       </span>
-      <span className="font-mono text-xs text-gray-400">
+      <span className="font-mono text-xs text-gray-600">
         {formatTimeOfDay(row.startedAt)}
       </span>
       <AvailabilityChip
@@ -162,10 +170,10 @@ function Row({
             ? 'Return to review — the exclusion is a label, not a deletion'
             : 'Exclude from training use. The recording is kept and this can be undone.'
         }
-        className="flex h-[26px] w-[26px] items-center justify-center rounded-[7px] text-gray-300 transition-colors hover:bg-amber-50 hover:text-amber-700"
+        className="flex h-[26px] w-[26px] items-center justify-center rounded-[7px] text-gray-600 transition-colors hover:bg-amber-50 hover:text-amber-700"
       >
         {row.isExcluded ? (
-          <span className="text-sm text-teal-700">↺</span>
+          <span className="text-sm text-teal-800">↺</span>
         ) : (
           <ArchiveIcon />
         )}
@@ -185,12 +193,12 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
   return (
     <div className="flex min-w-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-gray-100 px-[18px] py-3">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-600">
           Episodes
-        </span>
+        </h2>
         <span
           data-testid="review-episodes-count"
-          className="font-mono text-xs text-gray-400"
+          className="font-mono text-xs text-gray-600"
         >
           {rv.rows.length} shown
         </span>
@@ -198,13 +206,13 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           <>
             <span
               data-testid="review-lane-tally"
-              className="rounded-chip bg-gray-50 px-2 py-0.5 font-mono text-[11px] text-gray-500"
+              className="rounded-chip bg-gray-50 px-2 py-0.5 font-mono text-[11px] text-gray-600"
             >
               {nReady} ready · {nCheck} needs check · {nExcluded} excluded
             </span>
             <span
               data-testid="review-task-tally"
-              className="rounded-chip bg-gray-50 px-2 py-0.5 font-mono text-[11px] text-gray-500"
+              className="rounded-chip bg-gray-50 px-2 py-0.5 font-mono text-[11px] text-gray-600"
             >
               {nSuccess} success · {nFail} failure
             </span>
@@ -215,7 +223,7 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           <button
             type="button"
             onClick={rv.toggleExcluded}
-            className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-500 transition-colors hover:bg-gray-50"
+            className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-600 transition-colors hover:bg-gray-50"
           >
             {rv.showExcluded ? 'Hide' : 'Show'} excluded ({rv.nExcluded})
           </button>
@@ -259,7 +267,7 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
                 ? 'Every recording has reached this machine'
                 : 'Pull every recording whose copy has not arrived yet'
             }
-            className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-500 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:border-gray-100 disabled:bg-gray-50 disabled:text-gray-300 disabled:hover:bg-gray-50"
+            className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-600 transition-colors hover:bg-gray-50 disabled:cursor-not-allowed disabled:border-gray-100 disabled:bg-gray-50 disabled:text-gray-300 disabled:hover:bg-gray-50"
           >
             Transfer pending ({rv.nAwaiting})
           </button>
@@ -288,7 +296,7 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
                 data-testid="review-return-batch"
                 onClick={rv.returnBatchToReview}
                 title="Return every excluded episode of this batch to review (pending)"
-                className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-500 transition-colors hover:bg-gray-50"
+                className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-600 transition-colors hover:bg-gray-50"
               >
                 ↺ Return batch ({rv.batchExcluded.length})
               </button>
@@ -298,7 +306,7 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
               data-testid="review-batch-filter-clear"
               onClick={() => rv.toggleBatchFilter(null)}
               title="Show all batches"
-              className="rounded-control border border-gray-200 bg-white px-2 py-1.5 text-[12.5px] font-semibold text-gray-500 hover:bg-gray-50"
+              className="rounded-control border border-gray-200 bg-white px-2 py-1.5 text-[12.5px] font-semibold text-gray-600 hover:bg-gray-50"
             >
               ✕
             </button>
@@ -325,16 +333,67 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
           type="text"
           value={rv.search}
           onChange={(e) => rv.setSearch(e.target.value)}
+          // The placeholder is not a name: it is gone the moment there is a
+          // query, and a screen reader announces the field as "edit, blank".
+          aria-label="Search episodes"
           placeholder="Search episodes…"
           data-testid="review-search"
-          className="w-[150px] rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"
+          className="w-[150px] rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-600"
         />
       </div>
+      {/* The undo for the last exclude — its own band under the toolbar, not an
+          affordance on the excluded row: excluding a row removes it from the
+          default view, so the button would be behind "Show excluded" at exactly
+          the moment the operator wants a mis-click back. Nor in the toast, which
+          clears itself after a couple of seconds; a recovery path with a
+          countdown on it is not one. Same reasoning as the batch-return notice
+          in the toolbar above, which is persistent for the same reason.
+
+          `role="status"`: this is the durable half of the announcement, and a
+          keyboard operator who hears the exclude has to be able to find the way
+          back. Polite, not alert — nothing here is urgent, and the toast has
+          already said what happened. */}
+      {rv.excludeUndo && (
+        <div
+          role="status"
+          data-testid="review-exclude-undo"
+          className="flex flex-wrap items-center gap-2 border-b border-gray-100 bg-amber-50 px-[18px] py-2 text-[12.5px] text-amber-900"
+        >
+          <span>
+            <span className="font-semibold">{rv.excludeUndo.subject}</span> excluded —
+            the recording is kept.
+          </span>
+          <button
+            type="button"
+            data-testid="review-exclude-undo-btn"
+            onClick={rv.undoExclude}
+            // Carries its subject: the sibling span naming the episode is not
+            // associated with the button, so on its own this reads as one of
+            // however many "Undo"s a screen reader has collected.
+            aria-label={`Undo excluding ${rv.excludeUndo.subject}`}
+            title="Put back the status and quality this capture had before it was excluded"
+            className="rounded-control border border-amber-300 bg-white px-2.5 py-1 text-[12px] font-bold text-amber-800 transition-colors hover:bg-amber-100"
+          >
+            <span aria-hidden>↶</span> Undo
+          </button>
+          <div className="flex-1" />
+          <button
+            type="button"
+            data-testid="review-exclude-undo-dismiss"
+            onClick={rv.dismissExcludeUndo}
+            aria-label={`Dismiss — ${rv.excludeUndo.subject} stays excluded`}
+            title="Dismiss — the capture stays excluded"
+            className="rounded-control px-2 py-1 text-[12px] font-semibold text-amber-700 transition-colors hover:bg-amber-100"
+          >
+            <span aria-hidden>✕</span>
+          </button>
+        </div>
+      )}
       {/* Exception-review: a good take costs zero clicks; you only look at the
           exceptions. */}
       <p
         data-testid="review-adopt-explainer"
-        className="border-b border-gray-100 px-[18px] py-1.5 text-[11px] text-gray-400"
+        className="border-b border-gray-100 px-[18px] py-1.5 text-[11px] text-gray-600"
       >
         <span className="font-semibold text-teal-700">READY</span> episodes need no
         review — you only resolve the{' '}
@@ -356,7 +415,7 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
       <div className="flex min-h-0 flex-1 flex-col overflow-x-auto">
         <div
           className={cn(
-            'grid shrink-0 gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400',
+            'grid shrink-0 gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-600',
             rv.splitMode ? GRID_COLS_SPLIT : GRID_COLS,
           )}
         >
@@ -373,14 +432,14 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
         </div>
         <div className="flex-1 overflow-y-auto">
           {rv.isLoading ? (
-            <p className="px-[18px] py-3 text-sm text-gray-500">Loading episodes…</p>
+            <p className="px-[18px] py-3 text-sm text-gray-600">Loading episodes…</p>
           ) : rv.isError ? (
             <p className="px-[18px] py-3 text-sm text-red-600" role="alert">
               Couldn&apos;t load recordings
               {rv.errorMessage ? `: ${rv.errorMessage}` : ''}.
             </p>
           ) : rv.rows.length === 0 ? (
-            <p className="px-[18px] py-3 text-sm text-gray-500">
+            <p className="px-[18px] py-3 text-sm text-gray-600">
               No episodes to review yet.
             </p>
           ) : (
@@ -393,25 +452,23 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
               />
             ))
           )}
-          {/* The sweep stopped before the end of the catalog, so "no more
-            episodes" here means "no more that were fetched" — and the counts
-            above are of the same partial set. Said where the list ends,
-            because that is where an operator concludes it. */}
+          {/* The bounded server page has a successor. Said where this page
+            ends, because that is where an operator otherwise concludes that
+            the visible rows are the whole filtered result. */}
           {rv.catalogTruncated && (
             <p
               data-testid="catalog-truncated"
               className="m-[18px] rounded-control border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-800"
             >
-              This is not the whole catalog — there are more recordings than one sweep
-              fetches, so the oldest are not listed here. Narrow the search to reach a
-              specific one.
+              This page is not the whole catalog; more recordings match this search. The
+              counts and bulk actions above cover this page only; use Next to continue.
             </p>
           )}
         </div>
       </div>
       <p
         data-testid="review-bridge-caption"
-        className="border-t border-gray-100 px-[18px] py-2 text-[11px] text-gray-400"
+        className="border-t border-gray-100 px-[18px] py-2 text-[11px] text-gray-600"
       >
         Quality / Task / Batch are saved on the capture itself. Data shows where this
         machine&apos;s copy stands.

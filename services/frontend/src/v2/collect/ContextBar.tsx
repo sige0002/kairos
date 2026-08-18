@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Collect context bar: Robot / Project / Task / Batch / Episode / Condition
 // cells plus the Batch menu. Project/task/condition are plan-based mock
 // selections (see useBatchMachine's PLANS) — the backend has no plan/batch
@@ -39,11 +41,11 @@ function CellButton({
         disabled ? 'cursor-not-allowed opacity-55' : 'cursor-pointer hover:bg-gray-50',
       )}
     >
-      <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         {label}
       </span>
       <span className="text-sm font-semibold text-gray-900">
-        {value} <span className="text-[10px] text-gray-400">▾</span>
+        {value} <span className="text-[10px] text-gray-500">▾</span>
       </span>
     </button>
   );
@@ -66,13 +68,13 @@ function planCellValue(value: string | null): ReactNode {
   // `null` is the state the machine now holds when there is no catalog; the em
   // dash is the same state as restored from an older persisted blob.
   if (value !== null && value !== NO_PLAN) return value;
-  return <span className="font-normal text-gray-400">no plans configured</span>;
+  return <span className="font-normal text-gray-500">no plans configured</span>;
 }
 
 function StaticCell({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex flex-col gap-0.5 px-6">
-      <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         {label}
       </span>
       <span className="font-mono text-sm font-semibold text-gray-900">{value}</span>
@@ -96,12 +98,12 @@ function PickerPopover({
   return (
     <div
       className={cn(
-        'absolute z-40 flex w-60 flex-col gap-0.5 rounded-card border border-gray-200 bg-white p-1.5 shadow-float',
+        'absolute z-40 flex w-60 max-w-[calc(100vw-58px)] flex-col gap-0.5 rounded-card border border-gray-200 bg-white p-1.5 shadow-float',
         className,
       )}
     >
       {heading && (
-        <span className="px-3 pb-0.5 pt-1.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+        <span className="px-3 pb-0.5 pt-1.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           {heading}
         </span>
       )}
@@ -181,8 +183,7 @@ function RobotCell({
     queryFn: ({ signal }) => getConfigOptions({ signal }),
   });
   const select = useMutation({
-    mutationFn: (id: string) =>
-      selectConfig({ category: 'robot', id }),
+    mutationFn: (id: string) => selectConfig({ category: 'robot', id }),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.configOptions, data);
       // Same refresh set as Settings > Robots' selectMutation: a robot switch
@@ -231,7 +232,7 @@ function RobotCell({
             >
               {r.id}
               {r.local ? (
-                <span className="text-[10px] text-gray-400"> · local</span>
+                <span className="text-[10px] text-gray-500"> · local</span>
               ) : null}
             </PickItem>
           ))}
@@ -261,7 +262,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       : `${selection.count} configured`;
 
   return (
-    <Card className="relative flex shrink-0 items-center px-[18px] py-2.5 [@media(max-height:860px)]:py-1.5">
+    <Card className="relative flex shrink-0 flex-wrap items-center gap-y-1 px-[18px] py-2.5 [@media(max-height:860px)]:py-1.5">
       <CellButton
         label="Project"
         value={planCellValue(machine.project)}
@@ -289,9 +290,9 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
           machine.batchSeq != null ? (
             `Batch ${machine.batchSeq}`
           ) : (
-            <span className="font-normal text-gray-400">
+            <span className="font-normal text-gray-500">
               next #{machine.predictedSeq ?? 1}
-              <span className="ml-1.5 font-sans text-[11px] font-normal text-gray-400">
+              <span className="ml-1.5 font-sans text-[11px] font-normal text-gray-500">
                 · assigned on first recording
               </span>
             </span>
@@ -313,7 +314,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
               </span>
             )}
             {stats.nRecorded} / {machine.targetEpisodes}{' '}
-            <span className="text-teal-600">{epNextText}</span>
+            <span className="text-teal-700">{epNextText}</span>
           </>
         }
       />
@@ -347,11 +348,14 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         onClick={machine.toggleBatchMenu}
         className="inline-flex items-center gap-1.5 rounded-control border border-gray-200 bg-white px-3.5 py-2 text-[13px] font-semibold text-gray-700 hover:bg-gray-50"
       >
-        Batch menu <span className="text-[11px] text-gray-400">▾</span>
+        Batch menu <span className="text-[11px] text-gray-500">▾</span>
       </button>
 
       {machine.projPickerOpen && (
-        <PickerPopover className="left-3.5 top-[58px]" heading="Project (from plan)">
+        <PickerPopover
+          className="left-3.5 top-full lg:top-[58px]"
+          heading="Project (from plan)"
+        >
           {/* The one real dead end on an empty catalog: with nothing to pick
               this popover was a blank rectangle. (The Task picker has always
               had `Custom…`, so it is never a dead end.) */}
@@ -374,7 +378,10 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         </PickerPopover>
       )}
       {machine.taskPickerOpen && (
-        <PickerPopover className="left-[210px] top-[58px]" heading="Task (from plan)">
+        <PickerPopover
+          className="left-3.5 top-full lg:left-[210px] lg:top-[58px]"
+          heading="Task (from plan)"
+        >
           {curProject.tasks.map((t) => (
             <PickItem
               key={t.name}
@@ -400,7 +407,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         </PickerPopover>
       )}
       {machine.batchMenuOpen && (
-        <PickerPopover className="right-3.5 top-[58px] w-56">
+        <PickerPopover className="right-3.5 top-full w-56 lg:top-[58px]">
           <MenuItem onClick={machine.pauseBatch} disabled={phase !== 'ready'}>
             Pause set
           </MenuItem>
@@ -409,7 +416,6 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
           </MenuItem>
           <MenuItem onClick={machine.openResetModal}>Reset batch…</MenuItem>
           <MenuItem onClick={machine.openTargetModal}>Change target…</MenuItem>
-          <MenuItem onClick={machine.openIssueModal}>Report issue…</MenuItem>
           <MenuItem onClick={machine.openCondModal} disabled={!machine.condAllowed}>
             Change condition…
           </MenuItem>

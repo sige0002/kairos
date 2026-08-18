@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Monitor — the screen whose failure mode is "nothing shows up".
 //
 //   a bag is on the graph → Monitor › Topics → every configured topic carries a

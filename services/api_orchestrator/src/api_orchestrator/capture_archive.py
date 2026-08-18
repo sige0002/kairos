@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """§6: archiving a capture out of the store, verified, before the source goes.
 
 **Archive verifies before it deletes.** Copy, read back, compare, write the
@@ -10,26 +12,135 @@ place every other failure leaves them.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kairos_common import ApiError
 from kairos_common.rebuild import ReplicaState
+from kairos_common.task_sidecar import (
+    TASK_SIDECAR_FILENAME,
+    effective_task,
+    write_task_sidecar,
+)
 from kairos_common.time import utc_now_iso8601
 
 from api_orchestrator import fileops
 from api_orchestrator import layout as layout_mod
 from api_orchestrator.ledger_guard import append_or_503
-from api_orchestrator.models import ArchivedFile, Capture, CaptureArchiveResponse
+from api_orchestrator.models import (
+    ArchivedFile,
+    Capture,
+    CaptureArchiveProgress,
+    CaptureArchiveResponse,
+    CaptureError,
+)
+
+_WRITER_LEASE_TTL_S = 24 * 60 * 60
 
 if TYPE_CHECKING:
     from api_orchestrator.layout import DataLayout
     from api_orchestrator.store import CaptureStore
 
 logger = logging.getLogger("kairos")
+
+
+@dataclass
+class CaptureArchiveRun:
+    """One background per-capture archive (S2-1: accepted with 202, polled).
+
+    ``bytes_done`` is fed by the copy's progress callback; the terminal entry
+    keeps ``result``/``error`` readable until a new run replaces it.
+    """
+
+    capture_id: str
+    destination: str
+    state: str = "running"
+    bytes_done: int = 0
+    bytes_total: int | None = None
+    error: CaptureError | None = None
+    result: CaptureArchiveResponse | None = None
+    task: asyncio.Task[None] | None = None
+
+    def progress(self) -> CaptureArchiveProgress:
+        return CaptureArchiveProgress(
+            capture_id=self.capture_id,
+            destination=self.destination,
+            state=self.state,
+            bytes_done=self.bytes_done,
+            bytes_total=self.bytes_total,
+            error=self.error,
+            result=self.result,
+        )
+
+
+class CaptureArchiveRuns:
+    """In-memory registry of background capture archives, one per capture.
+
+    In-memory on purpose. An archive that dies with the process leaves either
+    an untouched source (failure before the ledger line) or a debris target
+    directory the next attempt refuses into (``destination_not_empty``) — both
+    already honest, and the DATA's durability is the ledger's job, not this
+    registry's. What a restart loses is only the progress view.
+    """
+
+    def __init__(self) -> None:
+        self._runs: dict[str, CaptureArchiveRun] = {}
+
+    def get(self, capture_id: str) -> CaptureArchiveRun | None:
+        return self._runs.get(capture_id)
+
+    def start(
+        self,
+        capture_id: str,
+        destination: str,
+        bytes_total: int | None,
+        execute: Callable[[CaptureArchiveRun], Awaitable[CaptureArchiveResponse]],
+    ) -> CaptureArchiveRun:
+        """Register and spawn one archive run; 409 if one is already running."""
+        existing = self._runs.get(capture_id)
+        if existing is not None and existing.state == "running":
+            raise ApiError(
+                status_code=409,
+                code="archive_in_progress",
+                message=(
+                    f"{capture_id} is already being archived to {existing.destination}."
+                ),
+                details={
+                    "capture_id": capture_id,
+                    "destination": existing.destination,
+                },
+            )
+        run = CaptureArchiveRun(
+            capture_id=capture_id,
+            destination=destination,
+            bytes_total=bytes_total,
+        )
+        self._runs[capture_id] = run
+        run.task = asyncio.create_task(self._execute(run, execute))
+        return run
+
+    async def _execute(
+        self,
+        run: CaptureArchiveRun,
+        execute: Callable[[CaptureArchiveRun], Awaitable[CaptureArchiveResponse]],
+    ) -> None:
+        try:
+            run.result = await execute(run)
+            run.state = "complete"
+        except ApiError as exc:
+            run.state = "failed"
+            run.error = CaptureError(code=exc.code, message=exc.message)
+        except Exception as exc:  # noqa: BLE001 - the poll is the error channel
+            logger.exception(
+                "capture archive failed", extra={"capture_id": run.capture_id}
+            )
+            run.state = "failed"
+            run.error = CaptureError(code="archive_failed", message=str(exc))
 
 
 class CaptureArchiveMixin:
@@ -45,6 +156,48 @@ class CaptureArchiveMixin:
     _layout: DataLayout
     _instance_id: str
 
+    def archive_preflight(self, capture_id: str, *, destination: Path) -> Capture:
+        """The synchronous refusals of an archive, without copying anything.
+
+        Run by the route BEFORE it answers 202, so an archive that can never
+        run (active capture, held lease, dataset member, overlapping or
+        missing paths) is refused in the response rather than surfacing later
+        as a failed background run. The real run re-checks all of it under the
+        mutex — this is a courtesy check, not the guard.
+        """
+        self._require_delete_available()
+        capture = self.get(capture_id)
+        self._reject_active(capture)
+        self._reject_leased(capture)
+        self._reject_dataset_member(capture)
+        source = self._layout.capture_dir(capture_id)
+        if not source.is_dir():
+            raise ApiError(
+                status_code=409,
+                code="capture_not_present",
+                message=(
+                    f"{capture_id} has no local copy to archive "
+                    f"({source} does not exist)."
+                ),
+                details={"capture_id": capture_id},
+            )
+        target = destination / capture_id
+        self._reject_overlapping_destination(target, source)
+        if target.exists() and (not target.is_dir() or any(target.iterdir())):
+            # The same refusal the copy itself would raise, surfaced while the
+            # response can still be a 409 instead of a failed background run.
+            raise ApiError(
+                status_code=409,
+                code="destination_not_empty",
+                message=(
+                    f"{target} already contains files — refusing to archive "
+                    "into it. Choose another path, or clear it if it is the "
+                    "debris of a failed archive."
+                ),
+                details={"capture_id": capture_id, "destination": str(target)},
+            )
+        return capture
+
     async def archive(
         self,
         capture_id: str,
@@ -52,6 +205,7 @@ class CaptureArchiveMixin:
         destination: Path,
         operator: str | None = None,
         reason: str | None = None,
+        progress: Callable[[int], None] | None = None,
     ) -> CaptureArchiveResponse:
         """Copy a capture out, verify it, record it, then delete the source.
 
@@ -67,9 +221,21 @@ class CaptureArchiveMixin:
             self._reject_active(capture)
             self._reject_leased(capture)
             self._reject_dataset_member(capture)
-            response = await self._archive_into(
-                capture, destination / capture_id, operator=operator, reason=reason
-            )
+            writer = f"writer:archive:{capture_id}"
+            while not self._store.acquire_writer_lease(
+                capture_id, writer, ttl_s=_WRITER_LEASE_TTL_S
+            ):
+                self._reject_leased(capture)
+            try:
+                response = await self._archive_into(
+                    capture,
+                    destination / capture_id,
+                    operator=operator,
+                    reason=reason,
+                    progress=progress,
+                )
+            finally:
+                self._store.release_lease(capture_id, writer)
 
         logger.info(
             "capture archived",
@@ -109,16 +275,24 @@ class CaptureArchiveMixin:
             self._reject_active(capture)
             self._reject_leased(capture)
             self._reject_dataset_member(capture, except_dataset=dataset_id)
-            response = await self._archive_into(
-                capture,
-                target,
-                extra_payload={
-                    "dataset_id": dataset_id,
-                    "membership_id": membership_id,
-                    "display_index": display_index,
-                },
-                progress=progress,
-            )
+            writer = f"writer:archive:{capture_id}"
+            while not self._store.acquire_writer_lease(
+                capture_id, writer, ttl_s=_WRITER_LEASE_TTL_S
+            ):
+                self._reject_leased(capture)
+            try:
+                response = await self._archive_into(
+                    capture,
+                    target,
+                    extra_payload={
+                        "dataset_id": dataset_id,
+                        "membership_id": membership_id,
+                        "display_index": display_index,
+                    },
+                    progress=progress,
+                )
+            finally:
+                self._store.release_lease(capture_id, writer)
 
         logger.info(
             "dataset member archived",
@@ -184,6 +358,13 @@ class CaptureArchiveMixin:
         ):
             if value is not None:
                 payload[key] = value
+        if capture.collection_context is not None:
+            # The source manifest is intentionally deleted after archiving.
+            # Preserve this frozen provenance in the ledger-only description,
+            # including forward-compatible fields the API model carries.
+            payload["collection_context"] = capture.collection_context.model_dump(
+                mode="json"
+            )
         if reason:
             payload["reason"] = reason
         if extra_payload:
@@ -245,9 +426,42 @@ class CaptureArchiveMixin:
 
         self._reject_overlapping_destination(target, source)
         try:
-            return await asyncio.to_thread(
+            result = await asyncio.to_thread(
                 fileops.copy_tree_verified, source, target, progress=progress
             )
+            # The destination additionally gains a generated task.json
+            # (rosbag2lerobot's per-bag sidecar), so the archived tree feeds
+            # the LeRobot converter without a kairos instance in the loop.
+            # Written only AFTER the verified copy — the destination must be
+            # empty when the copy starts — and only at the destination, never
+            # into objects/. A failure here is an OSError and lands in the
+            # handler below: the copy is not "done" until the tree it promised
+            # is complete, and the source is still untouched.
+            #
+            # A source that already carries its own task.json (imported bags —
+            # including a re-imported archive) keeps it: that file may hold
+            # subtasks that exist nowhere else, so overwriting it is the one
+            # option that loses information, and duplicating its entry would
+            # put a hash in the ledger that matches nothing on disk. kairos's
+            # own label still reaches the ledger via the event's `task` field.
+            #
+            # The label is read from the SOURCE sidecars under the caller's
+            # mutex (record.json §4.3 override, else the manifest), because
+            # the row can transiently lag them (adopt_manifest_facts has no
+            # record.json overlay); the row value is only the fallback when
+            # the sidecars cannot answer. A capture with no effective label
+            # gets no file.
+            if not any(
+                entry["path"] == TASK_SIDECAR_FILENAME for entry in result.entries
+            ):
+                task = await asyncio.to_thread(effective_task, source, capture.task)
+                if task:
+                    await asyncio.to_thread(_append_task_sidecar, result, target, task)
+                    if progress is not None:
+                        # The sidecar's bytes joined result.bytes; without
+                        # this the progress view stops just short of done.
+                        progress(result.bytes)
+            return result
         except fileops.DestinationNotEmptyError as exc:
             raise ApiError(
                 status_code=409,
@@ -351,4 +565,31 @@ def _overlaps(a: Path, b: Path) -> bool:
     return a == b or a.is_relative_to(b) or b.is_relative_to(a)
 
 
-__all__ = ["CaptureArchiveMixin", "reject_overlapping_destination"]
+def _append_task_sidecar(result: fileops.CopyResult, target: Path, task: str) -> None:
+    """Write ``<target>/task.json`` and account for it in *result*.
+
+    The entry joins ``result.entries`` in the same ``{path, size, sha256}``
+    shape as the copied files, so everything downstream of the copy — the
+    ``capture_archived`` ledger event, the archive response, the dataset
+    manifest — audits the generated file exactly like the copied bytes. The
+    digest is of the bytes read back from the destination: the hash recorded
+    is the hash of what is actually on that disk.
+    """
+    data = write_task_sidecar(target, task).read_bytes()
+    result.entries.append(
+        {
+            "path": TASK_SIDECAR_FILENAME,
+            "size": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(),
+        }
+    )
+    result.entries.sort(key=lambda entry: entry["path"])
+    result.bytes += len(data)
+
+
+__all__ = [
+    "CaptureArchiveMixin",
+    "CaptureArchiveRun",
+    "CaptureArchiveRuns",
+    "reject_overlapping_destination",
+]

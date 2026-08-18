@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The six operator-facing tabs of the v2 console shell. Unlike the legacy
 // 7-tab IA, this set is fixed client-side — deliberately NOT derived from the
 // backend's GET /api/v1/config `tabs` field (that field, and the rest of the

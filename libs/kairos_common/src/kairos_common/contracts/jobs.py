@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The job and validation-template models shared by orchestrator and dora_runner.
 
 The orchestrator's ``/api/v1/jobs`` is a proxy: it forwards to dora_runner's
@@ -60,10 +62,22 @@ class JobCreateRequest(BaseModel):
     capture_id: str
     pipeline: str
     params: dict[str, Any] = Field(default_factory=dict)
+    # Optional for legacy callers. A durable validation run supplies one so an
+    # orchestrator retry after a lost HTTP response cannot create a second
+    # worker for the same capture/attempt.
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class JobStatus(BaseModel):
-    """OpenAPI-visible job status contract."""
+    """OpenAPI-visible job status contract.
+
+    ``cancel_requested`` reports a cancel that was ACCEPTED but whose work has
+    not stopped yet: cancelling a running job is cooperative (the worker stops
+    at its next checkpoint), so ``state`` stays ``running`` until the work is
+    actually dead and only then turns ``canceled``. A client that stopped
+    polling on the cancel *response* would never learn the truth — this flag is
+    what tells it to keep watching.
+    """
 
     job_id: str
     capture_id: str
@@ -71,6 +85,12 @@ class JobStatus(BaseModel):
     state: JobState
     progress: float = Field(ge=0.0, le=1.0)
     logs_tail: list[str] = Field(default_factory=list)
+    # A timeout can settle the operator-facing outcome before a non-cooperative
+    # thread has actually stopped. Lease owners release only on an explicit
+    # false. ``null`` means an older runner did not report the fact, so the
+    # orchestrator retains a bounded safety lease rather than racing delete.
+    execution_active: bool | None = None
+    cancel_requested: bool = False
 
 
 class JobResult(BaseModel):

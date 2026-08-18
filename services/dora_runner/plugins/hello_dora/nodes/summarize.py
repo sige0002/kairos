@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """summarize node: turn loaded topic counts into the kairos summary contract.
 
 The summary shape mirrors the other dora_runner pipelines:

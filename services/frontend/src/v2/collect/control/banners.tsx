@@ -1,10 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The banners and notes the phase cards raise above their own controls. All of
 // them are driven by REAL recorder/orchestrator data — none of them invents a
 // figure, and each says which moment it describes.
 
 import { cn } from '../../../components/ui';
 import type { RecordArming } from '../../../api/types';
-import { readCaptureError } from '../../captures/errors';
+import { isTransportCode, readCaptureError } from '../../captures/errors';
 import type { MachineError } from '../useBatchMachine';
 
 // Operator-facing copy for known recorder error codes (D-8-1). Unknown codes
@@ -184,6 +186,12 @@ export function SaveErrorBanner({
 }) {
   const reading = readCaptureError(error, 'review');
   const destructive = reading.severity === 'destructive';
+  // A save that never reached an answer was not refused by anyone, and it is
+  // not known to have failed either — the header has to stop short of both.
+  // "Save not confirmed" holds for the whole family: the unreachable case may
+  // have arrived without its answer getting back, and the deadline case
+  // certainly was sent.
+  const unanswered = isTransportCode(reading.code);
   return (
     <div
       role="alert"
@@ -197,7 +205,7 @@ export function SaveErrorBanner({
       )}
     >
       <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
-        {destructive ? 'Not saved' : 'Save refused'}
+        {destructive ? 'Not saved' : unanswered ? 'Save not confirmed' : 'Save refused'}
       </span>
       <span className="font-semibold">{reading.message}</span>
       {reading.guidance && <span>{reading.guidance}</span>}

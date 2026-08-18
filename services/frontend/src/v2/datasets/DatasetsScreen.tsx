@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Datasets tab. Root mirrors the design mock's 270px / 1fr / 330px three-column
 // grid: the LEFT column lists the logical datasets (§6) with a search, a sort
 // and the member facets; the CENTER column lists the selected dataset's members
@@ -21,6 +23,7 @@ import { DatasetCenter } from './DatasetCenter';
 import { DatasetList } from './DatasetList';
 import { Toast } from '../shared/Toast';
 import { useDatasetsState } from './useDatasetsState';
+import { ScreenTitle } from '../shared/ScreenTitle';
 
 export function DatasetsScreen() {
   const state = useDatasetsState();
@@ -31,6 +34,7 @@ export function DatasetsScreen() {
   // older datasets. Columns scroll internally.
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[270px_1fr_330px] lg:grid-rows-[minmax(0,1fr)]">
+      <ScreenTitle>Datasets</ScreenTitle>
       <DatasetList state={state} />
       <DatasetCenter state={state} />
       <BuildRail state={state} />
@@ -43,6 +47,10 @@ export function DatasetsScreen() {
         error={deletion.error}
         done={deletion.done}
         failures={deletion.failures}
+        blockers={deletion.blockers}
+        clearingBlockers={deletion.clearingBlockers}
+        blockerFailures={deletion.blockerFailures}
+        onClearBlockers={(reason) => void deletion.clearBlockersAndRetry(reason)}
         onCancel={deletion.cancel}
         onConfirm={(reason) => void deletion.confirm(reason)}
       />
@@ -54,6 +62,10 @@ export function DatasetsScreen() {
         error={deletion.error}
         done={deletion.done}
         failures={deletion.failures}
+        blockers={deletion.blockers}
+        clearingBlockers={deletion.clearingBlockers}
+        blockerFailures={deletion.blockerFailures}
+        onClearBlockers={(reason) => void deletion.clearBlockersAndRetry(reason)}
         onCancel={deletion.cancel}
         onConfirm={(reason) => void deletion.confirm(reason)}
       />

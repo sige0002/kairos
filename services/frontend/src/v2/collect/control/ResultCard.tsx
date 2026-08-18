@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // EPISODE RESULT: the one card where the operator decides something. The
 // quick-check verdict is the server's; the task outcome is theirs; and nothing
 // is written until Save.
@@ -55,9 +57,9 @@ export function ResultCard({
       )}
     >
       <div className="flex items-center gap-2">
-        <span data-testid="phase-title" className="text-[15px] font-bold text-gray-900">
+        <h2 data-testid="phase-title" className="text-[15px] font-bold text-gray-900">
           Episode {stats.epNext} result
-        </span>
+        </h2>
         {/* WHICH take this panel is about. The recovery banner above can be
             describing a DIFFERENT unsaved take at the same time, each with its
             own Discard — so both have to name themselves or the two Discards
@@ -67,7 +69,7 @@ export function ResultCard({
             capture_id). */}
         <span
           data-testid="result-take-identity"
-          className="truncate font-mono text-[11px] text-gray-400"
+          className="truncate font-mono text-[11px] text-gray-500"
           title={machine.currentRunLabel ?? undefined}
         >
           {machine.currentTakeStartedAt
@@ -110,7 +112,7 @@ export function ResultCard({
             >
               {QUALITY_LABEL[effectiveQuality]}
             </span>
-            {qualityAuto && <span className="text-gray-400"> · auto</span>}
+            {qualityAuto && <span className="text-gray-500"> · auto</span>}
           </span>
           <button
             type="button"
@@ -125,7 +127,7 @@ export function ResultCard({
             carry the call, so nothing lingers here. Never a fabricated value,
             and saving is never blocked on it. */}
         {machine.quickCheck.pending && (
-          <span data-testid="quickcheck-pending" className="text-[11px] text-gray-400">
+          <span data-testid="quickcheck-pending" className="text-[11px] text-gray-500">
             Quick check running…
           </span>
         )}
@@ -160,7 +162,7 @@ export function ResultCard({
             className={cn(
               'h-[42px] flex-1 rounded-control text-[13px] font-bold',
               machine.pendingTask === 'ok'
-                ? 'bg-green-600 text-white'
+                ? 'bg-green-700 text-white'
                 : 'border border-gray-200 bg-white text-gray-500',
             )}
           >
@@ -234,7 +236,7 @@ export function ResultCard({
         className={cn(
           'h-[46px] rounded-control text-sm font-bold [@media(max-height:860px)]:h-[40px]',
           canConfirm
-            ? 'bg-teal-600 text-white shadow-btn'
+            ? 'bg-teal-700 text-white shadow-btn'
             : 'cursor-not-allowed bg-gray-200 text-gray-400',
         )}
       >

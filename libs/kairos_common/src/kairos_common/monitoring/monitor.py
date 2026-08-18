@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The monitoring service: subscriber -> registry -> snapshot (ROS-free core).
 
 :class:`MonitorService` is the heart of topic_monitor. It owns a

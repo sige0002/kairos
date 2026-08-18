@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Domain types for the Review screen.
 //
 // A capture (api/types.ts) is the real signal: v2 merged the run and the
@@ -11,6 +13,7 @@
 // wire format leak into table cells is how the two drift.
 
 import type { CaptureListItem, CaptureState, ReviewStatus } from '../../api/types';
+import type { CaptureConditionView } from '../captures/recordingCondition';
 
 export type DisplayQuality = 'Good' | 'Needs review' | 'Not usable';
 export type DisplayTaskResult = 'Success' | 'Failure';
@@ -60,6 +63,12 @@ export interface EpisodeRow {
   /** "MM/DD · #N" when the capture's batch number is known, else "—". */
   batch: string;
   batchId: string | null;
+  /** Condition recorded when this capture started. Legacy captures may fall
+   * back to their Batch's current label; it is never guessed from task text. */
+  condition: string | null;
+  /** Whether the displayed collection-time condition is a value, explicitly
+   * absent, still resolving for a legacy capture, or unavailable. */
+  conditionStatus: CaptureConditionView['status'];
   operator: string | null;
   /** The backend's own verdict wins: a capture that ended `failed` or
    *  `interrupted` is "Not usable" whatever the review says, because no review

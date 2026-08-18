@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """webrtc_streamer service entry point (Stage 2).
 
 ROS 2 image topics -> browser, low-latency WebRTC preview (not the canonical

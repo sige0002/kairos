@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Running one bagflow flow for one job — the machinery both gates share.
 
 ``fast_validation`` and ``full_validation`` are the same act with different
@@ -31,6 +33,7 @@ import asyncio
 import json
 import logging
 import shutil
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +47,7 @@ from kairos_common import (
     load_recording_config,
     resolve_config_path,
 )
+from kairos_common.atomic_io import atomic_write_text
 from kairos_common.monitoring.expected_hz import make_expected_hz_resolver
 
 from dora_runner.bagflow_flow import FlowBindings, materialize_flow
@@ -204,6 +208,7 @@ async def run_bagflow_pipeline(
     template: ValidationTemplate | None = None,
     flow_dirs: list[Path] | None = None,
     timeout_s: float | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Run *flow* over one capture's bag and return the job result dict."""
     if not bagflow_available():
@@ -227,6 +232,7 @@ async def run_bagflow_pipeline(
             template=template,
             flow_dirs=flow_dirs,
             timeout_s=timeout_s,
+            cancel_event=cancel_event,
         )
 
 
@@ -242,6 +248,7 @@ async def _run_locked(
     template: ValidationTemplate | None,
     flow_dirs: list[Path] | None,
     timeout_s: float | None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """The body of one validation, with this capture's outputs held exclusively."""
     # Every path below is handed to a subprocess whose cwd is the flow's workdir,
@@ -291,7 +298,11 @@ async def _run_locked(
         ) from exc
 
     run = await run_flow(
-        flow_file, name=job_name, endpoint=endpoint, timeout_s=timeout_s
+        flow_file,
+        name=job_name,
+        endpoint=endpoint,
+        timeout_s=timeout_s,
+        cancel_event=cancel_event,
     )
     if not report_path.is_file():
         reason = (
@@ -331,7 +342,7 @@ async def _run_locked(
         )
     )
     summary_path = report_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    atomic_write_text(summary_path, json.dumps(summary, indent=2))
 
     # The materialized flow is published on every run, pass or fail: "what did
     # this validation actually check?" is asked most often about a run that

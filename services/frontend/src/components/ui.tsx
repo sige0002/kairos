@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Shared visual primitives for the "Neutral Teal" design language (handoff).
 // These are presentation-only: no data, no app state. Feature tabs compose
 // them so cards, chips, status dots and toggles stay pixel-consistent.
@@ -66,12 +68,18 @@ export function CardHeader({
   );
 }
 
-/** Uppercase tracked label (10–11px / 500). */
+/** Uppercase tracked label (10–11px / 500).
+ *
+ *  An `h2` because every caller uses it to title a card or panel, which is the
+ *  level below each screen's own `h1` — this is where a screen reader's heading
+ *  list gets its entries. Tailwind's preflight zeroes heading margins and
+ *  inherits their font-size, so the tag carries no styling of its own; the
+ *  classes below remain the whole appearance. */
 export function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <span className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+    <h2 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
       {children}
-    </span>
+    </h2>
   );
 }
 
@@ -159,7 +167,7 @@ export function Button({
   variant?: 'primary' | 'danger' | 'ghost';
 } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   const styles: Record<string, string> = {
-    primary: 'bg-teal-600 text-white shadow-btn hover:bg-teal-700',
+    primary: 'bg-teal-700 text-white shadow-btn hover:bg-teal-800',
     danger: 'bg-red-600 text-white shadow-btn-red hover:bg-red-700',
     ghost: 'border border-gray-200 bg-white text-gray-700 hover:bg-gray-50',
   };

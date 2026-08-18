@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Latest-frame-wins frame buffer (the spec's "Frame Queue").
 
 The streamer is a low-latency *preview* path: when frames arrive faster than a

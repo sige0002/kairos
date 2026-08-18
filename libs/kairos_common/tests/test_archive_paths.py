@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The KAIROS_ARCHIVE_ROOTS allow-list.
 
 Archiving copies a dataset out and then DELETES the source, so the destination

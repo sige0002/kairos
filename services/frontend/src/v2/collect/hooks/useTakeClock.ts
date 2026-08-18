@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The take's clock and its honesty gates (E-28 / E-32 / B1), extracted from
 // useBatchMachine.ts: the monotonic take baseline, the Stop floor (M2), the
 // frozen-while-unreachable elapsed timer, the B1 recovery and healthy-end

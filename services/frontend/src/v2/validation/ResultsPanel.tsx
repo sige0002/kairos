@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Results column: renders the OK/WARNING/FAIL tiles + ratio bar + per-capture
 // rows when the active submission was a batch (multiple target captures — see
 // resultsMapping.ts for why that's the gate), otherwise falls back to the
@@ -5,10 +7,10 @@
 // fallback is the point: a new plugin's summary.json renders here with no UI
 // change required.
 import { Card } from '../../components/ui';
-import type { JobState, LossTopic } from '../../api/types';
+import type { JobState, LossEvent, LossTopic } from '../../api/types';
 import { isCancellable } from './useJobCancel';
 import { SummaryResult, type Summary } from '../../features/validation/SummaryResult';
-import { LossTable } from '../captures/inspect';
+import { LossEventTable, LossTable } from '../captures/inspect';
 import { ChecklistCard } from './ChecklistCard';
 import {
   canceledCount,
@@ -55,18 +57,21 @@ function LossReportCard({ summary }: { summary: Summary }) {
     (a, b) => (b.loss_rate ?? 0) - (a.loss_rate ?? 0),
   );
   const flagged = (summary as Record<string, unknown>).flagged;
+  const rawEvents = (summary as Record<string, unknown>).events;
+  const events = Array.isArray(rawEvents) ? (rawEvents as LossEvent[]) : null;
   const flaggedCount = Array.isArray(flagged) ? flagged.length : null;
   const worst = topics[0];
   return (
     <div className="flex flex-col gap-2" data-testid="loss-report-table">
       {flaggedCount !== null && flaggedCount > 0 && worst && (
         <p className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] font-semibold text-amber-800">
-          ⚠ {flaggedCount} of {topics.length} topics exceeded the gap threshold —
-          worst: <span className="font-mono">{worst.name}</span>{' '}
+          ⚠ {flaggedCount} of {topics.length} topics exceeded the gap threshold — worst:{' '}
+          <span className="font-mono">{worst.name}</span>{' '}
           {worst.loss_rate != null ? `${(worst.loss_rate * 100).toFixed(1)}%` : ''}
         </p>
       )}
       <LossTable topics={topics} />
+      {events && <LossEventTable events={events} />}
     </div>
   );
 }
@@ -148,7 +153,7 @@ const JOB_STATE_LABEL: Record<JobState, string> = {
 };
 
 const JOB_STATE_CLASS: Record<JobState, string> = {
-  queued: 'bg-gray-100 text-gray-500',
+  queued: 'bg-gray-100 text-gray-600',
   running: 'bg-teal-100 text-teal-700',
   succeeded: 'bg-green-100 text-green-700',
   failed: 'bg-red-50 text-red-700',
@@ -161,6 +166,8 @@ export interface RunJobRow {
   captureId: string;
   label: string;
   state: JobState;
+  /** Cancel accepted, work still stopping — the row shows "Cancelling…". */
+  cancelRequested?: boolean;
 }
 
 /** The per-job view of a run that is still going: which capture, what state,
@@ -179,9 +186,9 @@ function RunningJobs({
   if (jobs.length === 0) return null;
   return (
     <Card className="flex flex-col gap-1.5 p-4" data-testid="running-jobs">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         Jobs in this run
-      </span>
+      </h3>
       {jobs.map((job) => (
         <div
           key={job.jobId}
@@ -204,11 +211,13 @@ function RunningJobs({
             <button
               type="button"
               data-testid={`cancel-job-${job.captureId}`}
-              disabled={cancelPending.has(job.jobId)}
+              disabled={cancelPending.has(job.jobId) || job.cancelRequested}
               onClick={() => onCancelJob(job.jobId)}
               className="shrink-0 rounded-chip border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-gray-600 hover:border-red-200 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {cancelPending.has(job.jobId) ? 'Cancelling…' : 'Cancel'}
+              {cancelPending.has(job.jobId) || job.cancelRequested
+                ? 'Cancelling…'
+                : 'Cancel'}
             </button>
           )}
         </div>
@@ -292,10 +301,10 @@ export function ResultsPanel({
     return (
       <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
         <div className="flex items-center gap-2">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Latest run
-          </span>
-          <span className="font-mono text-xs text-gray-400">
+          </h3>
+          <span className="font-mono text-xs text-gray-500">
             {outcome.label ?? outcome.captureId}
           </span>
         </div>
@@ -316,17 +325,17 @@ export function ResultsPanel({
   // Without this line the tiles would simply not add up to the capture count.
   const canceled = canceledCount(rows);
   const selected = rows.find((r) => r.captureId === selectedCaptureId) ?? null;
-  const selectedOutcome = active.outcomes.find((o) => o.captureId === selectedCaptureId);
+  const selectedOutcome = active.outcomes.find(
+    (o) => o.captureId === selectedCaptureId,
+  );
 
   return (
     <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
       <div className="flex items-center gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Latest run
-        </span>
-        <span className="font-mono text-xs text-gray-400">
-          {counts.total} captures
-        </span>
+        </h3>
+        <span className="font-mono text-xs text-gray-500">{counts.total} captures</span>
         <div className="flex-1" />
         <button
           type="button"
@@ -339,7 +348,12 @@ export function ResultsPanel({
 
       <div className="flex gap-2">
         <Tile tone="ok" count={counts.ok} pct={counts.okPct} label="OK" />
-        <Tile tone="warning" count={counts.warning} pct={counts.warningPct} label="WARNING" />
+        <Tile
+          tone="warning"
+          count={counts.warning}
+          pct={counts.warningPct}
+          label="WARNING"
+        />
         <Tile tone="fail" count={counts.fail} pct={counts.failPct} label="FAIL" />
       </div>
 
@@ -351,12 +365,12 @@ export function ResultsPanel({
 
       {canceled > 0 && (
         <p data-testid="canceled-note" className="text-[11.5px] text-gray-500">
-          {canceled} of {counts.total} canceled — stopped before finishing, so they
-          are counted in none of the three results above.
+          {canceled} of {counts.total} canceled — stopped before finishing, so they are
+          counted in none of the three results above.
         </p>
       )}
 
-      <div className="grid grid-cols-[minmax(0,1fr)_100px_90px_1fr_60px] gap-2 border-b border-gray-100 px-1 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+      <div className="grid grid-cols-[minmax(0,1fr)_100px_90px_1fr_60px] gap-2 border-b border-gray-100 px-1 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         <span>Capture</span>
         <span>Result</span>
         <span>Coverage</span>
@@ -386,7 +400,9 @@ export function ResultsPanel({
             <div className="flex h-[14px] overflow-hidden rounded-[5px] bg-gray-100">
               <span
                 className={`opacity-75 ${BAR_TONE_CLASS[row.tone]}`}
-                style={{ width: `${row.coverage ?? (row.tone === 'OK' ? 100 : row.tone === 'WARNING' ? 50 : 20)}%` }}
+                style={{
+                  width: `${row.coverage ?? (row.tone === 'OK' ? 100 : row.tone === 'WARNING' ? 50 : 20)}%`,
+                }}
               />
             </div>
             <button
@@ -425,7 +441,9 @@ function Tile({
   label: string;
 }) {
   return (
-    <div className={`flex flex-1 flex-col gap-px rounded-[11px] border px-[14px] py-[10px] ${TILE_STYLES[tone]}`}>
+    <div
+      className={`flex flex-1 flex-col gap-px rounded-[11px] border px-[14px] py-[10px] ${TILE_STYLES[tone]}`}
+    >
       <span className="font-mono text-[19px] font-semibold">{count}</span>
       <span className="text-[11.5px]">
         {label} · {pct}%
@@ -437,7 +455,8 @@ function Tile({
 function FooterNote() {
   return (
     <div className="rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-[9px] text-[11.5px] leading-relaxed text-gray-500">
-      Raw JSON, artifacts and false-positive notes live in each capture&apos;s detail view.
+      Raw JSON, artifacts and false-positive notes live in each capture&apos;s detail
+      view.
     </div>
   );
 }

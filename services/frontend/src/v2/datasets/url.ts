@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // URL <-> Datasets-tab state.
 //
 // The tab's selection would otherwise live only in React state inside

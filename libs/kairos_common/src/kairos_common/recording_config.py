@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Loader and validator for the recording/monitoring config (RECORDING_CONFIG).
 
 This is three-layer config #2 (deployment tuning) from ``config.md``: the YAML

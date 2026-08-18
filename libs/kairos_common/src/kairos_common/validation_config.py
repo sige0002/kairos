@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Loader and model for a validation template (VALIDATION_CONFIG).
 
 A validation template declares which topics a recording must contain to be

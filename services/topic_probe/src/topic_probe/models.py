@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Pydantic models for the topic_probe API (OL-3.3).
 
 The public contract consumed by the frontend's Probe tab (same-origin via the

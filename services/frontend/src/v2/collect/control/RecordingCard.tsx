@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // RECORDING: the take is running. B1 also puts the "recorder stopped
 // answering" face of this card here — same card, but it stops asserting that a
 // recording is still happening.
@@ -47,7 +49,7 @@ export function RecordingCard({
             unreachable ? 'bg-amber-500' : 'animate-recpulse bg-red-600',
           )}
         />
-        <span
+        <h2
           data-testid="phase-title"
           className={cn(
             'text-[17px] font-bold',
@@ -55,7 +57,7 @@ export function RecordingCard({
           )}
         >
           {unreachable ? 'RECORDER UNREACHABLE' : 'RECORDING'}
-        </span>
+        </h2>
         <div className="flex-1" />
         <span className="font-mono text-xs text-gray-500">
           Ep {stats.epNext} / {machine.targetEpisodes}
@@ -77,13 +79,13 @@ export function RecordingCard({
           data-testid="elapsed"
           className={cn(
             'font-mono text-[34px] font-semibold',
-            unreachable ? 'text-gray-400' : 'text-gray-900',
+            unreachable ? 'text-gray-500' : 'text-gray-900',
           )}
           title={unreachable ? `Frozen at the last confirmed reading (${staleText})` : undefined}
         >
           {elapsedText}
         </span>
-        <span className="font-mono text-xs text-gray-400">{writtenText}</span>
+        <span className="font-mono text-xs text-gray-500">{writtenText}</span>
       </div>
       {/* Stop occupies the position Start just vacated, so the second half
           of a double-click lands here. Refused for the first moment of a

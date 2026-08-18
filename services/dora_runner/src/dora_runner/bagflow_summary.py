@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """bagflow ``report.json`` -> kairos ``summary.json`` (the adapter lives here).
 
 Two report formats meet in this module. bagflow reports **per node**: every node

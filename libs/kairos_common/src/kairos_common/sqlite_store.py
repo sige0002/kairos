@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared SQLite connection management for the kairos stores.
 
 Both stores in this repo — ``api_orchestrator.store.CaptureStore`` and

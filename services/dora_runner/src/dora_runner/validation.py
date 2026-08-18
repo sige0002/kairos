@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Validation templates: reading a run's topic inventory, drafting a template.
 
 The *checking* moved out of this module: ``fast_validation`` is now a bagflow

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The screen noticing that a recording ENDED without it.
 //
 // A take can finish while this console is watching and healthy: the recorder's
@@ -168,7 +170,10 @@ beforeEach(() => {
   __resetBatchStore();
   useUiStore.setState({
     activeTab: '',
-    recordOperator: '',
+    // Recording requires an operator since #11, in every configuration —
+    // so a suite that records has to say who is recording. The gate itself
+    // is exercised where it is the subject, not incidentally here.
+    recordOperator: 'tester',
     recordSelected: new Set<string>(),
     recordCustomized: false,
   });

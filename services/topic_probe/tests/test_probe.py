@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Service-level tests for ProbeService driven by the FakeProbeSubscriber (no ROS)."""
 
 from __future__ import annotations

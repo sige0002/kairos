@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The capture lease around a dora_runner job (§7.1).
 
 A job reads ``objects/<capture_id>`` for as long as it runs, and deletion
@@ -19,21 +21,23 @@ so an expired lease is simply not a lease — proven here rather than assumed.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import httpx
 import pytest
 from api_orchestrator.app_factory import create_orchestrator_app
 from api_orchestrator.layout import DataLayout
-from api_orchestrator.models import Capture, CaptureState
+from api_orchestrator.models import Capture, CaptureState, JobStatus
 from api_orchestrator.routers import jobs as jobs_router
 from api_orchestrator.store import CaptureStore
 from conftest import FakeRecorder
 from fastapi.testclient import TestClient
-from kairos_common import Settings
+from kairos_common import ApiError, JobState, Settings
 from kairos_common.ids import new_capture_id
 from kairos_common.rebuild import ReplicaState
 
@@ -57,6 +61,9 @@ class FakeDora:
         # Makes GET /jobs/{id}/status fail, so a test can drive the window
         # between "the lease was taken" and "the job row exists".
         self.status_fails = False
+        self.result_fails = False
+        self.execution_active = False
+        self.artifacts: list[str] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -84,8 +91,17 @@ class FakeDora:
                     )
                 return httpx.Response(200, json=self._status(job_id))
             if verb == "result":
+                if self.result_fails:
+                    return httpx.Response(
+                        500,
+                        json={"error": {"code": "result_late", "message": "not yet"}},
+                    )
                 return httpx.Response(
-                    200, json={"summary": {"result": "pass"}, "artifacts": []}
+                    200,
+                    json={
+                        "summary": {"result": "pass"},
+                        "artifacts": self.artifacts,
+                    },
                 )
         return httpx.Response(404, json={"error": {"code": "nf", "message": path}})
 
@@ -97,6 +113,9 @@ class FakeDora:
             "state": self.state,
             "progress": 1.0 if self.state != "running" else 0.5,
             "logs_tail": [],
+            # The current runner explicitly distinguishes a terminal state
+            # from a timeout label whose worker is still alive.
+            "execution_active": self.execution_active,
         }
 
 
@@ -149,6 +168,36 @@ def seed_capture(client: TestClient) -> str:
     return capture_id
 
 
+def test_job_result_omits_a_generated_artifact_after_cleanup(
+    lease_client: TestClient, dora: FakeDora
+) -> None:
+    capture_id = seed_capture(lease_client)
+    created = lease_client.post(
+        "/api/v1/jobs", json={"capture_id": capture_id, "pipeline": PIPELINE}
+    ).json()
+    dora.state = "succeeded"
+    artifact = (
+        lease_client.app.state.data_layout.report
+        / PIPELINE
+        / capture_id
+        / "summary.json"
+    )
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("{}", encoding="utf-8")
+    dora.artifacts = [str(artifact)]
+
+    present = lease_client.get(f"/api/v1/jobs/{created['job_id']}/result")
+    assert present.status_code == 200
+    assert present.json()["artifacts"] == [
+        f"report/{PIPELINE}/{capture_id}/summary.json"
+    ]
+
+    artifact.unlink()
+    removed = lease_client.get(f"/api/v1/jobs/{created['job_id']}/result")
+    assert removed.status_code == 200
+    assert removed.json()["artifacts"] == []
+
+
 def submit(client: TestClient, capture_id: str) -> httpx.Response:
     return client.post(
         "/api/v1/jobs",
@@ -193,49 +242,45 @@ def test_lease_ttl_covers_the_whole_job_budget(monkeypatch) -> None:
 # ---- 409 while held ----------------------------------------------------------
 
 
-def test_a_second_job_on_a_leased_capture_is_refused(
+def test_a_second_job_on_a_held_capture_is_accepted(
     lease_client: TestClient, dora: FakeDora
 ) -> None:
+    """rev.2.15: the case the shared lease exists for.
+
+    Was ``test_a_second_job_on_a_leased_capture_is_refused``, and its companion
+    ``test_a_job_that_loses_the_lease_race_is_cancelled`` is gone with it. Both
+    pinned the single-owner rule, which is exactly what stopped the N camera
+    encoders of one recording running at once. The compensating cancel they
+    also covered is still covered, by
+    ``test_a_failure_after_the_acquire_releases_and_cancels``.
+    """
     capture_id = seed_capture(lease_client)
     assert submit(lease_client, capture_id).status_code == 201
 
-    refused = submit(lease_client, capture_id)
-    assert refused.status_code == 409
-    error = refused.json()["error"]
-    assert error["code"] == "capture_busy"
-    assert error["details"]["lease_owner"] == "job:job_1"
-    # Refused before anything was created: no second job exists to clean up.
-    assert len(dora.created) == 1
+    second = submit(lease_client, capture_id)
+
+    assert second.status_code == 201, second.text
+    assert len(dora.created) == 2
+    assert dora.canceled == []
+    store = lease_client.app.state.capture_store
+    assert [h["owner"] for h in store.lease_holders(capture_id)] == [
+        "job:job_1",
+        "job:job_2",
+    ]
 
 
-def test_a_job_that_loses_the_lease_race_is_cancelled(
+def test_many_jobs_may_hold_one_capture(
     lease_client: TestClient, dora: FakeDora
 ) -> None:
-    """The authoritative check is the acquire, not the pre-flight peek.
-
-    A lease taken between the peek and the acquire (another submitter, or the
-    digest job) must still refuse this submission — and the job dora_runner
-    already accepted has to be called off rather than left running against a
-    capture someone else holds.
-    """
+    """The N-encoder case at its real width (N is 2-5 in practice)."""
     capture_id = seed_capture(lease_client)
+
+    for _ in range(5):
+        assert submit(lease_client, capture_id).status_code == 201
+
     store = lease_client.app.state.capture_store
-    real_acquire = store.acquire_lease
-
-    def steal_then_fail(cid: str, owner: str, *, ttl_s: float) -> bool:
-        # Simulates the race: someone else got there first.
-        real_acquire(cid, "job:someone_else", ttl_s=ttl_s)
-        return real_acquire(cid, owner, ttl_s=ttl_s)
-
-    store.acquire_lease = steal_then_fail  # type: ignore[method-assign]
-    try:
-        refused = submit(lease_client, capture_id)
-    finally:
-        store.acquire_lease = real_acquire  # type: ignore[method-assign]
-
-    assert refused.status_code == 409
-    assert refused.json()["error"]["code"] == "capture_busy"
-    assert dora.canceled == ["job_1"]
+    assert len(store.lease_holders(capture_id)) == 5
+    assert store.has_live_lease(capture_id) is True
 
 
 def test_delete_is_refused_while_a_job_holds_the_lease(
@@ -322,6 +367,274 @@ def test_a_job_already_terminal_at_creation_keeps_no_lease(
 
     assert submit(lease_client, capture_id).status_code == 201
     assert not lease_client.app.state.capture_store.has_live_lease(capture_id)
+
+
+def test_validation_run_claims_before_response_and_releases_after_terminal(
+    lease_client: TestClient,
+) -> None:
+    """A queued durable run blocks immediate delete before its first tick."""
+    capture_id = seed_capture(lease_client)
+    created = lease_client.post(
+        "/api/v1/validation/runs",
+        json={
+            "pipeline": PIPELINE,
+            "capture_ids": [capture_id],
+            "request_id": str(uuid4()),
+        },
+    )
+    assert created.status_code == 202
+    child = created.json()["jobs"][0]
+    assert (
+        lease_client.post(
+            f"/api/v1/captures/{capture_id}/delete",
+            json={"kind": "delete", "reason": "must wait"},
+        ).status_code
+        == 409
+    )
+
+    job = JobStatus(
+        job_id="job_validation_terminal",
+        capture_id=capture_id,
+        pipeline=PIPELINE,
+        state=JobState.succeeded,
+        progress=1.0,
+        logs_tail=[],
+        execution_active=False,
+    )
+    asyncio.run(
+        lease_client.app.state.validation_supervisor._record_status(
+            child["run_job_id"],
+            f"validation-run:{child['run_job_id']}",
+            job,
+        )
+    )
+    assert (
+        lease_client.post(
+            f"/api/v1/captures/{capture_id}/delete",
+            json={"kind": "delete", "reason": "done"},
+        ).status_code
+        == 200
+    )
+
+
+def test_validation_run_keeps_lease_when_create_outcome_is_unknown(
+    lease_client: TestClient,
+) -> None:
+    """A downstream 5xx can arrive after dora committed the idempotent job."""
+    capture_id = seed_capture(lease_client)
+    created = lease_client.post(
+        "/api/v1/validation/runs",
+        json={
+            "pipeline": PIPELINE,
+            "capture_ids": [capture_id],
+            "request_id": str(uuid4()),
+        },
+    )
+    assert created.status_code == 202
+    run_id = created.json()["run_id"]
+    supervisor = lease_client.app.state.validation_supervisor
+
+    async def unknown_create(_payload: dict) -> dict:
+        raise ApiError(
+            status_code=503,
+            code="dora_runner_unreachable",
+            message="The response was lost.",
+        )
+
+    original = supervisor._client.create_job
+    supervisor._client.create_job = unknown_create
+    try:
+        child = lease_client.app.state.validation_run_store.active_jobs_for_run(run_id)[
+            0
+        ]
+        asyncio.run(supervisor._sync(child))
+    finally:
+        supervisor._client.create_job = original
+
+    assert lease_client.app.state.capture_store.has_live_lease(capture_id)
+    run = lease_client.get(f"/api/v1/validation/runs/{run_id}").json()
+    assert run["jobs"][0]["dispatch_state"] == "submitting"
+    assert run["jobs"][0]["failure_code"] is None
+
+
+def test_validation_run_retries_a_terminal_result_read(
+    lease_client: TestClient, dora: FakeDora
+) -> None:
+    capture_id = seed_capture(lease_client)
+    created = lease_client.post(
+        "/api/v1/validation/runs",
+        json={
+            "pipeline": PIPELINE,
+            "capture_ids": [capture_id],
+            "request_id": str(uuid4()),
+        },
+    ).json()
+    supervisor = lease_client.app.state.validation_supervisor
+    asyncio.run(supervisor.tick())  # submit and bind the remote job
+    dora.state = "succeeded"
+    dora.result_fails = True
+
+    asyncio.run(supervisor.tick())
+
+    pending = lease_client.get(f"/api/v1/validation/runs/{created['run_id']}").json()
+    assert pending["state"] == "running"
+    assert pending["jobs"][0]["result"] is None
+    assert not lease_client.app.state.capture_store.has_live_lease(capture_id)
+
+    dora.result_fails = False
+    asyncio.run(supervisor.tick())
+    recovered = lease_client.get(f"/api/v1/validation/runs/{created['run_id']}").json()
+    assert recovered["state"] == "finished"
+    assert recovered["jobs"][0]["result"]["summary"]["result"] == "pass"
+
+
+def test_terminal_but_active_worker_keeps_renewing_its_lease(
+    lease_client: TestClient, dora: FakeDora
+) -> None:
+    capture_id = seed_capture(lease_client)
+    created = lease_client.post(
+        "/api/v1/validation/runs",
+        json={
+            "pipeline": PIPELINE,
+            "capture_ids": [capture_id],
+            "request_id": str(uuid4()),
+        },
+    ).json()
+    supervisor = lease_client.app.state.validation_supervisor
+    asyncio.run(supervisor.tick())
+    dora.state = "failed"
+    dora.execution_active = True
+    child_id = created["jobs"][0]["run_job_id"]
+    lease_client.app.state.validation_run_store._update_child(
+        child_id, safety_deadline_at="2000-01-01T00:00:00Z"
+    )
+
+    asyncio.run(supervisor.tick())
+
+    assert lease_client.app.state.capture_store.has_live_lease(capture_id)
+    run = lease_client.get(f"/api/v1/validation/runs/{created['run_id']}").json()
+    assert run["state"] == "running"
+    assert run["jobs"][0]["job"]["execution_active"] is True
+
+    # A long orchestrator outage may outlive the old safety deadline while the
+    # remote non-cooperative worker remains explicitly active. Startup must
+    # restore that positive-evidence lease before serving delete requests.
+    capture_store = lease_client.app.state.capture_store
+    for holder in capture_store.lease_holders(capture_id):
+        capture_store.release_lease(capture_id, holder["owner"])
+    assert not capture_store.has_live_lease(capture_id)
+    supervisor.acquire_local_leases(created["run_id"])
+    assert capture_store.has_live_lease(capture_id)
+
+
+def test_validation_run_resolves_a_frozen_selection(lease_client: TestClient) -> None:
+    """Selection targets stay server materialized rather than browser paginated."""
+    capture_id = seed_capture(lease_client)
+    selection = lease_client.post("/api/v1/capture-selections", json={"query": {}})
+    assert selection.status_code == 201
+    selection_id = selection.json()["selection_id"]
+    request_id = str(uuid4())
+
+    created = lease_client.post(
+        "/api/v1/validation/runs",
+        json={
+            "pipeline": PIPELINE,
+            "selection_id": selection_id,
+            "request_id": request_id,
+        },
+    )
+    assert created.status_code == 202
+    assert created.json()["selection_id"] == selection_id
+    assert [job["capture_id"] for job in created.json()["jobs"]] == [capture_id]
+
+    # A lost create response may be retried after the short-lived selection
+    # expires; the durable request id must still return the original intent.
+    with lease_client.app.state.capture_store._conn() as conn:
+        conn.execute(
+            "UPDATE capture_selections SET expires_at = ? WHERE selection_id = ?",
+            ("2000-01-01T00:00:00Z", selection_id),
+        )
+    recovered = lease_client.post(
+        "/api/v1/validation/runs",
+        json={
+            "pipeline": PIPELINE,
+            "selection_id": selection_id,
+            "request_id": request_id,
+        },
+    )
+    assert recovered.status_code == 202
+    assert recovered.json()["run_id"] == created.json()["run_id"]
+
+    expired = lease_client.post(
+        "/api/v1/validation/runs",
+        json={
+            "pipeline": PIPELINE,
+            "selection_id": "missing-selection",
+            "request_id": str(uuid4()),
+        },
+    )
+    assert expired.status_code == 409
+    assert expired.json()["error"]["code"] == "capture_selection_expired"
+
+
+def test_validation_run_rejects_an_unpaged_large_selection(
+    lease_client: TestClient,
+) -> None:
+    """Do not materialize more children than the current Run response can page."""
+    service = lease_client.app.state.capture_service
+    original = service.selection_capture_ids
+    service.selection_capture_ids = lambda _selection_id: [  # type: ignore[method-assign]
+        f"capture-{index}" for index in range(1001)
+    ]
+    try:
+        response = lease_client.post(
+            "/api/v1/validation/runs",
+            json={
+                "pipeline": PIPELINE,
+                "selection_id": "large-selection",
+                "request_id": str(uuid4()),
+            },
+        )
+    finally:
+        service.selection_capture_ids = original  # type: ignore[method-assign]
+    assert response.status_code == 409
+    error = response.json()["error"]
+    assert error["code"] == "validation_run_too_large"
+    assert error["details"] == {"matched_count": 1001, "max": 1000}
+
+
+def test_validation_run_rejects_an_empty_selection(lease_client: TestClient) -> None:
+    """An empty snapshot must not create a forever-creating childless run."""
+    service = lease_client.app.state.capture_service
+    original = service.selection_capture_ids
+    service.selection_capture_ids = lambda _selection_id: []  # type: ignore[method-assign]
+    try:
+        response = lease_client.post(
+            "/api/v1/validation/runs",
+            json={
+                "pipeline": PIPELINE,
+                "selection_id": "empty-selection",
+                "request_id": str(uuid4()),
+            },
+        )
+    finally:
+        service.selection_capture_ids = original  # type: ignore[method-assign]
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "no_validation_targets"
+
+
+def test_validation_run_rejects_empty_direct_target_list(
+    lease_client: TestClient,
+) -> None:
+    response = lease_client.post(
+        "/api/v1/validation/runs",
+        json={
+            "pipeline": PIPELINE,
+            "capture_ids": [],
+            "request_id": str(uuid4()),
+        },
+    )
+    assert response.status_code == 422
 
 
 def test_releasing_only_touches_a_lease_this_job_still_owns(
@@ -443,6 +756,30 @@ def test_a_capture_whose_bytes_vanished_outside_kairos_still_accepts_a_job(
     assert submit(lease_client, capture_id).status_code == 201
 
 
+def test_a_capture_the_catalog_says_is_elsewhere_is_refused_up_front(
+    lease_client: TestClient,
+) -> None:
+    """S1-5 note: no server-side replica check let a job be submitted for bytes
+    this installation does not hold (still on the robot, or archived away) —
+    it died minutes later inside dora_runner with a bare "no capture found".
+    The replica row is a durable CATALOG claim (§8), not a filesystem guess,
+    so refusing on it does not cross the rm-rf test's line above."""
+    capture_id = seed_capture(lease_client)
+    store = lease_client.app.state.capture_store
+    store.upsert_replica(
+        capture_id,
+        lease_client.app.state.instance_id,
+        ReplicaState.absent_managed,
+    )
+
+    response = submit(lease_client, capture_id)
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "capture_not_local"
+    # Refused before anything was created: no job, no lease.
+    assert not store.has_live_lease(capture_id)
+
+
 # ---- renewal on observation (rev.2.6) ----------------------------------------
 
 
@@ -479,7 +816,7 @@ def test_polling_a_running_job_extends_its_lease(
     assert store.get_capture(capture_id).lease_owner == f"job:{job_id}"
 
 
-def test_renewal_never_steals_a_lease_from_another_job(
+def test_renewal_extends_only_the_polled_jobs_own_hold(
     lease_client: TestClient, dora: FakeDora
 ) -> None:
     """A stale poll for a job whose lease expired must not take it back off the
@@ -491,11 +828,19 @@ def test_renewal_never_steals_a_lease_from_another_job(
     store.release_lease(capture_id, f"job:{stale_job}")
     store.acquire_lease(capture_id, "job:job_later", ttl_s=600)
 
-    # The stale job is still "running", so this poll would renew — but the
-    # lease is someone else's now.
+    before = {h["owner"]: h["expires_at"] for h in store.lease_holders(capture_id)}
+
+    # The stale job is still "running", so this poll renews ITS hold. Under a
+    # shared lease that takes nothing from anyone — but it must not touch the
+    # other holder's row, which is the property this test was always about.
     lease_client.get(f"/api/v1/jobs/{stale_job}/status")
 
-    assert store.get_capture(capture_id).lease_owner == "job:job_later"
+    after = {h["owner"]: h["expires_at"] for h in store.lease_holders(capture_id)}
+    assert after["job:job_later"] == before["job:job_later"], (
+        "renewing one job's hold moved another's expiry; a poll must only ever "
+        "extend the row it names"
+    )
+    assert f"job:{stale_job}" in after
 
 
 # ---- compensation when the create path fails after the acquire ---------------

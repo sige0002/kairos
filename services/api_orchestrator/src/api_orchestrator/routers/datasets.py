@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Dataset endpoints (``/api/v1/datasets``) — logical sets, no directory tree.
 
 Contract §6. A dataset is rows plus ledger events; adding a capture moves
@@ -16,12 +18,14 @@ export was a *move inside the store* that the catalog then forgot; the archive
 is the capture archive's vocabulary — copy, verify, then remove — lifted to a
 dataset, terminal by design, and recorded as ledger events that outlive the
 database. What leaves is gone from here and the record of WHERE it went is
-the point.
+the point. A zero-progress halted attempt is the one non-terminal exception:
+``POST /{dataset_id}/archive/cancel`` records that attempt's cancellation and
+returns the dataset to ``active`` without deleting destination files.
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response, status
 from kairos_common.archive_paths import parse_archive_roots
 
 from api_orchestrator.dataset_archive import DatasetArchiver
@@ -36,6 +40,10 @@ from api_orchestrator.models import (
     DatasetListResponse,
     DatasetMember,
     DatasetMemberCreateRequest,
+    DatasetMembershipBulkRun,
+    DatasetMembershipBulkRunCreateRequest,
+    DatasetSelectionRecipe,
+    DatasetSelectionRecipeCreateRequest,
     DatasetUpdateRequest,
 )
 
@@ -66,6 +74,20 @@ async def get_dataset(
 ) -> DatasetDetail:
     """One dataset and its members, ordered by display_index."""
     return service.get(dataset_id)
+
+
+@router.post(
+    "/{dataset_id}/selection-recipes",
+    response_model=DatasetSelectionRecipe,
+    status_code=status.HTTP_201_CREATED,
+)
+async def record_selection_recipe(
+    dataset_id: str,
+    body: DatasetSelectionRecipeCreateRequest,
+    service: DatasetService = Depends(get_dataset_service),
+) -> DatasetSelectionRecipe:
+    """Append immutable provenance for one completed filtered Bulk Add run."""
+    return service.record_selection(dataset_id, body)
 
 
 @router.patch("/{dataset_id}", response_model=Dataset)
@@ -108,6 +130,56 @@ async def add_member(
     return service.add_member(dataset_id, body.capture_id)
 
 
+@router.post(
+    "/{dataset_id}/membership-bulk-runs",
+    response_model=DatasetMembershipBulkRun,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def start_membership_bulk_run(
+    dataset_id: str,
+    body: DatasetMembershipBulkRunCreateRequest,
+    background: BackgroundTasks,
+    service: DatasetService = Depends(get_dataset_service),
+) -> DatasetMembershipBulkRun:
+    """Start an idempotent server-side add from a frozen capture selection."""
+    run = service.start_membership_bulk_run(
+        dataset_id, selection_id=body.selection_id, request_id=body.request_id
+    )
+    if run.state == "pending":
+        background.add_task(service.run_membership_bulk, run.run_id)
+    return run
+
+
+@router.get(
+    "/{dataset_id}/membership-bulk-runs/{run_id}",
+    response_model=DatasetMembershipBulkRun,
+)
+def get_membership_bulk_run(
+    dataset_id: str,
+    run_id: str,
+    service: DatasetService = Depends(get_dataset_service),
+) -> DatasetMembershipBulkRun:
+    return service.get_membership_bulk_run(dataset_id, run_id)
+
+
+@router.post(
+    "/{dataset_id}/membership-bulk-runs/{run_id}/retry",
+    response_model=DatasetMembershipBulkRun,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_membership_bulk_run(
+    dataset_id: str,
+    run_id: str,
+    background: BackgroundTasks,
+    service: DatasetService = Depends(get_dataset_service),
+) -> DatasetMembershipBulkRun:
+    """Retry only previously refused frozen IDs; successes are never replayed."""
+    run = service.retry_membership_bulk_run(dataset_id, run_id)
+    if run.state == "pending":
+        background.add_task(service.run_membership_bulk, run.run_id)
+    return run
+
+
 @router.delete("/{dataset_id}/members/{membership_id}", status_code=204)
 async def remove_member(
     dataset_id: str,
@@ -135,7 +207,8 @@ async def archive_dataset(
     202, not 200: a dataset is N captures and the copy runs in the
     background. By the time this returns, the member set is frozen in the
     ledger and the status is ``archiving``; poll the GET below for the rest.
-    Destinations pass the same allow-list as a capture archive.
+    Destinations pass the same allow-list as a capture archive, then the chosen
+    root is probed before the status and destination are frozen.
     """
     return await archiver.start(
         dataset_id,
@@ -158,6 +231,21 @@ async def dataset_archive_progress(
 
     The durable fields survive a restart; ``running``/``current_*``/``error``
     are this process's memory and honestly reset. ``archiving`` with
-    ``running: false`` means "resumable" — the UI's Resume button.
+    ``running: false`` means "resumable" — the UI's Resume button. ``cancelable``
+    additionally says whether zero durable progress makes abandoning this
+    attempt safe.
     """
     return archiver.progress_for(dataset_id)
+
+
+@router.post("/{dataset_id}/archive/cancel", response_model=DatasetArchiveProgress)
+async def cancel_dataset_archive(
+    dataset_id: str,
+    archiver: DatasetArchiver = Depends(get_dataset_archiver),
+) -> DatasetArchiveProgress:
+    """Abandon a halted archive attempt before any member completed.
+
+    This is deliberately narrower than stopping a running copy and is not a
+    rollback: once a member completed, Resume is the only safe forward path.
+    """
+    return await archiver.cancel(dataset_id)

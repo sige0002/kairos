@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Store health, reconciliation and views regeneration.
 
 Contract §8 (rebuild reporting), §9-3 (SUSPECT and Repair) and §6 (views).

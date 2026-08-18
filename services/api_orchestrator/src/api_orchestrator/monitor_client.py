@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Internal HTTP client for the topic_monitor service.
 
 The orchestrator proxies the monitor's discovery + live metrics and subscribes

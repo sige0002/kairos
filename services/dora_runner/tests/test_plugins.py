@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Plugin discovery + the bundled hello_dora example dataflow.
 
 These run the in-process interpreter path (no dora daemon), which is what makes

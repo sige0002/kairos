@@ -1,9 +1,13 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { useQuery } from '@tanstack/react-query';
 import { getBatchCoverage } from '../../../api/batches';
+import { getConfigOptions } from '../../../api/config';
 import { queryKeys } from '../../../api/queryKeys';
 import { COVERAGE_POLL_MS } from '../../pollingPolicy';
 import { Card, cn } from '../../../components/ui';
-import { findTask, usePlans } from '../../plans';
+import { findTask, resolvePlanIds, usePlans } from '../../plans';
+import { useUiStore } from '../../../store/uiStore';
 import type { BatchMachine } from '../useBatchMachine';
 import { SIDE_PAD } from '../compact';
 
@@ -28,18 +32,37 @@ import { SIDE_PAD } from '../compact';
 export function CoverageCard({ machine }: { machine: BatchMachine }) {
   const plans = usePlans();
   const task = machine.task;
+  const project = machine.project ?? null;
+  const ids = resolvePlanIds(plans, project, task ?? null, machine.condition ?? null);
+  const operator = useUiStore((state) => state.recordOperator).trim() || null;
+  const operatorHydrated = useUiStore((state) => state.operatorHydrated);
+  const config = useQuery({
+    queryKey: queryKeys.configOptions,
+    queryFn: ({ signal }) => getConfigOptions({ signal }),
+    staleTime: 15_000,
+  });
+  const robot = config.data?.active_robot?.trim() || null;
   // `\u2014` is the display placeholder for "no task chosen", and the endpoint
   // answers 422 without a real one. The card renders nothing in that state
   // anyway (no plan conditions, no measured rows), so it simply does not ask.
   const taskKnown = !!task && task !== '\u2014';
+  const scopeReady = taskKnown && !!robot && operatorHydrated && !!operator;
+  const scope = {
+    project_id: ids.project_id,
+    project: project && project !== '\u2014' ? project : null,
+    task_id: ids.task_id,
+    task: taskKnown ? task : null,
+    robot,
+    operator,
+  };
   // The key keeps the `['batches', …]` prefix, so the invalidation the strip
   // fires after a save still reaches this card, and carries the task so
   // switching tasks is a different cache entry rather than a stale figure
   // sitting under a new heading.
   const coverageQuery = useQuery({
-    queryKey: [...queryKeys.batches, 'coverage', task ?? ''],
-    queryFn: ({ signal }) => getBatchCoverage(task!, signal),
-    enabled: taskKnown,
+    queryKey: [...queryKeys.batches, 'coverage', scope],
+    queryFn: ({ signal }) => getBatchCoverage(scope, signal),
+    enabled: scopeReady,
     staleTime: 15_000,
     refetchInterval: COVERAGE_POLL_MS,
   });
@@ -49,18 +72,28 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
   // and possibly more, and there is no way to say which part is uncertain. So
   // the flag propagates through the addition rather than being shown per batch
   // — the operator reads the total, not the batches behind it.
-  const rowsByCondition = new Map<string, { recorded: number; isFloor: boolean }>();
-  const bump = (cond: string, n: number, isFloor: boolean) => {
+  const rowsByCondition = new Map<string, { name: string; recorded: number; isFloor: boolean }>();
+  const bump = (key: string, cond: string, n: number, isFloor: boolean) => {
     if (!cond || cond === '—') return;
-    const cur = rowsByCondition.get(cond) ?? { recorded: 0, isFloor: false };
-    rowsByCondition.set(cond, {
+    const cur = rowsByCondition.get(key) ?? { name: cond, recorded: 0, isFloor: false };
+    rowsByCondition.set(key, {
+      name: cur.name,
       recorded: cur.recorded + n,
       isFloor: cur.isFloor || isFloor,
     });
   };
-  for (const c of planConditions) bump(c, 0, false);
+  for (const c of planConditions) bump(c.condition_id, c.name, 0, false);
   for (const row of coverageQuery.data?.rows ?? []) {
-    bump(row.condition, row.recorded, row.is_floor === true);
+    // A rolling deployment may answer the legacy row shape without
+    // condition_id. Reuse the current plan's identity for the same name so a
+    // server upgrade cannot briefly render duplicate condition rows.
+    const matchingPlan = planConditions.find((condition) => condition.name === row.condition);
+    bump(
+      row.condition_id ?? matchingPlan?.condition_id ?? row.condition,
+      row.condition,
+      row.recorded,
+      row.is_floor === true,
+    );
   }
   const rows = [...rowsByCondition.entries()];
   if (rows.length === 0) return null; // free-text task with no plan conditions
@@ -70,13 +103,13 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
       className={cn('flex shrink-0 flex-col gap-1.5', SIDE_PAD)}
       data-testid="coverage-card"
     >
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         Coverage — {task}
-      </span>
+      </h2>
       <div className="flex flex-col gap-1">
-        {rows.map(([cond, { recorded, isFloor }]) => (
+        {rows.map(([key, { name: cond, recorded, isFloor }]) => (
           <div
-            key={cond}
+            key={key}
             data-testid={`coverage-row-${cond}`}
             className={cn(
               'flex items-baseline gap-2 rounded-[7px] px-1.5 py-0.5',
@@ -105,13 +138,15 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
               {isFloor ? '\u2265 ' : ''}
               {recorded}
             </span>
-            <span className="shrink-0 text-[10.5px] text-gray-400">rec</span>
+            <span className="shrink-0 text-[10.5px] text-gray-500">rec</span>
           </div>
         ))}
       </div>
-      <p className="text-[10.5px] leading-snug text-gray-400">
-        rec counts every take reviewed into this task&apos;s sets — it never drops
-        when a recording is later excluded or deleted
+      <p className="text-[10.5px] leading-snug text-gray-500">
+        {scopeReady
+          ? `Scope: ${project ?? 'custom project'} / ${task} · ${robot} · ${operator}`
+          : 'Coverage waits for the active robot and operator scope.'}{' '}
+        rec counts every take reviewed into this task&apos;s sets — it never drops when a recording is later excluded or deleted
       </p>
     </Card>
   );

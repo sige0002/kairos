@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The data directory's invariants (§2) — the guards that have no HTTP surface.
 
 These are small functions, but each one closes a specific way the capture store

@@ -1,8 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { expect, test } from 'vitest';
 import { mapCapturesToEpisodes } from './mapCaptures';
 import type { CaptureListItem, CaptureState } from '../../api/types';
 
-function capture(partial: Partial<CaptureListItem> & { capture_id: string }): CaptureListItem {
+function capture(
+  partial: Partial<CaptureListItem> & { capture_id: string },
+): CaptureListItem {
   return {
     state: 'completed',
     review_status: 'pending',
@@ -117,9 +121,17 @@ test('rows still order by started_at, which never depended on the episode number
   // Dropping the fallback must not touch the reading order: the sort key is the
   // recording time, and a row with no number sorts by it like any other.
   const rows = mapCapturesToEpisodes([
-    capture({ capture_id: 'mid', started_at: '2026-08-01T11:00:00Z', index_in_batch: 9 }),
+    capture({
+      capture_id: 'mid',
+      started_at: '2026-08-01T11:00:00Z',
+      index_in_batch: 9,
+    }),
     capture({ capture_id: 'first', started_at: '2026-08-01T10:00:00Z' }),
-    capture({ capture_id: 'last', started_at: '2026-08-01T12:00:00Z', index_in_batch: 2 }),
+    capture({
+      capture_id: 'last',
+      started_at: '2026-08-01T12:00:00Z',
+      index_in_batch: 2,
+    }),
   ]);
   expect(rows.map((r) => r.captureId)).toEqual(['first', 'mid', 'last']);
   expect(rows.map((r) => r.ep)).toEqual([null, 9, 2]);
@@ -150,6 +162,79 @@ test('the batch label needs a loaded batch; without one it says "—"', () => {
     () => ({ seq: 3, createdAt: '2026-07-13T09:00:00Z' }),
   );
   expect(labelled[0]!.batch).toBe('07/13 · #3');
+  expect(labelled[0]!.condition).toBeNull();
+
+  const withCondition = mapCapturesToEpisodes(
+    [capture({ capture_id: 'c1', batch_id: 'batch_1' })],
+    () => ({
+      seq: 3,
+      createdAt: '2026-07-13T09:00:00Z',
+      condition: 'Object: left bin',
+    }),
+  );
+  expect(withCondition[0]!.condition).toBe('Object: left bin');
+});
+
+test('the recorded snapshot condition wins over a current Batch relabel', () => {
+  const snapshot = {
+    batch_id: 'batch_1',
+    batch_seq: 3,
+    project_id: null,
+    task_id: null,
+    condition_id: null,
+    project: null,
+    task: null,
+    condition: 'Recorded left',
+    robot: null,
+    operator: null,
+  };
+  const batch = () => ({
+    seq: 3,
+    createdAt: '2026-07-13T09:00:00Z',
+    condition: 'Current right',
+  });
+  expect(
+    mapCapturesToEpisodes(
+      [
+        capture({
+          capture_id: 'snapshot',
+          batch_id: 'batch_1',
+          collection_context: snapshot,
+        }),
+      ],
+      batch,
+    )[0]!.condition,
+  ).toBe('Recorded left');
+  const explicitlyNotRecorded = mapCapturesToEpisodes(
+    [
+      capture({
+        capture_id: 'empty-snapshot',
+        batch_id: 'batch_1',
+        collection_context: { ...snapshot, condition: null },
+      }),
+    ],
+    batch,
+  )[0]!;
+  expect(explicitlyNotRecorded.condition).toBeNull();
+  expect(explicitlyNotRecorded.conditionStatus).toBe('not-recorded');
+  const legacy = mapCapturesToEpisodes(
+    [capture({ capture_id: 'legacy', batch_id: 'batch_1' })],
+    batch,
+  )[0]!;
+  expect(legacy.condition).toBe('Current right');
+  expect(legacy.conditionStatus).toBe('ready');
+});
+
+test('legacy conditions retain loading and unavailable states instead of becoming null', () => {
+  const legacy = capture({ capture_id: 'legacy', batch_id: 'batch_1' });
+  expect(mapCapturesToEpisodes([legacy], () => null, 'loading')[0]!).toMatchObject({
+    condition: null,
+    conditionStatus: 'loading',
+  });
+  expect(mapCapturesToEpisodes([legacy])[0]!).toMatchObject({
+    condition: null,
+    conditionStatus: 'unavailable',
+  });
 });
 
 test('run_id is carried for display and is never required', () => {

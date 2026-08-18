@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-19: a dataset row that leaves ``kairos.db`` without a ledger event.
 
 Every other deletion path in the suite goes through the API, which appends

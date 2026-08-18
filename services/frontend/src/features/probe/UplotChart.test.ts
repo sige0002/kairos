@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // yRange is the custom uPlot y-scale range fn (a custom fn bypasses uPlot's own
 // padding). The regression here: a single FLAT series (constant value, e.g. a
 // status/error field pinned at 0) collapsed the scale to min === max and the

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Review tab (v2 IA) — the take-review workflow (adopt / keep in review /
 // exclude) over captures, plus the two REMOVAL intents of §7, which are
 // deliberately separate controls with separate dialogs: Exclude is a reversible
@@ -21,19 +23,25 @@ import { useFiltersCollapsed, toggleFiltersCollapsed } from './filtersRail';
 import { episodeLabel } from './types';
 import { formatBytes } from './format';
 import { useReviewState } from './useReviewState';
+import { useRobotCopyMayRemain } from '../captures/useSplitDeploy';
+import { ScreenTitle } from '../shared/ScreenTitle';
 
 // Two complete literal grid templates (Tailwind's scanner needs full strings,
 // so we pick between them rather than interpolate a width). The two evidence
 // columns grow with the viewport (the detail pane, weighted 1.2fr, gets the
 // larger share); the table column keeps a hard 580px floor so its row grid
 // never clips. Collapsing the filter rail hands its 216→44px back to those two.
-const GRID_EXPANDED =
-  'lg:grid-cols-[216px_minmax(580px,0.8fr)_minmax(400px,1.2fr)]';
-const GRID_COLLAPSED =
-  'lg:grid-cols-[44px_minmax(580px,0.8fr)_minmax(400px,1.2fr)]';
+const GRID_EXPANDED = 'lg:grid-cols-[216px_minmax(580px,0.8fr)_minmax(400px,1.2fr)]';
+const GRID_COLLAPSED = 'lg:grid-cols-[44px_minmax(580px,0.8fr)_minmax(400px,1.2fr)]';
 
 export function ReviewScreen() {
   const rv = useReviewState();
+  // §12 disclosure for the removal dialogs, failed SAFE: while the split
+  // probe is unanswered or failing this stays true (the note shows), and only
+  // a confirmed single-host answer suppresses it (S3-7). rv.splitMode is the
+  // confirmed-split flag and gates transfer FEATURES, which is the opposite
+  // failure direction — do not swap one for the other.
+  const robotCopyMayRemain = useRobotCopyMayRemain();
   const { conflict, failure, failureCaptureId } = rv.reviewSave;
   const queryClient = useQueryClient();
   // Bringing in bags recorded outside kairos: a Review-side action because an
@@ -59,8 +67,33 @@ export function ReviewScreen() {
 
   return (
     <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
-      <div className="flex items-center gap-2.5">
+      <ScreenTitle>Review</ScreenTitle>
+      <div className="flex flex-wrap items-center gap-2.5">
+        <p data-testid="review-page-scope" className="text-xs text-gray-500">
+          Page scope: {rv.rows.length} shown of {rv.serverTotal} matching. Lane and bulk
+          actions apply only to this page.
+        </p>
         <div className="flex-1" />
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            data-testid="review-previous-page"
+            disabled={!rv.hasPreviousPage}
+            onClick={rv.previousPage}
+            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] font-semibold text-gray-600 disabled:cursor-not-allowed disabled:text-gray-300"
+          >
+            Previous
+          </button>
+          <button
+            type="button"
+            data-testid="review-next-page"
+            disabled={!rv.hasNextPage}
+            onClick={rv.nextPage}
+            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] font-semibold text-gray-600 disabled:cursor-not-allowed disabled:text-gray-300"
+          >
+            Next
+          </button>
+        </div>
         <button
           type="button"
           data-testid="review-import-bags"
@@ -220,6 +253,17 @@ export function ReviewScreen() {
           operatorOptions={rv.operatorOptions}
           operatorFilter={rv.operatorFilter}
           onOperatorChange={rv.setOperatorFilter}
+          qualityFilter={rv.qualityFilter}
+          onQualityChange={rv.setQualityFilter}
+          resultFilter={rv.resultFilter}
+          onResultChange={rv.setResultFilter}
+          conditionFilter={rv.conditionFilter}
+          conditionOptions={rv.conditionOptions}
+          onConditionChange={rv.setConditionFilter}
+          startedFrom={rv.startedFrom}
+          startedTo={rv.startedTo}
+          onStartedFromChange={rv.setStartedFrom}
+          onStartedToChange={rv.setStartedTo}
           batchFilterLabel={rv.batchFilterLabel}
           onClearBatchFilter={() => rv.toggleBatchFilter(null)}
           onClearFilters={rv.clearFilters}
@@ -232,50 +276,39 @@ export function ReviewScreen() {
 
       <Toast message={rv.toast} testId="review-toast" />
 
-      <Modal
-        open={rv.excludePending}
-        onClose={rv.cancelExclude}
-        title={`Exclude episode ${rv.pendingExcludeLabel ?? ''}?`}
-        footer={
-          <>
-            <Button variant="ghost" onClick={rv.cancelExclude}>
-              Cancel
-            </Button>
-            <Button
-              variant="danger"
-              data-testid="review-confirm-exclude"
-              onClick={rv.confirmExclude}
-            >
-              Exclude
-            </Button>
-          </>
-        }
-      >
-        The recording itself is kept and can be restored at any time. It&apos;s
-        reclassified as Not usable / Excluded — episode numbers are never reassigned.
-      </Modal>
+      {/* No exclude confirmation: excluding keeps every byte and is undoable in
+          one action from the band under the episode table's toolbar. The dialogs
+          below guard the two things that cannot be taken back. */}
 
       {/* The two removal intents (§12). Separate dialogs, separate testids:
           the operator must be able to tell which one they are about to do. */}
       <DiscardDialog
         open={rv.deletion.kind === 'discard'}
         captures={rv.deletion.targets}
-        splitDeploy={rv.splitMode}
+        splitDeploy={robotCopyMayRemain}
         busy={rv.deletion.busy}
         error={rv.deletion.error}
         done={rv.deletion.done}
         failures={rv.deletion.failures}
+        blockers={rv.deletion.blockers}
+        clearingBlockers={rv.deletion.clearingBlockers}
+        blockerFailures={rv.deletion.blockerFailures}
+        onClearBlockers={(reason) => void rv.deletion.clearBlockersAndRetry(reason)}
         onCancel={rv.deletion.cancel}
         onConfirm={(reason) => void rv.deletion.confirm(reason)}
       />
       <DeleteDialog
         open={rv.deletion.kind === 'delete'}
         captures={rv.deletion.targets}
-        splitDeploy={rv.splitMode}
+        splitDeploy={robotCopyMayRemain}
         busy={rv.deletion.busy}
         error={rv.deletion.error}
         done={rv.deletion.done}
         failures={rv.deletion.failures}
+        blockers={rv.deletion.blockers}
+        clearingBlockers={rv.deletion.clearingBlockers}
+        blockerFailures={rv.deletion.blockerFailures}
+        onClearBlockers={(reason) => void rv.deletion.clearBlockersAndRetry(reason)}
         onCancel={rv.deletion.cancel}
         onConfirm={(reason) => void rv.deletion.confirm(reason)}
       />
@@ -338,7 +371,7 @@ export function ReviewScreen() {
                     failed
                   </span>
                 ) : (
-                  <span className="shrink-0 font-mono text-gray-400">
+                  <span className="shrink-0 font-mono text-gray-500">
                     {r.reviewLane}
                   </span>
                 )}

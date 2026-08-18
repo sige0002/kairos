@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Ranked loss-event table under the integrity timeline (signal_report v1.1).
 // Lists every topic's inferred loss events (topic / time / duration / est. lost
 // / severity) RANKED worst-first — majors before minors, longer before shorter —
@@ -22,7 +24,7 @@ import {
 
 const SEVERITY_CLASS: Record<'major' | 'minor', string> = {
   major: 'text-red-600',
-  minor: 'text-amber-600',
+  minor: 'text-amber-700',
 };
 
 // Events shown before the fold: enough to read every major on a typical run
@@ -62,7 +64,7 @@ export function LossEventList({
       {(rows.length > 0 || edges.length > 0) && (
         <table className="w-full border-collapse text-[11px]">
           <thead>
-            <tr className="text-left text-[10px] uppercase tracking-[0.03em] text-gray-400">
+            <tr className="text-left text-[10px] uppercase tracking-[0.03em] text-gray-500">
               <th className="py-0.5 pr-2 font-medium">Topic</th>
               <th className="py-0.5 pr-2 font-medium">Time</th>
               <th className="py-0.5 pr-2 font-medium">Duration</th>
@@ -96,7 +98,7 @@ export function LossEventList({
                 key={`edge-${i}`}
                 data-testid="review-loss-edge"
                 onClick={() => onSeekGlobal(e.globalNs)}
-                className="cursor-pointer border-t border-gray-100 text-gray-400 hover:bg-gray-50"
+                className="cursor-pointer border-t border-gray-100 text-gray-500 hover:bg-gray-50"
               >
                 <td className="py-0.5 pr-2 font-mono">{e.topic}</td>
                 <td className="py-0.5 pr-2 font-mono">{formatSecondsShort(e.globalNs)}</td>
@@ -117,14 +119,14 @@ export function LossEventList({
           data-testid="review-loss-show-all"
           aria-expanded={showAll}
           onClick={() => setShowAll((v) => !v)}
-          className="self-start text-[11px] text-gray-400 underline decoration-dotted transition-colors hover:text-gray-600"
+          className="self-start text-[11px] text-gray-500 underline decoration-dotted transition-colors hover:text-gray-600"
         >
           {showAll ? 'Show fewer events' : `Show all ${allRows.length} events (${folded} folded)`}
         </button>
       )}
 
       {truncated > 0 && (
-        <p className="text-[10.5px] text-gray-400" data-testid="review-loss-truncated">
+        <p className="text-[10.5px] text-gray-500" data-testid="review-loss-truncated">
           {truncated} more event{truncated === 1 ? '' : 's'} not shown (largest kept).
         </p>
       )}

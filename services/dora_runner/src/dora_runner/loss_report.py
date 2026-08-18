@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """``loss_report`` pipeline: per-topic gap-based loss estimate for a run.
 
 Event-driven (button -> job), post-hoc, and read-only with respect to the
@@ -35,14 +37,17 @@ from __future__ import annotations
 import fnmatch
 import json
 import statistics
+import threading
 from pathlib import Path
 from typing import Any
 
 from kairos_common import utc_now_iso8601
+from kairos_common.atomic_io import atomic_write_text
 from mcap.reader import make_reader
 
 from dora_runner.loss_report_config import DEFAULT_GAP_THRESHOLD_MULTIPLIER
 from dora_runner.mcap_utils import find_mcap, resolve_source_dir, source_times
+from dora_runner.models import JobCanceled
 
 # Pipeline identity stamped into the summary (reproducibility contract, shared
 # with the other bundled pipelines and the hello_dora plugin example).
@@ -50,8 +55,9 @@ from dora_runner.mcap_utils import find_mcap, resolve_source_dir, source_times
 # (log_time fallback); topic entries gained ``time_source``.
 # 1.1.1: tightened the publish_time trust rule (reject a log/source mix and an
 # offset-clock span mismatch — see mcap_utils.source_times).
+# 1.2.0: added capture-relative gap events with an estimated missing count.
 PIPELINE_ID = "loss_report"
-PIPELINE_VERSION = "1.1.1"
+PIPELINE_VERSION = "1.2.0"
 
 
 def estimate_topic_loss(times_ns: list[int]) -> dict[str, Any]:
@@ -114,12 +120,65 @@ def gap_exceeded(estimate: dict[str, Any], multiplier: float) -> bool:
     return gap > median * multiplier
 
 
+def detect_gap_events(
+    analysis_times_ns: list[int],
+    timeline_times_ns: list[int],
+    timeline_origin_ns: int,
+    multiplier: float,
+) -> list[dict[str, int | float]]:
+    """Locate cadence gaps and estimate how many samples were absent.
+
+    ``analysis_times_ns`` uses the same per-topic source-time choice as the
+    aggregate loss estimate. ``timeline_times_ns`` is the corresponding MCAP
+    log-time series, used only to place an event on one capture-relative clock
+    that is comparable across topics. The interval between the last observed
+    message before a gap and the first one after it is evidence; it cannot say
+    where in that interval a missing publisher sample would have occurred.
+    """
+    if len(analysis_times_ns) != len(timeline_times_ns):
+        raise ValueError("analysis and timeline time series must have the same length")
+    if len(analysis_times_ns) < 3:
+        return []
+
+    ordered = sorted(zip(analysis_times_ns, timeline_times_ns, strict=True))
+    intervals_ms = [
+        (ordered[index][0] - ordered[index - 1][0]) / 1e6
+        for index in range(1, len(ordered))
+    ]
+    median_interval_ms = statistics.median(intervals_ms)
+    if median_interval_ms <= 0:
+        return []
+
+    events: list[dict[str, int | float]] = []
+    threshold_ms = median_interval_ms * multiplier
+    for index, gap_ms in enumerate(intervals_ms, start=1):
+        if gap_ms <= threshold_ms:
+            continue
+        previous_log_ns = ordered[index - 1][1]
+        current_log_ns = ordered[index][1]
+        event_start_ns = min(previous_log_ns, current_log_ns)
+        event_end_ns = max(previous_log_ns, current_log_ns)
+        estimated_missing = max(1, int(round(gap_ms / median_interval_ms)) - 1)
+        events.append(
+            {
+                "start_offset_ms": (event_start_ns - timeline_origin_ns) / 1e6,
+                "end_offset_ms": (event_end_ns - timeline_origin_ns) / 1e6,
+                "gap_ms": gap_ms,
+                "expected_interval_ms": median_interval_ms,
+                "estimated_missing": estimated_missing,
+                "gap_ratio": gap_ms / median_interval_ms,
+            }
+        )
+    return events
+
+
 def run_loss_report(
     *,
     capture_id: str,
     data_dir: Path,
     target_topics: list[str] | None = None,
     gap_threshold_multiplier: float = DEFAULT_GAP_THRESHOLD_MULTIPLIER,
+    cancel: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Estimate per-topic loss for the capture's MCAP.
 
@@ -148,18 +207,42 @@ def run_loss_report(
     types: dict[str, str] = {}
     with mcap_path.open("rb") as stream:
         for schema, channel, message in make_reader(stream).iter_messages():
+            # Cancellation checkpoint: this read is the job's whole wall time,
+            # so a cancel that only landed after it would not be a cancel.
+            if cancel is not None and cancel.is_set():
+                raise JobCanceled
             time_pairs.setdefault(channel.topic, []).append(
                 (message.log_time, message.publish_time)
             )
             if channel.topic not in types:
                 types[channel.topic] = schema.name if schema is not None else ""
 
+    timeline_origin_ns = min(
+        (log_time for pairs in time_pairs.values() for log_time, _publish in pairs),
+        default=0,
+    )
     topics = []
+    events: list[dict[str, Any]] = []
     for name, pairs in sorted(time_pairs.items()):
         if not _topic_matches(name, patterns):
             continue
         times, time_source = source_times(pairs)
         estimate = estimate_topic_loss(times)
+        timeline_times = [log_time for log_time, _publish_time in pairs]
+        topic_events = detect_gap_events(
+            times,
+            timeline_times,
+            timeline_origin_ns,
+            gap_threshold_multiplier,
+        )
+        for event in topic_events:
+            events.append(
+                {
+                    "topic": name,
+                    "time_source": time_source,
+                    **event,
+                }
+            )
         topics.append(
             {
                 "name": name,
@@ -170,8 +253,10 @@ def run_loss_report(
                 # fallback for bags that did not record a source timestamp).
                 "time_source": time_source,
                 "gap_exceeded": gap_exceeded(estimate, gap_threshold_multiplier),
+                "gap_events": topic_events,
             }
         )
+    events.sort(key=lambda event: (event["start_offset_ms"], event["topic"]))
     summary: dict[str, Any] = {
         "pipeline": PIPELINE_ID,
         "version": PIPELINE_VERSION,
@@ -182,10 +267,11 @@ def run_loss_report(
             "gap_threshold_multiplier": gap_threshold_multiplier,
         },
         "flagged": [t["name"] for t in topics if t.get("gap_exceeded")],
+        "events": events,
         "checked_at": utc_now_iso8601(),
     }
     report_dir = data_dir / "report" / "loss_report" / capture_id
     report_dir.mkdir(parents=True, exist_ok=True)
     summary_path = report_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    atomic_write_text(summary_path, json.dumps(summary, indent=2))
     return {"summary": summary, "artifacts": [str(summary_path)]}

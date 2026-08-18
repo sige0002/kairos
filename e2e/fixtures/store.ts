@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The store on disk: object_manifest.json, record.json, lifecycle.jsonl.
 //
 // These are the sidecar truths §13 asks each scenario to corroborate — the
@@ -21,6 +23,18 @@ export interface ObjectManifest {
   message_count: number | null;
   bytes: number | null;
   ended_at: string | null;
+  collection_context: CollectionContext | null;
+}
+
+export interface CollectionContext {
+  batch_id: string | null;
+  batch_seq: number | null;
+  project: string | null;
+  task: string | null;
+  condition: string | null;
+  robot: string | null;
+  operator: string | null;
+  [key: string]: unknown;
 }
 
 export interface RecordSidecar {
@@ -32,6 +46,8 @@ export interface RecordSidecar {
   quality: string | null;
   quality_source: string | null;
   review_status: string;
+  batch_id: string | null;
+  index_in_batch: number | null;
   updated_at: string;
 }
 

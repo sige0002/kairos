@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The capture list and the capture detail are different shapes, and this file
 // is where that stops being a comment.
 //

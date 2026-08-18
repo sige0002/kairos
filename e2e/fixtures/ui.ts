@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Page helpers for the real frontend.
 //
 // Everything here selects on committed data-testids or on accessible roles —
@@ -22,6 +24,91 @@ export async function openTab(page: Page, tab: TabId): Promise<void> {
 }
 
 export const phaseTitle = (page: Page): Locator => page.getByTestId('phase-title');
+
+// ---- operator identity ------------------------------------------------------
+
+/** The default name this suite records under. Deliberately not a person: a
+ *  capture made by the acceptance run should be identifiable as one. */
+export const E2E_OPERATOR = 'e2e_operator';
+
+/**
+ * Make sure a name is set on the OP chip, the way an operator sets one.
+ *
+ * A recording cannot start without one — Start is disabled and says why — and
+ * every test gets a fresh browser context, so nothing carries over from the
+ * last scenario or from a developer's own browser. Without this the recording
+ * scenarios sit on a disabled button until they time out.
+ *
+ * Driven through the real control ON PURPOSE, rather than seeding the chip's
+ * localStorage key. This suite's job is to prove the console works; a fixture
+ * that writes the app's private storage would keep passing after the chip
+ * stopped saving anything, which is precisely the regression an acceptance
+ * gate should catch. It costs three clicks.
+ *
+ * Idempotent: it reads the chip's own tooltip first and does nothing when a
+ * name is already set. The tooltip, not the chip's letters — those are
+ * INITIALS, and a real operator named e.g. Olivia Park would render "OP",
+ * indistinguishable from the empty chip's placeholder.
+ */
+export async function ensureOperator(page: Page, name = E2E_OPERATOR): Promise<void> {
+  const chip = page.getByTestId('operator-chip');
+  await expect(chip, 'the header never rendered — is the shell booted?').toBeVisible({
+    timeout: 60_000,
+  });
+
+  if (await hasOperator(chip)) return;
+
+  await chip.click();
+
+  // With a roster configured (Settings > Operators) the popover is a PICKER and
+  // there is no field to type into — free text is exactly what a roster exists
+  // to prevent. No scenario seeds a roster today, so the picker means an
+  // assumption here has changed: pick the name if it is on the list, and
+  // otherwise say so rather than recording under somebody else's identity,
+  // which is the very thing the operator gate exists to stop.
+  const roster = page.getByTestId('operator-roster');
+  if ((await roster.count()) > 0) {
+    const pick = page.getByTestId(`operator-pick-${name}`);
+    if ((await pick.count()) === 0) {
+      throw new Error(
+        `the operator roster is configured but does not contain "${name}", so this ` +
+          `run cannot name itself; add it in Settings > Operators or pass a name ` +
+          `that is on the roster`,
+      );
+    }
+    await pick.click();
+  } else {
+    const field = page.getByTestId('operator-input');
+    await field.fill(name);
+    // Enter, not the popover's Save button, and not for convenience: that
+    // button carries no testid, and "Save" is not a unique accessible name in
+    // this app (Settings alone has three), so a page-wide role lookup would be
+    // a strict-mode violation waiting for the first caller on another tab.
+    // Enter is the same handler the button calls, and is what someone typing
+    // their name actually presses. Exercising the button itself needs a testid
+    // in services/frontend.
+    await field.press('Enter');
+  }
+
+  // The chip has taken a name — so a caller heading straight for Start is not
+  // racing the popover's close. Asserted with the SAME predicate the early
+  // return used, so "already set" and "now set" can never disagree; a save that
+  // stored nothing (an empty or whitespace name) leaves the chip in its unset
+  // state and fails here rather than at a disabled Start button later.
+  await expect
+    .poll(() => hasOperator(chip), {
+      message: 'the OP chip never took the name',
+      timeout: 30_000,
+    })
+    .toBe(true);
+}
+
+/** Whether the OP chip is currently carrying a name, read from its tooltip:
+ *  "Operator: <name> — saved into each recording" when set, "Set operator
+ *  name — …" when not. */
+async function hasOperator(chip: Locator): Promise<boolean> {
+  return ((await chip.getAttribute('title')) ?? '').startsWith('Operator: ');
+}
 
 /** Seconds shown on the Collect screen's `elapsed` chip (`00:MM:SS`). */
 export async function elapsedSeconds(page: Page): Promise<number> {
@@ -50,6 +137,9 @@ export async function recordThroughUi(
 ): Promise<string> {
   const seconds = opts.seconds ?? 5;
   await openTab(page, 'collect');
+  // Nothing records anonymously: Start stays disabled until the take has
+  // somebody's name on it.
+  await ensureOperator(page);
 
   const before = new Set((await api.allCaptures(true)).map((c) => c.capture_id));
 

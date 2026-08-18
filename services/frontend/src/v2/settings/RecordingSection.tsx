@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > Recording — a form-FIRST view of the ACTIVE robot's recording
 // config (GET /api/v1/config/recording), with the raw-JSON editor demoted to an
 // "Advanced" disclosure (spec §12: JSON is Advanced). Everything shown is read
@@ -74,9 +76,9 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
   return (
     <Card className="flex min-w-0 flex-col overflow-auto lg:col-span-2" data-testid="settings-recording">
       <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-[13px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Recording
-        </span>
+        </h2>
         <span data-testid="recording-robot" className="font-mono text-[13px] font-semibold text-gray-900">
           {cfg?.robot_name ?? config?.defaults.robot_name ?? '—'}
         </span>
@@ -144,18 +146,18 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
 
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2">
-              <span className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+              <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
                 Default topics
-              </span>
-              <span data-testid="recording-topic-count" className="font-mono text-[11.5px] text-gray-400">
+              </h3>
+              <span data-testid="recording-topic-count" className="font-mono text-[11.5px] text-gray-500">
                 {topics.length} topic{topics.length === 1 ? '' : 's'}
               </span>
             </div>
             {topics.length === 0 ? (
-              <p className="text-[12.5px] text-gray-400">No default topics configured.</p>
+              <p className="text-[12.5px] text-gray-500">No default topics configured.</p>
             ) : (
               <div className="overflow-hidden rounded-control border border-gray-200" data-testid="recording-topics">
-                <div className="flex items-center gap-2 border-b border-gray-100 bg-gray-50 px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.04em] text-gray-400">
+                <div className="flex items-center gap-2 border-b border-gray-100 bg-gray-50 px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.04em] text-gray-500">
                   <span className="flex-1">Topic</span>
                   <span className="w-24 text-right">Expected Hz</span>
                   <span className="w-20 text-right">QoS</span>
@@ -176,7 +178,7 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
                         {hz != null ? `${hz} Hz` : '—'}
                       </span>
                       <span className="w-20 text-right">
-                        {qos ? <Badge tone="teal">custom</Badge> : <span className="text-gray-300">default</span>}
+                        {qos ? <Badge tone="teal">custom</Badge> : <span className="text-gray-500">default</span>}
                       </span>
                     </div>
                   );
@@ -185,7 +187,7 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
             )}
           </div>
 
-          <p className="text-[11.5px] leading-relaxed text-gray-400">
+          <p className="text-[11.5px] leading-relaxed text-gray-500">
             <code>default_topics</code> / <code>robot_name</code> apply immediately; expected Hz,
             QoS and the start gate load at service startup, so they apply on the next recorder
             restart.
@@ -200,11 +202,11 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
               onClick={() => setAdvancedOpen((o) => !o)}
               className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[12.5px] font-semibold text-gray-700 hover:bg-gray-50"
             >
-              <span className={cn('text-gray-400 transition-transform', advancedOpen && 'rotate-90')}>
+              <span className={cn('text-gray-500 transition-transform', advancedOpen && 'rotate-90')}>
                 ▸
               </span>
               Advanced — edit raw JSON
-              {path && <span className="font-mono text-[11px] font-normal text-gray-400">{path}</span>}
+              {path && <span className="font-mono text-[11px] font-normal text-gray-500">{path}</span>}
             </button>
             {advancedOpen && config && (
               <div className="border-t border-gray-100 p-3.5" data-testid="recording-advanced">

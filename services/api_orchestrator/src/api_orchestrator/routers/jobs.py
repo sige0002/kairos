@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Pipeline job endpoints (``/api/v1/jobs``).
 
 Keyed by ``capture_id`` (§10.5): a job resolves its source as
@@ -9,7 +11,7 @@ lease-ignorant: it reads a capture and writes a report, and knows nothing about
 deletion. So the orchestrator — which owns both the catalog and the deletion
 path — takes the lease on the job's behalf at submission, extends it whenever it
 sees the job still running, and drops it as soon as it sees the job finish.
-While the lease is live, discard and delete answer 409 ``capture_busy`` rather
+While any holder is live, discard and delete answer 409 ``capture_busy`` rather
 than renaming ``objects/<id>`` out from under a running job.
 
 **What the TTL actually guarantees** (rev.2.6). The lease is renewed on
@@ -26,40 +28,41 @@ looked:
   which is why this is accepted rather than papered over with a renewal loop the
   orchestrator would have to run for jobs it is not watching.
 
-An expired lease is already not-a-lease (``store.acquire_lease`` compares
-against *now*), so a job whose process died never locks its capture out of
-deletion forever. That is the property the whole design leans on: every failure
-here resolves toward "deletable again", never toward "permanently stuck".
+An expired hold is already not a hold (every read compares against *now*), so a
+job whose process died never locks its capture out of deletion forever. That is
+the property the whole design leans on, and the shared rewrite preserves it
+holder by holder: each one expires on its own, and the capture becomes deletable
+when the last of them does. Every failure here resolves toward "deletable
+again", never toward "permanently stuck".
+
+**The lease does not gate submission** (rev.2.15). It is shared, so several jobs
+may hold one capture at once — that is what lets the N camera encoders of one
+recording run in parallel, and it is why submitting a job no longer asks whether
+somebody else holds it.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from pathlib import PurePosixPath
+import uuid
+from pathlib import Path, PurePosixPath
 
 from fastapi import APIRouter, Request, status
 from kairos_common import ApiError, JobState
 
 from api_orchestrator.events import EVENT_JOB
+from api_orchestrator.job_submission import prepare_job_submission
 from api_orchestrator.models import (
-    UNFINALIZED_STATES,
-    Capture,
-    CaptureState,
     JobCreateRequest,
     JobCreateResponse,
     JobResult,
     JobStatus,
 )
-from api_orchestrator.store import CaptureStore
 
 logger = logging.getLogger("kairos")
 
 router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
-
-# Capture states for which an export must be refused: the bag is still being
-# written, so exporting it would read a recording mid-flight.
-_UNFINISHED_STATES = UNFINALIZED_STATES
 
 # The same knob dora_runner reads for its own per-job wall-clock budget. Both
 # services load the root .env (compose `env_file`), so tuning it there moves the
@@ -126,17 +129,14 @@ def _sync_lease(request: Request, job: JobStatus) -> None:
     store = request.app.state.capture_store
     owner = _lease_owner(job.job_id)
     if job.state in _TERMINAL_STATES:
-        store.release_lease(job.capture_id, owner)
+        # Only a runner that explicitly confirmed its worker stopped may open
+        # the delete gate. Older runners omit this additive field; their lease
+        # expires on the already-bounded TTL rather than racing a surviving
+        # timeout thread.
+        if job.execution_active is False:
+            store.release_lease(job.capture_id, owner)
         return
     store.acquire_lease(job.capture_id, owner, ttl_s=_lease_ttl_s())
-
-
-# Pipelines whose `template` param is a Config-catalog template id: the id is
-# resolved to the full object before forwarding (dora_runner's template store is
-# empty at boot). fast_validation matches the template's topics directly;
-# full_validation hands them to its flow as ${KAIROS_REQUIRED_TOPICS}, so the
-# Config tab's active template drives both.
-_TEMPLATE_PIPELINES = {"fast_validation", "full_validation"}
 
 
 async def _emit_job(request: Request, job: JobStatus | JobCreateResponse) -> None:
@@ -181,41 +181,30 @@ async def create_job(request: Request, body: JobCreateRequest) -> JobCreateRespo
     """
     client = request.app.state.dora_runner_client
     store = request.app.state.capture_store
-    payload = body.model_dump()
-    capture = store.get_capture(body.capture_id)
-    if capture is None:
-        raise ApiError(
-            status_code=404,
-            code="capture_not_found",
-            message=f"Capture not found: {body.capture_id}",
-            details={"capture_id": body.capture_id},
-        )
-    if str(capture.state) in _UNFINISHED_STATES:
+    payload = prepare_job_submission(request, body)
+    # Reader leases remain shared, so parallel jobs are allowed. The atomic
+    # acquisition only refuses an exclusive archive/delete writer and happens
+    # before remote create, closing the byte-move race without serializing jobs.
+    provisional_owner = f"job-submit:{uuid.uuid4()}"
+    if not store.acquire_lease(
+        body.capture_id, provisional_owner, ttl_s=_lease_ttl_s()
+    ):
         raise ApiError(
             status_code=409,
-            code="capture_not_finished",
-            message="Cannot run a job on a capture that is still recording.",
-            details={"capture_id": body.capture_id, "state": str(capture.state)},
+            code="capture_busy",
+            message="The capture is being archived or deleted.",
+            details={"capture_id": body.capture_id},
         )
-    _reject_tombstoned(capture)
-    # Checked before anything is created: another job already working on this
-    # capture is the common case, and refusing here means no doomed job row is
-    # ever written. The authoritative check is the acquire below — this one only
-    # keeps the compensating cancel rare.
-    if store.has_live_lease(body.capture_id):
-        raise _capture_busy(store, body.capture_id)
-    if body.pipeline in _TEMPLATE_PIPELINES:
-        raw = body.params.get("template")
-        if not isinstance(raw, dict):
-            catalog = request.app.state.config_catalog
-            template = None
-            if isinstance(raw, str) and raw:
-                template = catalog.validation_template_by_id(raw)
-            if template is None:  # blank id, or id not in the catalog
-                template = catalog.active_validation_template()
-            if template is not None:
-                payload["params"] = {**body.params, "template": template.model_dump()}
-    created = await client.create_job(payload)
+    try:
+        created = await client.create_job(payload)
+    except ApiError as exc:
+        if exc.status_code < 500:
+            store.release_lease(body.capture_id, provisional_owner)
+        raise
+    except Exception:
+        # The remote POST may have committed. Let this provisional protection
+        # expire rather than opening a writer race around an unknown worker.
+        raise
     job_id = str(created["job_id"])
     # The lease can only be taken once the job has an id, because the id is what
     # ties the lease to the work: the owner string is what a 409 shows an
@@ -223,11 +212,12 @@ async def create_job(request: Request, body: JobCreateRequest) -> JobCreateRespo
     # the acquire necessarily follows the create — and if the capture turns out
     # to be busy after all, the job we just created is cancelled rather than
     # left running against a capture someone else holds.
-    if not store.acquire_lease(
-        body.capture_id, _lease_owner(job_id), ttl_s=_lease_ttl_s()
-    ):
-        await _abandon_job(client, job_id, body.capture_id)
-        raise _capture_busy(store, body.capture_id)
+    # Shared, so this always succeeds; it records one more holder rather than
+    # arbitrating. Still taken AFTER the create because the id is what ties the
+    # hold to the work — it is what a 409 shows an operator and what the release
+    # below matches on.
+    store.acquire_lease(body.capture_id, _lease_owner(job_id), ttl_s=_lease_ttl_s())
+    store.release_lease(body.capture_id, provisional_owner)
     try:
         status_body = await client.job_status(job_id)
         job = JobCreateResponse.model_validate(status_body)
@@ -264,75 +254,6 @@ async def _abandon_job(client, job_id: str, capture_id: str) -> None:
             "report is harmless",
             extra={"job_id": job_id, "capture_id": capture_id},
         )
-
-
-def _reject_tombstoned(capture: Capture) -> None:
-    """Refuse a job on a capture that is being, or has been, deleted (§7).
-
-    ``delete_pending`` is included for the same reason review saves include it
-    (``captures._reject_review_on_delete``): it is the window between the ledger
-    append and the rename, and a job admitted inside it would read a capture
-    whose bytes are already on their way to ``.trash`` — and write a report for
-    it, leaving ``report/<pipeline>/<capture_id>/`` behind for a recording that
-    no longer exists. The operator's delete already won.
-
-    A capture whose bytes were removed *outside* kairos (``rm -rf``) is
-    deliberately NOT covered here: its row still says ``completed``, which is an
-    honest claim that the bytes should be there, and the job fails late with a
-    clear "No capture found". Guessing at the filesystem on every submission
-    would trade that clarity for a check that races anyway.
-    """
-    if capture.state not in (
-        CaptureState.delete_pending,
-        CaptureState.discarded,
-        CaptureState.deleted,
-    ):
-        return
-    pending = capture.state == CaptureState.delete_pending
-    kind = capture.delete_kind or ("delete" if pending else "deleted")
-    raise ApiError(
-        status_code=409,
-        code="capture_deleting" if pending else "capture_deleted",
-        message=(
-            f"{capture.capture_id} is being {kind}d; no new job can be run against it."
-            if pending
-            else (
-                f"{capture.capture_id} was {kind}"
-                f"{f' on {capture.deleted_at}' if capture.deleted_at else ''}; "
-                "no job can be run against it."
-            )
-        ),
-        details={"capture_id": capture.capture_id, "state": str(capture.state)},
-    )
-
-
-def _capture_busy(store: CaptureStore, capture_id: str) -> ApiError:
-    """The 409 §7.1 requires, naming who holds the capture and until when.
-
-    Worded like the delete path's ``capture_busy`` so an operator meets the same
-    sentence whichever action they were refused.
-    """
-    capture = store.get_capture(capture_id)
-    owner = capture.lease_owner if capture else None
-    expires = capture.lease_expires_at if capture else None
-    # The lease can be gone by the time this message is built (it expired, or
-    # its job finished between the refusal and this read), so the deadline is
-    # only promised when there is one to promise — "until None" is worse than
-    # saying nothing.
-    until = f" until {expires}" if expires else ""
-    return ApiError(
-        status_code=409,
-        code="capture_busy",
-        message=(
-            f"{owner or 'Another job'} is working on {capture_id}"
-            f"{until}; try again in a moment."
-        ),
-        details={
-            "capture_id": capture_id,
-            "lease_owner": owner,
-            "lease_expires_at": expires,
-        },
-    )
 
 
 @router.get("/{job_id}/status", response_model=JobStatus)
@@ -393,12 +314,40 @@ def _data_relative_artifacts(artifacts: list[str], data_dir: str) -> list[str]:
     return out
 
 
+def _available_report_artifacts(artifacts: list[str], data_dir: str) -> list[str]:
+    """Drop cleaned report links while preserving non-report artifact semantics.
+
+    Generated-report cleanup intentionally leaves volatile job history in place.
+    A succeeded job therefore remains succeeded, but a report-relative link it
+    used to expose must not remain a clickable guaranteed-404. Paths outside the
+    managed ``report/`` namespace retain the existing pass-through behaviour.
+    """
+    root = Path(data_dir).resolve()
+    available: list[str] = []
+    for artifact in artifacts:
+        path = PurePosixPath(artifact)
+        if path.is_absolute() or not path.parts or path.parts[0] != "report":
+            available.append(artifact)
+            continue
+        candidate = (root / Path(*path.parts)).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            continue
+        if candidate.is_file():
+            available.append(artifact)
+    return available
+
+
 @router.get("/{job_id}/result", response_model=JobResult)
 async def job_result(request: Request, job_id: str) -> JobResult:
     """Return a terminal job result (artifacts normalised to data-relative)."""
     body = await request.app.state.dora_runner_client.job_result(job_id)
     result = JobResult.model_validate(body)
     result.artifacts = _data_relative_artifacts(
+        result.artifacts, request.app.state.settings.data_dir
+    )
+    result.artifacts = _available_report_artifacts(
         result.artifacts, request.app.state.settings.data_dir
     )
     status_body = await request.app.state.dora_runner_client.job_status(job_id)

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The shared discard/delete flow (contract §7 + §12).
 //
 // Every screen that can remove a recording drives the SAME state machine, so
@@ -11,16 +13,40 @@
 // there — dropping it from the report is how an operator ends up believing the
 // disk is emptier than it is.
 
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { deleteCapture } from '../../api/captures';
+import { cancelJob, getJobStatus } from '../../api/jobs';
 import { queryKeys } from '../../api/queryKeys';
-import { captureErrorText } from './errors';
+import { captureErrorText, readCaptureError, readLeaseHolders, type LeaseHolder } from './errors';
 import type { CaptureListItem, DeleteKind } from '../../api/types';
 
 export interface DeletionFailure {
   captureId: string;
   error: string;
+}
+
+// How long clearBlockersAndRetry waits for a cancelled job's work to actually
+// stop before retrying the removal. Sized for the workers' checkpoint cadence
+// (a frame boundary or a subprocess kill — seconds), not the job's full
+// budget: a job that ignores its cancel for this long leaves the retry to be
+// refused with the holder named.
+const CANCEL_SETTLE_MAX_MS = 30_000;
+const CANCEL_SETTLE_POLL_MS = 1000;
+// Job states with work still alive (mirrors the server's non-terminal set).
+const ACTIVE_JOB_STATES = new Set(['queued', 'running']);
+
+// Test seam (same shape as stopConfirm's): the settle wait is a real
+// wall-clock poll, which a unit test must not sit through.
+let cancelSettleMaxMs: number | null = null;
+let cancelSettlePollMs: number | null = null;
+export function __setCancelSettleMs(maxMs: number, pollMs: number): void {
+  cancelSettleMaxMs = maxMs;
+  cancelSettlePollMs = pollMs;
+}
+export function __resetCancelSettleMs(): void {
+  cancelSettleMaxMs = null;
+  cancelSettlePollMs = null;
 }
 
 export interface CaptureDeletionState {
@@ -34,6 +60,25 @@ export interface CaptureDeletionState {
   /** The failure that stopped a single-capture attempt (drives the dialog's
    *  error block); null for a bulk run, whose failures are per-capture. */
   error: unknown;
+
+  /** The jobs holding this capture, when the last refusal was `capture_busy`.
+   *  Empty otherwise — so a screen can key the "cancel them" affordance on
+   *  this alone rather than re-reading the error code itself. */
+  blockers: LeaseHolder[];
+  /** A cancel-and-retry is running. */
+  clearingBlockers: boolean;
+  /** Blocking jobs whose cancel was itself refused, named so the operator can
+   *  see WHICH one is still holding the capture. */
+  blockerFailures: DeletionFailure[];
+  /**
+   * Cancel every blocking job, then retry the removal ONCE.
+   *
+   * Once, deliberately: a retry that lost to a job which started in the
+   * meantime would spin, and each turn of that loop cancels somebody's work.
+   * The second refusal carries the new holders, so the operator sees who it is
+   * now and decides again.
+   */
+  clearBlockersAndRetry: (reason: string) => Promise<void>;
 
   requestDiscard: (targets: CaptureListItem | CaptureListItem[]) => void;
   requestDelete: (targets: CaptureListItem | CaptureListItem[]) => void;
@@ -75,6 +120,8 @@ export function useCaptureDeletion(
   const [done, setDone] = useState(0);
   const [failures, setFailures] = useState<DeletionFailure[]>([]);
   const [error, setError] = useState<unknown>(null);
+  const [clearingBlockers, setClearingBlockers] = useState(false);
+  const [blockerFailures, setBlockerFailures] = useState<DeletionFailure[]>([]);
 
   const open = useCallback((next: DeleteKind, list: CaptureListItem | CaptureListItem[]) => {
     setKind(next);
@@ -82,6 +129,7 @@ export function useCaptureDeletion(
     setDone(0);
     setFailures([]);
     setError(null);
+    setBlockerFailures([]);
   }, []);
 
   const requestDiscard = useCallback(
@@ -101,6 +149,7 @@ export function useCaptureDeletion(
     setTargets([]);
     setFailures([]);
     setError(null);
+    setBlockerFailures([]);
     setDone(0);
   }, [busy]);
 
@@ -143,6 +192,69 @@ export function useCaptureDeletion(
       }
     },
     [kind, targets, queryClient, invalidate, onDeleted, onToast],
+  );
+
+  // Who is holding this capture, read off the refusal itself. Derived rather
+  // than stored: it is a fact about the current error and cannot outlive it.
+  const blockers = useMemo(
+    () => (error ? readLeaseHolders(readCaptureError(error, 'delete').details) : []),
+    [error],
+  );
+
+  const clearBlockersAndRetry = useCallback(
+    async (reason: string) => {
+      // Only jobs can be cancelled. A capture held by a transfer or the digest
+      // queue keeps its holder, and the retry below will be refused again —
+      // which is the honest outcome, not something to paper over.
+      const jobIds = blockers
+        .map((h) => h.jobId)
+        .filter((id): id is string => id !== null);
+      if (jobIds.length === 0) return;
+      setClearingBlockers(true);
+      setBlockerFailures([]);
+      const failed: DeletionFailure[] = [];
+      const cancelled: string[] = [];
+      for (const jobId of jobIds) {
+        try {
+          await cancelJob(jobId);
+          cancelled.push(jobId);
+        } catch (e) {
+          // Keep going: one job refusing to stop is not a reason to leave the
+          // others running, and the retry may still succeed without it.
+          failed.push({ captureId: jobId, error: captureErrorText(e, 'job') });
+        }
+      }
+      // A cancel of RUNNING work is a request, not a state: the worker stops
+      // at its next checkpoint, and the capture lease is released only when
+      // the orchestrator observes the terminal state. Retrying the delete
+      // before that would rename `objects/<id>` out from under work that is
+      // still writing — the very thing the lease exists to prevent — so wait,
+      // bounded, for each cancelled job to actually end. (The status poll is
+      // itself the observation that releases the lease.) A job that never
+      // stops inside the budget leaves the retry to be refused with the
+      // holder named, which is the honest outcome.
+      const deadline = Date.now() + (cancelSettleMaxMs ?? CANCEL_SETTLE_MAX_MS);
+      for (const jobId of cancelled) {
+        for (;;) {
+          try {
+            const status = await getJobStatus(jobId);
+            if (!ACTIVE_JOB_STATES.has(status.state)) break;
+          } catch {
+            // A failed read is not "the job ended" — keep waiting it out.
+          }
+          if (Date.now() >= deadline) break;
+          await new Promise((resolve) =>
+            setTimeout(resolve, cancelSettlePollMs ?? CANCEL_SETTLE_POLL_MS),
+          );
+        }
+      }
+      setBlockerFailures(failed);
+      setClearingBlockers(false);
+      // ONE retry. `confirm` republishes `error` (and with it `blockers`), so a
+      // capture that is busy again shows its new holder instead of looping.
+      await confirm(reason);
+    },
+    [blockers, confirm],
   );
 
   const discardNow = useCallback(
@@ -202,6 +314,10 @@ export function useCaptureDeletion(
     done,
     failures,
     error,
+    blockers,
+    clearingBlockers,
+    blockerFailures,
+    clearBlockersAndRetry,
     requestDiscard,
     requestDelete,
     cancel,

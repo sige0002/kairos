@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Windowed metric math for topic_monitor (the unit-testable core).
 
 This module computes per-topic monitoring metrics over sliding time windows from

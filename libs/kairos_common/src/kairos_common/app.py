@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared FastAPI app factory for kairos services.
 
 :func:`create_app` returns a FastAPI app that already has the cross-cutting

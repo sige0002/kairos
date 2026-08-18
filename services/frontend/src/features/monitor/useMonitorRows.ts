@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Shared monitor data: merges ROS 2 graph discovery (GET /api/v1/topics) with
 // the live SSE `metrics` snapshot into per-topic health rows. Extracted from
 // MonitorTab so both the standalone Monitor table and the fused Live tab's
@@ -18,6 +20,7 @@ import type {
 } from '../../api/types';
 import type { RuntimeConfig } from '../../config';
 import { matchesTopic } from '../record/topics';
+import { useUiStore } from '../../store/uiStore';
 import type { Tone } from '../../components/ui';
 
 export interface MonitorRow extends Partial<TopicMetric> {
@@ -174,6 +177,10 @@ export interface MonitorData {
   /** Readings the SSE ingest could not identify and dropped (E-23). Surfaced
    *  so a row that vanished does not vanish silently. */
   malformedDropped: number;
+  /** True while live metrics CANNOT be current (SSE not open, or the monitor
+   *  bridge down): measured values are withheld from the rows rather than
+   *  frozen at the last snapshot (S3-6). Discovery columns still fill. */
+  metricsStale: boolean;
 }
 
 /**
@@ -238,10 +245,23 @@ export function useMonitorRows(config?: RuntimeConfig): MonitorData {
     refetchInterval: TOPIC_DISCOVERY_POLL_MS,
   });
 
-  const metrics: TopicMetric[] = metricsQuery.data?.topics ?? [];
-  const paused = metricsQuery.data?.paused ?? false;
-  const selfLoad = metricsQuery.data?.self_load ?? null;
-  const malformedDropped = metricsQuery.data?.malformed_dropped ?? 0;
+  // Freshness gate (S3-6). The metrics cache is only ever WRITTEN by the SSE
+  // stream, so once that stream is down (or the orchestrator says its link to
+  // the monitor is), the cache is a snapshot of the moment things died — and
+  // this table kept rendering those Hz/bandwidth numbers as current while the
+  // header said "reconnecting…". Collect's system card already gates on the
+  // bridge (useSystemRows); this is the same rule for the table: a reading we
+  // cannot take is shown as no reading, not as the last one that came back.
+  const sseStatus = useUiStore((s) => s.sseStatus);
+  const monitorBridge = useUiStore((s) => s.monitorBridge);
+  const metricsFresh = sseStatus === 'open' && monitorBridge !== 'down';
+
+  const metrics: TopicMetric[] = metricsFresh ? (metricsQuery.data?.topics ?? []) : [];
+  const paused = metricsFresh ? (metricsQuery.data?.paused ?? false) : false;
+  const selfLoad = metricsFresh ? (metricsQuery.data?.self_load ?? null) : null;
+  const malformedDropped = metricsFresh
+    ? (metricsQuery.data?.malformed_dropped ?? 0)
+    : 0;
   const discovered: TopicInfo[] = asTopicList(topicsQuery.data ?? []);
 
   const rows: MonitorRow[] = useMemo(() => {
@@ -282,5 +302,6 @@ export function useMonitorRows(config?: RuntimeConfig): MonitorData {
     alerts: alertsQuery.data ?? [],
     isDiscovering: topicsQuery.isPending,
     selfLoad,
+    metricsStale: !metricsFresh,
   };
 }

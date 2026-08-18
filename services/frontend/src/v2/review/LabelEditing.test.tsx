@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Editing a capture's operator / task / robot from Review.
 //
 // The case that motivates it: an imported bag arrives with all three unset —

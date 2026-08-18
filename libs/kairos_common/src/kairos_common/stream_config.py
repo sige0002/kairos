@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Loader and validator for the Stream tab layout config (STREAM_CONFIG).
 
 This is a small, UI-facing config (separate from the recording/monitoring

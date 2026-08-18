@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The plan-editor handlers as a TOTAL contract over the shared catalog.
 //
 // PlansSection never offers these controls without a project (it renders an
@@ -74,7 +76,7 @@ test('the condition handlers are no-ops on a project with no tasks yet', () => {
   act(() => result.current.addCondition());
   act(() => result.current.removeCondition(0));
 
-  expect(getPlans()).toEqual(fresh);
+  expect(getPlans()).toMatchObject(fresh);
   expect(catalogPuts()).toBe(putsBefore);
   expect(promptSpy).not.toHaveBeenCalled();
   expect(result.current.toast).toBe('');
@@ -93,7 +95,7 @@ test('removing a task/condition that is no longer there leaves the catalog alone
   act(() => result.current.removeTask(3));
   act(() => result.current.removeCondition(9));
 
-  expect(getPlans()).toEqual(short);
+  expect(getPlans()[0]).toMatchObject({ name: 'P', tasks: [{ name: 'T' }] });
   expect(catalogPuts()).toBe(putsBefore);
   expect(result.current.toast).toBe('');
 });
@@ -128,7 +130,7 @@ test('a task vanishing under the cursor freezes the selected-task handlers', () 
   act(() => result.current.renameTask());
   act(() => result.current.addCondition());
   act(() => result.current.removeCondition(0));
-  expect(getPlans()).toEqual([{ name: 'P', tasks: [{ name: 'T0', conditions: ['c0'] }] }]);
+  expect(getPlans()).toMatchObject([{ name: 'P', tasks: [{ name: 'T0', conditions: [{ name: 'c0' }] }] }]);
   expect(catalogPuts()).toBe(putsBefore);
 
   // Re-confirm, and the handlers act on the task the view is showing.

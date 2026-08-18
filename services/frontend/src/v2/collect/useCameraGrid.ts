@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Pane/topic wiring for the Collect camera wall, split out of Cameras.tsx:
 // seeding the camera store from the robot's configured panes, live topic
 // discovery for the add-camera picker, and the main pane's resolution bounds.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Center column. Two vertically stacked panes:
 //   TOP  — the scope's members, ~10 rows tall with internal scroll, fronted by a
 //          pinned Summary row and its own member search. It BUILDS at most one
@@ -19,8 +21,11 @@ import { ErrorMessage } from '../../components/ErrorMessage';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { CaptureLabelChips } from '../episodeChips';
 import { DatasetArchiveDialog } from './DatasetArchiveDialog';
+import { CaptureConditionLabel } from './CaptureConditionLabel';
 import { DatasetDetail } from './DatasetDetail';
 import { EditDatasetDialog } from './EditDatasetDialog';
+import { LeRobotExportButton } from './LeRobotExportButton';
+import { LeRobotExportDialog } from './LeRobotExportDialog';
 import { ScopeSummary } from './ScopeSummary';
 import { DatasetGoneNote, DatasetGonePane } from './SelectionGone';
 import {
@@ -77,9 +82,9 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
   const rendered = memberRows.length;
   return (
     <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 px-[18px] py-[11px]">
-      <span data-testid="dataset-scope-title" className="text-[15px] font-bold text-gray-900">
+      <h2 data-testid="dataset-scope-title" className="text-[15px] font-bold text-gray-900">
         {scope.label}
-      </span>
+      </h2>
       {scope.operator && <Badge tone="gray">{scope.operator}</Badge>}
       {scope.task && <Badge tone="teal">{scope.task}</Badge>}
       {scope.kind === 'dataset' && status !== 'active' && (
@@ -87,7 +92,7 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
           <Badge tone={status === 'archived' ? 'gray' : 'amber'}>{status}</Badge>
         </span>
       )}
-      <span data-testid="dataset-scope-count" className="text-[11.5px] text-gray-400">
+      <span data-testid="dataset-scope-count" className="text-[11.5px] text-gray-500">
         {rendered === total
           ? memberCount(total)
           : `showing ${formatCount(rendered)} of ${memberCount(total)}`}
@@ -98,8 +103,9 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
         data-testid="dataset-member-search"
         value={state.memberSearch}
         onChange={(e) => state.setMemberSearch(e.target.value)}
+        aria-label="Search members of this dataset"
         placeholder="Find #N, capture, run, operator…"
-        className="w-[190px] rounded-control border border-gray-200 bg-white px-2.5 py-1 text-[12px] text-gray-700 placeholder:text-gray-400"
+        className="w-[190px] rounded-control border border-gray-200 bg-white px-2.5 py-1 text-[12px] text-gray-700 placeholder:text-gray-500"
       />
       {scope.kind === 'dataset' && state.canEditDataset && (
         <button
@@ -127,6 +133,11 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
           {status === 'archiving' ? 'Archive run…' : 'Archive dataset'}
         </button>
       )}
+      {/* Renders nothing at all unless this installation has an exporter with
+          a profile library (§6.2) — the archive gate's rule, one control over.
+          Not gated on status: an archived-copy dataset is still convertible,
+          and an archived-move one preflights to zero and says so. */}
+      {scope.kind === 'dataset' && <LeRobotExportButton state={state.lerobotExport} />}
       {/* This status gate is on the BUTTON only, and the dialog it opens
           deliberately has none: a hint on a control nobody has committed to is
           cheap, but a second copy of the server's rule guarding the commitment
@@ -203,7 +214,7 @@ function SummaryRow({ state }: { state: DatasetsState }) {
       >
         Summary
       </span>
-      <span className="truncate text-[11.5px] text-gray-400">
+      <span className="truncate text-[11.5px] text-gray-500">
         success / failure · quality · availability for {state.scope.label}
       </span>
     </button>
@@ -248,7 +259,7 @@ function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }
             <span className="text-gray-500"> · {captureFacts(capture)}</span>
           )}
         </span>
-        <span className="truncate font-mono text-[10.5px] text-gray-400">
+        <span className="truncate font-mono text-[10.5px] text-gray-500">
           {capture?.run_id ?? shortCaptureId(row.captureId)}
         </span>
       </div>
@@ -261,7 +272,7 @@ function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }
         <span
           data-testid={`dataset-member-unresolved-${row.membershipId}`}
           title="This dataset lists a capture the loaded catalog has no row for, so nothing can be said about it here."
-          className="text-[11px] italic text-gray-400"
+          className="text-[11px] italic text-gray-500"
         >
           not in the catalog
         </span>
@@ -273,7 +284,14 @@ function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }
             testId={`dataset-member-labels-${row.membershipId}`}
           />
         ) : (
-          <span className="text-[11px] italic text-gray-400">—</span>
+          <span className="text-[11px] italic text-gray-500">—</span>
+        )}
+        {capture && (
+          <CaptureConditionLabel
+            capture={capture}
+            state={state}
+            testId={`dataset-member-condition-${row.membershipId}`}
+          />
         )}
       </div>
       <span className="justify-self-end font-mono text-xs text-gray-500">
@@ -426,6 +444,12 @@ export function DatasetCenter({ state }: { state: DatasetsState }) {
       <DeleteDatasetDialog state={state} />
       <DatasetArchiveDialog state={state} />
       <EditDatasetDialog state={state} />
+      <LeRobotExportDialog
+        state={state.lerobotExport}
+        datasetName={
+          state.selectedDataset?.dataset.name ?? state.selectedDatasetId ?? 'This dataset'
+        }
+      />
     </>
   );
 }
@@ -466,7 +490,7 @@ function SelectedDatasetPane({ state }: { state: DatasetsState }) {
         <SummaryRow state={state} />
         <div
           className={cn(
-            'grid gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400',
+            'grid gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500',
             GRID_COLS,
           )}
         >
@@ -480,7 +504,7 @@ function SelectedDatasetPane({ state }: { state: DatasetsState }) {
           {memberRows.length === 0 ? (
             <p
               data-testid="dataset-member-empty"
-              className="px-[18px] py-4 text-[12.5px] text-gray-400"
+              className="px-[18px] py-4 text-[12.5px] text-gray-500"
             >
               {scopeMembers.length === 0
                 ? 'No members yet — add finished recordings from the right-hand rail.'
@@ -503,7 +527,18 @@ function SelectedDatasetPane({ state }: { state: DatasetsState }) {
         className="min-h-0 flex-1 overflow-y-auto border-t-4 border-gray-100"
       >
         {selected ? (
-          <DatasetDetail state={state} member={selected} />
+          // Keyed by CAPTURE, so selecting another member mounts a fresh
+          // detail instead of re-rendering this one against a different
+          // recording. What it holds below is per-capture — the loss job id, a
+          // frozen submission error, and the Retry that resubmits it — and a
+          // cached detail meant the pane never remounted on its own, leaving a
+          // failed run's note over the wrong member and its Retry aimed at the
+          // wrong capture_id.
+          //
+          // By capture rather than by membership on purpose: two memberships of
+          // the SAME recording are the same job and the same report, so
+          // remounting between them would discard state that is still correct.
+          <DatasetDetail key={selected.captureId} state={state} member={selected} />
         ) : (
           <ScopeSummary scope={state.scope} />
         )}

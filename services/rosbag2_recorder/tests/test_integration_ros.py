@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Integration test against a real ``ros2 bag record``.
 
 SKIPPED unless ROS 2 is installed (``ros2`` on PATH). It is meant to run in the

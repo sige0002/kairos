@@ -32,7 +32,7 @@
 | `DATA_DIR` | `./data` | ホスト側データ root（→ コンテナ `/data`） |
 | `ROBOT` | `airoa_hsr` | アクティブな機体。`config/<robot>/`（committed）または `config/local/<robot>/`（gitignored）を選ぶ。recording / stream / validation / validators / monitoring の各パスはこれから派生する（Makefile が committed/local を解決し、`docker compose` もネスト補間で尊重。さらに各サービスは**起動時**に、与えられた committed 形のパスが実在しなければ `config/local/` 側へ解決し直す — `kairos_common.resolve_config_path` — ため、素の `docker compose` でも local 機体が解決される）。Settings タブで機体 → aspect → option を選択・編集できる |
 | `RECORDING_CONFIG` | `/config/<robot>/recording/default.yaml` | 収録・監視の YAML（通常は `ROBOT` から自動導出。`.env` で直接指定すると派生より優先される）。compose 経由のパスは**コンテナ絶対**（`./config`→`/config` マウント）（下記） |
-| `STREAM_CONFIG` | `/config/<robot>/stream/default.yaml` | Stream タブの初期ペイン定義。`ROBOT` から自動導出（コンテナ絶対） |
+| `STREAM_CONFIG` | `/config/<robot>/stream/default.yaml` | Collect カメラペインの初期定義（現行コンソールが読むのは `panes` のみ。`columns` はファイル形式として保持・未使用）。`ROBOT` から自動導出（コンテナ絶対）。Settings > Robots の JSON エディタから編集・永続化できる（`GET/PUT /api/v1/config/stream`。`panes` はリクエスト毎読みのため**保存は即時反映**、[api_orchestrator](api_orchestrator.md)） |
 | `LOSS_REPORT_CONFIG` | `/config/<robot>/validators/loss_report.yaml` | `dora_runner` の loss_report パラメータ。`ROBOT` から自動導出（コンテナ絶対） |
 | `MSGS_OVERLAY_DIR` | `./deploy/msgs_overlay/robot` | カスタム ROS メッセージ overlay の bind-mount 元。`./` 始まり必須（named volume 化を避ける）。recorder / monitor / probe に read-only マウント。詳細は [`deploy/msgs_overlay/`](../../../deploy/msgs_overlay/README.md) |
 | `BIND_HOST` | `0.0.0.0` | API バインド先。**LAN 公開を許容**（信頼された LAN 前提・認証なし）。非信頼ネットワークへ直接公開しない |
@@ -108,7 +108,8 @@ topic_qos_overrides:       # パターン → QoS（recorder / monitor が適用
 ```
 
 - **`recording` チューニング**: `start_delay_s`（publisher ウォームアップ待ち）に加え、開始時の購読確立 lag 対策として `start_paused`（既定 `false`／`true` で `--start-paused`＋購読 readiness gate＋resume を有効化）と `subscription_ready_timeout_s`（既定 5.0）を持つ。two-phase start 用に `prepare_disarm_timeout_s`（既定 120 — 未消費 armed セッションの自動解消）と `pre_arm`（既定 `true` — **frontend が読む**: Collect 画面が ready の間 recorder を armed に保ち Start を即時化する。armed 中は記録相当の DDS 受信負荷が乗るため、受信余力の無いロボットは `false`）。詳細は [rosbag2_recorder](rosbag2_recorder.md)。
-- **UI からの編集・永続化**: この `RECORDING_CONFIG` 全体は Settings タブから編集できる（`GET/PUT /api/v1/config/recording`、[api_orchestrator](api_orchestrator.md)）。`PUT` は `RecordingConfig` で型検証し（失敗は `422`）、設定ファイルへアトミックに書き込んで在メモリ設定をホットスワップする。`default_topics` / `robot_name` は即時反映、`expected_hz` / QoS は各サービスの**再起動時**に反映される。
+- **UI からの編集・永続化**: この `RECORDING_CONFIG` 全体は Settings タブから編集できる（`GET/PUT /api/v1/config/recording`、[api_orchestrator](api_orchestrator.md)）。`PUT` は `RecordingConfig` で型検証し（失敗は `422`）、設定ファイルへアトミックに書き込んで在メモリ設定をホットスワップする。`default_topics` / `robot_name` は即時反映。**録画の QoS（`topic_qos_overrides`）も次の start から即時反映**される（2026-08 改修 — orchestrator が毎 start に自分のライブ config の pattern を `qos_override_patterns` として recorder へ同送し、recorder の起動時 config より優先させる。[rosbag2_recorder](rosbag2_recorder.md)）。monitor の `expected_hz` / streamer / probe は各サービスの**再起動時**に反映される（Settings の robot 切替後バナーがこの残りを開示する）。
+- **`POST /api/v1/config/select` は all-or-nothing**（2026-08 改修）: 選んだファイルのロードが失敗（`422 invalid_config`）したら選択自体をロールバックする。以前は catalog だけ切り替わってライブ config が旧のままという半端状態になり、「切替は失敗した」ように見えて次の録画から robot ラベルだけ新しくなっていた（timing sweep S1-3）。
 
 ## ワンクリック検証プリセット（`config/<robot>/validation_presets.yaml`）
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { expect, test } from 'vitest';
 import type { RecordStatus } from '../../api/types';
 import { readRecordStatus } from '../captures/useRecordStatus';

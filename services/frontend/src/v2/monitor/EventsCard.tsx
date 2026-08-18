@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Right-rail Events list — REAL alerts from the monitor. The `alert` SSE snapshot
 // is accumulated into a rolling max-100 buffer in the TanStack Query cache by
 // useEventStream (queryKeys.alerts); we READ that cache (no second SSE
@@ -37,11 +39,11 @@ export function EventsCard() {
   return (
     <Card className="flex flex-1 flex-col lg:min-h-0">
       <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-3">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-600">
           Events
-        </span>
+        </h2>
         <div className="flex-1" />
-        <span data-testid="events-count" className="font-mono text-[11.5px] text-gray-400">
+        <span data-testid="events-count" className="font-mono text-[11.5px] text-gray-600">
           {total > CAP ? `${CAP} of ${total}` : `${total}`} alerts
         </span>
       </div>
@@ -49,7 +51,7 @@ export function EventsCard() {
         {rows.length === 0 ? (
           <p
             data-testid="events-empty"
-            className="px-1.5 py-6 text-center text-[11.5px] leading-relaxed text-gray-400"
+            className="px-1.5 py-6 text-center text-[11.5px] leading-relaxed text-gray-600"
           >
             No alerts yet — threshold breaches from the monitor will appear here.
           </p>
@@ -74,11 +76,11 @@ export function EventsCard() {
                     titles wrap exactly as before. */}
                 <span className="break-words text-[12.5px] font-semibold text-gray-700">
                   {ev.title}
-                  {ev.detail && <span className="font-normal text-gray-400"> · {ev.detail}</span>}
+                  {ev.detail && <span className="font-normal text-gray-600"> · {ev.detail}</span>}
                 </span>
-                <span className="font-mono text-[11px] text-gray-400">
+                <span className="font-mono text-[11px] text-gray-600">
                   {ev.state === 'cleared' ? `cleared · ${ev.time}` : `firing · since ${ev.time}`}
-                  {ev.refires > 1 && <span className="text-gray-400"> · ×{ev.refires}</span>}
+                  {ev.refires > 1 && <span className="text-gray-600"> · ×{ev.refires}</span>}
                 </span>
               </div>
             </div>

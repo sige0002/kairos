@@ -1,0 +1,74 @@
+# LeRobot export profile "full" for the airoa_hsr robot (capture_store §6.2).
+#
+# One file = one named recipe in this robot's profile library
+# (config/<robot>/lerobot/*.yaml). The Convert dialog only PICKS a profile —
+# fps / feature selection / resampling live here, so a different recipe is a
+# new file (e.g. lowfps.yaml), never a dialog knob. Adapted from
+# rosbag2lerobot's configs/hsr.yaml for the AIRoA MOMA sample bags in data/.
+#
+# `task` is a schema-required placeholder: kairos always injects the real task
+# per episode (task.json) or via --task, so this value must never appear in an
+# export — if it does, a wiring bug dropped the override.
+
+robot_type: "hsr"
+fps: 10
+task: "OVERRIDDEN_PER_EXPORT"
+
+observations:
+  # All 13 joint positions (~50Hz).
+  - key: "observation.state"
+    topic: "/hsrb/joint_states"
+    msg_type: "sensor_msgs/msg/JointState"
+    selector: "position"
+    dtype: "float32"
+    stamp_source: "header"
+
+  # Wrist force/torque 6D.
+  - key: "observation.wrench"
+    topic: "/hsrb/wrist_wrench/raw"
+    msg_type: "geometry_msgs/msg/WrenchStamped"
+    dtype: "float32"
+    stamp_source: "header"
+
+  # Head RGB camera (JPEG CompressedImage, ~30Hz).
+  - key: "observation.images.head_rgb"
+    topic: "/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed"
+    msg_type: "sensor_msgs/msg/CompressedImage"
+    dtype: "image"
+    image_size: [480, 640, 3]
+    stamp_source: "header"
+
+  # Hand camera (JPEG CompressedImage, ~25Hz).
+  - key: "observation.images.hand"
+    topic: "/hsrb/hand_camera/image_raw/compressed"
+    msg_type: "sensor_msgs/msg/CompressedImage"
+    dtype: "image"
+    image_size: [480, 640, 3]
+    stamp_source: "header"
+
+  # Odometry 13D: pos(3) + ori(4) + lin_vel(3) + ang_vel(3).
+  - key: "observation.odom"
+    topic: "/hsrb/odom"
+    msg_type: "nav_msgs/msg/Odometry"
+    dtype: "float32"
+    stamp_source: "header"
+
+actions:
+  # Arm trajectory command (first waypoint positions, 5 joints).
+  - key: "action.arm_trajectory"
+    topic: "/hsrb/arm_trajectory_controller/command"
+    msg_type: "trajectory_msgs/msg/JointTrajectory"
+    selector: "positions"
+    dtype: "float32"
+    stamp_source: "header"
+
+  # Base velocity command (6D twist).
+  - key: "action.velocity"
+    topic: "/hsrb/command_velocity"
+    msg_type: "geometry_msgs/msg/Twist"
+    dtype: "float32"
+    stamp_source: "header"
+
+resampling:
+  default_policy: "hold"
+  tolerance_ms: 100.0

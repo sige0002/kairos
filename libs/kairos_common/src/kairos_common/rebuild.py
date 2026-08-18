@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Reconstructing the catalog from what is actually on disk.
 
 Contract §8. ``kairos.db`` is an index, not the truth: delete it and restarting
@@ -65,10 +67,12 @@ from kairos_common.capture_sidecars import (
     ROSBAG2_METADATA_FILENAME,
     UNFINALIZED_STATES,
     CaptureState,
+    CollectionContextSnapshotV1,
     DigestState,
     ObjectManifestV2,
     ReviewStatus,
     SidecarStatus,
+    collection_context_snapshot_from_json,
     objects_dir,
     read_object_manifest,
     read_quick_check,
@@ -131,6 +135,7 @@ class CaptureRow:
     review_from_sidecar: bool = True
     batch_id: str | None = None
     index_in_batch: int | None = None
+    collection_context: CollectionContextSnapshotV1 | None = None
     deleted_at: str | None = None
     delete_kind: str | None = None
     delete_reason: str | None = None
@@ -558,6 +563,7 @@ def _rows_from_archive_events(
             # Archived first, then discarded or deleted. The tombstone is the
             # later intent and :func:`_rows_from_ledger_only_tombstones` owns it.
             continue
+        collection_context = _archive_collection_context(event, capture_id, acc)
         acc.captures.append(
             CaptureRow(
                 capture_id=capture_id,
@@ -570,6 +576,12 @@ def _rows_from_archive_events(
                 task=_event_str(event, "task"),
                 message_count=_event_int(event, "message_count"),
                 bytes=_event_int(event, "bytes"),
+                batch_id=(
+                    collection_context.batch_id
+                    if collection_context is not None
+                    else None
+                ),
+                collection_context=collection_context,
                 archived_at=_event_str(event, "at"),
                 archive_destination=_event_str(event, "destination"),
             )
@@ -589,6 +601,22 @@ def _rows_from_archive_events(
             "gone, so topics, timestamps and review state cannot be recovered"
         )
         seen.add(capture_id)
+
+
+def _archive_collection_context(
+    event: Mapping[str, Any], capture_id: str, acc: _Accumulator
+) -> CollectionContextSnapshotV1 | None:
+    """Read an optional archive-event context without aborting a rebuild."""
+    raw = event.get("collection_context")
+    if raw is None:
+        return None
+    try:
+        return collection_context_snapshot_from_json(raw)
+    except ValueError as exc:
+        acc.warnings.append(
+            f"{capture_id}: archived collection_context is invalid; ignored ({exc})"
+        )
+        return None
 
 
 def _event_str(event: Mapping[str, Any], key: str) -> str | None:
@@ -674,8 +702,14 @@ def _capture_row(
         review_status=review.review_status,
         review_revision=review.revision,
         review_from_sidecar=review.from_sidecar,
-        batch_id=review.batch_id,
+        batch_id=(
+            manifest.collection_context.batch_id
+            if manifest.collection_context is not None
+            and manifest.collection_context.batch_id is not None
+            else review.batch_id
+        ),
         index_in_batch=review.index_in_batch,
+        collection_context=manifest.collection_context,
         digest_state=manifest.digest_state,
         quick_check=quick_check,
     )

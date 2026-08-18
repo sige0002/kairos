@@ -15,6 +15,7 @@
 #   ./e2e/scripts/stack.sh start-lenient  # boot without requiring a readable catalog
 #   ./e2e/scripts/stack.sh stop-recorder  # recorder-honesty: kill ONLY the recorder
 #   ./e2e/scripts/stack.sh start-recorder # ...and bring it back
+#   ./e2e/scripts/stack.sh replay-check   # validate the bag fixture, no Docker
 #   ./e2e/scripts/stack.sh rm-db          # §13-4: delete the index
 #   ./e2e/scripts/stack.sh rm-objects ID  # §13-5: out-of-band rm -rf
 #   ./e2e/scripts/stack.sh ps|logs|env
@@ -67,6 +68,21 @@ PROJECT="kairos-e2e"
 REPLAY_PROJECT="kairos-e2e-replay"
 TEST_COMPOSE="deploy/test/compose.yaml"
 REPLAY_CID_FILE="$RUN_DIR/replay.cid"
+
+# gitignored sample bags are intentionally not copied into linked worktrees.
+# Keep the default convenient for a normal checkout, while allowing an
+# isolated worktree to point at the checkout that owns the local fixture:
+#
+#   E2E_REPLAY_DATA_DIR=/path/to/kairos/data make test-e2e
+REPLAY_DATA_DIR="${E2E_REPLAY_DATA_DIR:-$HERE/data}"
+case "$REPLAY_DATA_DIR" in
+  /*) ;;
+  *) REPLAY_DATA_DIR="$HERE/$REPLAY_DATA_DIR" ;;
+esac
+REPLAY_DATA_DIR="$(realpath -m "$REPLAY_DATA_DIR")"
+# deploy/test/compose.yaml consumes this host path for its read-only /data
+# mount. It is separate from DATA_DIR, which is the E2E capture-store output.
+export KAIROS_TEST_DATA_DIR="$REPLAY_DATA_DIR"
 
 # The services the acceptance suite drives. The webrtc streamer and the topic
 # probe are deliberately absent: no scenario asserts on a camera preview, and
@@ -339,6 +355,11 @@ cmd_reset() {
 }
 
 cmd_up() {
+  # Validate before claiming the run lease or tearing down an existing stack.
+  # A linked worktree normally has only data/.gitkeep because data/* is ignored.
+  # Starting anyway used to launch a short-lived player, then run the complete
+  # browser suite against an empty ROS graph.
+  cmd_replay_check
   # Before anything is torn down or wiped: is this stack someone else's?
   claim_lease
   require_images
@@ -353,7 +374,12 @@ cmd_up() {
   say "starting stack ($PROJECT) on ports ${API_ORCH_PORT}/${FRONTEND_PORT}, ROS_DOMAIN_ID=$ROS_DOMAIN_ID"
   compose up -d $SERVICES
   cmd_wait
-  cmd_replay_start
+  if ! cmd_replay_start; then
+    say "replay readiness failed — removing the unusable acceptance stack"
+    cmd_down
+    release_lease
+    return 1
+  fi
   say "up — UI at $FE/  API at $ORCH/api/v1"
 }
 
@@ -406,15 +432,153 @@ cmd_start_recorder() {
   wait_for recorder "$REC/healthz" 90 recorder || die "recorder not ready"
 }
 
+replay_bag_host_path() {
+  local bag="${BAG:-airoa-moma-mcap/235210}" relative candidate
+  case "$bag" in
+    /data/*) relative="${bag#/data/}" ;;
+    /*)
+      printf '\033[31me2e: replay BAG absolute paths must start with /data/: %s\033[0m\n' \
+        "$bag" >&2
+      return 1
+      ;;
+    *) relative="$bag" ;;
+  esac
+  candidate="$(realpath -m "$REPLAY_DATA_DIR/$relative")"
+  case "$candidate" in
+    "$REPLAY_DATA_DIR"/*) printf '%s\n' "$candidate" ;;
+    *)
+      printf '\033[31me2e: replay bag must resolve under %s: %s\033[0m\n' \
+        "$REPLAY_DATA_DIR" "$bag" >&2
+      return 1
+      ;;
+  esac
+}
+
+cmd_replay_check() {
+  local bag="${BAG:-airoa-moma-mcap/235210}" host_path mcap
+  host_path="$(replay_bag_host_path)" || return 1
+  if [ ! -d "$host_path" ]; then
+    printf '\033[31me2e: replay bag directory does not exist: %s\033[0m\n' \
+      "$host_path" >&2
+    printf 'Set E2E_REPLAY_DATA_DIR to the checkout that owns the gitignored sample data.\n' >&2
+    return 1
+  fi
+  if [ ! -f "$host_path/metadata.yaml" ]; then
+    printf '\033[31me2e: replay bag has no metadata.yaml: %s\033[0m\n' \
+      "$host_path" >&2
+    return 1
+  fi
+  mcap="$(find "$host_path" -maxdepth 1 -type f -name '*.mcap' -print -quit)"
+  if [ -z "$mcap" ]; then
+    printf '\033[31me2e: replay bag contains no MCAP file: %s\033[0m\n' \
+      "$host_path" >&2
+    return 1
+  fi
+  [ -r "$mcap" ] || {
+    printf '\033[31me2e: replay MCAP is not readable: %s\033[0m\n' "$mcap" >&2
+    return 1
+  }
+  say "replay fixture ready: $host_path (source $REPLAY_DATA_DIR, BAG=$bag)"
+}
+
+replay_flow_observation() {
+  python3 - "$ORCH/api/v1/config" "$ORCH/api/v1/topics" "$MON/metrics" <<'PY'
+import fnmatch
+import json
+import sys
+import urllib.request
+
+
+def read(url: str) -> dict:
+    with urllib.request.urlopen(url, timeout=3) as response:
+        return json.load(response)
+
+
+config = read(sys.argv[1])
+graph = read(sys.argv[2])
+metrics = read(sys.argv[3])
+patterns = config.get("defaults", {}).get("default_topics", [])
+if not patterns:
+    raise SystemExit(1)
+
+
+def configured(name: str) -> bool:
+    return any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns)
+
+
+published = {
+    item.get("name")
+    for item in graph.get("topics", [])
+    if configured(str(item.get("name", "")))
+    and int(item.get("publisher_count") or 0) > 0
+}
+flowing = {
+    item.get("name")
+    for item in metrics.get("topics", [])
+    if item.get("name") in published
+    and (
+        int(item.get("messages_total") or 0) > 0
+        or float(item.get("hz") or 0.0) > 0.0
+    )
+}
+if not published or not flowing:
+    raise SystemExit(1)
+print(f"{len(published)} configured publisher(s), {len(flowing)} topic(s) delivering samples")
+PY
+}
+
+replay_diagnostics() {
+  local cid="$1"
+  printf '\n--- replay container state ---\n' >&2
+  docker inspect "$cid" \
+    --format 'running={{.State.Running}} exit={{.State.ExitCode}} error={{.State.Error}}' \
+    >&2 2>/dev/null || printf 'container no longer exists: %s\n' "$cid" >&2
+  printf '%s\n' '--- replay logs ---' >&2
+  docker logs --tail 80 "$cid" >&2 2>&1 || true
+  printf '%s\n' '--- discovered topics ---' >&2
+  curl -fsS --max-time 3 "$ORCH/api/v1/topics" >&2 2>/dev/null || true
+  printf '\n%s\n' '--- monitor metrics ---' >&2
+  curl -fsS --max-time 3 "$MON/metrics" >&2 2>/dev/null || true
+  printf '\n' >&2
+}
+
+wait_for_replay_flow() {
+  local cid="$1" deadline=$(( SECONDS + ${E2E_REPLAY_READY_TIMEOUT:-45} ))
+  local running observation
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    running="$(docker inspect "$cid" --format '{{.State.Running}}' 2>/dev/null || true)"
+    if [ "$running" != "true" ]; then
+      printf '\033[31me2e: replay container exited before the ROS graph became ready\033[0m\n' >&2
+      replay_diagnostics "$cid"
+      return 1
+    fi
+    if observation="$(replay_flow_observation 2>/dev/null)"; then
+      say "ready: replay — $observation"
+      return 0
+    fi
+    sleep 1
+  done
+  printf '\033[31me2e: replay produced no configured live topic within %ss\033[0m\n' \
+    "${E2E_REPLAY_READY_TIMEOUT:-45}" >&2
+  replay_diagnostics "$cid"
+  return 1
+}
+
 cmd_replay_start() {
   cmd_replay_stop
-  local bag="${BAG:-airoa-moma-mcap/235210}"
+  cmd_replay_check || return 1
+  local bag="${BAG:-airoa-moma-mcap/235210}" cid
   say "replaying $bag on ROS_DOMAIN_ID=$ROS_DOMAIN_ID (loop)"
   mkdir -p "$RUN_DIR"
-  BAG="$bag" LOOP=--loop \
+  if ! cid="$(BAG="$bag" LOOP=--loop \
     docker compose --env-file "$ENV_FILE" -f "$TEST_COMPOSE" -p "$REPLAY_PROJECT" \
-      run --rm -d rosbag_player > "$REPLAY_CID_FILE"
-  say "replay container $(cut -c1-12 < "$REPLAY_CID_FILE")"
+      run -d rosbag_player | tail -n 1)"; then
+    printf '\033[31me2e: could not start replay container\033[0m\n' >&2
+    return 1
+  fi
+  printf '%s\n' "$cid" > "$REPLAY_CID_FILE"
+  say "replay container ${cid:0:12}"
+  wait_for_replay_flow "$cid"
 }
 
 cmd_replay_stop() {
@@ -472,6 +636,7 @@ case "${1:-}" in
   start-recorder) with_lock cmd_start_recorder ;;
   replay-start) with_lock cmd_replay_start ;;
   replay-stop)  with_lock cmd_replay_stop ;;
+  replay-check) cmd_replay_check ;;
   rm-db)        with_lock cmd_rm_db ;;
   rm-objects)   shift; with_lock cmd_rm_objects "$@" ;;
   env)          cmd_env ;;

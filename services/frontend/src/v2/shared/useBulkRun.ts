@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The shape every bulk operation in this console shares (the standing bulk
 // rule, first written down in useCaptureDeletion).
 //

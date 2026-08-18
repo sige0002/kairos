@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-7: two tabs in one batch must not both get episode #1.
 
 ``index_in_batch`` is what the strip chip, the Review row and every
@@ -39,7 +41,7 @@ from api_orchestrator import captures as captures_mod
 from api_orchestrator.captures import CaptureService
 from api_orchestrator.health import StoreHealth
 from api_orchestrator.layout import DataLayout
-from api_orchestrator.models import Capture, CaptureState, ReviewSaveRequest
+from api_orchestrator.models import Batch, Capture, CaptureState, ReviewSaveRequest
 from api_orchestrator.store import CaptureStore
 from fastapi.testclient import TestClient
 from kairos_common.capture_sidecars import (
@@ -92,6 +94,8 @@ def _service(
     store: CaptureStore, layout: DataLayout, instance_id: str
 ) -> CaptureService:
     """One orchestrator's view of the store — its own locks, its own connection."""
+    if store.get_batch(BATCH) is None:
+        store.create_batch(Batch(batch_id=BATCH, task="pick"))
     return CaptureService(store, layout, StoreHealth(), instance_id=instance_id)
 
 

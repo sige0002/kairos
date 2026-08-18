@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The dataset archive run (§6.x): freeze, copy out, seal — and every resume.
 
 The run is N per-capture archives plus a start and a seal, so the tests here
@@ -105,6 +107,29 @@ def _dataset_dir(roots: Path) -> Path:
 
 class TestPreflight:
     """Everything that must refuse before a single byte moves."""
+
+    def test_an_unavailable_archive_root_is_refused_before_the_run_is_frozen(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "missing-mount"
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            dataset = _dataset(client, layout, members=1)
+            dataset_id = dataset["dataset_id"]
+
+            response = client.post(
+                f"/api/v1/datasets/{dataset_id}/archive",
+                json={"destination": str(roots / "exports")},
+            )
+
+            assert response.status_code == 503
+            assert response.json()["error"]["code"] == (
+                "archive_destination_unavailable"
+            )
+            detail = client.get(f"/api/v1/datasets/{dataset_id}").json()
+            assert detail["status"] == "active"
+            assert detail["archive_destination"] is None
+            assert _events(layout, "dataset_archive_started") == []
 
     def test_a_shared_member_blocks_the_start(
         self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
@@ -266,12 +291,23 @@ class TestHappyPath:
             # for itself.
             assert (target / "001" / "bag_0.mcap").is_file()
             assert (target / "002" / "bag_0.mcap").is_file()
+            # Each member travels with its task projection (§6), and the
+            # manifest vouches for the generated file like any copied one.
+            for member_dir in ("001", "002"):
+                sidecar = target / member_dir / "task.json"
+                assert json.loads(sidecar.read_text(encoding="utf-8")) == {
+                    "task": "pick"
+                }
             manifest_bytes = (target / MANIFEST_NAME).read_bytes()
             manifest = json.loads(manifest_bytes)
             assert manifest["status"] == "complete"
             assert manifest["dataset_id"] == dataset_id
             assert [m["dir"] for m in manifest["members"]] == ["001", "002"]
             assert all(m["files"] for m in manifest["members"])
+            assert all(
+                "task.json" in {f["path"] for f in m["files"]}
+                for m in manifest["members"]
+            )
             assert manifest["started_event_id"]
 
             # The ledger: started → one archive per member → seal, and the
@@ -389,6 +425,42 @@ class TestResume:
             # One event per member: the finished one was recognised from its
             # row, not copied and recorded again.
             assert len(events) == len(members)
+
+    def test_a_recorded_member_whose_copy_vanished_halts_the_resume(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        """S1-4: "the record says done" is not enough — the destination must
+        still hold the copy before a resume counts the member toward a
+        complete seal. An external destination that lost run 1's verified
+        bytes used to be sealed over with "10/10 verified"."""
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            service = client.app.state.capture_service
+            dataset_id, members, target = self._frozen_run(
+                client, layout, roots, members=1
+            )
+            # Member 1 archived for real in run 1...
+            asyncio.run(
+                service.archive_member(
+                    members[0]["capture_id"],
+                    dataset_id=dataset_id,
+                    membership_id=members[0]["membership_id"],
+                    display_index=members[0]["display_index"],
+                    target=target / "001",
+                )
+            )
+            # ...and the destination then lost it (disk swapped / wiped).
+            import shutil
+
+            shutil.rmtree(target / "001")
+
+            progress = self._resume(client, dataset_id)
+
+            assert progress["status"] == "archiving"
+            assert progress["running"] is False
+            assert progress["error"]["code"] == "archived_copy_missing"
 
     def test_a_crash_between_append_and_row_finishes_without_recopying(
         self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
@@ -539,6 +611,160 @@ class TestResume:
             assert layout.capture_dir(members[0]["capture_id"]).is_dir()
 
 
+class TestCancel:
+    """A halted zero-progress attempt may be abandoned, never rolled back."""
+
+    def _frozen_run(
+        self, client: TestClient, layout: DataLayout, roots: Path, *, members: int = 2
+    ) -> tuple[str, list[dict], Path]:
+        return TestResume()._frozen_run(client, layout, roots, members=members)
+
+    def test_a_halted_zero_progress_run_can_be_canceled_and_started_again(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            dataset_id, _, target = self._frozen_run(client, layout, roots)
+
+            before = client.get(f"/api/v1/datasets/{dataset_id}/archive").json()
+            assert before["status"] == "archiving"
+            assert before["running"] is False
+            assert before["cancelable"] is True
+            assert before["cancel_blocker"] is None
+
+            canceled = client.post(f"/api/v1/datasets/{dataset_id}/archive/cancel")
+
+            assert canceled.status_code == 200
+            progress = canceled.json()
+            assert progress["status"] == "active"
+            assert progress["destination"] is None
+            assert progress["cancelable"] is False
+            assert progress["cancel_blocker"] == "not_archiving"
+            detail = client.get(f"/api/v1/datasets/{dataset_id}").json()
+            assert detail["status"] == "active"
+            assert detail["archive_destination"] is None
+            events = _events(layout, "dataset_archive_canceled")
+            assert len(events) == 1
+            assert events[0]["destination"] == str(target)
+            assert (
+                events[0]["started_event_id"]
+                == _events(layout, "dataset_archive_started")[0]["event_id"]
+            )
+
+            restarted = client.post(
+                f"/api/v1/datasets/{dataset_id}/archive",
+                json={"destination": str(roots / "retry")},
+            )
+            assert restarted.status_code == 202
+            _settle(client, dataset_id)
+            assert (
+                client.get(f"/api/v1/datasets/{dataset_id}").json()["status"]
+                == "archived"
+            )
+            assert len(_events(layout, "dataset_archive_started")) == 2
+
+    def test_a_run_with_a_completed_member_cannot_be_canceled(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            service = client.app.state.capture_service
+            dataset_id, members, target = self._frozen_run(client, layout, roots)
+            asyncio.run(
+                service.archive_member(
+                    members[0]["capture_id"],
+                    dataset_id=dataset_id,
+                    membership_id=members[0]["membership_id"],
+                    display_index=members[0]["display_index"],
+                    target=target / "001",
+                )
+            )
+
+            progress = client.get(f"/api/v1/datasets/{dataset_id}/archive").json()
+            assert progress["members_done"] == 1
+            assert progress["cancelable"] is False
+            assert progress["cancel_blocker"] == "members_completed"
+
+            refused = client.post(f"/api/v1/datasets/{dataset_id}/archive/cancel")
+
+            assert refused.status_code == 409
+            error = refused.json()["error"]
+            assert error["code"] == "archive_cancel_unsafe"
+            assert error["details"]["members_done"] == 1
+            assert (
+                client.get(f"/api/v1/datasets/{dataset_id}").json()["status"]
+                == "archiving"
+            )
+            assert _events(layout, "dataset_archive_canceled") == []
+
+    def test_a_durable_cancel_blocks_resume_when_the_catalog_reset_fails(
+        self,
+        data_dir: Path,
+        tmp_path: Path,
+        fake_recorder: FakeRecorder,
+        monkeypatch,
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            store = client.app.state.capture_store
+            dataset_id, members, _ = self._frozen_run(client, layout, roots)
+            monkeypatch.setattr(store, "cancel_dataset_archive", lambda _id: False)
+
+            canceled = client.post(f"/api/v1/datasets/{dataset_id}/archive/cancel")
+
+            assert canceled.status_code == 503
+            assert canceled.json()["error"]["code"] == (
+                "archive_cancel_catalog_pending"
+            )
+            assert len(_events(layout, "dataset_archive_canceled")) == 1
+            progress = client.get(f"/api/v1/datasets/{dataset_id}/archive").json()
+            assert progress["status"] == "archiving"
+            assert progress["cancelable"] is False
+            assert progress["cancel_blocker"] == "archive_canceled"
+
+            resumed = client.post(f"/api/v1/datasets/{dataset_id}/archive", json={})
+
+            assert resumed.status_code == 409
+            assert resumed.json()["error"]["code"] == "archive_attempt_canceled"
+            assert all(
+                layout.capture_dir(member["capture_id"]).is_dir() for member in members
+            )
+            assert _events(layout, "capture_archived") == []
+
+    def test_progress_reads_the_lifecycle_ledger_once(
+        self,
+        data_dir: Path,
+        tmp_path: Path,
+        fake_recorder: FakeRecorder,
+        monkeypatch,
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            dataset_id, _, _ = self._frozen_run(client, layout, roots)
+            original = ledger_v2.read_all
+            calls = 0
+
+            def counted_read_all(path, *, strict=True):
+                nonlocal calls
+                calls += 1
+                return original(path, strict=strict)
+
+            monkeypatch.setattr(ledger_v2, "read_all", counted_read_all)
+
+            response = client.get(f"/api/v1/datasets/{dataset_id}/archive")
+
+            assert response.status_code == 200
+            assert calls == 1
+
+
 class TestResumeRefusals:
     def test_a_new_destination_cannot_hijack_a_run(
         self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
@@ -603,6 +829,8 @@ class TestCopyMode:
             # The export is complete and self-describing…
             assert (target / "001" / "bag_0.mcap").is_file()
             assert (target / "002" / "bag_0.mcap").is_file()
+            assert (target / "001" / "task.json").is_file()
+            assert (target / "002" / "task.json").is_file()
             manifest = json.loads((target / MANIFEST_NAME).read_bytes())
             assert manifest["mode"] == "copy"
             assert manifest["status"] == "complete"
@@ -620,6 +848,11 @@ class TestCopyMode:
                 row = store.get_capture(member["capture_id"])
                 assert row.archived_at is None
                 assert layout.capture_dir(member["capture_id"]).is_dir()
+                # The projection is destination-only: the live capture dir
+                # must not have gained a task.json.
+                assert not (
+                    layout.capture_dir(member["capture_id"]) / "task.json"
+                ).exists()
             assert (
                 client.get(f"/api/v1/datasets/{other['dataset_id']}").json()[
                     "member_count"

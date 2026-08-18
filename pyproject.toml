@@ -6,7 +6,9 @@
 [tool.ruff]
 line-length = 88
 target-version = "py312"
-extend-exclude = ["services/frontend"]
+# The rosbag2lerobot submodule carries its own ruff rules; linting it with
+# kairos's would both fail CI and dirty a pinned checkout.
+extend-exclude = ["services/frontend", "services/lerobot_exporter/rosbag2lerobot"]
 
 [tool.ruff.lint]
 # A pragmatic baseline: pyflakes, pycodestyle, isort, pyupgrade, bugbear.

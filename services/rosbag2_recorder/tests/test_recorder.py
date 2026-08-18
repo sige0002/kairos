@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """State machine + recording mechanics, with the subprocess mocked out.
 
 The ``ros2 bag record`` spawn and OS-signal delivery are replaced by the
@@ -17,6 +19,7 @@ from typing import Any
 import pytest
 from kairos_common import ApiError, Compression, Settings
 from kairos_common.capture_sidecars import (
+    CollectionContextSnapshotV1,
     ObjectManifestV2,
     capture_dir,
     failed_start_path,
@@ -461,6 +464,127 @@ def test_failed_start_writes_a_sibling_marker_not_a_capture_dir(
     assert session.status().state is RunState.created
 
 
+def test_start_freezes_collection_context_in_the_manifest(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    session = _make_session(settings, fake_process, write_metadata)
+    context = CollectionContextSnapshotV1(
+        batch_id="batch_20260802_101500",
+        batch_seq=4,
+        project="kitchen",
+        task="pick",
+        condition=None,
+        robot="robot_a",
+        operator="op_a",
+        extra={"future_label": "original"},
+    )
+
+    started = session.start(_start_req("run_context", collection_context=context))
+    context.extra["future_label"] = "mutated after start"
+    session.stop()
+
+    assert _manifest(settings, started.capture_id).collection_context == (
+        CollectionContextSnapshotV1(
+            batch_id="batch_20260802_101500",
+            batch_seq=4,
+            project="kitchen",
+            task="pick",
+            condition=None,
+            robot="robot_a",
+            operator="op_a",
+            extra={"future_label": "original"},
+        )
+    )
+
+
+def test_start_preserves_unknown_collection_context_fields_from_http_json(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    session = _make_session(settings, fake_process, write_metadata)
+    request = RecordStartRequest.model_validate(
+        {
+            "topics": ["/joint_states"],
+            "run_id": "run_context_unknown",
+            "collection_context": {
+                "project": "kitchen",
+                "future_label": "kept",
+            },
+        }
+    )
+
+    started = session.start(request)
+
+    assert _manifest(settings, started.capture_id).collection_context == (
+        CollectionContextSnapshotV1(project="kitchen", extra={"future_label": "kept"})
+    )
+
+
+def test_next_start_does_not_reuse_the_previous_collection_context(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    session = _make_session(settings, fake_process, write_metadata)
+    first = session.start(
+        _start_req(
+            "run_context_first",
+            collection_context=CollectionContextSnapshotV1(project="first"),
+        )
+    )
+    session.stop()
+
+    second = session.start(_start_req("run_context_second"))
+
+    assert _manifest(settings, first.capture_id).collection_context == (
+        CollectionContextSnapshotV1(project="first")
+    )
+    assert _manifest(settings, second.capture_id).collection_context is None
+
+
+def test_failed_start_preserves_collection_context_in_the_failure_marker(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    session = _make_session(
+        settings, fake_process, write_metadata, behavior="no_dir", returncode=1
+    )
+    context = CollectionContextSnapshotV1(project="kitchen", task="pick")
+
+    with pytest.raises(ApiError) as exc:
+        session.start(_start_req("run_context_failure", collection_context=context))
+
+    assert (
+        _failed_start(settings, exc.value.details["capture_id"]).collection_context
+        == context
+    )
+
+
+def test_failed_prepare_is_not_filed_as_a_capture(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """S2-7: a failed pre-arm probe answers 507 but mints no failed capture.
+
+    prepare() is the console's background keep-alive, repeated every 30 s. A
+    persistent arm blocker (topic mismatch, disk full) used to deposit
+    objects/<id>.failed.json — and, through the orchestrator, a failed row —
+    per attempt: an unbounded pile of "Not usable" captures nobody asked to
+    create, while the screen showed nothing. The failure now lives in the
+    response (the console surfaces it) and the log; only an operator start()
+    files.
+    """
+    session = _make_session(
+        settings, fake_process, write_metadata, behavior="no_dir", returncode=1
+    )
+    with pytest.raises(ApiError) as exc:
+        session.prepare(_start_req("run_prearm_fail"))
+
+    assert exc.value.status_code == 507
+    capture_id = exc.value.details["capture_id"]
+    assert is_uuid7(capture_id)
+    # Nothing under objects/ carries this id: no dir, no .failed.json, and no
+    # leftover .qos.yaml / storage-config siblings either.
+    objects_root = Path(settings.data_dir) / "objects"
+    assert list(objects_root.glob(f"{capture_id}*")) == []
+    assert session.status().state is RunState.created
+
+
 def test_failed_start_write_error_is_surfaced_in_the_response(
     settings: Settings,
     fake_process: type,
@@ -670,6 +794,7 @@ def _plant(
     digest_state: str = "pending",
     files: Any = None,
     manifest_digest: str | None = None,
+    collection_context: CollectionContextSnapshotV1 | None = None,
 ) -> str:
     """Write a capture directory on disk as a previous process would have left it."""
     from kairos_common.capture_sidecars import write_object_manifest
@@ -692,6 +817,7 @@ def _plant(
             digest_state=digest_state,
             files=files,
             manifest_digest=manifest_digest,
+            collection_context=collection_context,
         ),
     )
     return capture_id
@@ -711,6 +837,17 @@ def test_reconcile_marks_unfinalized_captures_interrupted(
         assert manifest.ended_at is not None
         assert manifest.error is not None
         assert manifest.digest_state == "pending"
+
+
+def test_reconcile_preserves_a_recorded_collection_context(settings: Settings) -> None:
+    context = CollectionContextSnapshotV1(
+        batch_id="batch_20260802_101500", project="kitchen", task="pick"
+    )
+    capture_id = _plant(settings, "recording", collection_context=context)
+
+    RecorderSession(settings, None).reconcile_on_startup()
+
+    assert _manifest(settings, capture_id).collection_context == context
 
 
 def test_reconcile_marks_a_bagless_capture_failed(settings: Settings) -> None:
@@ -1434,7 +1571,13 @@ def test_max_record_bytes_auto_stops(
     assert capture_id is not None
     # Wait for the watcher to observe the size and auto-stop.
     deadline = time.monotonic() + 5.0
-    while session.status().state is RunState.recording and time.monotonic() < deadline:
+    # `stopping` is normal progress, not the end (the S2-2 lesson): the
+    # watcher's stop flips recording -> stopping -> completed, and asserting
+    # right at the first non-recording read raced the finalise.
+    while (
+        session.status().state in (RunState.recording, RunState.stopping)
+        and time.monotonic() < deadline
+    ):
         time.sleep(0.02)
 
     assert session.status().state is RunState.completed
@@ -1462,7 +1605,13 @@ def test_max_record_seconds_auto_stops(
     capture_id = session.start(_start_req("run_timecap")).capture_id
     assert capture_id is not None
     deadline = time.monotonic() + 5.0
-    while session.status().state is RunState.recording and time.monotonic() < deadline:
+    # `stopping` is normal progress, not the end (the S2-2 lesson): the
+    # watcher's stop flips recording -> stopping -> completed, and asserting
+    # right at the first non-recording read raced the finalise.
+    while (
+        session.status().state in (RunState.recording, RunState.stopping)
+        and time.monotonic() < deadline
+    ):
         time.sleep(0.02)
 
     assert session.status().state is RunState.completed
@@ -1984,6 +2133,26 @@ def test_operator_task_come_from_start_request_not_prepare(
     assert manifest.task == "real_task"
 
 
+def test_collection_context_comes_from_start_request_not_prepare(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    """The snapshot belongs to the actual start, never pre-arm metadata."""
+    session = _make_session(settings, fake_process, write_metadata)
+    prepared = session.prepare(
+        _start_req(
+            "run_context_meta",
+            collection_context=CollectionContextSnapshotV1(project="prepared"),
+        )
+    )
+    context = CollectionContextSnapshotV1(
+        batch_id="batch_20260802_101500", project="started", task="pick"
+    )
+
+    session.start(_start_req("run_context_meta", collection_context=context))
+
+    assert _manifest(settings, prepared.capture_id).collection_context == context
+
+
 def _armed_with_late_topic(
     settings: Settings,
     fake_process: type,
@@ -2347,14 +2516,20 @@ def test_resume_failure_during_fast_start_fails_safely(
     """A+B fail-safe applies to the fast path too: if resume fails/doesn't
     confirm, the start fails (507) rather than leaving a paused recorder."""
     session = _make_session(settings, fake_process, write_metadata)
-    prepared = session.prepare(_start_req("run_resume_fail"))
+    prepared = session.prepare(
+        _start_req(
+            "run_resume_fail",
+            collection_context=CollectionContextSnapshotV1(project="prepared"),
+        )
+    )
+    actual_context = CollectionContextSnapshotV1(project="started", task="pick")
 
     def boom(_armed: Any) -> None:
         raise RuntimeError("resume did not confirm")
 
     session._resume_armed = boom  # type: ignore[method-assign]
     with pytest.raises(ApiError) as exc:
-        session.start(_start_req("run_resume_fail"))
+        session.start(_start_req("run_resume_fail", collection_context=actual_context))
     assert exc.value.status_code == 507
     assert exc.value.code == "record_arm_failed"
     assert exc.value.details["capture_id"] == prepared.capture_id
@@ -2363,7 +2538,9 @@ def test_resume_failure_during_fast_start_fails_safely(
     # recorded under the id the capture would have had.
     assert session.status().state is RunState.created
     assert not capture_dir(settings.data_dir, prepared.capture_id).exists()
-    assert _failed_start(settings, prepared.capture_id).state == "failed"
+    failed_start = _failed_start(settings, prepared.capture_id)
+    assert failed_start.state == "failed"
+    assert failed_start.collection_context == actual_context
 
 
 def test_auto_disarm_fires_and_cleans_up_capture_dir(

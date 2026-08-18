@@ -1,8 +1,11 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { renderWithClient, jsonResponse } from '../../test/renderWithClient';
 import { ValidationScreen } from './ValidationScreen';
+import { expectScreenHeadingOutline } from '../../test/headingOutline';
 
 const PIPELINES = {
   items: [
@@ -80,12 +83,21 @@ const CAPTURE_TOPICS = [
 const TOPICS_BY_CAPTURE: Record<string, { name: string; type: string }[]> = {
   cap_002: [
     { name: '/hsrb/joint_states', type: 'sensor_msgs/msg/JointState' },
-    { name: '/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed', type: 'sensor_msgs/msg/CompressedImage' },
-    { name: '/hsrb/hand_camera/image_raw/compressed', type: 'sensor_msgs/msg/CompressedImage' },
+    {
+      name: '/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed',
+      type: 'sensor_msgs/msg/CompressedImage',
+    },
+    {
+      name: '/hsrb/hand_camera/image_raw/compressed',
+      type: 'sensor_msgs/msg/CompressedImage',
+    },
   ],
   cap_001: [
     { name: '/myrobot/joint_states', type: 'sensor_msgs/msg/JointState' },
-    { name: '/myrobot/front_camera/image_raw/compressed', type: 'sensor_msgs/msg/CompressedImage' },
+    {
+      name: '/myrobot/front_camera/image_raw/compressed',
+      type: 'sensor_msgs/msg/CompressedImage',
+    },
   ],
 };
 
@@ -192,6 +204,7 @@ const BATCHES = {
 };
 
 let requestedUrls: string[] = [];
+let captureSearchBodies: Record<string, unknown>[] = [];
 // Keeps every submitted job in `running`, so polling continues.
 let jobStaysRunning = false;
 // When true, every capture page reports another page after it, so the client's
@@ -204,21 +217,139 @@ let refuseJobFor: Record<string, string> = {};
 let postedBodies: Record<string, unknown>[] = [];
 let jobCounter = 0;
 let resultByJobId: Record<string, unknown> = {};
+let validationRuns: Record<string, Record<string, unknown>> = {};
+let selectionCaptureIds: Record<string, string[]> = {};
+let validationRunByRequestId: Record<string, Record<string, unknown>> = {};
+let validationRequestIds: string[] = [];
+let loseFirstValidationRunResponse = false;
+let selectionFailures = 0;
 
 beforeEach(() => {
   setApiBase('/api/v1');
   requestedUrls = [];
+  captureSearchBodies = [];
   postedBodies = [];
   jobCounter = 0;
   jobStaysRunning = false;
   capturesNeverEnd = false;
   resultByJobId = {};
+  validationRuns = {};
+  selectionCaptureIds = {};
+  validationRunByRequestId = {};
+  validationRequestIds = [];
+  loseFirstValidationRunResponse = false;
+  selectionFailures = 0;
   refuseJobFor = {};
+  window.sessionStorage.clear();
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     requestedUrls.push(url);
+    if (url.endsWith('/captures/search')) {
+      captureSearchBodies.push(
+        JSON.parse(String((init as RequestInit).body)) as Record<string, unknown>,
+      );
+    }
     if (url.includes('/validation/presets'))
       return Promise.resolve(jsonResponse(PRESETS));
+    if (url.includes('/validation/runs')) {
+      const method = (init?.method ?? 'GET').toUpperCase();
+      const path = url.split('/validation/runs')[1] ?? '';
+      if (method === 'GET' && (path === '' || path.startsWith('?'))) {
+        return Promise.resolve(jsonResponse({ items: [] }));
+      }
+      if (method === 'POST' && (path === '' || path.startsWith('?'))) {
+        const body = JSON.parse(String((init as RequestInit).body));
+        validationRequestIds.push(String(body.request_id));
+        const prior = validationRunByRequestId[String(body.request_id)];
+        if (prior) return Promise.resolve(jsonResponse(prior, 202));
+        const captureIds =
+          body.capture_ids ?? selectionCaptureIds[body.selection_id] ?? [];
+        for (const capture_id of captureIds) {
+          postedBodies.push({
+            pipeline: body.pipeline,
+            params: body.params ?? {},
+            capture_id,
+          });
+        }
+        const runId = `vr-${Object.keys(validationRuns).length + 1}`;
+        const run = {
+          run_id: runId,
+          pipeline: body.pipeline,
+          params: body.params ?? {},
+          state: jobStaysRunning ? 'running' : 'finished',
+          cancel_requested: false,
+          created_at: '2026-01-01T00:00:00Z',
+          updated_at: '2026-01-01T00:00:00Z',
+          completed_at: jobStaysRunning ? null : '2026-01-01T00:01:00Z',
+          jobs: captureIds.map((capture_id: string, index: number) => ({
+            run_job_id: `rj-${index + 1}`,
+            capture_id,
+            attempt: 1,
+            dispatch_state: refuseJobFor[capture_id] ? 'submission_failed' : 'accepted',
+            failure_message: refuseJobFor[capture_id]
+              ? `${capture_id} could not be submitted.`
+              : null,
+            job: refuseJobFor[capture_id]
+              ? null
+              : {
+                  job_id: `j-${index + 1}`,
+                  capture_id,
+                  pipeline: body.pipeline,
+                  state: jobStaysRunning ? 'running' : 'succeeded',
+                  progress: jobStaysRunning ? 0.4 : 1,
+                },
+            result: jobStaysRunning
+              ? null
+              : (resultByJobId[`for:${capture_id}`] ?? { summary: { result: 'pass' } }),
+          })),
+        };
+        validationRuns[runId] = run;
+        validationRunByRequestId[String(body.request_id)] = run;
+        if (loseFirstValidationRunResponse) {
+          loseFirstValidationRunResponse = false;
+          return Promise.reject(new TypeError('connection reset after server commit'));
+        }
+        return Promise.resolve(jsonResponse(run, 202));
+      }
+      const runId = path.split('/')[1]?.split('?')[0] ?? '';
+      const run = validationRuns[runId];
+      if (method === 'POST' && path.endsWith('/cancel') && run) {
+        run.state = 'cancel_requested';
+        run.cancel_requested = true;
+        return Promise.resolve(jsonResponse(run, 202));
+      }
+      return Promise.resolve(
+        jsonResponse(
+          run ?? { error: { code: 'validation_run_not_found' } },
+          run ? 200 : 404,
+        ),
+      );
+    }
+    if (url.endsWith('/capture-selections')) {
+      if (selectionFailures > 0) {
+        selectionFailures -= 1;
+        return Promise.resolve(
+          jsonResponse({ error: { code: 'service_unavailable' } }, 503),
+        );
+      }
+      const body = JSON.parse(String((init as RequestInit).body));
+      const batchId = body.query?.predicates?.find(
+        (predicate: { field?: string }) => predicate.field === 'batch_id',
+      )?.value;
+      selectionCaptureIds['selection-1'] = batchId
+        ? ['cap_001']
+        : ['cap_002', 'cap_001'];
+      return Promise.resolve(
+        jsonResponse(
+          {
+            selection_id: 'selection-1',
+            matched_count: 2,
+            expires_at: '2099-01-01T00:00:00Z',
+          },
+          201,
+        ),
+      );
+    }
     if (url.includes('/batches')) return Promise.resolve(jsonResponse(BATCHES));
     if (url.includes('/config/options')) return Promise.resolve(jsonResponse(OPTIONS));
     if (url.endsWith('/api/v1/config') || url.endsWith('/api/v1/config/')) {
@@ -251,7 +382,10 @@ beforeEach(() => {
       const refusal = refuseJobFor[String(body.capture_id)];
       if (refusal) {
         return Promise.resolve(
-          jsonResponse({ error: { code: refusal, message: `${body.capture_id} is gone` } }, 409),
+          jsonResponse(
+            { error: { code: refusal, message: `${body.capture_id} is gone` } },
+            409,
+          ),
         );
       }
       jobCounter += 1;
@@ -269,6 +403,15 @@ beforeEach(() => {
           // would stop the poll before it ever started.
           state: jobStaysRunning ? 'running' : 'succeeded',
           progress: jobStaysRunning ? 0.1 : 1,
+        }),
+      );
+    }
+    if (url.endsWith('/captures/search')) {
+      return Promise.resolve(
+        jsonResponse({
+          ...(capturesNeverEnd ? { ...CAPTURES, next_cursor: 'more' } : CAPTURES),
+          total: CAPTURES.items.length,
+          facets: {},
         }),
       );
     }
@@ -332,7 +475,9 @@ test('the screen never touches the retired /runs or /episodes resources', async 
   renderWithClient(<ValidationScreen />);
   await screen.findByTestId('pipeline-card-fast_validation');
   await waitFor(() =>
-    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe('cap_002'),
+    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe(
+      'cap_002',
+    ),
   );
   expect(requestedUrls.some((u) => /\/api\/v1\/(runs|episodes)\b/.test(u))).toBe(false);
   expect(requestedUrls.some((u) => u.includes('/api/v1/captures'))).toBe(true);
@@ -373,12 +518,12 @@ test('the target selector lists captures and batches, and nothing dataset-shaped
   expect(values).toContain('cap_002');
   expect(values).not.toContain('cap_live');
   expect(values.some((v) => v.startsWith('dataset:'))).toBe(false);
-  expect(
-    within(target).getByRole('option', { name: 'run_002' }),
-  ).toBeInTheDocument();
+  expect(within(target).getByRole('option', { name: 'run_002' })).toBeInTheDocument();
   // Only the two captures that are here count towards "all".
   expect(
-    within(target).getByRole('option', { name: '— All captures on this host (2) —' }),
+    within(target).getByRole('option', {
+      name: '— All captures on this host (server selection) —',
+    }),
   ).toBeInTheDocument();
 });
 
@@ -415,7 +560,9 @@ test('running on a single target capture posts capture_id and renders SummaryRes
   fireEvent.click(await screen.findByTestId('pipeline-card-hello_kairos'));
 
   await waitFor(() =>
-    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe('cap_002'),
+    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe(
+      'cap_002',
+    ),
   );
   fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
 
@@ -458,6 +605,55 @@ test('running on all present captures renders OK/WARNING/FAIL tiles and per-capt
     .parentElement as HTMLElement;
   expect(within(rowsSection).getByText('run_002')).toBeInTheDocument();
   expect(within(rowsSection).getByText('run_001')).toBeInTheDocument();
+});
+
+test('Cancel run records a durable server intent', async () => {
+  jobStaysRunning = true;
+  renderWithClient(<ValidationScreen />);
+  fireEvent.click(await screen.findByTestId('pipeline-card-hello_kairos'));
+  await waitFor(() =>
+    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe(
+      'cap_002',
+    ),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Cancel run' }));
+  await waitFor(() =>
+    expect(requestedUrls.some((url) => url.endsWith('/validation/runs/vr-1/cancel'))).toBe(
+      true,
+    ),
+  );
+});
+
+test('a failed server selection is visible and the operator can retry Run', async () => {
+  selectionFailures = 1;
+  renderWithClient(<ValidationScreen />);
+  fireEvent.change(await screen.findByLabelText('target'), {
+    target: { value: '__all__' },
+  });
+  fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
+
+  expect(await screen.findByTestId('validation-selection-message')).toHaveTextContent(
+    /Could not freeze the server selection/i,
+  );
+  expect(screen.getByRole('button', { name: 'Run on selection' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
+  await waitFor(() => expect(postedBodies).toHaveLength(2));
+});
+
+test('a reload recovers a lost validation create response with the same request id', async () => {
+  loseFirstValidationRunResponse = true;
+  const first = renderWithClient(<ValidationScreen />);
+  await screen.findByLabelText('target');
+  fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
+  await screen.findByTestId('validation-submit-error');
+  first.unmount();
+
+  renderWithClient(<ValidationScreen />);
+  await waitFor(() => expect(validationRequestIds).toHaveLength(2));
+  expect(new Set(validationRequestIds).size).toBe(1);
+  await screen.findByTestId('detail-header');
+  expect(window.sessionStorage.getItem('kairos:pending-validation-run:v1')).toBeNull();
 });
 
 test('real presets list with pending badges; an up-to-date preset is disabled', async () => {
@@ -503,7 +699,9 @@ test('a fast_validation run renders the bespoke required-topics checklist', asyn
   // fast_validation is the default (first) pipeline; target defaults to cap_002.
   await screen.findByTestId('pipeline-card-fast_validation');
   await waitFor(() =>
-    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe('cap_002'),
+    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe(
+      'cap_002',
+    ),
   );
   fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
 
@@ -536,7 +734,9 @@ test("fast_validation shows bagflow's evidence under the checklist", async () =>
   renderWithClient(<ValidationScreen />);
   await screen.findByTestId('pipeline-card-fast_validation');
   await waitFor(() =>
-    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe('cap_002'),
+    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe(
+      'cap_002',
+    ),
   );
   fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
 
@@ -553,7 +753,7 @@ test('a batch target validates every capture of that batch that is here (blast r
   // The batch member whose bytes are elsewhere is excluded from the count.
   expect(
     await screen.findByRole('option', {
-      name: /07\/13 · #4 · pick \(1 on this host\)/,
+      name: /07\/13 · #4 · pick \(server selection\)/,
     }),
   ).toBeInTheDocument();
 
@@ -586,7 +786,7 @@ test('batch targets survive a list that carries no per-capture rows', async () =
   ).not.toBeInTheDocument();
   // Membership came from the captures already on hand, so no batch detail was
   // fetched to rebuild what the screen was holding.
-  expect(requestedUrls.some((u) => /\/batches\/[^/?]+$/.test(u))).toBe(false);
+  expect(requestedUrls.some((u) => u.endsWith('/batches/lookup'))).toBe(true);
 });
 
 // ---- the catalog sweep's own limit ---------------------------------------
@@ -594,24 +794,41 @@ test('batch targets survive a list that carries no per-capture rows', async () =
 // MAX_PAGES. "All captures on this host (N)" and a batch's "(n on this host)"
 // are then counts of what was fetched, presented as counts of what exists.
 
-test('a catalog too big for one sweep says so beside the targets', async () => {
+test('a paged catalog says so beside the targets and supports navigation', async () => {
   capturesNeverEnd = true;
   renderWithClient(<ValidationScreen />);
 
   const note = await screen.findByTestId('catalog-truncated', undefined, {
     timeout: 10000,
   });
-  expect(note).toHaveTextContent(/not the whole catalog|more recordings than/i);
-  // It says what the numbers next to it actually mean, not just that something
-  // is wrong.
-  expect(note).toHaveTextContent(/fetched/i);
+  expect(note).toHaveTextContent(/page 1/i);
+  expect(note).toHaveTextContent(/server selection/i);
+  expect(screen.getByTestId('validation-captures-previous')).toBeDisabled();
+  fireEvent.click(screen.getByTestId('validation-captures-next'));
+  await waitFor(() =>
+    expect(screen.getByTestId('validation-capture-pagination')).toHaveTextContent(
+      'Page 2',
+    ),
+  );
+  // The new page gets its own default target; the capture selected before the
+  // boundary is never silently retained.
+  expect(screen.getByLabelText('target')).toHaveValue('cap_002');
+  expect(captureSearchBodies.at(-1)).toMatchObject({ cursor: 'more', limit: 100 });
+  fireEvent.click(screen.getByTestId('validation-captures-previous'));
+  await waitFor(() =>
+    expect(screen.getByTestId('validation-capture-pagination')).toHaveTextContent(
+      'Page 1',
+    ),
+  );
 });
 
 test('a catalog that fits reports nothing — the note is not decoration', async () => {
   renderWithClient(<ValidationScreen />);
 
   await waitFor(() =>
-    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe('cap_002'),
+    expect((screen.getByLabelText('target') as HTMLSelectElement).value).toBe(
+      'cap_002',
+    ),
   );
   expect(screen.queryByTestId('catalog-truncated')).not.toBeInTheDocument();
 });
@@ -624,9 +841,7 @@ test("video_check's topic param is a picker seeded from the target capture's cam
   // topics, pre-seeded with its first camera topic — no hand-typing.
   const select = (await screen.findByLabelText('topic')) as HTMLSelectElement;
   await waitFor(() =>
-    expect(select.value).toBe(
-      '/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed',
-    ),
+    expect(select.value).toBe('/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed'),
   );
   expect(select.tagName).toBe('SELECT');
   // Only camera topics are offered, and BOTH of them — cap_002 carries two
@@ -667,7 +882,7 @@ test('one refused capture does not abandon the rest of a preset run', async () =
   // Named, so the operator knows which recording did not get validated, and
   // told what it means rather than shown a bare code.
   expect(failures).toHaveTextContent('cap_001');
-  expect(failures.textContent).toMatch(/being deleted/i);
+  expect(failures.textContent).toMatch(/could not be submitted/i);
 });
 
 test('a preset whose captures were all discarded reports it instead of showing a run', async () => {
@@ -680,7 +895,7 @@ test('a preset whose captures were all discarded reports it instead of showing a
     expect(screen.getByTestId('submit-failures')).toBeInTheDocument(),
   );
   expect(screen.getByTestId('submit-failures').textContent).toMatch(
-    /already been deleted/i,
+    /could not be submitted/i,
   );
   // No fabricated progress for a run with no jobs in it.
   expect(screen.queryByText('NaN%')).toBeNull();
@@ -759,7 +974,7 @@ test('a parameter unrelated to the capture SURVIVES a target switch', async () =
 
 /** How many GET /jobs/{id}/status calls have been made. */
 function statusPolls() {
-  return requestedUrls.filter((u) => /\/jobs\/[^/]+\/status/.test(u)).length;
+  return requestedUrls.filter((u) => /\/validation\/runs\/vr-\d+/.test(u)).length;
 }
 
 test('leaving the Validation tab stops the polling it started', async () => {
@@ -771,7 +986,9 @@ test('leaving the Validation tab stops the polling it started', async () => {
 
   // The poll is genuinely live — without this the assertion below would pass on
   // a screen that never polled at all.
-  await waitFor(() => expect(statusPolls()).toBeGreaterThanOrEqual(2), { timeout: 5000 });
+  await waitFor(() => expect(statusPolls()).toBeGreaterThanOrEqual(2), {
+    timeout: 5000,
+  });
 
   unmount();
   // Let anything already dispatched land, then wait out more than one interval.
@@ -781,3 +998,11 @@ test('leaving the Validation tab stops the polling it started', async () => {
 
   expect(statusPolls()).toBe(settled);
 });
+
+// #14 — heading structure. This screen must title itself exactly once and
+// descend one heading level at a time, so a screen-reader user can navigate it
+// by heading instead of reading it as one flat run of text.
+test('titles itself with a single h1 and skips no heading level', async () => {
+  renderWithClient(<ValidationScreen />);
+  await expectScreenHeadingOutline('Validation');
+}, 20000);

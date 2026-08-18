@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Resolve robot config paths against the committed and local config trees.
 
 Committed robots live under ``config/<robot>/...``; user-defined ones under the

@@ -1,5 +1,12 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { describe, expect, test } from 'vitest';
-import type { CaptureListItem, Dataset, DatasetMember, ReplicaState } from '../../api/types';
+import type {
+  CaptureListItem,
+  Dataset,
+  DatasetMember,
+  ReplicaState,
+} from '../../api/types';
 import {
   ANY_OPERATOR,
   aggregate,
@@ -8,6 +15,8 @@ import {
   captureFacts,
   captureWhen,
   datasetMatchesSearch,
+  candidateMatchesConditions,
+  conditionDistribution,
   datasetSummarySegments,
   distinctOperators,
   filterMembers,
@@ -21,6 +30,7 @@ import {
   outcomeBreakdown,
   type MemberRow,
 } from './data';
+import type { CaptureConditionView } from '../captures/recordingCondition';
 
 /** A minimal finished capture; override the fields a case cares about. */
 function capture(over: Partial<CaptureListItem> = {}): CaptureListItem {
@@ -76,7 +86,10 @@ function row(displayIndex: number, c: CaptureListItem | null): MemberRow {
 
 describe('joinMembers', () => {
   test('joins by capture_id and orders by display_index', () => {
-    const captures = [capture({ capture_id: 'cap-a' }), capture({ capture_id: 'cap-b' })];
+    const captures = [
+      capture({ capture_id: 'cap-a' }),
+      capture({ capture_id: 'cap-b' }),
+    ];
     const rows = joinMembers(
       [
         member({ membership_id: 'm-9', capture_id: 'cap-b', display_index: 9 }),
@@ -99,7 +112,10 @@ describe('joinMembers', () => {
 
   test('display_index is read as a label, never as a position', () => {
     // #1 and #2 were removed; the survivors keep 3 and 4 forever (§6).
-    const captures = [capture({ capture_id: 'cap-c' }), capture({ capture_id: 'cap-d' })];
+    const captures = [
+      capture({ capture_id: 'cap-c' }),
+      capture({ capture_id: 'cap-d' }),
+    ];
     const rows = joinMembers(
       [
         member({ membership_id: 'm-3', capture_id: 'cap-c', display_index: 3 }),
@@ -138,7 +154,10 @@ describe('aggregate', () => {
   test('counts labels and quality over the members that carry them', () => {
     const agg = aggregate([
       row(1, capture({ capture_id: 'a', task_result: 'success', quality: 'good' })),
-      row(2, capture({ capture_id: 'b', task_result: 'failure', quality: 'not_usable' })),
+      row(
+        2,
+        capture({ capture_id: 'b', task_result: 'failure', quality: 'not_usable' }),
+      ),
       row(3, capture({ capture_id: 'c' })),
     ]);
     expect(agg.memberCount).toBe(3);
@@ -184,6 +203,40 @@ describe('aggregate', () => {
     expect(agg.bytes.known).toBe(1);
     expect(agg.labeledCount).toBe(1);
     expect(agg.availability.unresolved).toBe(1);
+  });
+});
+
+describe('conditionDistribution', () => {
+  test('keeps recorded, absent, and unavailable conditions in one honest denominator', () => {
+    const conditions = new Map<string, CaptureConditionView>([
+      ['left', { status: 'ready', value: 'Left' }],
+      ['right', { status: 'ready', value: 'Right' }],
+      ['empty', { status: 'not-recorded', value: null }],
+      ['legacy', { status: 'unavailable', value: null }],
+    ]);
+    const distribution = conditionDistribution(
+      [
+        row(1, capture({ capture_id: 'left' })),
+        row(2, capture({ capture_id: 'right' })),
+        row(3, capture({ capture_id: 'empty' })),
+        row(4, capture({ capture_id: 'legacy' })),
+        row(5, null),
+      ],
+      (item) => conditions.get(item.capture_id)!,
+    );
+    expect(distribution).toEqual({
+      labels: [
+        { value: 'Left', count: 1 },
+        { value: 'Right', count: 1 },
+      ],
+      notRecorded: 1,
+      unavailable: 2,
+    });
+    expect(
+      distribution.labels.reduce((sum, item) => sum + item.count, 0) +
+        distribution.notRecorded +
+        distribution.unavailable,
+    ).toBe(5);
   });
 });
 
@@ -249,7 +302,10 @@ describe('outcomeBreakdown', () => {
 describe('buildDatasetRow', () => {
   test('the server’s member_count is the authority; the shortfall is named', () => {
     const ds = dataset({ member_count: 5 });
-    const built = buildDatasetRow(ds, [row(1, capture()), row(2, capture({ capture_id: 'b' }))]);
+    const built = buildDatasetRow(ds, [
+      row(1, capture()),
+      row(2, capture({ capture_id: 'b' })),
+    ]);
     expect(built.dataset.member_count).toBe(5);
     expect(built.aggregate.memberCount).toBe(2);
     expect(built.unresolved).toBe(3);
@@ -264,14 +320,25 @@ describe('buildDatasetRow', () => {
   });
 
   test('an unjoinable member and a missing row both count as unresolved', () => {
-    const built = buildDatasetRow(dataset({ member_count: 3 }), [row(1, capture()), row(2, null)]);
+    const built = buildDatasetRow(dataset({ member_count: 3 }), [
+      row(1, capture()),
+      row(2, null),
+    ]);
     expect(built.unresolved).toBe(2); // one never listed + one with no capture
   });
 });
 
 describe('buildDatasetRows', () => {
-  const a = dataset({ dataset_id: 'ds-a', name: 'alpha', created_at: '2026-07-20T10:00:00Z' });
-  const b = dataset({ dataset_id: 'ds-b', name: 'zulu', created_at: '2026-07-22T10:00:00Z' });
+  const a = dataset({
+    dataset_id: 'ds-a',
+    name: 'alpha',
+    created_at: '2026-07-20T10:00:00Z',
+  });
+  const b = dataset({
+    dataset_id: 'ds-b',
+    name: 'zulu',
+    created_at: '2026-07-22T10:00:00Z',
+  });
   const c = dataset({ dataset_id: 'ds-c', name: 'mike' });
 
   test('recent puts the newest first and a dataset with no date last', () => {
@@ -306,7 +373,79 @@ describe('search + facets', () => {
     expect(datasetMatchesSearch(built, '   ')).toBe(true); // blank matches all
   });
 
-  test('a member matches on #N, N, capture id, run id, operator and failure reason', () => {
+  test("candidate conditions support fielded AND and OR matching", () => {
+    const candidate = capture({
+      capture_id: "cap-abc",
+      run_id: "run_20260721_090000",
+      operator: "Alice",
+      task: "Pick and Place",
+      task_result: "success",
+    });
+    const operator = {
+      id: 1,
+      field: "operator" as const,
+      operator: "equals" as const,
+      value: "alice",
+    };
+    const task = {
+      id: 2,
+      field: "task" as const,
+      operator: "contains" as const,
+      value: "place",
+    };
+    const failure = {
+      id: 3,
+      field: "task_result" as const,
+      operator: "equals" as const,
+      value: "failure",
+    };
+
+    expect(candidateMatchesConditions(candidate, [operator, task], 'and')).toBe(true);
+    expect(candidateMatchesConditions(candidate, [operator, failure], 'and')).toBe(
+      false,
+    );
+    expect(candidateMatchesConditions(candidate, [failure, task], 'or')).toBe(true);
+    expect(candidateMatchesConditions(candidate, [], "and")).toBe(true);
+    expect(
+      candidateMatchesConditions(
+        candidate,
+        [
+          {
+            id: 4,
+            field: "condition",
+            operator: "contains",
+            value: "left bin",
+          },
+        ],
+        "and",
+        "Object: left bin",
+      ),
+    ).toBe(true);
+  });
+
+  test("the any-field condition checks identifiers and labels without joining fields", () => {
+    const candidate = capture({
+      capture_id: "cap-abc",
+      operator: "op_a",
+      task: "pick_place",
+    });
+    expect(
+      candidateMatchesConditions(
+        candidate,
+        [{ id: 1, field: "any", operator: "contains", value: "cap-ab" }],
+        "and",
+      ),
+    ).toBe(true);
+    expect(
+      candidateMatchesConditions(
+        candidate,
+        [{ id: 1, field: "any", operator: "contains", value: "op_a pick" }],
+        "and",
+      ),
+    ).toBe(false);
+  });
+
+  test("a member matches on #N, N, capture id, run id, operator and failure reason", () => {
     const r = row(
       12,
       capture({
@@ -393,7 +532,9 @@ describe('datasetSummarySegments', () => {
 
   test('"not here yet" is stated plainly and is not a warning', () => {
     const segs = datasetSummarySegments(
-      buildDatasetRow(dataset({ member_count: 1 }), [row(1, withReplica(capture(), null))]),
+      buildDatasetRow(dataset({ member_count: 1 }), [
+        row(1, withReplica(capture(), null)),
+      ]),
     );
     const awaiting = segs.find((s) => s.text === '1 not here yet')!;
     expect(awaiting).toBeDefined();
@@ -412,7 +553,9 @@ describe('datasetSummarySegments', () => {
 
 describe('operatorSegment', () => {
   test('one operator shows the name', () => {
-    expect(operatorSegment(aggregate([row(1, capture({ operator: 'op_a' }))])).text).toBe('op_a');
+    expect(
+      operatorSegment(aggregate([row(1, capture({ operator: 'op_a' }))])).text,
+    ).toBe('op_a');
   });
 
   test('several show a count, with a "+" when some record none', () => {
@@ -425,7 +568,9 @@ describe('operatorSegment', () => {
   });
 
   test('none recorded is said in words, not as an empty name', () => {
-    expect(operatorSegment(aggregate([row(1, capture())])).text).toBe('operator not recorded');
+    expect(operatorSegment(aggregate([row(1, capture())])).text).toBe(
+      'operator not recorded',
+    );
   });
 });
 

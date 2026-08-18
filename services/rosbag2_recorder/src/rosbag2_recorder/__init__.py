@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """rosbag2_recorder: ROS 2 topics -> MCAP canonical recorder.
 
 The service exposes the recorder's internal HTTP API (consumed by

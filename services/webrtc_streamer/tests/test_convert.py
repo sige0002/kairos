@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """ROS image -> BGR conversions (convert.py) over synthetic messages.
 
 numpy + opencv-python-headless are real here, so these tests exercise the actual

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
@@ -7,6 +9,10 @@ import { CollectScreen } from './CollectScreen';
 import { __resetBatchStore, __setStopFloorMs, __resetStopFloorMs } from './useBatchMachine';
 import { __resetCameraStore } from './cameraStore';
 import { __resetPlansStore, clonePlans, getPlans, setPlans } from '../plans';
+import {
+  expectHeadingSpine,
+  expectScreenHeadingOutline,
+} from '../../test/headingOutline';
 
 const CONFIG = {
   endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
@@ -132,7 +138,10 @@ beforeEach(() => {
     activeTab: '',
     sseStatus: 'closed',
     monitorBridge: null,
-    recordOperator: '',
+    // Recording requires an operator since #11, in every configuration —
+    // so a suite that records has to say who is recording. The gate itself
+    // is exercised where it is the subject, not incidentally here.
+    recordOperator: 'tester',
     recordSelected: new Set<string>(),
     recordCustomized: false,
   });
@@ -221,8 +230,11 @@ test('Stop recording moves to SAVING and shows the honest finalizing copy', asyn
 
   fireEvent.click(screen.getByRole('button', { name: /Stop recording/ }));
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('SAVING…'));
-  // Honest, non-fabricated copy (no fake MB/percent).
-  expect(screen.getByText('Finalizing the recording…')).toBeInTheDocument();
+  // Honest, non-fabricated copy (no fake MB/percent): while the stop waits on
+  // the recorder's flush, the card shows the real elapsed seconds.
+  expect(
+    screen.getByText(/Finalizing the recording — the recorder is flushing \(\d+s\)…/),
+  ).toBeInTheDocument();
 });
 
 // Persona finding P1/P4: a failed TASK must not read as "not usable" data, and
@@ -543,8 +555,10 @@ test('Discard & re-record discards in one click, keyed on capture_id', async () 
 // §12: on a split deployment the discard removes only the copy on this machine.
 // With no dialog left to carry that disclosure, the success toast says so
 // unprompted — letting an operator believe the robot's copy went too is
-// exactly the failure this line exists to prevent.
-test('on a split deployment the discard toast says the robot copy is untouched', async () => {
+// exactly the failure this line exists to prevent. ("May remain", not "is
+// untouched": the same wording also serves the probe-unanswered case, where
+// the may-remain flag fails toward disclosing — S3-7.)
+test('on a split deployment the discard toast says a robot copy may remain', async () => {
   const base = mockFetchWithStatus({
     status: { state: 'completed', integrity: 'ok' },
   });
@@ -562,7 +576,7 @@ test('on a split deployment the discard toast says the robot copy is untouched',
   fireEvent.click(screen.getByTestId('discard-episode'));
   await waitFor(() =>
     expect(
-      screen.getByText(/the robot's own copy is untouched/i),
+      screen.getByText(/a copy may remain on the robot/i),
     ).toBeInTheDocument(),
   );
 });
@@ -612,7 +626,20 @@ test('Robot cell lists real robots and switches via POST /config/select', async 
 test('a project added to the shared store appears in the Collect project picker', async () => {
   mockFetch();
   // Simulate a Settings edit: add a project to the shared catalog.
-  setPlans([...clonePlans(getPlans()), { name: 'Warehouse Sort', tasks: [{ name: 'Sort', conditions: ['Bin: A'] }] }]);
+  setPlans([
+    ...clonePlans(getPlans()),
+    {
+      project_id: 'project-warehouse-sort',
+      name: 'Warehouse Sort',
+      tasks: [
+        {
+          task_id: 'task-sort',
+          name: 'Sort',
+          conditions: [{ condition_id: 'condition-bin-a', name: 'Bin: A' }],
+        },
+      ],
+    },
+  ]);
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
 
@@ -649,7 +676,19 @@ test('Collect degrades gracefully when its selected project is absent from the s
   mockFetch();
   // The machine seeded its project from the default catalog; now replace the
   // catalog so that selection no longer exists (as if it were removed/renamed).
-  setPlans([{ name: 'Only Project', tasks: [{ name: 'Only Task', conditions: ['Only Cond'] }] }]);
+  setPlans([
+    {
+      project_id: 'project-only',
+      name: 'Only Project',
+      tasks: [
+        {
+          task_id: 'task-only',
+          name: 'Only Task',
+          conditions: [{ condition_id: 'condition-only', name: 'Only Cond' }],
+        },
+      ],
+    },
+  ]);
   renderWithClient(<CollectScreen />);
 
   // Still renders (no crash); the orphaned selection stays shown as-is, and the
@@ -756,7 +795,14 @@ test('a status missing live_capture_ids claims no takeover and reports no answer
 
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
   expect(screen.queryByText('RECORDING IN PROGRESS')).toBeNull();
-  await waitFor(() => expect(screen.getByText('no answer')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('sys-recorder')).toHaveTextContent('no answer'),
+  );
+  // …and the warnings card no longer answers "no active warnings" over it (#13):
+  // the Recorder row is CHECK, so it is restated there with what to do about it.
+  const checks = await screen.findByTestId('collect-check-recorder');
+  expect(checks).toHaveTextContent(/not answering/i);
+  expect(screen.queryByText('No active warnings')).toBeNull();
 });
 
 // ---------------------------------------------------------------------------
@@ -1079,4 +1125,29 @@ test('Space ends the take too when the recorder died inside the stop floor', asy
   fireEvent.keyDown(document.body, { key: ' ' });
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('SAVING'));
   expect(recorder.stopAttempts()).toBeGreaterThan(0);
+}, 20000);
+
+// #14 — heading structure. This screen must title itself exactly once and
+// descend one heading level at a time, so a screen-reader user can navigate it
+// by heading instead of reading it as one flat run of text.
+test('titles itself with a single h1 and skips no heading level', async () => {
+  renderWithClient(<CollectScreen />);
+  // Let the screen's cards land first — the h1 appears before them, and a
+  // spine snapshotted at that instant would pin almost nothing.
+  await screen.findByTestId('sys-recorder');
+  await expectScreenHeadingOutline('Collect');
+  // The exact h1/h2 spine. The outline check above cannot see a heading that is
+  // MISSING — it walks what IS rendered — so demoting any promoted title back to
+  // a span would leave it green. This is what pins the promotions.
+  expectHeadingSpine([
+    'h1 Collect',
+    // The control card's phase title — it changes with the phase, and it is the
+    // screen's primary card, so it belongs on the spine.
+    'h2 READY',
+    'h2 System status',
+    'h2 Active warnings',
+    'h2 Advice for next episode',
+    'h2 Batch stats',
+    'h2 Coverage — Pick and Place',
+  ]);
 }, 20000);

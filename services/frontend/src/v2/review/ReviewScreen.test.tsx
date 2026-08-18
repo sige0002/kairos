@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
@@ -6,7 +8,8 @@ import { useUiStore } from '../../store/uiStore';
 import { setSplitMode } from '../captures/splitMode';
 import { setFiltersCollapsed } from './filtersRail';
 import { ReviewScreen } from './ReviewScreen';
-import type { Capture } from '../../api/types';
+import type { BatchSummary, Capture } from '../../api/types';
+import { expectScreenHeadingOutline } from '../../test/headingOutline';
 
 const FILTERS_KEY = 'kairos.v2.review.filtersCollapsed.v1';
 
@@ -50,6 +53,11 @@ interface ApiOptions {
    *  server serialises); only the answer waits for `releaseReviews()`, and that
    *  wait is the window a second click lands in. */
   holdReviews?: boolean;
+  /** Every POST /jobs is lost on the way out, as a dead connection loses it —
+   *  a rejected fetch, not an error response. */
+  jobsUnreachable?: boolean;
+  batches?: BatchSummary[];
+  batchesError?: boolean;
 }
 
 /** Everything the Review screen touches: the capture list, the per-capture
@@ -81,7 +89,12 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
       if (options.reviewError) {
         return answer(
           jsonResponse(
-            { error: { code: options.reviewError.code, message: options.reviewError.message } },
+            {
+              error: {
+                code: options.reviewError.code,
+                message: options.reviewError.message,
+              },
+            },
             options.reviewError.status,
           ),
         );
@@ -120,6 +133,21 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
       return Promise.resolve(jsonResponse({}, 200));
     }
 
+    if (method === 'POST' && url.endsWith('/jobs') && options.jobsUnreachable) {
+      return Promise.reject(new TypeError('Failed to fetch'));
+    }
+
+    if (method === 'POST' && url.endsWith('/captures/search')) {
+      return Promise.resolve(
+        jsonResponse({
+          items,
+          next_cursor: options.capturesNeverEnd ? 'more' : null,
+          total: items.length,
+          facets: {},
+        }),
+      );
+    }
+
     const detail = url.match(/\/captures\/([^/?]+)$/);
     if (method === 'GET' && detail) {
       const id = decodeURIComponent(detail[1]!);
@@ -127,14 +155,19 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
       return Promise.resolve(jsonResponse(found ?? { ...capture({ capture_id: id }) }));
     }
 
-    if (url.includes('/config/options')) return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
+    if (url.includes('/config/options'))
+      return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
     if (url.includes('/transfer/status'))
       return Promise.resolve(
         jsonResponse({ available: options.transferAvailable ?? false }),
       );
     if (url.includes('/retention'))
       return Promise.resolve(jsonResponse({ days: 0, candidates: [], total_bytes: 0 }));
-    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    if (url.includes('/batches')) {
+      if (options.batchesError)
+        return Promise.reject(new TypeError('Batch service unavailable'));
+      return Promise.resolve(jsonResponse({ items: options.batches ?? [] }));
+    }
     if (url.includes('/captures'))
       return Promise.resolve(
         jsonResponse({
@@ -188,6 +221,105 @@ test('rows render with an availability chip stating where the bytes are', async 
   expect(screen.getByTestId('review-availability-c2')).toHaveAttribute(
     'data-availability',
     'verifying',
+  );
+});
+
+test('the right detail shows the recorded condition immediately below Task', async () => {
+  mockApi(
+    [
+      capture({
+        capture_id: 'c1',
+        run_id: 'run_1',
+        index_in_batch: 1,
+        batch_id: 'batch-1',
+        task: 'Pick and Place',
+        collection_context: {
+          batch_id: 'batch-1',
+          batch_seq: 1,
+          project_id: null,
+          task_id: null,
+          condition_id: null,
+          project: 'Manipulation',
+          task: 'Pick and Place',
+          condition: 'Recorded left bin',
+          robot: null,
+          operator: 'op_a',
+        },
+      }),
+    ],
+    {
+      batches: [
+        {
+          batch_id: 'batch-1',
+          project: 'Manipulation',
+          task: 'Pick and Place',
+          condition: 'Current right bin',
+          operator: 'op_a',
+          target_episodes: 30,
+          status: 'completed',
+          episode_count: 1,
+        },
+      ],
+    },
+  );
+  renderWithClient(<ReviewScreen />);
+
+  const inspection = await screen.findByTestId('review-inspection');
+  expect(screen.getByTestId('review-condition')).toHaveTextContent('Recorded left bin');
+  const labels = Array.from(inspection.querySelectorAll('dt')).map((node) =>
+    node.textContent?.trim(),
+  );
+  expect(labels.indexOf('Condition')).toBe(labels.indexOf('Task') + 1);
+});
+
+test('the detail calls an explicit snapshot condition null Not recorded', async () => {
+  mockApi(
+    [
+      capture({
+        capture_id: 'c1',
+        batch_id: 'batch-1',
+        collection_context: {
+          batch_id: 'batch-1',
+          batch_seq: 1,
+          project_id: null,
+          task_id: null,
+          condition_id: null,
+          project: null,
+          task: null,
+          condition: null,
+          robot: null,
+          operator: null,
+        },
+      }),
+    ],
+    {
+      batches: [
+        {
+          batch_id: 'batch-1',
+          project: null,
+          task: null,
+          condition: 'Current condition must not replace history',
+          operator: null,
+          target_episodes: 30,
+          status: 'completed',
+          episode_count: 1,
+        },
+      ],
+    },
+  );
+  renderWithClient(<ReviewScreen />);
+
+  expect(await screen.findByTestId('review-condition')).toHaveTextContent(
+    'Not recorded',
+  );
+});
+
+test('a legacy capture says Unavailable when its Batch condition cannot be loaded', async () => {
+  mockApi([capture({ capture_id: 'c1', batch_id: 'batch-1' })], { batchesError: true });
+  renderWithClient(<ReviewScreen />);
+
+  await waitFor(() =>
+    expect(screen.getByTestId('review-condition')).toHaveTextContent('Unavailable'),
   );
 });
 
@@ -335,8 +467,21 @@ test('a 409 capture_busy names the job holding the lease inside the dialog', asy
 
 test('a refused review save raises the conflict banner with what is stored now', async () => {
   mockApi(
-    [capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1, quality: 'good' })],
-    { reviewError: { status: 409, code: 'review_conflict', message: 'edited elsewhere' } },
+    [
+      capture({
+        capture_id: 'c1',
+        run_id: 'run_1',
+        index_in_batch: 1,
+        quality: 'good',
+      }),
+    ],
+    {
+      reviewError: {
+        status: 409,
+        code: 'review_conflict',
+        message: 'edited elsewhere',
+      },
+    },
   );
   renderWithClient(<ReviewScreen />);
   await waitFor(() => expect(screen.getByTestId('review-row-c1')).toBeInTheDocument());
@@ -377,10 +522,13 @@ test('excluding a row is offered as a label, separately from any removal', async
     capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 }),
   ]);
   renderWithClient(<ReviewScreen />);
-  await waitFor(() => expect(screen.getByTestId('review-exclude-c1')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('review-exclude-c1')).toBeInTheDocument(),
+  );
 
+  // CHANGED with #12: no confirmation step. Excluding keeps every byte and is
+  // undoable from the toolbar, so the click is the action.
   fireEvent.click(screen.getByTestId('review-exclude-c1'));
-  fireEvent.click(screen.getByTestId('review-confirm-exclude'));
 
   await waitFor(() =>
     expect(screen.getByTestId('review-discard-excluded')).toBeInTheDocument(),
@@ -389,9 +537,70 @@ test('excluding a row is offered as a label, separately from any removal', async
   expect(api.deleteCalls).toHaveLength(0);
 });
 
+test('the excluded row is gone from the table, and the undo for it is not', async () => {
+  // The two halves of the same fact: the default view hides excluded rows, so
+  // an undo attached to the ROW would be behind "Show excluded" at exactly the
+  // moment the operator wants their mis-click back.
+  mockApi([capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 })]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() =>
+    expect(screen.getByTestId('review-exclude-c1')).toBeInTheDocument(),
+  );
+
+  fireEvent.click(screen.getByTestId('review-exclude-c1'));
+
+  const undo = await screen.findByTestId('review-exclude-undo');
+  expect(screen.queryByTestId('review-row-c1')).not.toBeInTheDocument();
+  expect(undo).toHaveTextContent('Episode #1');
+  expect(undo).toHaveTextContent('the recording is kept');
+
+  // Announced, and named. The band is the durable half of the announcement —
+  // the toast that fires with it is gone in seconds — and the buttons carry
+  // their subject, because the span naming the episode is not associated with
+  // them: on their own they are one of however many "Undo"s on the page.
+  expect(undo).toHaveAttribute('role', 'status');
+  expect(screen.getByRole('button', { name: 'Undo excluding Episode #1' })).toBe(
+    screen.getByTestId('review-exclude-undo-btn'),
+  );
+  expect(
+    screen.getByRole('button', { name: 'Dismiss — Episode #1 stays excluded' }),
+  ).toBe(screen.getByTestId('review-exclude-undo-dismiss'));
+
+  // Undo puts it back in one click, and the offer goes with it.
+  fireEvent.click(screen.getByTestId('review-exclude-undo-btn'));
+  await waitFor(() => expect(screen.getByTestId('review-row-c1')).toBeInTheDocument());
+  expect(screen.queryByTestId('review-exclude-undo')).not.toBeInTheDocument();
+});
+
+test('the undo offer is dismissible, and dismissing it changes nothing else', async () => {
+  const api = mockApi([
+    capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 }),
+  ]);
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() =>
+    expect(screen.getByTestId('review-exclude-c1')).toBeInTheDocument(),
+  );
+
+  fireEvent.click(screen.getByTestId('review-exclude-c1'));
+  await screen.findByTestId('review-exclude-undo');
+  fireEvent.click(screen.getByTestId('review-exclude-undo-dismiss'));
+
+  await waitFor(() =>
+    expect(screen.queryByTestId('review-exclude-undo')).not.toBeInTheDocument(),
+  );
+  // Dismissing is not undoing: one save happened, and it stands.
+  expect(api.reviewCalls).toHaveLength(1);
+  expect(screen.queryByTestId('review-row-c1')).not.toBeInTheDocument();
+});
+
 test('the detail panel shows the revision, which is what a conflict is about', async () => {
   mockApi([
-    capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1, review_revision: 5 }),
+    capture({
+      capture_id: 'c1',
+      run_id: 'run_1',
+      index_in_batch: 1,
+      review_revision: 5,
+    }),
   ]);
   renderWithClient(<ReviewScreen />);
   const revision = await screen.findByTestId('review-revision');
@@ -450,7 +659,9 @@ test('an adopted capture offers no adopt control at all', async () => {
     }),
   ]);
   renderWithClient(<ReviewScreen />);
-  await waitFor(() => expect(screen.getByTestId('review-decision-bar')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('review-decision-bar')).toBeInTheDocument(),
+  );
   expect(screen.queryByTestId('review-mark-ok')).toBeNull();
 });
 
@@ -468,7 +679,9 @@ test('a NEEDS CHECK exception keeps its own wording', async () => {
   renderWithClient(<ReviewScreen />);
   // Same control, same server effect; the exception lane still reads as
   // resolving an exception rather than as a dataset step.
-  expect(await screen.findByTestId('review-mark-ok')).toHaveTextContent('Mark OK — include');
+  expect(await screen.findByTestId('review-mark-ok')).toHaveTextContent(
+    'Mark OK — include',
+  );
 });
 
 test('a batch return that fails says so where the operator will still see it', async () => {
@@ -517,7 +730,9 @@ test('a batch return that fails says so where the operator will still see it', a
   );
   // The count alone would let the reasons be dropped on the way to the DOM.
   // Both episodes are named, each with why it stayed behind.
-  const title = screen.getByTestId('review-return-batch-failures').getAttribute('title');
+  const title = screen
+    .getByTestId('review-return-batch-failures')
+    .getAttribute('title');
   expect(title).toContain('c2');
   expect(title).toContain('c3');
   expect(title).toContain('record.json');
@@ -531,9 +746,12 @@ test('a second decision taken while the save is in flight goes nowhere, visibly'
   // EXCLUDE, its `flex-1` neighbour, slides into the slot the pointer is
   // already over. The operator's second click is therefore not a repeat of
   // their decision but the opposite one, spending a revision already spent.
-  const api = mockApi([capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 })], {
-    holdReviews: true,
-  });
+  const api = mockApi(
+    [capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 })],
+    {
+      holdReviews: true,
+    },
+  );
   renderWithClient(<ReviewScreen />);
   await waitFor(() => expect(screen.getByTestId('review-mark-ok')).toBeInTheDocument());
 
@@ -564,7 +782,9 @@ test('a second decision taken while the save is in flight goes nowhere, visibly'
   });
   await waitFor(() => expect(screen.queryByTestId('review-saving')).toBeNull());
   expect(screen.queryByTestId('review-conflict-banner')).toBeNull();
-  await waitFor(() => expect(screen.getByTestId('review-decision-exclude')).toBeEnabled());
+  await waitFor(() =>
+    expect(screen.getByTestId('review-decision-exclude')).toBeEnabled(),
+  );
 });
 
 test('double-clicking Final quality saves once and never blames the operator', async () => {
@@ -572,7 +792,14 @@ test('double-clicking Final quality saves once and never blames the operator', a
   // Not usable"), so two fast clicks are the intended route to the third
   // value, not operator error.
   const api = mockApi(
-    [capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1, quality: 'good' })],
+    [
+      capture({
+        capture_id: 'c1',
+        run_id: 'run_1',
+        index_in_batch: 1,
+        quality: 'good',
+      }),
+    ],
     { holdReviews: true },
   );
   renderWithClient(<ReviewScreen />);
@@ -595,7 +822,9 @@ test('double-clicking Final quality saves once and never blames the operator', a
   await Promise.resolve();
   expect(api.reviewCalls).toHaveLength(1);
   // The value the in-flight save is writing is still on screen.
-  expect(screen.getByTestId('review-final-quality').textContent).toContain('Needs review');
+  expect(screen.getByTestId('review-final-quality').textContent).toContain(
+    'Needs review',
+  );
 
   await act(async () => {
     api.releaseReviews();
@@ -635,7 +864,9 @@ test('a conflict raised by another terminal is still reported', async () => {
 
   fireEvent.click(screen.getByTestId('review-mark-ok'));
   const banner = await screen.findByTestId('review-conflict-banner');
-  expect(banner.textContent).toMatch(/Someone else saved a review for this capture first/);
+  expect(banner.textContent).toMatch(
+    /Someone else saved a review for this capture first/,
+  );
   // And the screen is usable afterwards: the notice is gone, so the operator
   // can reload and re-apply rather than facing a permanently frozen bar.
   await waitFor(() => expect(screen.queryByTestId('review-saving')).toBeNull());
@@ -699,7 +930,9 @@ test('the "nothing was saved" notice names its episode too', async () => {
   fireEvent.click(screen.getByTestId('review-row-c1'));
   fireEvent.click(screen.getByTestId('review-mark-ok'));
   await screen.findByTestId('review-save-failure');
-  expect(screen.getByTestId('review-save-failure-subject').textContent).toBe('Episode #1');
+  expect(screen.getByTestId('review-save-failure-subject').textContent).toBe(
+    'Episode #1',
+  );
 });
 
 // ---- the catalog sweep's own limit ---------------------------------------
@@ -728,3 +961,67 @@ test('a catalog that fits reports nothing — the note is not decoration', async
   await screen.findByTestId('review-row-c1');
   expect(screen.queryByTestId('catalog-truncated')).not.toBeInTheDocument();
 });
+
+// ---- accessible names (#10) ----------------------------------------------
+// Both controls carried their purpose visually only: the search in a
+// placeholder, the operator filter in a caption sitting above it that nothing
+// tied to the field. Queried by name here on purpose — a testid query would go
+// on passing with the association removed again.
+
+test('the episode search and the operator filter both have accessible names', async () => {
+  mockApi([
+    capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1, operator: 'op_a' }),
+  ]);
+  renderWithClient(<ReviewScreen />);
+  await screen.findByTestId('review-row-c1');
+
+  expect(screen.getByRole('textbox', { name: 'Search episodes' })).toBe(
+    screen.getByTestId('review-search'),
+  );
+  // A real <label for>, so clicking the caption moves focus into the select.
+  expect(screen.getByRole('combobox', { name: 'Operator' })).toBe(
+    screen.getByTestId('review-operator-filter'),
+  );
+});
+
+// N1: the detail panel rendered <CaptureInspection captureId={…}/> with no key,
+// so selecting another episode re-rendered the SAME instance with a new id.
+// Everything that panel holds is per-capture — a running job id, a frozen
+// submission error, and the report snapshot a failed attempt compares against —
+// and none of it belongs to the episode the operator switched to. A failed
+// validation on one recording carried its note onto the next, where it
+// described an attempt that never touched that recording.
+test('a failed check does not follow the operator to the next episode', async () => {
+  mockApi(
+    [
+      capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 }),
+      capture({ capture_id: 'c2', run_id: 'run_2', index_in_batch: 2 }),
+    ],
+    { jobsUnreachable: true },
+  );
+  renderWithClient(<ReviewScreen />);
+  await waitFor(() => expect(screen.getByTestId('review-row-c1')).toBeInTheDocument());
+
+  fireEvent.click(screen.getByTestId('review-row-c1'));
+  fireEvent.click(await screen.findByTestId('review-run-validation'));
+  await screen.findByTestId('review-validation-error');
+
+  fireEvent.click(screen.getByTestId('review-row-c2'));
+  await waitFor(() =>
+    expect(screen.getByTestId('review-detail-header').textContent).toContain('#2'),
+  );
+
+  // Episode 2 was never asked to validate anything, so it has nothing to say
+  // about a failed attempt — and above all must not claim a check "landed
+  // after all" against a recording this attempt never touched.
+  expect(screen.queryByTestId('review-validation-error')).toBeNull();
+  expect(screen.queryByTestId('review-validation-error-stale')).toBeNull();
+});
+
+// #14 — heading structure. This screen must title itself exactly once and
+// descend one heading level at a time, so a screen-reader user can navigate it
+// by heading instead of reading it as one flat run of text.
+test('titles itself with a single h1 and skips no heading level', async () => {
+  renderWithClient(<ReviewScreen />);
+  await expectScreenHeadingOutline('Review');
+}, 20000);

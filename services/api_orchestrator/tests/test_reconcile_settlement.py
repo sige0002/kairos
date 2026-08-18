@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """A capture the recorder finalised by itself, found by something other than a poll.
 
 ``stop()`` is not the only way a recording reaches a terminal state, but for a

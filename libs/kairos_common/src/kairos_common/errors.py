@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Unified error model shared by all kairos HTTP services.
 
 Every API returns errors in the single shape defined in ``config.md``::

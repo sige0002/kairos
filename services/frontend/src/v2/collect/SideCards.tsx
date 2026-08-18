@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Left-column always-visible cards: System status, Active warnings, Advice,
 // Batch stats, Coverage. Each one lives in `sidecards/` and fetches its own
 // data; this file is the barrel that keeps them addressable as one group.

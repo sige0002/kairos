@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Monitor > Overview — the diagnostic landing (§11). A single glance answers
 // "is capture running, is anything unhealthy, and where do I look next":
 //   - record context (REC + run + elapsed, or STANDBY) from /record/status,
@@ -39,9 +41,9 @@ function RecordContextBlock() {
 
   return (
     <Card className="flex flex-col gap-2 px-4 py-3.5" data-testid="overview-record">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-600">
         Recording
-      </span>
+      </h2>
       {ctx.recording ? (
         <>
           <div className="flex flex-wrap items-center gap-2.5">
@@ -55,13 +57,13 @@ function RecordContextBlock() {
             <span className="font-mono text-[13px] font-semibold text-gray-900">
               {ctx.runId ?? '—'}
             </span>
-            <span className="font-mono text-xs text-gray-500">{formatElapsed(ctx.elapsedMs)}</span>
+            <span className="font-mono text-xs text-gray-600">{formatElapsed(ctx.elapsedMs)}</span>
           </div>
           {/* The run name above is display text (§1); this is the identity the
               capture list, jobs and reports are keyed by. */}
           <span
             data-testid="overview-record-capture"
-            className="font-mono text-[11px] text-gray-400"
+            className="font-mono text-[11px] text-gray-600"
           >
             capture {ctx.captureId ?? '— (the recorder did not name it)'}
           </span>
@@ -69,14 +71,14 @@ function RecordContextBlock() {
       ) : isPending ? (
         <span
           data-testid="overview-record-state"
-          className="inline-flex w-fit rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-400"
+          className="inline-flex w-fit rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-600"
         >
           CHECKING…
         </span>
       ) : ctx.liveKnown ? (
         <span
           data-testid="overview-record-state"
-          className="inline-flex w-fit rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-500"
+          className="inline-flex w-fit rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-600"
         >
           STANDBY
         </span>
@@ -88,7 +90,7 @@ function RecordContextBlock() {
           >
             LIVE STATE UNREPORTED
           </span>
-          <span className="text-[11.5px] leading-relaxed text-gray-500">
+          <span className="text-[11.5px] leading-relaxed text-gray-600">
             The recorder answered without its live-capture list, so it cannot be confirmed that
             nothing is recording (§10). This is not the same as an idle recorder.
           </span>
@@ -139,23 +141,23 @@ export function OverviewView({
         {/* Topic health tally + the topics that need attention */}
         <Card className="flex flex-col" data-testid="overview-health">
           <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-3">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-600">
               Topic health
-            </span>
+            </h2>
             <div className="flex-1" />
-            <span className="font-mono text-[11.5px] text-gray-400">
+            <span className="font-mono text-[11.5px] text-gray-600">
               {measured.length} measured · {rows.length} discovered
             </span>
           </div>
 
           {rows.length === 0 ? (
-            <p data-testid="overview-health-empty" className="px-4 py-8 text-center text-[12.5px] text-gray-400">
+            <p data-testid="overview-health-empty" className="px-4 py-8 text-center text-[12.5px] text-gray-600">
               {isDiscovering
                 ? 'Discovering topics on the ROS 2 graph…'
                 : 'No topics discovered on the ROS 2 graph yet.'}
             </p>
           ) : measured.length === 0 ? (
-            <p data-testid="overview-health-nometrics" className="px-4 py-8 text-center text-[12.5px] leading-relaxed text-gray-400">
+            <p data-testid="overview-health-nometrics" className="px-4 py-8 text-center text-[12.5px] leading-relaxed text-gray-600">
               Topics are discovered but the monitor has no live metrics yet — health appears once
               the monitor is measuring. If it stays empty, the active robot&apos;s configured
               topics may not match what&apos;s on the graph.
@@ -169,7 +171,7 @@ export function OverviewView({
                     data-testid={`tally-${c.status}`}
                     className="flex flex-col items-center gap-1 rounded-control border border-gray-100 bg-gray-50 py-2.5"
                   >
-                    <span className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+                    <span className="flex items-center gap-1.5 text-[10.5px] font-semibold uppercase tracking-[0.04em] text-gray-600">
                       <StatusDot tone={statusTone(c.status)} />
                       {c.label}
                     </span>
@@ -180,9 +182,9 @@ export function OverviewView({
 
               {attention.length > 0 ? (
                 <div className="flex flex-col gap-1.5">
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-600">
                     Needs attention
-                  </span>
+                  </h3>
                   <div className="flex flex-col gap-1" data-testid="overview-attention">
                     {attention.map((r) => (
                       <button
@@ -196,14 +198,14 @@ export function OverviewView({
                         <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-gray-800">
                           {r.name}
                         </span>
-                        <span className="text-[11px] font-semibold text-gray-400">{r.status}</span>
+                        <span className="text-[11px] font-semibold text-gray-600">{r.status}</span>
                         <span className="text-[11px] text-teal-700">chart →</span>
                       </button>
                     ))}
                   </div>
                 </div>
               ) : (
-                <p data-testid="overview-attention-none" className="text-[12px] text-gray-400">
+                <p data-testid="overview-attention-none" className="text-[12px] text-gray-600">
                   All measured topics are on rate — nothing needs attention.
                 </p>
               )}
@@ -214,14 +216,14 @@ export function OverviewView({
         {/* Active incidents (real alert buffer) */}
         <Card className="flex flex-col" data-testid="overview-incidents">
           <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-3">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+            <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-600">
               Active incidents
-            </span>
+            </h2>
             <div className="flex-1" />
-            <span className="font-mono text-[11.5px] text-gray-400">{firing.length} firing</span>
+            <span className="font-mono text-[11.5px] text-gray-600">{firing.length} firing</span>
           </div>
           {firing.length === 0 ? (
-            <p data-testid="overview-incidents-empty" className="px-4 py-6 text-center text-[12px] text-gray-400">
+            <p data-testid="overview-incidents-empty" className="px-4 py-6 text-center text-[12px] text-gray-600">
               No firing alerts. Threshold breaches from the monitor appear here (session-local).
             </p>
           ) : (
@@ -236,9 +238,9 @@ export function OverviewView({
                   <div className="flex min-w-0 flex-col">
                     <span className="text-[12.5px] font-semibold text-gray-700">
                       {i.title}
-                      {i.detail && <span className="font-normal text-gray-400"> · {i.detail}</span>}
+                      {i.detail && <span className="font-normal text-gray-600"> · {i.detail}</span>}
                     </span>
-                    <span className="font-mono text-[11px] text-gray-400">firing · {i.time}</span>
+                    <span className="font-mono text-[11px] text-gray-600">firing · {i.time}</span>
                   </div>
                 </div>
               ))}
@@ -259,9 +261,9 @@ export function OverviewView({
       <div className="flex flex-col gap-2.5">
         <SystemCard />
         <Card className="flex flex-col gap-2 p-4">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-600">
             Jump to
-          </span>
+          </h2>
           <button
             type="button"
             data-testid="overview-open-topics"

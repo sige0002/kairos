@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Collect batches: database rows plus ledger events (§8).
 
 A batch's row used to be the only record it ever existed. It has no sidecar —
@@ -42,7 +44,17 @@ logger = logging.getLogger("kairos")
 # Fields an edit may change. Every one of them is written on every
 # ``batch_updated`` event, complete rather than as a diff: a replay then needs
 # only the last one, and a lost line cannot leave a half-applied edit.
-EDITABLE_FIELDS = ("project", "task", "condition", "target_episodes")
+EDITABLE_FIELDS = (
+    "robot",
+    "project_id",
+    "task_id",
+    "condition_id",
+    "project",
+    "task",
+    "condition",
+    "operator",
+    "target_episodes",
+)
 
 
 @dataclass(frozen=True)
@@ -76,6 +88,9 @@ class BatchService:
         payload: dict[str, Any] = {
             "batch_id": created.batch_id,
             "batch_seq": created.batch_seq,
+            "project_id": created.project_id,
+            "task_id": created.task_id,
+            "condition_id": created.condition_id,
             "project": created.project,
             "task": created.task,
             "target_episodes": created.target_episodes,
@@ -111,11 +126,17 @@ class BatchService:
                 "batch_updated",
                 {
                     "batch_id": batch_id,
+                    "robot": updated.robot,
+                    "project_id": updated.project_id,
+                    "task_id": updated.task_id,
+                    "condition_id": updated.condition_id,
                     "project": updated.project,
                     "task": updated.task,
                     "condition": updated.condition,
+                    "operator": updated.operator,
                     "target_episodes": updated.target_episodes,
                 },
+                preserve_none=True,
             )
         if "status" in fields:
             self._append(
@@ -215,11 +236,10 @@ class BatchService:
 
     def _apply(self, batch_id: str, fields: dict[str, Any]) -> None:
         """Apply a replayed edit, skipping a batch whose creation line is lost."""
-        usable = {k: v for k, v in fields.items() if v is not None}
-        if not usable:
+        if not fields:
             return
         try:
-            self._store.update_batch(batch_id, **usable)
+            self._store.update_batch(batch_id, enforce_label_invariant=False, **fields)
         except KeyError:
             # The creation line never made it (a truncated head). Inventing the
             # batch from an edit would give it a number nobody allocated, so
@@ -232,12 +252,19 @@ class BatchService:
 
     # ---- helpers -----------------------------------------------------------
 
-    def _append(self, kind: str, payload: dict[str, Any]) -> None:
+    def _append(
+        self, kind: str, payload: dict[str, Any], *, preserve_none: bool = False
+    ) -> None:
+        event_payload = (
+            payload
+            if preserve_none
+            else {key: value for key, value in payload.items() if value is not None}
+        )
         append_or_503(
             self._layout.data_dir,
             kind,
             instance_id=self._instance_id,
-            payload={k: v for k, v in payload.items() if v is not None},
+            payload=event_payload,
             failure=lambda exc: (
                 f"The lifecycle ledger could not be written ({exc}), so the "
                 "batch change was not applied. A batch that is not in the "
@@ -264,7 +291,9 @@ def _counter_warning(restored: list[str]) -> tuple[str, ...]:
 
 
 def _editable_from_event(event: dict[str, Any]) -> dict[str, Any]:
-    return {field: event.get(field) for field in EDITABLE_FIELDS}
+    # Old events omitted nulls. Newer events retain an explicit null to mean a
+    # label clear, so membership rather than ``get`` carries that distinction.
+    return {field: event[field] for field in EDITABLE_FIELDS if field in event}
 
 
 def _batch_from_event(batch_id: str, event: dict[str, Any]) -> Batch:
@@ -274,6 +303,9 @@ def _batch_from_event(batch_id: str, event: dict[str, Any]) -> Batch:
     return Batch(
         batch_id=batch_id,
         robot=_opt_str(event.get("robot")),
+        project_id=_opt_str(event.get("project_id")),
+        task_id=_opt_str(event.get("task_id")),
+        condition_id=_opt_str(event.get("condition_id")),
         project=_opt_str(event.get("project")),
         task=_opt_str(event.get("task")),
         condition=_opt_str(event.get("condition")),

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // A 1 Hz wall-clock tick used as the chart's window anchor, so the visible time
 // window scrolls smoothly between SSE snapshots (the same idiom the v1 Graph tab
 // and Live Scope band use). When `active` is false the clock FREEZES at its

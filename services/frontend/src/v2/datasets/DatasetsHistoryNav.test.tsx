@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // E-28, the Datasets half: a history navigation that changes THIS screen's keys.
 //
 // `App.tsx` adopts the URL's `?tab=` on `popstate`, with a comment saying why:

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The recorder wire contract (§10 rev.2.3/2.4), pinned by name.
 
 This file exists because both services' suites stayed green while the

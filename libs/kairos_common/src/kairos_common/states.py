@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared enum vocabularies from ``docs/specs/ja/config.md``."""
 
 from __future__ import annotations

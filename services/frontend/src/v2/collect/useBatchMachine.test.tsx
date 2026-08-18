@@ -1,9 +1,17 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { setApiBase } from '../../api/client';
+import { queryKeys } from '../../api/queryKeys';
 import { makeTestClient, jsonResponse } from '../../test/renderWithClient';
+import { __setPreArmRetryBaseMs } from './hooks/usePreArm';
+import {
+  __resetDiscardRetryMs,
+  __setDiscardRetryMs,
+} from './hooks/useCancelledStartCleanup';
 import { useUiStore } from '../../store/uiStore';
 import { isDestructiveFailure } from '../captures/errors';
 import {
@@ -14,9 +22,13 @@ import {
   __resetBatchStore,
   __setStopFloorMs,
   __resetStopFloorMs,
+  __setStopConfirmMs,
   __rehydrateBatchStore,
   EPISODES_PER_BATCH,
+  OPERATOR_GATE_HINT,
 } from './useBatchMachine';
+import { getStoreSnapshot } from './machine/store';
+import { getOperators } from '../plans';
 
 const BATCH_STORAGE_KEY = 'kairos.collect.batch';
 
@@ -279,7 +291,11 @@ test('PAUSE_BATCH / RESUME_BATCH only apply from ready / paused respectively', (
   const paused = reducer(ready, { type: 'PAUSE_BATCH' });
   expect(paused.phase).toBe('paused');
   // Can't pause again from a non-ready phase.
-  const recording = reducer(reducer(ready, { type: 'START_REQUESTED' }), { type: 'START_SUCCEEDED', captureId: null, runLabel: null });
+  const recording = reducer(reducer(ready, { type: 'START_REQUESTED' }), {
+    type: 'START_SUCCEEDED',
+    captureId: null,
+    runLabel: null,
+  });
   expect(reducer(recording, { type: 'PAUSE_BATCH' }).phase).toBe('recording');
   expect(reducer(paused, { type: 'RESUME_BATCH' }).phase).toBe('ready');
 });
@@ -290,6 +306,11 @@ test('PAUSE_BATCH / RESUME_BATCH only apply from ready / paused respectively', (
 
 function wrapper({ children }: { children: ReactNode }) {
   const client = makeTestClient();
+  client.setQueryData(queryKeys.configOptions, {
+    active_robot: 'test-robot',
+    robots: [],
+    aspects: {},
+  });
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
@@ -298,6 +319,11 @@ beforeEach(() => {
   // These tests are not about the Stop floor; they stop immediately after
   // starting, which the shipped 1s guard would (correctly) refuse.
   __setStopFloorMs(0);
+  // Nor about the flush-confirmation budget: a zero budget makes the
+  // post-stop poll a single check, so a mock that never reports terminal
+  // is refused immediately instead of after the shipped ~70s escalation
+  // window. The flush-success test below sets its own budget.
+  __setStopConfirmMs(0, 1);
   // The batch machine now lives in a module-level store (so it survives a
   // tab-switch unmount); reset it — and its localStorage mirror — between hook
   // tests so state can't leak from one test into the next.
@@ -306,7 +332,12 @@ beforeEach(() => {
   // leak customized state into each other.
   useUiStore.setState({
     activeTab: '',
-    recordOperator: '',
+    // Recording requires an operator since #11, in every configuration —
+    // so a suite that records has to say who is recording. The gate itself
+    // is exercised where it is the subject, not incidentally here.
+    recordOperator: 'tester',
+    operatorHydrated: true,
+    batchRestoreIssue: null,
     recordSelected: new Set<string>(),
     recordCustomized: false,
   });
@@ -316,6 +347,9 @@ afterEach(() => {
   // No-op for the ~84 tests on the real clock; unpins the system time for the
   // prediction tests that set it (restoreAllMocks does not restore timers).
   vi.useRealTimers();
+  // The cancelled-start discard retry is a module-level seam like the two
+  // above: restoreAllMocks does not touch it.
+  __resetDiscardRetryMs();
 });
 
 test('startRecording() calls /record/start and only then moves to recording', async () => {
@@ -414,7 +448,9 @@ test('once the floor has passed the stop goes through normally', async () => {
       return Promise.resolve(jsonResponse(captureBody('cap_ok')));
     }
     if (url.includes('/record/stop')) {
-      return Promise.resolve(jsonResponse(captureBody('cap_ok', { state: 'completed' })));
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_ok', { state: 'completed' })),
+      );
     }
     return Promise.resolve(jsonResponse({}));
   });
@@ -428,6 +464,428 @@ test('once the floor has passed the stop goes through normally', async () => {
 
   act(() => result.current.stopRecording());
   expect(result.current.phase).toBe('saving');
+});
+
+// ---------------------------------------------------------------------------
+// #8: the same double-click, one phase earlier. ARMING's Cancel sits where
+// Start was, so the second press backs out of a start that is already in
+// flight — and the recorder honours it, leaving a sub-second take behind.
+// ---------------------------------------------------------------------------
+
+/**
+ * A fetch mock whose /record/start and /record/stop are released by hand, so a
+ * test can act inside the windows this bug lives in.
+ *
+ * `onDelete` answers the Nth discard attempt (1-based), which is how the
+ * lease-race retry is driven; `status` is the GET /record/status body, which
+ * decides whether the cleanup believes the live take is ours.
+ */
+function cancelledStartFetch(
+  opts: {
+    onDelete?: (attempt: number) => Response;
+    status?: Record<string, unknown>;
+  } = {},
+) {
+  const {
+    onDelete = () => jsonResponse(captureBody('cap_cancel', { state: 'discarded' })),
+    // Nothing live: the ordinary case, in which the cleanup stops the recorder.
+    status = { state: 'completed', live_capture_ids: [] },
+  } = opts;
+  let releaseStart!: () => void;
+  let releaseStop!: () => void;
+  const startHeld = new Promise<void>((resolve) => {
+    releaseStart = resolve;
+  });
+  const stopHeld = new Promise<void>((resolve) => {
+    releaseStop = resolve;
+  });
+  let deleteAttempts = 0;
+  const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/record/start'))
+      return startHeld.then(() => jsonResponse(captureBody('cap_cancel')));
+    if (url.includes('/record/stop'))
+      return stopHeld.then(() =>
+        jsonResponse(captureBody('cap_cancel', { state: 'completed' })),
+      );
+    if (url.includes('/record/status')) return Promise.resolve(jsonResponse(status));
+    if (url.includes('/captures/cap_cancel/delete') && method === 'POST') {
+      deleteAttempts += 1;
+      return Promise.resolve(onDelete(deleteAttempts));
+    }
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  const calls = (fragment: string) =>
+    fetchMock.mock.calls.filter(([u]) => String(u).includes(fragment));
+  return { fetchMock, calls, releaseStart, releaseStop, startHeld, stopHeld };
+}
+
+/** 409 `capture_busy`, exactly as a digest lease answers a delete. */
+function busyResponse() {
+  return jsonResponse(
+    {
+      error: {
+        code: 'capture_busy',
+        message: '1 job is working on this recording.',
+        details: { lease_holders: [{ owner: 'digest' }] },
+      },
+    },
+    409,
+  );
+}
+
+/** Start, then cancel from inside the arming window. Returns once the machine
+ *  is back at READY with the start still in flight. */
+async function startThenCancel(result: {
+  current: ReturnType<typeof useBatchMachine>;
+}) {
+  act(() => result.current.startRecording());
+  expect(result.current.phase).toBe('arming');
+  // The guard (#8) holds Cancel shut for its first moments — a DELIBERATE
+  // cancel waits it out, which is what these tests are about.
+  await waitFor(() => expect(result.current.canCancelArming).toBe(true));
+  act(() => result.current.cancelArming());
+  expect(result.current.phase).toBe('ready');
+}
+
+test('a cancelled start stops the recorder and only then discards what it wrote', async () => {
+  const mock = cancelledStartFetch();
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await startThenCancel(result);
+
+  // The recorder answers anyway: it started, and there is now a take on disk.
+  await act(async () => {
+    mock.releaseStart();
+    await mock.startHeld;
+  });
+  await waitFor(() => expect(mock.calls('/record/stop')).toHaveLength(1));
+
+  // ORDER: the discard would be refused while the recorder still holds the
+  // capture, so nothing may be sent until the stop has RETURNED.
+  expect(mock.calls('/captures/cap_cancel/delete')).toHaveLength(0);
+
+  await act(async () => {
+    mock.releaseStop();
+    await mock.stopHeld;
+  });
+  await waitFor(() =>
+    expect(mock.calls('/captures/cap_cancel/delete')).toHaveLength(1),
+  );
+
+  // A §7 discard with a ledger reason naming the gesture — not a delete.
+  const del = mock.calls('/captures/cap_cancel/delete')[0]!;
+  expect((del[1] as RequestInit).method).toBe('POST');
+  expect(JSON.parse(String((del[1] as RequestInit).body))).toEqual({
+    kind: 'discard',
+    reason: 'Start cancelled during arming (Collect)',
+  });
+
+  // And the cancel left nothing behind locally either: no episode, no count,
+  // and the machine is back where the operator thinks it is.
+  expect(result.current.phase).toBe('ready');
+  expect(result.current.episodes).toHaveLength(0);
+  expect(result.current.stats.nRecorded).toBe(0);
+});
+
+// The race that made the fix intermittent: /record/stop QUEUES the digest, the
+// digest takes the §7.1 lease, and a leased capture answers a delete with 409
+// capture_busy. Sending the discard once, a millisecond after the stop returns,
+// loses this race often enough to leave the orphan the fix exists to remove.
+test('a discard refused by the digest lease is retried until it lands', async () => {
+  __setDiscardRetryMs(5000, 1);
+  const mock = cancelledStartFetch({
+    onDelete: (attempt) =>
+      attempt < 3
+        ? busyResponse()
+        : jsonResponse(captureBody('cap_cancel', { state: 'discarded' })),
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await startThenCancel(result);
+  await act(async () => {
+    mock.releaseStart();
+    await mock.startHeld;
+  });
+  await waitFor(() => expect(mock.calls('/record/stop')).toHaveLength(1));
+  await act(async () => {
+    mock.releaseStop();
+    await mock.stopHeld;
+  });
+
+  // Two refusals, then the lease is released and the third attempt succeeds.
+  await waitFor(() =>
+    expect(mock.calls('/captures/cap_cancel/delete')).toHaveLength(3),
+  );
+  await waitFor(() => expect(result.current.toast).toContain('discarded'));
+  // The operator is told it went, because it did.
+  expect(result.current.toast).not.toContain('working on this');
+});
+
+// The retry is bounded. A capture still held past the budget is held by
+// something other than the quick digest we predicted, and saying so beats
+// spinning.
+test('a discard refused past the retry budget reports the refusal', async () => {
+  __setDiscardRetryMs(30, 1);
+  const mock = cancelledStartFetch({ onDelete: () => busyResponse() });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await startThenCancel(result);
+  await act(async () => {
+    mock.releaseStart();
+    await mock.startHeld;
+  });
+  await act(async () => {
+    mock.releaseStop();
+    await mock.stopHeld;
+  });
+
+  await waitFor(() => expect(result.current.toast).toContain('working on this'));
+  // It gave up rather than hammering: bounded, not unbounded.
+  expect(mock.calls('/captures/cap_cancel/delete').length).toBeLessThan(20);
+});
+
+// A failed discard must not evaporate with the toast. The capture list is
+// invalidated on every outcome, so the take it could not remove comes back as
+// an unsaved take — a server-backed banner that survives the tab switch a
+// toast does not.
+test('a discard that could not remove the take leaves it on the unsaved banner', async () => {
+  __setDiscardRetryMs(30, 1);
+  // The take the discard fails to remove is still on the server, so the scan
+  // that feeds the recovery banner keeps finding it.
+  const orphan = captureBody('cap_cancel', {
+    state: 'completed',
+    started_at: new Date().toISOString(),
+    review_revision: 0,
+  });
+  const mock = cancelledStartFetch({ onDelete: () => busyResponse() });
+  mock.fetchMock.mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/record/start'))
+      return mock.startHeld.then(() => jsonResponse(captureBody('cap_cancel')));
+    if (url.includes('/record/stop'))
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_cancel', { state: 'completed' })),
+      );
+    if (url.includes('/record/status'))
+      return Promise.resolve(
+        jsonResponse({ state: 'completed', live_capture_ids: [] }),
+      );
+    if (url.includes('/captures/cap_cancel/delete') && method === 'POST')
+      return Promise.resolve(busyResponse());
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [orphan], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await startThenCancel(result);
+  await act(async () => {
+    mock.releaseStart();
+    await mock.startHeld;
+  });
+
+  // The refusal reaches the toast AND the take is still offered for recovery,
+  // which is the surface that outlives this screen.
+  await waitFor(() => expect(result.current.toast).toContain('working on this'));
+  await waitFor(() => expect(result.current.unsavedTake?.captureId).toBe('cap_cancel'));
+});
+
+// POST /record/stop names no capture — the orchestrator stops the newest
+// non-terminal row. A cleanup that fires it blind can therefore end a take this
+// screen never started (D-1 takeover is a modelled state, not a hypothetical).
+test("the cleanup does not stop a take that is provably another driver's", async () => {
+  const mock = cancelledStartFetch({
+    status: {
+      state: 'recording',
+      capture_id: 'cap_other',
+      live_capture_ids: ['cap_other'],
+    },
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await startThenCancel(result);
+  await act(async () => {
+    mock.releaseStart();
+    await mock.startHeld;
+  });
+
+  // Ours is gone from the live set, so somebody else is recording: leave their
+  // take alone …
+  await waitFor(() =>
+    expect(mock.calls('/captures/cap_cancel/delete')).toHaveLength(1),
+  );
+  expect(mock.calls('/record/stop')).toHaveLength(0);
+  // … and still remove ours.
+  expect(
+    JSON.parse(
+      String((mock.calls('/captures/cap_cancel/delete')[0]![1] as RequestInit).body),
+    ),
+  ).toMatchObject({ kind: 'discard' });
+});
+
+// The other branch: the live take IS ours, so the stop is exactly what should
+// happen.
+test('the cleanup does stop the recorder when the live take is ours', async () => {
+  const mock = cancelledStartFetch({
+    status: {
+      state: 'recording',
+      capture_id: 'cap_cancel',
+      live_capture_ids: ['cap_cancel'],
+    },
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await startThenCancel(result);
+  await act(async () => {
+    mock.releaseStart();
+    await mock.startHeld;
+  });
+  await waitFor(() => expect(mock.calls('/record/stop')).toHaveLength(1));
+  await act(async () => {
+    mock.releaseStop();
+    await mock.stopHeld;
+  });
+  await waitFor(() =>
+    expect(mock.calls('/captures/cap_cancel/delete')).toHaveLength(1),
+  );
+});
+
+// Two cancels in a row must produce two discards. The shared deletion hook
+// answers a second call while one is in flight with a silent `return`, which
+// would drop the only thing that would ever remove the second orphan.
+test('a second cancelled start is cleaned up too, not dropped', async () => {
+  const deleted: string[] = [];
+  // A fresh held start per press, so both cancels happen mid-flight — the only
+  // way two cleanups are ever in the air at once.
+  const releases: (() => void)[] = [];
+  let nth = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/record/start')) {
+      const id = `cap_${++nth}`;
+      return new Promise<Response>((resolve) => {
+        releases.push(() => resolve(jsonResponse(captureBody(id))));
+      });
+    }
+    if (url.includes('/record/stop'))
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_x', { state: 'completed' })),
+      );
+    if (url.includes('/record/status'))
+      return Promise.resolve(
+        jsonResponse({ state: 'completed', live_capture_ids: [] }),
+      );
+    const del = url.match(/\/captures\/([^/]+)\/delete/);
+    if (del && method === 'POST') {
+      deleted.push(del[1]!);
+      return Promise.resolve(
+        jsonResponse(captureBody(del[1]!, { state: 'discarded' })),
+      );
+    }
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  for (let i = 0; i < 2; i++) {
+    await startThenCancel(result);
+    await waitFor(() => expect(releases).toHaveLength(i + 1));
+    await act(async () => {
+      releases[i]!();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(deleted).toHaveLength(i + 1));
+  }
+  // Both takes removed, each by its own id — neither swallowed by a shared
+  // in-flight flag.
+  expect(deleted).toEqual(['cap_1', 'cap_2']);
+});
+
+// Ending the set while ARMING is as much a "never mind" as Cancel is, and it
+// shares the same flag — so it must leave the same nothing behind.
+test('ending the set while arming stops and discards the take too', async () => {
+  const mock = cancelledStartFetch();
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  expect(result.current.phase).toBe('arming');
+  // This exercises terminal cancellation after the recorder request has
+  // actually been issued. Batch creation makes that distinct from a cancel
+  // while its promise is still pending.
+  await waitFor(() => expect(mock.calls('/record/start')).toHaveLength(1));
+
+  act(() => result.current.openEndModal());
+  act(() => result.current.pickEndReason('Out of time'));
+  act(() => result.current.confirmEndBatch());
+
+  await act(async () => {
+    mock.releaseStart();
+    await mock.startHeld;
+  });
+  await waitFor(() => expect(mock.calls('/record/stop')).toHaveLength(1));
+  await act(async () => {
+    mock.releaseStop();
+    await mock.stopHeld;
+  });
+  await waitFor(() =>
+    expect(mock.calls('/captures/cap_cancel/delete')).toHaveLength(1),
+  );
+  await waitFor(() => expect(result.current.phase).toBe('ended'));
+  expect(
+    JSON.parse(
+      String((mock.calls('/captures/cap_cancel/delete')[0]![1] as RequestInit).body),
+    ),
+  ).toMatchObject({ reason: 'Start cancelled during arming (Collect)' });
+});
+
+// The guard is a property of the MACHINE, not of the button: Escape reaches
+// cancelArming without passing the control, so a guard that only disabled the
+// button would be walked around by the keyboard.
+test('Escape cannot cancel inside the guard window, and can after it', async () => {
+  const mock = cancelledStartFetch();
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  expect(result.current.phase).toBe('arming');
+
+  // Inside the window: refused, exactly as the disabled button would.
+  expect(result.current.canCancelArming).toBe(false);
+  act(() => result.current.cancelArming());
+  expect(result.current.phase).toBe('arming');
+
+  // After it: a deliberate cancel still works.
+  await waitFor(() => expect(result.current.canCancelArming).toBe(true));
+  act(() => result.current.cancelArming());
+  expect(result.current.phase).toBe('ready');
+
+  await act(async () => {
+    mock.releaseStart();
+    await mock.startHeld;
+  });
 });
 
 // The recorder can reject a start with HTTP 200 + state: "failed" (the row is
@@ -484,7 +942,9 @@ test('stopRecording() optimistically moves to saving and calls /record/stop', as
       return Promise.resolve(jsonResponse(captureBody('cap_1')));
     }
     if (url.includes('/record/stop')) {
-      return Promise.resolve(jsonResponse(captureBody('cap_1', { state: 'completed' })));
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_1', { state: 'completed' })),
+      );
     }
     return Promise.resolve(jsonResponse({}));
   });
@@ -516,7 +976,9 @@ test('a stop the recorder did not honour keeps the screen on saving', async () =
     }
     if (url.includes('/record/stop')) {
       // 200 with the last capture — the idempotent no-op answer.
-      return Promise.resolve(jsonResponse(captureBody('cap_1', { state: 'completed' })));
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_1', { state: 'completed' })),
+      );
     }
     if (url.includes('/record/status')) {
       // ...but the recorder is still going, and still names our capture live.
@@ -554,7 +1016,9 @@ test('a stop is refused while live_capture_ids still names our capture', async (
     if (url.includes('/record/start'))
       return Promise.resolve(jsonResponse(captureBody('cap_1')));
     if (url.includes('/record/stop'))
-      return Promise.resolve(jsonResponse(captureBody('cap_1', { state: 'completed' })));
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_1', { state: 'completed' })),
+      );
     if (url.includes('/record/status'))
       return Promise.resolve(
         jsonResponse({
@@ -574,8 +1038,132 @@ test('a stop is refused while live_capture_ids still names our capture', async (
   await waitFor(() => expect(result.current.phase).toBe('recording'));
 
   act(() => result.current.stopRecording());
-  await waitFor(() => expect(result.current.stopError?.code).toBe('stop_not_confirmed'));
+  await waitFor(() =>
+    expect(result.current.stopError?.code).toBe('stop_not_confirmed'),
+  );
   expect(result.current.phase).toBe('saving');
+});
+
+// The UX fix (2026-08-07): a recorder that is merely FLUSHING is not a failed
+// stop. rosbag2 drains its cache for seconds after /record/stop returns, and
+// that used to surface as stop_not_confirmed on the very first status check.
+// The confirmation now POLLS until the recorder reports terminal and only
+// errors past the escalation budget — so a flush that finishes inside it
+// advances to QUICK CHECK with no error ever shown.
+test('a stop that confirms on a later poll (flush in progress) is not an error', async () => {
+  // Real budget semantics, fast cadence so several polls fit in the test.
+  __setStopConfirmMs(5000, 5);
+  let stopCalled = false;
+  let postStopStatusCalls = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start'))
+      return Promise.resolve(jsonResponse(captureBody('cap_1')));
+    if (url.includes('/record/stop')) {
+      stopCalled = true;
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_1', { state: 'completed' })),
+      );
+    }
+    if (url.includes('/record/status')) {
+      if (!stopCalled) return Promise.resolve(jsonResponse({}));
+      postStopStatusCalls += 1;
+      if (postStopStatusCalls <= 2) {
+        // Still draining the cache to disk — normal progress, not a failure.
+        return Promise.resolve(
+          jsonResponse({
+            capture_id: 'cap_1',
+            run_id: 'run_cap_1',
+            state: 'stopping',
+            live_capture_ids: ['cap_1'],
+          }),
+        );
+      }
+      // The flush finished: terminal state, nothing live.
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: 'cap_1',
+          run_id: 'run_cap_1',
+          state: 'completed',
+          live_capture_ids: [],
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  act(() => result.current.stopRecording());
+  expect(result.current.phase).toBe('saving');
+  await waitFor(() => expect(result.current.phase).toBe('quickcheck'));
+  expect(result.current.stopError).toBeNull();
+});
+
+// S2-2 (timing sweep 2026-08-07): a transient status-read failure during the
+// confirmation must not fail the stop. The recorder's status route shares its
+// finalise lock, so a 503/timeout lands exactly while a large bag flushes —
+// aborting there resurrected the stop_not_confirmed banner one fix after it
+// was cured. Only the deadline may call the stop failed.
+test('a status read that fails mid-confirmation keeps polling, not STOP_FAILED', async () => {
+  __setStopConfirmMs(5000, 5);
+  let stopCalled = false;
+  let postStopStatusCalls = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/record/start'))
+      return Promise.resolve(jsonResponse(captureBody('cap_1')));
+    if (url.includes('/record/stop')) {
+      stopCalled = true;
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_1', { state: 'completed' })),
+      );
+    }
+    if (url.includes('/record/status')) {
+      if (!stopCalled) return Promise.resolve(jsonResponse({}));
+      postStopStatusCalls += 1;
+      // First read: the busy recorder 503s. Second read: still flushing.
+      // Third: settled. None of these may surface as a failed stop.
+      if (postStopStatusCalls === 1) {
+        return Promise.reject(new TypeError('fetch failed'));
+      }
+      if (postStopStatusCalls === 2) {
+        return Promise.resolve(
+          jsonResponse({
+            capture_id: 'cap_1',
+            run_id: 'run_cap_1',
+            state: 'stopping',
+            live_capture_ids: ['cap_1'],
+          }),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: 'cap_1',
+          run_id: 'run_cap_1',
+          state: 'completed',
+          live_capture_ids: [],
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  act(() => result.current.stopRecording());
+  expect(result.current.phase).toBe('saving');
+  await waitFor(() => expect(result.current.phase).toBe('quickcheck'));
+  expect(result.current.stopError).toBeNull();
+  expect(postStopStatusCalls).toBeGreaterThanOrEqual(3);
 });
 
 // ---------------------------------------------------------------------------
@@ -706,9 +1294,8 @@ test('startRecording sends operator (trimmed) + configured topics', async () => 
   expect(body.topics).toEqual(['/a', '/b']);
 });
 
-test('startRecording omits operator when the store value is blank, defaults to all topics', async () => {
+test('startRecording defaults to all topics when nothing is configured', async () => {
   const fetchMock = startFetch();
-  // recordOperator stays '' (reset in beforeEach).
   const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
     wrapper,
   });
@@ -717,8 +1304,46 @@ test('startRecording omits operator when the store value is blank, defaults to a
 
   const call = fetchMock.mock.calls.find(([u]) => String(u).includes('/record/start'));
   const body = JSON.parse(String((call![1] as RequestInit).body));
-  expect('operator' in body).toBe(false);
   expect(body.topics).toBe('all');
+});
+
+// REPLACES 'startRecording omits operator when the store value is blank'. That
+// test asserted the old contract — a blank name simply left `operator` out of
+// the body, and the orchestrator filled in `unknown_operator`, which is how a
+// real capture ended up owned by nobody (#11). A blank name is now refused
+// outright, so there is no such body to inspect.
+test('startRecording is refused with no operator, and says so', async () => {
+  const fetchMock = startFetch();
+  useUiStore.setState({ recordOperator: '   ' }); // whitespace is not a name
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  expect(result.current.operatorMissing).toBe(true);
+
+  act(() => result.current.startRecording());
+
+  // Nothing was sent and nothing moved: no half-started take to reconcile.
+  expect(result.current.phase).toBe('ready');
+  expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/record/start'))).toBe(
+    false,
+  );
+  // And the refusal explains itself rather than reading as a dead button.
+  expect(result.current.toast).toBe(OPERATOR_GATE_HINT);
+  expect(result.current.toast).toContain('OP');
+});
+
+// The gate is not the roster's any more: it holds in the shipped default,
+// where Settings has no operator list at all.
+test('the operator gate holds with an empty roster, and lifts once a name is set', async () => {
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  expect(getOperators()).toEqual([]); // the shipped default
+  useUiStore.setState({ recordOperator: '' });
+  await waitFor(() => expect(result.current.operatorMissing).toBe(true));
+
+  useUiStore.setState({ recordOperator: 'tester' });
+  await waitFor(() => expect(result.current.operatorMissing).toBe(false));
 });
 
 test('selection resolution: customized set → explicit topics; empty customized set disables Start', () => {
@@ -803,7 +1428,9 @@ test('Discard: a capture_busy refusal names the lease holder and keeps the take'
     if (url.includes('/record/start'))
       return Promise.resolve(jsonResponse(captureBody('cap_9')));
     if (url.includes('/record/stop'))
-      return Promise.resolve(jsonResponse(captureBody('cap_9', { state: 'completed' })));
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_9', { state: 'completed' })),
+      );
     if (url.includes('/captures/cap_9/delete') && method === 'POST') {
       return busy
         ? Promise.resolve(
@@ -841,9 +1468,7 @@ test('Discard: a capture_busy refusal names the lease holder and keeps the take'
   await act(async () => {
     result.current.discardEpisode();
   });
-  await waitFor(() =>
-    expect(result.current.episodeDiscard.failures).toHaveLength(1),
-  );
+  await waitFor(() => expect(result.current.episodeDiscard.failures).toHaveLength(1));
   // Refused: the take survives on the result panel, nothing opened, and the
   // failure names the job the operator is waiting on.
   expect(result.current.episodeDiscard.kind).toBeNull();
@@ -860,8 +1485,7 @@ test('Discard: a capture_busy refusal names the lease holder and keeps the take'
   expect(result.current.episodes).toHaveLength(0);
   const del = fetchMock.mock.calls
     .filter(
-      ([u, i]) =>
-        String(u).includes('/captures/cap_9/delete') && i?.method === 'POST',
+      ([u, i]) => String(u).includes('/captures/cap_9/delete') && i?.method === 'POST',
     )
     .at(-1);
   expect(JSON.parse(String((del![1] as RequestInit).body))).toEqual({
@@ -902,7 +1526,9 @@ function recordFlowFetch(captureId: string) {
     }
     if (url.includes('/review') && method === 'PATCH') {
       return Promise.resolve(
-        jsonResponse(captureBody(captureId, { state: 'completed', review_revision: 1 })),
+        jsonResponse(
+          captureBody(captureId, { state: 'completed', review_revision: 1 }),
+        ),
       );
     }
     if (url.includes('/captures'))
@@ -1119,7 +1745,15 @@ function phase2Fetch(opts: Phase2Opts = {}) {
       );
     }
     if (url.includes('/batches') && method === 'GET') {
-      return Promise.resolve(jsonResponse({ items: listItems }));
+      const status = new URL(url, window.location.origin).searchParams.get('status');
+      return Promise.resolve(
+        jsonResponse({
+          items:
+            status === 'active'
+              ? listItems.filter((item) => item.status === 'active')
+              : listItems,
+        }),
+      );
     }
     if (url.includes('/review') && method === 'PATCH') {
       if (opts.reviewFails) {
@@ -1198,6 +1832,185 @@ test('starting a recording creates a server batch with the plan context', async 
     operator: 'yuki',
     target_episodes: EPISODES_PER_BATCH,
   });
+  const start = calls.find((c) => c.url.includes('/record/start'))!;
+  expect(start.body?.collection_context).toEqual({
+    batch_id: 'batch_x',
+    batch_seq: null,
+    project_id: 'project-tabletop-manipulation',
+    task_id: 'task-pick-and-place',
+    condition_id: 'condition-object-left-tray-center',
+    project: 'Tabletop Manipulation',
+    task: 'Pick and Place',
+    condition: 'Object: Left → Tray: Center',
+    robot: 'test-robot',
+    operator: 'yuki',
+  });
+});
+
+test('cancelling while batch creation is pending never starts recording and permits retry', async () => {
+  let releaseCreate!: () => void;
+  const createHeld = new Promise<Response>((resolve) => {
+    releaseCreate = () =>
+      resolve(
+        jsonResponse(
+          {
+            batch_id: 'batch-pending',
+            batch_seq: 9,
+            status: 'active',
+          },
+          201,
+        ),
+      );
+  });
+  let recordStarts = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/config/options')) {
+      return Promise.resolve(
+        jsonResponse({ active_robot: 'test-robot', robots: [], aspects: {} }),
+      );
+    }
+    if (url.endsWith('/batches') && method === 'POST') return createHeld;
+    if (url.includes('/batches/batch-pending') && method === 'GET') {
+      return Promise.resolve(
+        jsonResponse({
+          batch_id: 'batch-pending',
+          batch_seq: 9,
+          robot: 'test-robot',
+          operator: 'tester',
+          project: 'Tabletop Manipulation',
+          task: 'Pick and Place',
+          condition: 'Object: Left → Tray: Center',
+          target_episodes: 30,
+          status: 'active',
+          episode_count: 0,
+          captures: [],
+        }),
+      );
+    }
+    if (url.includes('/batches') && method === 'GET') {
+      return Promise.resolve(jsonResponse({ items: [] }));
+    }
+    if (url.includes('/record/start')) {
+      recordStarts += 1;
+      return Promise.resolve(jsonResponse(captureBody('cap-retry')));
+    }
+    if (url.includes('/captures')) {
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  expect(result.current.phase).toBe('arming');
+  await waitFor(() => expect(result.current.canCancelArming).toBe(true));
+
+  act(() => result.current.cancelArming());
+  expect(result.current.phase).toBe('ready');
+  await act(async () => {
+    releaseCreate();
+    await createHeld;
+  });
+  await waitFor(() => expect(recordStarts).toBe(0));
+  expect(result.current.phase).toBe('ready');
+
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  expect(recordStarts).toBe(1);
+});
+
+test('Start refreshes a restored batch sequence before freezing collection context', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchSeq: null,
+      recordedCount: 0,
+      batchId: 'batch-restored',
+      episodes: [],
+      project: 'Project',
+      task: 'Task',
+      condition: 'Condition',
+      lastCaptureId: null,
+    }),
+  );
+  __rehydrateBatchStore();
+  const starts: Record<string, unknown>[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/batches/batch-restored') && method === 'GET') {
+      return Promise.resolve(
+        jsonResponse({
+          batch_id: 'batch-restored',
+          batch_seq: 12,
+          robot: 'test-robot',
+          operator: 'tester',
+          project: 'Project',
+          task: 'Task',
+          condition: 'Condition',
+          status: 'active',
+          target_episodes: 30,
+          episode_count: 0,
+          captures: [],
+        }),
+      );
+    }
+    if (url.includes('/record/start')) {
+      starts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Promise.resolve(jsonResponse(captureBody('cap-seq')));
+    }
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  expect(starts).toHaveLength(1);
+  expect(starts[0]?.collection_context).toMatchObject({
+    batch_id: 'batch-restored',
+    batch_seq: 12,
+    robot: 'test-robot',
+    operator: 'tester',
+  });
+});
+
+test('Start records with a null batch snapshot when batch creation fails', async () => {
+  const starts: Record<string, unknown>[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.endsWith('/batches') && method === 'POST') {
+      return Promise.reject(new Error('batch service unavailable'));
+    }
+    if (url.includes('/record/start')) {
+      starts.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+      return Promise.resolve(jsonResponse(captureBody('cap-unbatched')));
+    }
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+
+  expect(starts).toHaveLength(1);
+  expect(starts[0]?.collection_context).toMatchObject({
+    batch_id: null,
+    batch_seq: null,
+    robot: 'test-robot',
+    operator: 'tester',
+  });
 });
 
 // M5: Coverage is read from the batch's `episodes_recorded`, which the server
@@ -1230,9 +2043,7 @@ test('a review save invalidates the batches the coverage figure is read from', a
   // reaches it by prefix — the figure refreshes with the strip instead of
   // waiting out its own 30-second interval.
   await waitFor(() =>
-    expect(
-      invalidated.some((k) => Array.isArray(k) && k[0] === 'batches'),
-    ).toBe(true),
+    expect(invalidated.some((k) => Array.isArray(k) && k[0] === 'batches')).toBe(true),
   );
 });
 
@@ -1357,7 +2168,9 @@ test('auto quality prefers the settled quick_check verdict over integrity', asyn
       quick_check: {
         verdict: {
           quality: 'needs_review',
-          reasons: ['/hsrb/hand_camera/image_raw/compressed avg 9.982Hz < expected 30Hz'],
+          reasons: [
+            '/hsrb/hand_camera/image_raw/compressed avg 9.982Hz < expected 30Hz',
+          ],
         },
       },
     },
@@ -1433,6 +2246,272 @@ test('ending a batch early PATCHes the server batch to ended_early', async () =>
     (c) => c.url.includes('/batches/batch_e') && c.method === 'PATCH',
   )!;
   expect(patch.body).toMatchObject({ status: 'ended_early', ended_reason: 'Safety' });
+});
+
+test('End batch waits for stop confirmation before it PATCHes or leaves recording', async () => {
+  let releaseStop!: () => void;
+  let stopped = false;
+  const stopHeld = new Promise<void>((resolve) => {
+    releaseStop = () => {
+      stopped = true;
+      resolve();
+    };
+  });
+  const calls: Array<{ url: string; method: string }> = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    calls.push({ url, method });
+    if (url.includes('/record/start'))
+      return Promise.resolve(jsonResponse(captureBody('cap_end')));
+    if (url.includes('/record/stop'))
+      return stopHeld.then(() =>
+        jsonResponse(captureBody('cap_end', { state: 'completed' })),
+      );
+    if (url.includes('/record/status'))
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: 'cap_end',
+          state: stopped ? 'completed' : 'recording',
+          live_capture_ids: stopped ? [] : ['cap_end'],
+        }),
+      );
+    if (url.includes('/batches') && method === 'POST')
+      return Promise.resolve(
+        jsonResponse({ batch_id: 'batch_end', batch_seq: 1 }, 201),
+      );
+    if (url.includes('/batches/batch_end') && method === 'PATCH')
+      return Promise.resolve(
+        jsonResponse({ batch_id: 'batch_end', status: 'ended_early' }),
+      );
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  await waitFor(() => expect(result.current.batchSeq).toBe(1));
+  act(() => result.current.pickEndReason('Safety'));
+  act(() => result.current.confirmEndBatch());
+  await waitFor(() =>
+    expect(calls.some((call) => call.url.includes('/record/stop'))).toBe(true),
+  );
+
+  expect(result.current.phase).toBe('saving');
+  expect(
+    calls.some(
+      (call) => call.url.includes('/batches/batch_end') && call.method === 'PATCH',
+    ),
+  ).toBe(false);
+
+  await act(async () => {
+    releaseStop();
+    await stopHeld;
+  });
+  await waitFor(() => expect(result.current.phase).toBe('ended'));
+  expect(
+    calls.some(
+      (call) => call.url.includes('/batches/batch_end') && call.method === 'PATCH',
+    ),
+  ).toBe(true);
+});
+
+test('Reset waits for stop confirmation before it PATCHes or clears the batch', async () => {
+  let releaseStop!: () => void;
+  let stopped = false;
+  const stopHeld = new Promise<void>((resolve) => {
+    releaseStop = () => {
+      stopped = true;
+      resolve();
+    };
+  });
+  const calls: Array<{ url: string; method: string }> = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    calls.push({ url, method });
+    if (url.includes('/record/start'))
+      return Promise.resolve(jsonResponse(captureBody('cap_reset')));
+    if (url.includes('/record/stop'))
+      return stopHeld.then(() =>
+        jsonResponse(captureBody('cap_reset', { state: 'completed' })),
+      );
+    if (url.includes('/record/status'))
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: 'cap_reset',
+          state: stopped ? 'completed' : 'recording',
+          live_capture_ids: stopped ? [] : ['cap_reset'],
+        }),
+      );
+    if (url.includes('/batches') && method === 'POST')
+      return Promise.resolve(
+        jsonResponse({ batch_id: 'batch_reset', batch_seq: 1 }, 201),
+      );
+    if (url.includes('/batches/batch_reset') && method === 'PATCH')
+      return Promise.resolve(
+        jsonResponse({ batch_id: 'batch_reset', status: 'ended_early' }),
+      );
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  await waitFor(() => expect(result.current.batchSeq).toBe(1));
+  act(() => result.current.resetBatch());
+  await waitFor(() =>
+    expect(calls.some((call) => call.url.includes('/record/stop'))).toBe(true),
+  );
+
+  expect(result.current.phase).toBe('saving');
+  expect(result.current.batchSeq).toBe(1);
+  expect(
+    calls.some(
+      (call) => call.url.includes('/batches/batch_reset') && call.method === 'PATCH',
+    ),
+  ).toBe(false);
+
+  await act(async () => {
+    releaseStop();
+    await stopHeld;
+  });
+  await waitFor(() => expect(result.current.phase).toBe('ready'));
+  expect(result.current.batchSeq).toBeNull();
+  expect(
+    calls.some(
+      (call) => call.url.includes('/batches/batch_reset') && call.method === 'PATCH',
+    ),
+  ).toBe(true);
+});
+
+test('Reset after an unknown arming start does not blindly stop another driver', async () => {
+  let rejectStart!: (error: Error) => void;
+  const startHeld = new Promise<Response>((_resolve, reject) => {
+    rejectStart = reject;
+  });
+  const calls: Array<{ url: string; method: string }> = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    calls.push({ url, method });
+    if (url.includes('/record/start')) return startHeld;
+    if (url.includes('/batches') && method === 'POST')
+      return Promise.resolve(
+        jsonResponse({ batch_id: 'batch_unknown_start', batch_seq: 1 }, 201),
+      );
+    if (url.includes('/batches/batch_unknown_start') && method === 'PATCH')
+      return Promise.resolve(
+        jsonResponse({ batch_id: 'batch_unknown_start', status: 'ended_early' }),
+      );
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.startRecording());
+  expect(result.current.phase).toBe('arming');
+  await waitFor(() => expect(result.current.batchSeq).toBe(1));
+
+  act(() => result.current.resetBatch());
+  rejectStart(new Error('start transport failed'));
+
+  await waitFor(() => expect(result.current.phase).toBe('ready'));
+  expect(result.current.batchSeq).toBeNull();
+  expect(calls.some((call) => call.url.includes('/record/stop'))).toBe(false);
+  expect(
+    calls.some(
+      (call) =>
+        call.url.includes('/batches/batch_unknown_start') && call.method === 'PATCH',
+    ),
+  ).toBe(true);
+});
+
+test('a rejected end PATCH keeps the batch open and offers retry', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchId: 'batch_503',
+      batchSeq: 3,
+      episodes: [{ index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap_1' }],
+    }),
+  );
+  __rehydrateBatchStore();
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/batches/batch_503') && method === 'PATCH')
+      return Promise.resolve(
+        jsonResponse(
+          { error: { code: 'unavailable', message: 'try later', details: {} } },
+          503,
+        ),
+      );
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  act(() => result.current.pickEndReason('Safety'));
+  act(() => result.current.confirmEndBatch());
+
+  await waitFor(() => expect(result.current.toast).toContain('Retry End batch'));
+  expect(result.current.phase).toBe('ready');
+  expect(result.current.stats.nRecorded).toBe(1);
+  expect(result.current.batchSeq).toBe(3);
+});
+
+test('a rejected target PATCH does not locally change the target or completion state', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchId: 'batch_target_503',
+      batchSeq: 4,
+      episodes: [{ index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap_1' }],
+    }),
+  );
+  __rehydrateBatchStore();
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/batches/batch_target_503') && method === 'PATCH')
+      return Promise.resolve(
+        jsonResponse(
+          { error: { code: 'unavailable', message: 'try later', details: {} } },
+          503,
+        ),
+      );
+    if (url.includes('/captures'))
+      return Promise.resolve(jsonResponse({ items: [], next_cursor: null }));
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+
+  act(() => result.current.changeTarget(1));
+
+  await waitFor(() =>
+    expect(result.current.toast).toContain('Set target was not saved'),
+  );
+  expect(result.current.targetEpisodes).toBe(EPISODES_PER_BATCH);
+  expect(result.current.phase).toBe('ready');
+  expect(result.current.stats.nRecorded).toBe(1);
 });
 
 test('completing the 30th episode PATCHes the batch to completed', async () => {
@@ -1625,10 +2704,7 @@ test('the active-batch restore reads the batch detail for its episodes', async (
   // The strip is populated from the detail's captures, keyed by capture_id and
   // placed by index_in_batch (§1) — not merely counted.
   await waitFor(() => expect(result.current.episodes).toHaveLength(2));
-  expect(result.current.episodes.map((e) => e.captureId)).toEqual([
-    'cap_d1',
-    'cap_d2',
-  ]);
+  expect(result.current.episodes.map((e) => e.captureId)).toEqual(['cap_d1', 'cap_d2']);
   expect(result.current.episodes.map((e) => e.index)).toEqual([1, 2]);
   expect(result.current.stats.nReview).toBe(1);
   expect(result.current.batchSeq).toBe(3);
@@ -2129,8 +3205,7 @@ test('discarding the take refreshes the capture cache and re-arms for a retake',
   await waitFor(() => expect(result.current.phase).toBe('ready'));
   expect(result.current.episodeDiscard.kind).toBeNull();
   const del = fetchMock.mock.calls.find(
-    ([u, i]) =>
-      String(u).includes('/captures/cap_disc/delete') && i?.method === 'POST',
+    ([u, i]) => String(u).includes('/captures/cap_disc/delete') && i?.method === 'POST',
   );
   expect(JSON.parse(String((del![1] as RequestInit).body))).toEqual({
     kind: 'discard',
@@ -2160,7 +3235,7 @@ test('resetBatch clears the counts, PATCHes the batch ended_early=reset, and del
 
   // Counts back to 0/30, batch number cleared (server re-assigns on next record),
   // back to a ready fresh batch.
-  expect(result.current.stats.nRecorded).toBe(0);
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(0));
   expect(result.current.stats.epNext).toBe(1);
   expect(result.current.batchSeq).toBeNull();
   expect(result.current.phase).toBe('ready');
@@ -2197,7 +3272,7 @@ test('after a reset, the next recording start lazily creates a fresh server batc
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
 
   act(() => result.current.resetBatch());
-  expect(result.current.stats.nRecorded).toBe(0);
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(0));
 
   const postsBefore = calls.filter(
     (c) => c.url.includes('/batches') && c.method === 'POST',
@@ -2312,10 +3387,12 @@ test('changing the condition once the set has a recording rolls the set over (ol
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
   expect(result.current.batchSeq).toBe(5);
 
-  act(() => result.current.pickCondition('Object: Center → Tray: Center'));
+  await act(async () => {
+    await result.current.pickCondition('Object: Center → Tray: Center');
+  });
 
   // Rolled over: a fresh empty set, target inherited, next number predicted.
-  expect(result.current.stats.nRecorded).toBe(0);
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(0));
   expect(result.current.batchSeq).toBeNull();
   expect(result.current.targetEpisodes).toBe(20);
   expect(result.current.condition).toBe('Object: Center → Tray: Center');
@@ -2358,7 +3435,9 @@ test('changing the condition before any recording updates in place (PATCH {condi
   await waitFor(() => expect(result.current.batchSeq).toBe(4));
   expect(result.current.stats.nRecorded).toBe(0);
 
-  act(() => result.current.pickCondition('Object: Right → Tray: Center'));
+  await act(async () => {
+    await result.current.pickCondition('Object: Right → Tray: Center');
+  });
 
   // In place: same set (id + number), condition updated, nothing rolled over.
   expect(result.current.batchSeq).toBe(4);
@@ -2403,12 +3482,16 @@ test('pickCustomCondition trims whitespace and ignores an empty value', async ()
   await waitFor(() => expect(result.current.batchSeq).toBe(4));
 
   // Empty / whitespace-only is a no-op (no condition change, no PATCH).
-  act(() => result.current.pickCustomCondition('   '));
+  await act(async () => {
+    await result.current.pickCustomCondition('   ');
+  });
   expect(result.current.condition).toBe('Object: Left → Tray: Center');
   expect(calls.some((c) => c.method === 'PATCH')).toBe(false);
 
   // A trimmed custom string applies just like a catalog condition (in place at 0).
-  act(() => result.current.pickCustomCondition('  Wet floor  '));
+  await act(async () => {
+    await result.current.pickCustomCondition('  Wet floor  ');
+  });
   expect(result.current.condition).toBe('Wet floor');
   await waitFor(() =>
     expect(
@@ -2443,7 +3526,9 @@ test('changing the task before any recording PATCHes {task, condition} onto the 
   });
   await waitFor(() => expect(result.current.batchSeq).toBe(4));
 
-  act(() => result.current.pickTask('Stacking'));
+  await act(async () => {
+    await result.current.pickTask('Stacking');
+  });
 
   // In place: same set, task + its first condition synced to the server.
   expect(result.current.batchSeq).toBe(4);
@@ -2487,7 +3572,9 @@ test('changing the project before any recording PATCHes {project, task, conditio
   });
   await waitFor(() => expect(result.current.batchSeq).toBe(4));
 
-  act(() => result.current.pickProject('Bin Picking'));
+  await act(async () => {
+    await result.current.pickProject('Bin Picking');
+  });
 
   expect(result.current.batchSeq).toBe(4);
   expect(result.current.project).toBe('Bin Picking');
@@ -2528,7 +3615,9 @@ test('a custom task before any recording PATCHes only {task} (no condition sent 
   });
   await waitFor(() => expect(result.current.batchSeq).toBe(4));
 
-  act(() => result.current.pickCustomTask('  Handover  '));
+  await act(async () => {
+    await result.current.pickCustomTask('  Handover  ');
+  });
 
   // In place, trimmed; the machine clears the condition to '—' locally.
   expect(result.current.batchSeq).toBe(4);
@@ -2542,9 +3631,7 @@ test('a custom task before any recording PATCHes only {task} (no condition sent 
   const patch = calls.find(
     (c) => c.url.includes('/batches/batch0') && c.method === 'PATCH',
   )!;
-  expect(patch.body).toEqual({ task: 'Handover' });
-  // A '—' condition is never sent (matches the create path's omit).
-  expect('condition' in (patch.body ?? {})).toBe(false);
+  expect(patch.body).toEqual({ task: 'Handover', condition: null });
 });
 
 test('changing the task once the set has a recording rolls over with a Task change reason', async () => {
@@ -2563,7 +3650,9 @@ test('changing the task once the set has a recording rolls over with a Task chan
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
   const predictedBefore = result.current.predictedSeq;
 
-  act(() => result.current.pickCustomTask('Handover'));
+  await act(async () => {
+    await result.current.pickCustomTask('Handover');
+  });
 
   // Rolled over to a fresh set carrying the new (free-text) task.
   expect(result.current.stats.nRecorded).toBe(0);
@@ -2617,10 +3706,12 @@ test('changing the project once the set has a recording rolls over with a Plan c
   await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
   expect(result.current.batchSeq).toBe(2);
 
-  act(() => result.current.pickProject('Bin Picking'));
+  await act(async () => {
+    await result.current.pickProject('Bin Picking');
+  });
 
   // The new project reloads its first task + condition into a fresh set.
-  expect(result.current.stats.nRecorded).toBe(0);
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(0));
   expect(result.current.batchSeq).toBeNull();
   expect(result.current.project).toBe('Bin Picking');
   expect(result.current.task).toBe('Bin to Tray');
@@ -2648,7 +3739,11 @@ test('a batch the API could not create leaves the review saved but ungrouped', a
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
-    calls.push({ url, method, body: init?.body ? JSON.parse(String(init.body)) : undefined });
+    calls.push({
+      url,
+      method,
+      body: init?.body ? JSON.parse(String(init.body)) : undefined,
+    });
     if (url.includes('/batches')) return Promise.reject(new Error('api down'));
     if (url.includes('/record/status')) {
       return Promise.resolve(
@@ -2664,7 +3759,9 @@ test('a batch the API could not create leaves the review saved but ungrouped', a
     if (url.includes('/record/start'))
       return Promise.resolve(jsonResponse(captureBody('cap_x')));
     if (url.includes('/record/stop'))
-      return Promise.resolve(jsonResponse(captureBody('cap_x', { state: 'completed' })));
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_x', { state: 'completed' })),
+      );
     if (url.includes('/review') && method === 'PATCH')
       return Promise.resolve(
         jsonResponse(captureBody('cap_x', { state: 'completed', review_revision: 1 })),
@@ -2693,7 +3790,7 @@ test('a batch the API could not create leaves the review saved but ungrouped', a
 
   // Reset still works locally even though every batch call failed.
   act(() => result.current.resetBatch());
-  expect(result.current.stats.nRecorded).toBe(0);
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(0));
   expect(result.current.phase).toBe('ready');
 });
 
@@ -3048,6 +4145,246 @@ test('detects a completed-but-unreviewed recent capture as an unsaved take, then
   expect(result.current.unsavedTake).toBeNull();
 });
 
+test('recovery restores the capture’s original batch before saving its review', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchSeq: 2,
+      batchId: 'batch-b',
+      recordedCount: 1,
+      episodes: [{ index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap-b' }],
+      project: 'Project B',
+      task: 'Task B',
+      condition: 'Condition B',
+    }),
+  );
+  __rehydrateBatchStore();
+  const reviewBodies: Record<string, unknown>[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/batches/batch-a') && method === 'GET') {
+      return Promise.resolve(
+        jsonResponse({
+          batch_id: 'batch-a',
+          batch_seq: 7,
+          robot: 'test-robot',
+          operator: 'tester',
+          project: 'Project A',
+          task: 'Task A',
+          condition: 'Condition A',
+          target_episodes: 30,
+          status: 'ended_early',
+          episode_count: 1,
+          episodes_recorded: 1,
+          captures: [
+            captureBody('cap-a', {
+              index_in_batch: 1,
+              task_result: 'success',
+              quality: 'good',
+            }),
+          ],
+        }),
+      );
+    }
+    if (url.includes('/captures/cap_unsaved/review') && method === 'PATCH') {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      reviewBodies.push(body);
+      return Promise.resolve(
+        jsonResponse(
+          captureBody('cap_unsaved', {
+            state: 'completed',
+            review_revision: 1,
+            ...body,
+          }),
+        ),
+      );
+    }
+    if (url.includes('/captures')) {
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            captureBody('cap_unsaved', {
+              state: 'completed',
+              review_revision: 0,
+              started_at: new Date(Date.now() - 60_000).toISOString(),
+              collection_context: {
+                batch_id: 'batch-a',
+                batch_seq: 7,
+                project: 'Project A',
+                task: 'Task A',
+                condition: 'Condition A',
+                robot: 'test-robot',
+                operator: 'tester',
+              },
+            }),
+          ],
+          next_cursor: null,
+        }),
+      );
+    }
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() =>
+    expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved'),
+  );
+
+  act(() => result.current.labelUnsavedTake());
+  await waitFor(() => expect(result.current.phase).toBe('result'));
+  expect(getStoreSnapshot().batchId).toBe('batch-a');
+  expect(result.current.batchSeq).toBe(7);
+  expect(result.current.project).toBe('Project A');
+  expect(result.current.task).toBe('Task A');
+  expect(result.current.condition).toBe('Condition A');
+
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(reviewBodies).toHaveLength(1));
+  expect(reviewBodies[0]).toMatchObject({ batch_id: 'batch-a', index_in_batch: 2 });
+});
+
+test('a failed original-batch recovery leaves the current batch and take pending', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchSeq: 2,
+      batchId: 'batch-b',
+      recordedCount: 1,
+      episodes: [{ index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap-b' }],
+      project: 'Project B',
+      task: 'Task B',
+      condition: 'Condition B',
+    }),
+  );
+  __rehydrateBatchStore();
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    const url = String(input);
+    if (url.includes('/batches/batch-a')) {
+      return Promise.resolve(
+        jsonResponse(
+          { error: { code: 'unavailable', message: 'batch service unavailable' } },
+          503,
+        ),
+      );
+    }
+    if (url.includes('/captures')) {
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            captureBody('cap_unsaved', {
+              state: 'completed',
+              review_revision: 0,
+              started_at: new Date(Date.now() - 60_000).toISOString(),
+              collection_context: {
+                batch_id: 'batch-a',
+                batch_seq: 7,
+                project: 'Project A',
+                task: 'Task A',
+                condition: 'Condition A',
+                robot: 'test-robot',
+                operator: 'tester',
+              },
+            }),
+          ],
+          next_cursor: null,
+        }),
+      );
+    }
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() =>
+    expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved'),
+  );
+
+  act(() => result.current.labelUnsavedTake());
+  await waitFor(() =>
+    expect(result.current.toast).toContain(
+      'Could not restore this take’s original batch',
+    ),
+  );
+  expect(result.current.phase).toBe('ready');
+  expect(getStoreSnapshot().batchId).toBe('batch-b');
+  expect(result.current.project).toBe('Project B');
+  expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved');
+});
+
+test('an unlinked recovery saves without guessing the current batch', async () => {
+  window.localStorage.setItem(
+    BATCH_STORAGE_KEY,
+    JSON.stringify({
+      batchSeq: 2,
+      batchId: 'batch-b',
+      recordedCount: 1,
+      episodes: [{ index: 1, quality: 'good', taskResult: 'ok', captureId: 'cap-b' }],
+      project: 'Project B',
+      task: 'Task B',
+      condition: 'Condition B',
+    }),
+  );
+  __rehydrateBatchStore();
+  const reviewBodies: Record<string, unknown>[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (url.includes('/captures/cap_unsaved/review') && method === 'PATCH') {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      reviewBodies.push(body);
+      return Promise.resolve(
+        jsonResponse(captureBody('cap_unsaved', { review_revision: 1, ...body })),
+      );
+    }
+    if (url.includes('/captures')) {
+      return Promise.resolve(
+        jsonResponse({
+          items: [
+            captureBody('cap_unsaved', {
+              state: 'completed',
+              review_revision: 0,
+              started_at: new Date(Date.now() - 60_000).toISOString(),
+              collection_context: {
+                batch_id: null,
+                batch_seq: null,
+                project: 'Project A',
+                task: 'Task A',
+                condition: 'Condition A',
+                robot: 'test-robot',
+                operator: 'tester',
+              },
+            }),
+          ],
+          next_cursor: null,
+        }),
+      );
+    }
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await waitFor(() =>
+    expect(result.current.unsavedTake?.captureId).toBe('cap_unsaved'),
+  );
+
+  act(() => result.current.labelUnsavedTake());
+  await waitFor(() => expect(result.current.phase).toBe('result'));
+  expect(getStoreSnapshot().batchId).toBe('batch-b');
+
+  act(() => result.current.confirmEpisode());
+  await waitFor(() => expect(reviewBodies).toHaveLength(1));
+  expect(reviewBodies[0]).toMatchObject({ batch_id: null, index_in_batch: null });
+});
+
 test('an already-reviewed capture is NOT offered as an unsaved take', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
@@ -3245,6 +4582,37 @@ test('pre-arms via /record/prepare while ready, mirroring the start selection', 
   });
 });
 
+// A DECISION, pinned so it is not "fixed" later by mistake (#11): the operator
+// gate is on Start, not on pre-arm. Pre-arm is recorder readiness — spawn and
+// subscribe — and the orchestrator's own prepare/start match key deliberately
+// excludes operator and task, because they do not change what is recorded, only
+// how it is labelled. So a session armed before anyone types a name is still
+// claimed by the start that carries one. Gating prepare instead would buy
+// nothing (no capture is persisted by a prepare) and cost the operator a slow
+// full start on the very first take after naming themselves — in the flow this
+// issue makes universal.
+test('pre-arms even with no operator set — the gate is on Start, not on readiness', async () => {
+  useUiStore.setState({ recordOperator: '' });
+  const fetchMock = preArmFetch();
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: ['/tf'] }), {
+    wrapper,
+  });
+  expect(result.current.operatorMissing).toBe(true);
+
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).includes('/record/prepare')),
+    ).toBe(true),
+  );
+  // And the nameless prepare does not smuggle a placeholder onto the wire: the
+  // body simply carries no operator, so the eventual start's name is the only
+  // one the recorder ever sees.
+  const call = fetchMock.mock.calls.find(([u]) =>
+    String(u).includes('/record/prepare'),
+  );
+  expect('operator' in JSON.parse(String(call![1]!.body))).toBe(false);
+});
+
 test('does NOT pre-arm when recording.pre_arm is off', async () => {
   const fetchMock = preArmFetch({ preArm: false });
   renderHook(() => useBatchMachine({ defaultTopics: ['/tf'] }), { wrapper });
@@ -3304,6 +4672,62 @@ test('preArmed reflects the server-reported armed state, never a sent prepare', 
   });
   await waitFor(() => expect(result.current.preArmed).toBe(true));
   expect(result.current.recorderState).toBe('armed');
+});
+
+// S2-7: silently retrying a failing pre-arm every 30 s hid a persistent arm
+// blocker (topic mismatch, disk full) while — before the recorder-side fix —
+// minting a failed capture per attempt. A failure STREAK must reach the
+// operator; a single failure (usually a lost race with a start) stays silent.
+test('a pre-arm failure streak surfaces preArmDegraded with the blocker', async () => {
+  __setPreArmRetryBaseMs(10);
+  try {
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+      const url = String(input);
+      if (url.includes('/config/recording')) {
+        return Promise.resolve(
+          jsonResponse({ config: { recording: { pre_arm: true } }, path: 'p' }),
+        );
+      }
+      if (url.includes('/record/prepare')) {
+        return Promise.resolve(
+          jsonResponse(
+            {
+              error: {
+                code: 'record_arm_failed',
+                message: 'Recording failed to arm (subscribe + resume).',
+                details: {},
+              },
+            },
+            507,
+          ),
+        );
+      }
+      if (url.includes('/record/status')) {
+        return Promise.resolve(
+          jsonResponse({
+            run_id: null,
+            capture_id: null,
+            state: 'created',
+            live_capture_ids: [],
+          }),
+        );
+      }
+      return Promise.resolve(jsonResponse({}));
+    });
+    const { result } = renderHook(() => useBatchMachine({ defaultTopics: ['/tf'] }), {
+      wrapper,
+    });
+    // One failure: silent. Two (the retry also fails): surfaced.
+    await waitFor(
+      () => expect(result.current.preArmDegraded).toMatch(/failed to arm/i),
+      { timeout: 5000 },
+    );
+    expect(result.current.preArmed).toBe(false);
+    // Start stays usable — the degraded surface is a cue, not a gate.
+    expect(result.current.phase).toBe('ready');
+  } finally {
+    __setPreArmRetryBaseMs(null);
+  }
 });
 
 // M6 (qa-ui shots/08b): two unsaved takes can be pending at once — the recovery
@@ -3370,7 +4794,12 @@ test('a recording does not resume when the recorder returns without it', async (
           started
             ? // Back up, and holding NOTHING: the take died during the outage.
               { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] }
-            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+            : {
+                capture_id: null,
+                run_id: null,
+                state: 'created',
+                live_capture_ids: [],
+              },
         ),
       );
     }

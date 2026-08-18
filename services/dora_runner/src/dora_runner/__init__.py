@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """dora_runner: post-recording validation & conversion.
 
 Hosts the job engine (MCAP loader, plugin/pipeline registry, fast_validation,

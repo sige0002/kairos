@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """SDP-answer candidate filtering (pure logic; no aiortc)."""
 
 from __future__ import annotations

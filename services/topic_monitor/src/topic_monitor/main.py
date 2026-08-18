@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """topic_monitor service entry point (Stage 2).
 
 Lightweight, non-destructive ROS 2 topic monitoring. This module wires the

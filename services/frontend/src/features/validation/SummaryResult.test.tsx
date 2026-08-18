@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Artifact rendering in the generic result view — the zero-UI-edit channel:
 // an image artifact renders inline, another file becomes a /files link, and an
 // absolute (non-normalisable) path stays plain text.

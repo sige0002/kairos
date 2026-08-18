@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Presentational pieces of the Collect camera wall, split out of Cameras.tsx:
 // the stats/placeholder/overlay chips, the sub-tile (with its own WebRTC
 // stream) and the add-camera tile. Container logic stays in Cameras.tsx.
@@ -22,6 +24,8 @@ import {
   type CameraPane,
   type SubResLabel,
 } from './cameraStore';
+import { ROVING_ITEM_ATTR, useRovingRadio } from './hooks/useRovingRadio';
+import { HIT_AREA_RES_SUB } from '../shared/hitArea';
 
 /** True once the decoded-frame count has stood still past the deadline. */
 export function isFramesStale(stats: StreamStats): boolean {
@@ -73,7 +77,7 @@ export function StatsBadge({
           'that arrived — the picture is not current.'
         }
         className={cn(
-          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-white',
+          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-gray-900',
           className,
         )}
       >
@@ -126,7 +130,7 @@ function StreamStatsBadge({ stats, className }: { stats: StreamStats; className?
           'publisher rather than a network problem.'
         }
         className={cn(
-          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-white',
+          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-gray-900',
           className,
         )}
       >
@@ -195,7 +199,7 @@ export function CameraPlaceholder({
             Camera preview unavailable
           </span>
           <span
-            className="max-w-full truncate font-mono text-[11px] text-gray-400"
+            className="max-w-full truncate font-mono text-[11px] text-gray-500"
             title={error ?? undefined}
           >
             {error ?? "the WebRTC stream couldn't connect"}
@@ -208,7 +212,7 @@ export function CameraPlaceholder({
               e.stopPropagation();
               onRetry();
             }}
-            className="mt-0.5 rounded-control border border-gray-500 bg-gray-900/70 px-3 py-1 text-[11.5px] font-semibold text-teal-300 hover:bg-gray-800"
+            className="mt-0.5 rounded-control border border-gray-500 bg-gray-900/70 px-3 py-1 text-[11.5px] font-semibold text-teal-200 hover:bg-gray-800"
           >
             Retry
           </button>
@@ -245,18 +249,45 @@ export function OverlayBadge({ className, children }: { className: string; child
 
 /** Compact segmented control for a sub tile's resolution (360p/240p only).
  *  Positioned by its parent (the tile's top-right overlay stack). */
-function SubResToggle({ value, onPick }: { value: SubResLabel; onPick: (l: SubResLabel) => void }) {
+function SubResToggle({
+  value,
+  onPick,
+  cameraLabel,
+}: {
+  value: SubResLabel;
+  onPick: (l: SubResLabel) => void;
+  /** Which camera this group belongs to. Up to three sub tiles are on screen at
+   *  once, so a shared label would leave a screen-reader user with three groups
+   *  called the same thing and no way to tell which stream they were changing. */
+  cameraLabel: string;
+}) {
+  // One tab stop per tile, not two (#17) — with three tiles on screen those
+  // chips were six of the nine stops between Start and anything else. Arrows
+  // move focus and Space/Enter commits: each commit renegotiates this tile's
+  // stream.
+  const res = useRovingRadio({ options: SUB_RES_LABELS, value, onPick });
   return (
-    <div className="flex items-center gap-0.5 rounded-chip bg-gray-900/80 p-[2px]">
+    <div
+      ref={res.groupRef}
+      role="radiogroup"
+      aria-label={`${cameraLabel} camera resolution`}
+      onKeyDown={res.onKeyDown}
+      className="flex items-center gap-0.5 rounded-chip bg-gray-900/80 p-[2px]"
+    >
       {SUB_RES_LABELS.map((label) => (
         <button
           key={label}
           type="button"
-          onClick={() => onPick(label)}
+          role="radio"
+          aria-checked={label === value}
+          tabIndex={res.itemTabIndex(label)}
+          {...{ [ROVING_ITEM_ATTR]: '' }}
+          onClick={() => res.commit(label)}
           title={`Sub preview resolution — subs stay low-res by design (§3-2)`}
           className={cn(
             'rounded-chip px-1.5 py-0.5 font-mono text-[9.5px] font-bold',
-            label === value ? 'bg-teal-300 text-gray-900' : 'text-gray-400',
+            HIT_AREA_RES_SUB,
+            label === value ? 'bg-teal-300 text-gray-900' : 'text-gray-300',
           )}
         >
           {label}
@@ -358,7 +389,11 @@ export function SubCameraTile({
         // Don't let a res/stats click bubble to the tile's click-to-main handler.
         onClick={(e) => e.stopPropagation()}
       >
-        <SubResToggle value={pane.subResLabel} onPick={(l) => setSubCameraRes(pane.id, l)} />
+        <SubResToggle
+          value={pane.subResLabel}
+          onPick={(l) => setSubCameraRes(pane.id, l)}
+          cameraLabel={label}
+        />
         {connected && (
           <StatsBadge
             stats={stats}
@@ -403,7 +438,7 @@ export function AddCameraTile({
       className="flex min-w-0 flex-col items-center justify-center gap-2 overflow-hidden rounded-card border border-dashed border-gray-300 bg-gray-50 p-3"
       style={style}
     >
-      <span className="text-xl font-semibold text-gray-400">+</span>
+      <span className="text-xl font-semibold text-gray-500">+</span>
       <span className="text-[11px] font-semibold text-gray-500">Add camera</span>
       <select
         aria-label="add camera topic"
@@ -413,7 +448,7 @@ export function AddCameraTile({
           if (e.target.value) addCameraPane(e.target.value);
           // Value stays "" (it's an action trigger, not a persistent selection).
         }}
-        className="w-full max-w-[92%] rounded-control border border-gray-200 bg-white px-2 py-1 font-mono text-[11px] text-gray-700 focus:border-teal-500 focus:outline-none"
+        className="w-full max-w-[92%] rounded-control border border-gray-200 bg-white px-2 py-1 font-mono text-[11px] text-gray-700 focus:border-teal-600 focus:outline-none"
       >
         <option value="" disabled>
           {options.length === 0 ? 'No image topics found' : 'Choose a camera…'}

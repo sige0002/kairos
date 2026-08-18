@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Module-level store for the Collect screen's camera panes — the operator's
 // per-session choices (which cameras are open, which is the main tile, and each
 // tile's resolution) that must survive a tab-switch unmount. The Collect screen
@@ -38,6 +40,9 @@ export const MAIN_RES_PRESETS: { label: string; w: number | null; h: number | nu
 // stream at a time — the main tile — so a sub's robot-side encode/egress cost
 // stays marginal). The per-tile selector is therefore restricted to the two
 // lowest presets; it never offers Source/720p/480p.
+/** The main presets' labels alone — what the radiogroup steps through (#17). */
+export const MAIN_RES_LABELS = MAIN_RES_PRESETS.map((p) => p.label);
+
 export const SUB_RES_LABELS = ['360p', '240p'] as const;
 export type SubResLabel = (typeof SUB_RES_LABELS)[number];
 

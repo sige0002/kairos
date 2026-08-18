@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Helpers for the Record tab's config-driven topic picker.
 //
 // The backend RECORDING_CONFIG exposes `default_topics` (see GET /api/v1/config

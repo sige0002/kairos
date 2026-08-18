@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """UUIDv7 identifiers: globally unique, and sortable by when they were minted.
 
 Every durable v2 identity (capture_id, event_id, membership_id, dataset_id) is a
@@ -120,6 +122,11 @@ def new_capture_id() -> str:
 
 def new_event_id() -> str:
     """A lifecycle event's idempotency key (§1), used to replay a resume safely."""
+    return uuid7()
+
+
+def new_export_id() -> str:
+    """A LeRobot export run's identity (§6.2): lease owner suffix, staging dir."""
     return uuid7()
 
 

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Validation gating (§ verdict): a validator that can refuse, not a diary.
 
 The defect these pin: a capture could fail validation, stay GOOD, be adopted,

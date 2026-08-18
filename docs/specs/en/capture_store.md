@@ -46,6 +46,8 @@ The cross-service source of truth that defines the **identity, placement, and du
 ├── .trash/<capture_id>/               # intermediate state of deletion (§7). must be on the same FS as objects/
 ├── views/                             # generated symlink tree (§6). can be wiped and regenerated
 ├── report/<pipeline>/<capture_id>/    # dora_runner artifacts
+├── exports/<name>/                    # LeRobot export artifacts (§6.2). Derived, regenerable
+│   └── (exports/.staging/<export_id>/ # symlink staging for conversion input; gone when the job ends)
 ├── catalog/                           # sidecar duplication of validation_templates / plan_catalog
 ├── lifecycle.jsonl                    # §5
 ├── instance.json                      # §1
@@ -55,7 +57,7 @@ The cross-service source of truth that defines the **identity, placement, and du
 ```
 
 - **Paths carry no meaning.** A capture's directory name is its `capture_id` and nothing else; operator, task, and number do not appear in it. Files no longer have to be moved every time a label is corrected, and the state "the power died partway through a move" disappears structurally.
-- **Reserved names** (directly under `data_dir`): `objects` / `views` / `.trash` / `.incoming` / `report` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db`. A name colliding with one of these is rejected with `400 reserved_name` **at dataset creation** (the `name` / `operator` / `task` of `POST /api/v1/datasets`) — those three become path components under `views/`, so a collision would tread on the store's own layout. A recording's operator / task never becomes a path and is therefore not subject to this check.
+- **Reserved names** (directly under `data_dir`): `objects` / `views` / `.trash` / `.incoming` / `report` / `exports` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db`. A name colliding with one of these is rejected with `400 reserved_name` **at dataset creation** (the `name` / `operator` / `task` of `POST /api/v1/datasets`) — those three become path components under `views/`, so a collision would tread on the store's own layout. A recording's operator / task never becomes a path and is therefore not subject to this check.
 - **Removed**: the old `recorded/`, the 3-level `<operator>/<task>/<NNN>` dataset tree, and `data/index.jsonl`.
 - **Invariant**: the only incomplete capture directory that ever appears directly under `objects/` is **the live capture recorder is currently writing**. Imports and transfers are always completed in `.incoming/<capture_id>` first, then moved into `objects/` with `os.replace`. Therefore a directory visible in `objects/` (and not live) is always a complete copy.
 - **Startup check**: verify that `objects/`, `.trash/`, and `.incoming/` share the same `st_dev`. If they do not (a layout in which `os.rename` returns `EXDEV`), **deletion and archive answer `503 delete_unavailable` per request**. The routes themselves stay registered: rather than vanishing, they **refuse and state the reason** — and that reason also appears in `delete_unavailable_reason` of `GET /api/v1/store/health`, so an operator reads "why it cannot be used" instead of "the button is gone". An implicit fallback to copy + delete is forbidden — so that we never build behavior that promises an "atomic move" and in fact deletes only part of the way.
@@ -72,6 +74,11 @@ The **audit record** written by recorder. It consolidates v1's `manifest.json` +
   "capture_id": "…", "source_instance_id": "…", "run_id": "run_…",
   "state": "recording|stopping|completed|interrupted|failed",
   "operator": …, "task": …, "robot": …,
+  "collection_context": {
+    "batch_id": null, "batch_seq": null,
+    "project": null, "task": null, "condition": null,
+    "robot": null, "operator": null
+  },
   "started_at": "<ISO8601>", "ended_at": "<ISO8601>|null",
   "topics": [ { "name": …, "type": …, "qos": … } … ],
   "message_count": N|null, "bytes": N|null,
@@ -79,10 +86,12 @@ The **audit record** written by recorder. It consolidates v1's `manifest.json` +
   "integrity": "ok|dropped|failed|unknown", "error": str|null,
   "digest_state": "pending|complete",
   "files": null | [ { "path": …, "size": …, "sha256": … } … ],
-  "manifest_digest": null | "sha256:…"
+  "manifest_digest": null | "sha256:…",
+  "digest_sealed_by": null | "<instance_id>"   // the instance that sealed (§10; null on older manifests)
 }
 ```
 
+- `collection_context` is the snapshot of the Batch and provenance labels at **actual Start**. Its seven fields are all nullable; unknown fields inside the same object are also preserved and written back. Recording / stopping / failed-start / crash-recovery manifests do not change this value. The top-level `robot` / `operator` / `task` remain recorder metadata for backward compatibility.
 - Fields not in the contract are preserved as `extra` and re-emitted on write-back (so an old digest job does not silently drop a field a newer recorder added).
 - A read returns **one of three values: `ok` / `missing` / `corrupt`**. Reading a 0-byte or unparsable manifest as "does not exist" is forbidden (→ §8 rebuild rule 4).
 
@@ -109,6 +118,8 @@ Sort `files` by `path` ascending, concatenate them as `f"{path}\n{size}\n{sha256
 A start that produced not one byte of bag leaves a **sibling file** rather than a directory (to preserve the invariant "a directory directly under `objects/` means bytes were written"). It is written with the §3.1 helper, and **a write failure is not swallowed** — beyond the error log, the start error response (`507`) carries what failed (`failed_start_record_error`).
 
 rebuild reads this file too and creates a `state='failed'` row. The deletion path and the reaper also cover a capture's sibling files (`.failed.json` / `.qos.yaml`).
+
+**Exception: a failed `prepare` (pre-arm probe) is not filed** (2026-08-11, sweep S2-7). A prepare is the console's background keep-alive repeated every 30 seconds, not an operator's recording action. Under a persistent arm blocker (topic mismatch, disk full), the old contract piled up a `.failed.json` + failed row **every 30 seconds** with nothing on screen. Now the recorder writes no sidecar for a failed prepare (temporary files are cleaned up), the orchestrator files no row, and the failure returns to the console as the error response — Collect shows "pre-arm failing" and retries with exponential backoff. A failed operator `start` is still always filed.
 
 > **Implementation note (found by E2E §13-4)**: the failed-start sidecar records topics from before type discovery finished, so `type` can be an explicit `null`. rebuild faithfully turns that into a row, so if any API model refuses `null`, **the whole of `GET /api/v1/captures` becomes a permanent `500`** (the row stays in the DB, so a restart does not fix it). Normalize `null` to "not yet discovered" = the empty string.
 
@@ -137,7 +148,8 @@ rebuild reads this file too and creates a `state='failed'` row. The deletion pat
 - We do not say "the DB is rolled back" (with sqlite3 plus files, that cannot be promised). What we promise is that **disk and DB converge on one decision**, whichever of them is ahead.
 - A global lock is not used for this (it would serialize every request across an fsync).
 - **System-originated rewrites** (re-deriving quality once quick_check has settled) go through the same path and advance `revision` (`quality_source=quick_check`). A client receiving a `409` as a result is **correct behavior**.
-- The side effects the old `POST /episodes` carried (the monotonic increment of `batches.episodes_recorded`, launching auto-pull) have been relocated to "**the first review save for that capture**".
+- When `collection_context.batch_id` is non-null, a capture's Batch association is fixed at Start. Review may retain that same `batch_id` after terminal state, but rejects changing it to another Batch or clearing it. Only a capture that started with `batch_id=null` may be associated on its first Review save with an active Batch whose snapshot `robot` / `operator` / `project` / `task` / `condition` exactly match; after that association, the same invariant applies.
+- The monotonic increment of `batches.episodes_recorded` and auto-pull launch occur on the **first review save for that capture**. The review-sidecar CAS and that initial counter update commit in the same SQLite transaction.
 
 ### 4.2 `quick_check.json` (the stop-time verdict sidecar)
 
@@ -206,13 +218,14 @@ the fact of the edit on disk, and makes undoing the edit return to the recorded 
 | kind | payload |
 |---|---|
 | `capture_discarded` / `capture_deleted` | Tombstone. Reason and so on |
-| `capture_archived` | `destination` / `run_id` / `operator` / `task` / `bytes` / `message_count` / `files: [{path,size,sha256}]`. When written as a member of a dataset archive, also `dataset_id` / `membership_id` / `display_index` (§6.1) |
+| `capture_archived` | `destination` / `run_id` / `operator` / `task` / `bytes` / `message_count` / `files: [{path,size,sha256}]` / `collection_context` (including unknown fields). This preserves capture provenance for ledger-only rebuild after the source manifest is gone. When written as a member of a dataset archive, also `dataset_id` / `membership_id` / `display_index` (§6.1) |
 | `dataset_created` | `dataset_id` / `name` / `operator` / `task` |
 | `dataset_updated` | `dataset_id` / `name` / `operator` / `task`. **The complete post-change label set, not a diff** (so a replay applies events in order without reconstructing the preceding rename history) |
 | `dataset_member_added` | `dataset_id` / `membership_id` / `capture_id` / `display_index` / `operator` / `task` / `dataset_name` |
 | `dataset_member_removed` | `dataset_id` / `membership_id` |
 | `dataset_deleted` | `dataset_id` |
 | `dataset_archive_started` | `dataset_id` / `destination` / `dataset_name` / `mode?` (`copy`\|`move`; missing = `move`) / `operator?` / `task?` / `members: [{membership_id, capture_id, display_index}]` / `reason?`. **The frozen member set itself** (§6.1) |
+| `dataset_archive_canceled` | `dataset_id` / `destination` / `started_event_id` / `reason?`. Records the explicit abandonment of a halted attempt with zero completed members (§6.1) |
 | `dataset_archived` | `dataset_id` / `destination` / `dataset_name` / `mode?` / `member_total` / `bytes_total` / `manifest_sha256?`. The seal on the run (§6.1) |
 | `batch_created` | `batch_id` / `batch_seq` / `project` / `task` / `target_episodes` / `created_at` / `robot?` / `condition?` / `operator?`. **`status` is deliberately absent** — at creation it is always `active`, so it carries no information, and a replay that believed it would restore a finished batch as still open (see `batch_ended`) |
 | `batch_updated` | `batch_id` / `project` / `task` / `condition` / `target_episodes`. Like `dataset_updated`, **the complete set after the change rather than a diff** |
@@ -220,7 +233,7 @@ the fact of the edit on disk, and makes undoing the edit return to the recorded 
 
 - `capture_id` travels in the event's **envelope**. `event_id` / `at` / `source_instance_id` are owned by the envelope as well and cannot be set from the payload (so a caller cannot forge an idempotency key or a timestamp).
 - append is flush → fsync → fsync of the parent dir. **Fatal for every kind** — if it cannot be written, the operation is aborted.
-- The crucial point is that `capture_archived` is **not counted as a tombstone**. The bytes merely moved to a location the operator chose and the capture really exists, so it must never be normalized into "it never existed". The same holds for `dataset_archive_started` / `dataset_archived` — neither is a tombstone.
+- The crucial point is that `capture_archived` is **not counted as a tombstone**. The bytes merely moved to a location the operator chose and the capture really exists, so it must never be normalized into "it never existed". The same holds for `dataset_archive_started` / `dataset_archive_canceled` / `dataset_archived` — none is a tombstone.
 - **No recording-related event kinds are added** (the invariant behind safety principle 5: recording start/stop must not depend on whether the ledger is writable).
 - **ENOSPC countermeasure**: reserve `.ledger-slack` (1MB) at startup. When an append hits `ENOSPC`, the discard / delete path releases the slack and retries the append (preventing the only escape route from a full disk from being blocked because it, too, demands disk).
 - Review edits are not written to the ledger (`record.json` is authoritative).
@@ -243,25 +256,65 @@ the fact of the edit on disk, and makes undoing the edit return to the recorded 
   - **The `KAIROS_ARCHIVE_ROOTS` allow-list and the overlap check are different questions**, and passing the former is no evidence about the latter. The allow-list says "where you are allowed to write"; the overlap check says "those two must not be the same bytes".
   - What is checked is the **resolved write target (target = `<destination>/<capture_id>`)**, not the permitted root itself. Permitting a root that contains `data_dir` is therefore **not forbidden in itself** — `KAIROS_ARCHIVE_ROOTS=/data` is in fact the kind of setting an operator would plausibly choose, and on the allow-list alone it would let `objects/<id>` be archived to a location under data_dir, after which deleting the source **erases the verified copy along with the original** and reports "success, nothing left". Stopping that is what this independent check is for.
   - Resolve both sides with `realpath` (a symlink cannot fake away an overlap) and check **containment in both directions** (the write target being inside data_dir, and data_dir being inside the write target, are two faces of the same disaster).
+- **The task.json projection (destination only)**: after the verified copy completes, if the capture has an effective task label (§4.3, override applied — **read from the sidecars**, not the row cache: `record.json`'s override, else the manifest, falling back to the row only when the sidecars cannot answer), generate a rosbag2lerobot-compatible `task.json` (`{"task": "<label>"}`) in the destination directory — so an archived tree can be read by the LeRobot converter directly, with no kairos in the loop. This applies on every path that carries capture bytes out: the per-capture archive and dataset-archive members (both move and copy). A capture with no label (imports etc.) gets no file at all. **A source that already carries its own `task.json` (imported bags, including a re-imported archive) keeps it verbatim and gets no projection** — the source file may hold information that exists nowhere else (subtasks etc.), and kairos's own label still reaches `capture_archived`'s `task` field. Generation happens at the **destination only** — never into the live `objects/` tree, where a later §4.3 label edit would leave a stale copy. The entry (`{path, size, sha256}`) joins the copy result, so `capture_archived`'s `files` and the dataset manifest's member `files` audit the generated file exactly like the copied bytes. **The destination task.json is a snapshot of the labels at the moment that member was copied** and does not follow later label edits — across a halt/resume, a dataset archive's members may carry snapshots from different moments (the seal does not retroactively align them).
 
 ### 6.1 Archiving a dataset (finalize and write out — the terminal transition)
 
 The dataset's terminal state. It lifts the capture archive's vocabulary (copy → verify → remove) to a dataset, and it is **not a revival of v1's "export = a move inside the store"**: what left is gone from this store, and **that a record of where it went remains** is the purpose itself.
 
-- **State machine**: `datasets.status` walks `active → archiving → archived` in one direction. `active → archiving` is serialized by a DB CAS (`UPDATE … WHERE status='active'`), structurally ruling out a double start. `archived` is terminal.
+- **State machine**: normally, `datasets.status` walks `active → archiving → archived` in one direction. `active → archiving` is serialized by a DB CAS (`UPDATE … WHERE status='active'`), structurally ruling out a double start. The only reverse edge is `archiving → active` when a halted attempt with zero completed members is recorded in the ledger and abandoned (cancel, below). `archived` is terminal.
 - **The two modes** (frozen as `archive_mode` into both the row and the ledger; a resume cannot change it — `409 archive_mode_mismatch`):
   - **`move` (the default)**: **deletes the source** of each verified member as it goes. Disk is freed. Members must be exclusive (sharing with another active dataset is a 409).
   - **`copy`**: produces the same folder, the same manifest, and the same seal, but **touches neither the captures' rows nor their bytes**. Shared members are legal — the standard way to write out a combined set. The per-member `capture_archived` events are **not written** (recording "it left" for a capture nothing happened to would be a lie) — the durable record of finished members is the destination manifest itself, and a resume reads it to pick up. It runs even where deleting is withdrawn (`delete_unavailable`).
 - **A membership in a copy-sealed dataset (archived × copy) is not a claim on the capture's local bytes**: it blocks **neither** the per-capture delete / archive **nor** joining a new dataset. Without this there is a trap: a capture belonging only to a copy-sealed dataset could never be deleted — the member set is frozen, so the membership could never be removed to unblock it. move is as before (§7's guard counts only the memberships that claim bytes: active datasets, and the non-active move family).
-- **Start (`POST /api/v1/datasets/{id}/archive` → 202)**: the destination goes through the same `KAIROS_ARCHIVE_ROOTS` allow-list plus overlap check as the capture archive (the two independent questions of §6; what is checked is the resolved dataset_dir). **The folder name is the operator's**: `path` (a relative path under the root; its last component is the dataset's folder) is prefilled by the UI with the views shape `<operator>/<task>/<name>` and freely editable. When omitted, the server derives the same sanitized default. Escapes (`..` and the like) are closed not by string hygiene but by realpath re-validation of the final directory (containment in the allow-list), and **a collision with an existing export is `409 destination_not_empty` or `409 destination_claimed`** (these two are the duplicate check). The latter is for a destination already held by another dataset, and closes the empty-but-owned window — just after a start, while the runner has written nothing yet, or after an operator has cleared away the debris of an interrupted run. Zero members, shared members (captures that also belong to another dataset; a 409 enumerating every one), busy members (every one, each with its own reason), and a non-empty destination are refused before anything starts. CAS succeeds → append `dataset_archive_started` (**carrying the frozen member set**. If the append fails, the CAS is put back — the only rollback ever permitted, allowed precisely because no byte has moved yet).
+- **Start (`POST /api/v1/datasets/{id}/archive` → 202)**: the destination goes through the same `KAIROS_ARCHIVE_ROOTS` allow-list plus overlap check as the capture archive (the two independent questions of §6; what is checked is the resolved dataset_dir). **The folder name is the operator's**: `path` (a relative path under the root; its last component is the dataset's folder) is prefilled by the UI with the views shape `<operator>/<task>/<name>` and freely editable. When omitted, the server derives the same sanitized default. Escapes (`..` and the like) are closed not by string hygiene but by realpath re-validation of the final directory (containment in the allow-list), and **a collision with an existing export is `409 destination_not_empty` or `409 destination_claimed`** (these two are the duplicate check). The latter is for a destination already held by another dataset, and closes the empty-but-owned window — just after a start, while the runner has written nothing yet, or after an operator has cleared away the debris of an interrupted run. Zero members, shared members (captures that also belong to another dataset; a 409 enumerating every one), busy members (every one, each with its own reason), and a non-empty destination are refused before anything starts. In addition, a probe file is created, fsynced, and deleted at the selected root; an unmounted path, a non-directory, or an unwritable root returns `503 archive_destination_unavailable`. All of these checks precede the CAS, so a bad configuration does not freeze the dataset. CAS succeeds → append `dataset_archive_started` (**carrying the frozen member set**. If the append fails, the CAS is put back — the only rollback ever permitted, allowed precisely because no byte has moved yet).
 - **The run (an in-process runner inside the orchestrator. Not dora_runner — moving files is not its job)**: members are carried out in `display_index` order through the same §9-1 sequence as the per-capture archive (copy → sha256 verify → `capture_archived` (with the dataset annotation) → row update → source deletion via trash, the replica going to `trashed` in the same critical section). The write target is `<dataset_dir>/<NNN>/`.
 - **The one relaxation of the member guard**: §7's "a dataset member is refused for archive" is waived **only for memberships in the run's own dataset** (memberships in any other dataset are refused as before). The behavior of the per-capture archive over HTTP is unchanged.
 - **`dataset_manifest.json`**: placed in the dataset_dir from the first write and atomically rewritten as each member completes — so that a folder that died halfway **declares itself**: "dataset X, write-out in progress, 001–002 sealed". When every member is done it settles to `status: complete`, and the sha256 of those bytes is recorded by `dataset_archived` (the seal event). The dependency is one-way, manifest → ledger, so a manifest rewritten after the seal is detectable from the ledger alone.
 - **Halt and resume**: on a member it cannot advance past (a lease appears, an append fails, unrecorded bytes at the destination, etc.) the run **stops on the spot and stays `archiving`**, reporting why. Nothing is rolled back. A re-POST (destination omitted; if given it must match the record — otherwise a 409) resumes idempotently **from durable state alone**: members the rows say are complete are skipped, members only the ledger vouches for are finished from the row update onward, unrecorded debris is rebuilt **only while the source is intact**, and when even the source is gone it calls a human (the one state it must not touch). **No automatic resume at startup** — a write to external storage the operator chose is not continued as a side effect of a restart. The UI presents `archiving` + `running: false` as Resume.
+- **Canceling a halted attempt (`POST …/archive/cancel`)**: this is neither a stop for a running copy nor a rollback. It is allowed only when the server can prove `archiving` + `running: false`, no seal, zero completed members in the DB / ledger / manifest, and a destination that is absent or contains only a pending-only manifest. `dataset_archive_canceled` is appended first (linked to its attempt by `started_event_id`), then the row returns to `active` and releases the destination / mode / started_at claim. Destination files are not deleted. If even one member completed, the ledger / manifest cannot be read, or an unknown file exists, the result is `409 archive_cancel_unsafe` and Resume is the only path. Even if the DB reset after the append fails and the row temporarily remains `archiving`, the ledger cancellation is authoritative, so the runner and Resume reject that same attempt (the API returns `503 archive_cancel_catalog_pending`; startup rebuild converges it to `active`).
 - **Freezing**: a dataset with `status != 'active'` refuses adding members, removing members, and deletion, all with a 409 (resume replays the frozen set from the started event, so a mid-flight change would be a silent divergence). **The archived row is never deletable** — the row is the queryable cache of the ledger's migration log, the very answer to "where did this dataset go" (the same "the row is not removed" principle as a capture's tombstone). The reverse guards: an archived capture (its bytes are gone) and a member of a non-active dataset (its bytes are on their way out) cannot be added to a new dataset.
 - **views/**: `list_view_entries` restricts itself to `status='active'`. Starting an archive removes the dataset from views/ **as a declaration** — never by dropping into regeneration's "the source is gone, skip it" path.
-- **rebuild**: `dataset_archive_started` reconstructs the dataset row and the member rows on its own (a self-contained payload, against a truncated ledger), and with no seal present it restores the dataset **still `archiving`** — resumability survives the total loss of the DB. The members' capture rows are carried, unchanged, by the existing `capture_archived` reconstruction.
-- **Progress**: volatile (`GET /api/v1/datasets/{id}/archive`). The count of completed members is derived from the rows; the bytes being copied and the halt reason are process memory — honestly reset by a restart. It is not put in the jobs table (the volatile, out-of-rebuild contract).
+- **rebuild**: `dataset_archive_started` reconstructs the dataset row and the member rows on its own (a self-contained payload, against a truncated ledger), and with neither a seal nor a cancel present it restores the dataset **still `archiving`** — resumability survives the total loss of the DB. A subsequent `dataset_archive_canceled` returns the same row to `active` and clears the claim. The members' capture rows are carried, unchanged, by the existing `capture_archived` reconstruction.
+- **Progress**: volatile (`GET /api/v1/datasets/{id}/archive`). The count of completed members is derived from the rows; the bytes being copied and the halt reason are process memory — honestly reset by a restart. `cancelable` / `cancel_blocker` are recomputed from durable state and the destination on every read. The started / canceled / sealed / capture_archived facts are derived together from a single lifecycle-ledger read per poll. It is not put in the jobs table (the volatile, out-of-rebuild contract).
+
+### 6.2 LeRobot export of a dataset (derived-artifact generation — non-terminal)
+
+Converts a dataset to the training format (LeRobot v3) under `exports/<name>/`. Unlike archive it is
+**non-terminal** — the dataset's status does not change and the export can be run any number of times.
+The executor is the resident `lerobot_exporter` container (opt-in overlay; it spawns the bundled
+rosbag2lerobot as a subprocess per conversion).
+
+- **Input snapshot**: at `POST /api/v1/datasets/{id}/export` the orchestrator resolves the members to a
+  capture list (in `display_index` order; members without local bytes and with review_status=excluded
+  are dropped) and pins each capture's effective task label — resolved by the §4.3 rule
+  (record.json override → manifest → row fallback) **under the capture mutex**. The live views/ tree
+  is never used as input.
+- **Leases**: every targeted capture gets a shared lease `export:<export_id>` (held while queued too,
+  extended on observation, released at the terminal state). No freezing — the snapshot plus the lease
+  give the same guarantee.
+- **Staging**: real directories at `exports/.staging/<export_id>/<NNN>/` with **per-file symlinks** to
+  the MCAP(s) and `metadata.yaml` only. Episodes with a task label get a `task.json`; a source bag
+  that carries its own `task.json` keeps it and gets no injection (the same collision rule as the §6
+  projection). Nothing is ever written into `objects/`. Staging is removed when the job ends.
+- **Destination and naming**: the root is fixed at `exports/`. Names are
+  `<operator>_<profile>_<memo>` (mixed operators become the fixed word `mixed`; only the trailing memo
+  may be omitted; views-style sanitisation). Collisions are 409 `destination_not_empty`. Paths are
+  recorded data-root-relative — no absolute path is ever baked. The host-side location is decided by
+  `.env`'s `EXPORTS_DIR` (default `<data_dir>/exports`) via the mount.
+- **Concurrency**: intake is an unbounded FIFO queue; execution slots default to 1
+  (`KAIROS_LEROBOT_MAX_CONCURRENCY`). Only a duplicate submission for the same dataset is refused with
+  409 `export_in_progress`. Running concurrently with recording is allowed (the container's `cpus:`
+  cap plus the recorder's drop detection are the guardrails).
+- **Record**: when the orchestrator first observes the successful terminal state it appends
+  `dataset_exported` to the ledger (export_id, output path relative to the data root, profile +
+  config sha256, the capture snapshot, counts). No row is created (the artifact is derived; its own
+  source of truth is the output tree's `meta/conversion_log.json`). `dataset_exported` is not a
+  tombstone.
+- **Deletion**: `exports/<name>/` is a derivative — plain deletion, not the trash pathway.
+  Regeneration is just re-running the same dataset with the same profile.
+- **Progress**: volatile. The exporter reads the conversion heartbeat (`meta/progress.json`) and
+  reports `queued/running/complete/failed/canceled` plus per-episode / in-episode progress and stalls.
 
 ## 7. Unified deletion (via trash, with tombstones)
 
@@ -290,15 +343,66 @@ The common path for discard (discarding something not yet sent) and delete.
 
 ### 7.1 capture lease
 
-`captures` carries `lease_owner` / `lease_expires_at`. The digest job and dora_runner jobs acquire a lease before touching `objects/<id>`. discard / delete answer `409` while a lease is live.
+**The lease is shared (a shared reader lease, rev.2.15).** One capture can be **held by several
+holders at once**: one holder = one row in `capture_leases(capture_id, owner, expires_at,
+acquired_at)` (PK `(capture_id, owner)`, index on `(capture_id, expires_at)`). The digest job and
+dora_runner jobs take a hold before touching `objects/<id>`. **discard / delete answer
+`409 capture_busy` while even one live holder exists.**
 
-- A job that has lost its lease, or whose state is no longer terminal, **aborts and writes nothing**.
-- **The digest job** holds the lease for the entire span of its run and, **immediately before the final manifest write, re-reads both `captures.state` and its own hold on the lease**. If either has broken (it became `delete_pending|discarded|deleted`, or the lease was lost) it **aborts right there — it does not update**. What closes the window is not a DB lock but **the lease itself**; the last re-read merely confirms, at the final moment a write is still possible, the §7.1 requirement that "a job that has lost its lease gives up quietly and writes nothing".
-- **A job must not create `objects/<id>/`** (writing a tmp there would resurrect the tree).
-- dora_runner's jobs may remain **lease-unaware** (they write only to `report/`, so the ban on writing to `objects/` holds structurally). orchestrator manages the lease on their behalf: acquire on submission, **renew when a status / result poll observes a non-terminal state (renew-on-poll)**, and release within the owner scope once a terminal state is observed.
-  - **Acquisition necessarily comes after the job is created** (the order is forced). The lease's owner string is `job:<job_id>`, and it is dora_runner that issues `job_id`, so without creating the job there is no owner to name — that id is precisely the name shown to the operator in a `409`, and the key matched against on release. The create → acquire order therefore cannot be broken. **If the acquire fails, the job just created is undone** (a compensating cancel). A cheap pre-check is also run once before creation to reduce how often that compensation path is entered (the authoritative decision remains the acquire that follows).
-- **What the TTL does not guarantee (stated honestly)**: renew-on-poll guarantees "**it stays alive while someone is watching**"; it does **not** cover waiting in the queue. dora_runner caps its concurrency, so a submitted job can sit behind other jobs, and if nobody polls during that time the lease expires and delete wins. That job then **fails cleanly** against a directory that has since moved to `.trash` — a slow, orderly ending, not corruption. We accept this failure rather than run a renewal loop for jobs the orchestrator is not watching.
-- An expired lease is not a lease (`acquire_lease` compares against the current time), so a job whose process died never locks a capture forever. The property this design leans on is that **every failure converges toward "you can delete it again"**.
+- **Why shared**: the single-owner lease conflated "someone is touching this" (the record) with
+  mutual exclusion between jobs — and the exclusion was never the goal; its only observable effect
+  was that a capture's N camera topics (2-5 in practice) could not encode in parallel. So the
+  exclusion is gone and the record remains.
+- **The invariant is unchanged**, reproduced per holder — an expired hold is not a hold (every read
+  compares against now) / holders expire independently / **the moment the last one is gone, the
+  capture is deletable again**. Every failure still converges toward "deletable again".
+- **Acquisition never excludes** (it always succeeds). Accordingly, **the submission-time "is
+  someone holding this" pre-check is removed** — that check was the very gate that serialized the
+  encoders.
+- **No GC task.** Expired rows are swept opportunistically by the next acquisition on the same
+  capture. An expired hold already stopped counting at read time, so the sweep is hygiene, not
+  correctness — which is exactly why it can ride an inevitable write instead of being a resident
+  task that can die.
+- **The `409` details name every holder**: `{ capture_id, holders: [{owner, expires_at}, …],
+  lease_owner, lease_expires_at }`. `holders` is sorted by expires_at; `lease_owner` /
+  `lease_expires_at` are a scalar summary pointing at the **last holder to expire** (= the answer
+  to "when can I retry"), kept for clients that only know the single-owner shape.
+- **The `captures` columns `lease_owner` / `lease_expires_at` are gone.** The API fields of those
+  names are served by the `captures_with_lease` view as the scalar summary above. Leases are
+  **volatile and out of rebuild's scope** (§8) — a lease describes a process running right now, and
+  a rebuild runs precisely when no such process exists; restoring one would lock a capture behind a
+  holder nobody can release.
+
+- A job that lost its hold / whose capture left a terminal state **aborts and writes nothing**.
+- **The digest job** holds for its whole run and re-reads both `captures.state` and its own hold
+  **immediately before the final manifest write**; if either has collapsed it stops there — no
+  update. What closes the window is the lease itself, not a DB lock.
+- **Jobs must not create `objects/<id>/`** (a tmp write would resurrect the tree).
+- dora_runner jobs stay **lease-ignorant** (they write only under `report/`); the orchestrator
+  manages the hold on their behalf: acquire at submission, **renew on every status/result poll
+  observation while non-terminal**, release owner-scoped on observing terminal.
+  - **Acquisition comes after job creation** (the order is forced): the owner string is
+    `job:<job_id>` and dora_runner mints the id — it is also the name a `409` shows an operator and
+    the key release matches on. If a later step fails, the just-created job is cancelled
+    (compensating cancel); a cheap pre-check before creation keeps that path rare.
+- **What the TTL does not guarantee (stated honestly)**: renew-on-poll means "alive while someone
+  is watching", not "alive while queued". A job waiting behind others with nobody polling can lose
+  its hold, and delete wins; that job later fails cleanly against a directory moved to `.trash` — a
+  slow clean failure, not corruption.
+- An expired lease is not a lease (reads compare against now), so a job whose process died can
+  never lock a capture forever. **Every failure converges toward "deletable again"** — the property
+  this design leans on.
+- **Known follow-up (rev.2.15)**: dataset archive's "halt on a live lease" is unchanged; with more
+  holders it will halt more often. Whether archive should wait for holders, or judge per holder, is
+  a separate decision.
+- **Concurrent runs of the same pipeline (adjudicated in rev.2.15)**: with the submission-time
+  exclusion gone, several jobs of one pipeline can run on one capture. The ruling is **allow** —
+  the camera case (video_check) never collided anyway (artifact names derive from the topic), and
+  the pipelines that write a fixed `summary.json` now write **every artifact atomically
+  (tmp → rename)**, so a concurrent run normalizes to **whole-file last-writer-wins** — semantically
+  identical to running twice sequentially, with no torn bytes and no partial reads. De-duplicating
+  a fully identical (capture, pipeline, params) submission is a follow-up if ever needed (the UI
+  already suppresses double-submits).
 
 ## 8. DB schema v2 and rebuild
 
@@ -354,7 +458,7 @@ Only these five — `recording` / `stopping` / `completed` / `interrupted` / `fa
 
 ### 8.2 rebuild (full reconstruction from the sidecars)
 
-**Inputs**: `objects/*/object_manifest.json`, `objects/*.failed.json`, `record.json`, `quick_check.json` (§4.2), `lifecycle.jsonl`. `jobs` is treated as volatile and is out of scope for rebuild. `validation_templates` and `plan_catalog` are duplicated into sidecars under `catalog/*.json` when saved, and restored by rebuild. A dataset's archive state (§6.1: `archiving` / `archived`, destination included) is restored by replaying the ledger.
+**Inputs**: `objects/*/object_manifest.json`, `objects/*.failed.json`, `record.json`, `quick_check.json` (§4.2), `lifecycle.jsonl`. `jobs` is treated as volatile and is out of scope for rebuild. `validation_templates` and `plan_catalog` are duplicated into sidecars under `catalog/*.json` when saved, and restored by rebuild. The plan catalog sidecar contains its CAS `revision` and canonical project/task/condition IDs. A legacy name/string catalog receives deterministic IDs during restore and is written back as a canonical sidecar. An archived capture's `collection_context` is restored from the `capture_archived` ledger payload. A dataset's archive state (§6.1: `archiving` / `archived`, destination included) is restored by replaying the ledger.
 
 **Conditions for rebuilding at startup**: the DB is absent / the schema version differs / an explicit request via `KAIROS_REBUILD`. It is not something that runs on every startup.
 
@@ -365,14 +469,14 @@ Only these five — `recording` / `stopping` / `completed` / `interrupted` / `fa
 3. **For tombstones, the ledger takes precedence over the manifest.**
 4. A 0-byte / unparsable manifest is **reported as CORRUPT** (treating it as "does not exist" is forbidden). **No `captures` row is created for that capture** — that manifest was the only thing that could say "what this capture is", so creating a row would be fabrication. Instead, two things are emitted: (a) an entry in the corrupt list (with the reason) and (b) a **replica row** with `state=corrupt`. This is so that the set of rows itself can say "the bytes are here, but their description is broken". As a consequence, joining `captures` to `replicas` leaves the corrupt replica with no counterpart — **that is exactly the set to repair**, so a reader has to tolerate this mismatch.
 5. Review fields follow the divergence rule of §4.1-4 (sidecar wins; the reverse direction is a warning).
-6. **`batches` rows are rebuilt from the ledger.** `batch_created` / `batch_updated` / `batch_ended` (§5) are authoritative, and `project` / `robot` / `condition` / `operator` / `target_episodes` / `batch_seq` / `status` all come back from them. The replay is **idempotent** — every value is read from the event rather than recomputed from the row, so `KAIROS_REBUILD=1` can be applied any number of times without `batch_seq` moving. **A ledger older than this event holds no `batch_created` lines at all**, so on those installations the batch rows still do not come back (neither an exception nor a failure: it falls through to the orphan report below). **This is a decision, not a gap**: the metadata only ever existed in `kairos.db`, so there is nothing to back-fill it from, and minting a batch that has the right id and no contents would show the operator a batch that exists and is blank rather than one that is honestly gone — a new wrong answer wearing the shape of a fix. So **batches created after this event survive; batches created before it do not**. `batch_id` / `index_in_batch` on the `captures` side are restored from `record.json` as before. **`episodes_recorded` is the one field no event can restore** — a monotone counter of review saves, which are events rather than facts, and the ledger records facts. The replay therefore **recounts it from the capture rows still naming that batch** and sets `episodes_recorded_is_floor = 1` on the row. That figure is a **lower bound**: a capture that was reviewed in and later deleted took its `record.json` with it and cannot be counted (tombstone rows survive, so they are). Writing 0 was not even a lower bound — it was wrong — so it was changed. The displayed `N / 30` can still go down after a rebuild, but now the fact that it can is machine-readable. Where a capture points at a batch whose row did not come back, the rebuild reports it as a warning (visible in store health). **Ids are never reused** — a `batch_id` that a capture still names is treated as taken.
+6. **`batches` rows are rebuilt from the ledger.** `batch_created` / `batch_updated` / `batch_ended` (§5) are authoritative, and `project` / `robot` / `condition` / `operator` / `target_episodes` / `batch_seq` / `status` all come back from them. The replay is **idempotent** — every value is read from the event rather than recomputed from the row, so `KAIROS_REBUILD=1` can be applied any number of times without `batch_seq` moving. **A ledger older than this event holds no `batch_created` lines at all**, so on those installations the batch rows still do not come back (neither an exception nor a failure: it falls through to the orphan report below). **This is a decision, not a gap**: the metadata only ever existed in `kairos.db`, so there is nothing to back-fill it from, and minting a batch that has the right id and no contents would show the operator a batch that exists and is blank rather than one that is honestly gone — a new wrong answer wearing the shape of a fix. So **batches created after this event survive; batches created before it do not**. A capture's `batch_id` comes from `collection_context.batch_id` when that value is non-null; otherwise rebuild falls back to `record.json`. `index_in_batch` comes from `record.json`. **`episodes_recorded` is the one field no event can restore** — a monotone counter of review saves, which are events rather than facts, and the ledger records facts. The replay therefore recounts only capture rows with `review_revision > 0` for that Batch and sets `episodes_recorded_is_floor = 1` on the row. That figure is a **lower bound**: a capture that was reviewed in and later deleted took its `record.json` with it and cannot be counted (tombstone rows survive, so they are). Writing 0 was not even a lower bound — it was wrong — so it was changed. The displayed `N / 30` can still go down after a rebuild, but now the fact that it can is machine-readable. Where a capture points at a batch whose row did not come back, the rebuild reports it as a warning (visible in store health). **Ids are never reused** — a `batch_id` that a capture still names is treated as taken.
 
 ### 8.3 Periodic reconciler
 
 A consistency pass that runs continuously, separate from rebuild. It picks up:
 
 - An `objects/<id>` that has a valid manifest but no DB row (where a crashed import or a race with rebuild lands) → adopt the row.
-- Something left complete in `.incoming/<id>` (an importer that died between the rsync and the rename) → move it into `objects/` and adopt it.
+- Something left complete in `.incoming/<id>` (an importer that died between the rsync and the rename) → move it into `objects/` and adopt it. **A terminal manifest alone is not "complete"** (2026-08-11, sweep S1-5 — the old protection was the single accident that the mcap shards sort before the manifest in a filename sort). Adoption now passes two independent gates first: (a) **byte completeness** — the staged `*.mcap` sizes sum to at least the manifest's `bytes` (the value the recorder measured at finalise; manifests without `bytes` skip this gate). (b) **quiescence** — nothing anywhere inside the directory was written in the last 5 seconds (the same whole-tree mtime walk the orphan sweep uses; rsync restores source mtimes on completion, so a finished transfer passes immediately). A directory that fails either gate is **simply left for a later tick** — nothing is destroyed. The quiescence gate also closes the race where adoption slips into the gap between an import's `write_manifest` and `finalize` awaits.
 - Terminal with `digest_state=pending` → re-submit to the digest queue.
 - Resuming `delete_pending` (§7).
 - Marking vanished copies `missing_unmanaged` (**under the threshold guard**, described below).
@@ -407,6 +511,9 @@ These are not the kind of properties you can "fix later". Break one even once, a
 - per-file sha256 → completed by the single atomic write of §3.3 → record `replicas.manifest_digest` → `present_verified`.
 - While it runs, surface `digest_state=pending` in the UI (never blend "verified" with "being verified").
 - After a crash, the reconciler re-submits the pending work (partial results are thrown away and it starts over).
+- **Mutable and derived sidecars are excluded from what gets hashed**: `object_manifest.json` (the file being written), `record.json` (mutable), and additionally `quick_check.json` (2026-08-11 — settlement writes it after stop **on its own clock**, so one landing after the seal would make every later comparison misread a derived file's arrival as corruption of the capture).
+- **An unverified copy of an already-sealed manifest is genuinely compared** (2026-08-11, sweep S3-3). When a replica is `present_unverified` but the manifest says `digest_state=complete`, the old implementation promoted to `present_verified` without comparing a single byte (a bag truncated in transit could arrive verified). Now the local per-file hashes are checked against the manifest's `files`: a match promotes; **a mismatch marks the replica `corrupt`** and never touches the manifest (the manifest is evidence). Manifests sealed under the old rule that included `quick_check.json` are compared with that entry ignored (and the `manifest_digest` cross-check skipped in that case).
+- **The seal's origin is stamped into the manifest**: sealing writes `digest_sealed_by` (the sealing instance's id). Hashes **sealed at the source** anchor back to the recording itself; hashes **sealed on a receiver** (the robot side runs no orchestrator, so a transfer can precede any sealing) are "the reference for every future integrity check" and **not proof of the transfer itself** — the UI's verified wording says so. A receipt-style design where the robot seals digests before transfer remains TBD under §13 (D12).
 
 ## 11. API (summary)
 
@@ -446,5 +553,5 @@ The pytest side guards a different layer: crash injection (kill → restart → 
 
 ## 13. Out of scope (next branch)
 
-- The edge → server transfer subsystem, hub mode, receipts, drop-local (formal replica management for copies left behind on the robot is resolved there). In the current split deployment, a discard is "**discarding the copy on the recording PC**", and a copy may still remain on the robot — the UI states that honestly alongside.
+- The edge → server transfer subsystem, hub mode, receipts, drop-local (formal replica management for copies left behind on the robot is resolved there). In the current split deployment, a discard is "**discarding the copy on the recording PC**", and a copy may still remain on the robot — the UI states that honestly alongside. **Interim re-fetch guard** (2026-08-11, sweep S4): the importer's pull skips any capture with a tombstone (`capture_discarded` / `capture_deleted`) in the local ledger — so while drop-local does not exist, an `{"all": true}` pull cannot drag a deleted capture back from the robot (deletion has no restore, so skipping forever is safe).
 - `task_revision_id`, and automating retention / capacity (this branch goes **only as far as fixing the definitions that are displayed**).

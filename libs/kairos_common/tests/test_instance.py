@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """instance.json: minted once, never regenerated, never guessed at."""
 
 from __future__ import annotations

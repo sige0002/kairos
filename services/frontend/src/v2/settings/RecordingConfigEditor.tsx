@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Recording-config editing pieces for v2 Settings (moved here from the v1-era
 // features/config/ConfigTab.tsx once nothing v1 was left in it). Exports:
 // RecordingConfigEditor — editable JSON for the ACTIVE robot's RECORDING_CONFIG
@@ -190,7 +192,7 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
       <label className="mb-1 block text-sm font-medium text-gray-700">Config (JSON)</label>
       <textarea
         aria-label="recording config json"
-        className="h-80 w-full rounded-control border border-gray-200 p-2 font-mono text-xs focus:border-teal-500 focus:outline-none"
+        className="h-80 w-full rounded-control border border-gray-200 p-2 font-mono text-xs focus:border-teal-600 focus:outline-none"
         spellCheck={false}
         value={text}
         disabled={saveMutation.isPending}
@@ -203,7 +205,7 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
       {jsonError ? (
         <p className="mt-2 text-sm text-red-700">Invalid JSON — {jsonError}</p>
       ) : (
-        <p className="mt-2 text-xs text-gray-400">Valid JSON</p>
+        <p className="mt-2 text-xs text-gray-500">Valid JSON</p>
       )}
 
       {pendingServer && (
@@ -289,11 +291,11 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
           type="button"
           onClick={onSave}
           disabled={saveMutation.isPending || jsonError !== null}
-          className="rounded-control bg-teal-600 px-4 py-1.5 text-sm font-medium text-white hover:bg-teal-700 disabled:opacity-50"
+          className="rounded-control bg-teal-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-teal-800 disabled:opacity-50"
         >
           {saveMutation.isPending ? 'Saving…' : 'Save'}
         </button>
-        <span className="text-xs text-gray-400">
+        <span className="text-xs text-gray-500">
           Edits the active recording file; the server validates on save.
         </span>
       </div>

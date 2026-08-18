@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """RosTopicSubscriber lifecycle guards, exercised WITHOUT rclpy.
 
 Covers the failure paths added in MON-H1 (readiness must not lie when spin-up

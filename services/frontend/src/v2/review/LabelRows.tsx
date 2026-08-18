@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The three operator-owned labels on a capture — operator / task / robot —
 // as rows of the inspection's definition list, editable in place.
 //
@@ -16,8 +18,9 @@
 // reads as a value someone chose, and it hides the one fact this screen needs
 // to convey about an imported bag: that the blank is yours to fill in.
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { cn } from '../../components/ui';
+import type { CaptureConditionView } from '../captures/recordingCondition';
 
 export interface CaptureLabels {
   operator: string | null;
@@ -48,11 +51,26 @@ function trimOrNull(value: string): string | null {
   return trimmed === '' ? null : trimmed;
 }
 
+export function displayCondition(
+  condition: string | null,
+  status: CaptureConditionView['status'] | undefined,
+): string {
+  if (status === 'loading') return 'Loading…';
+  if (status === 'unavailable') return 'Unavailable';
+  if (status === 'not-recorded') return 'Not recorded';
+  return condition ?? 'Not recorded';
+}
+
 export function LabelRows({
   values,
+  condition,
+  conditionStatus,
   editing,
 }: {
   values: CaptureLabels;
+  /** Read-only collection-time fact: editing labels must not rewrite history. */
+  condition: string | null;
+  conditionStatus?: CaptureConditionView['status'];
   editing: LabelEditing;
 }) {
   const [open, setOpen] = useState(false);
@@ -62,6 +80,7 @@ export function LabelRows({
     robot: '',
   });
   const [error, setError] = useState<string | null>(null);
+  const displayedCondition = displayCondition(condition, conditionStatus);
 
   const startEditing = () => {
     setDraft({
@@ -97,25 +116,35 @@ export function LabelRows({
         {FIELDS.map((field) => {
           const value = values[field.key];
           return (
-            <RowFrame key={field.key} label={field.label}>
-              <button
-                type="button"
-                data-testid={`label-edit-${field.key}`}
-                onClick={startEditing}
-                title="Edit operator, task and robot"
-                className={cn(
-                  'group inline-flex items-center gap-1.5 rounded-[5px] px-1 py-0.5 text-left hover:bg-gray-50',
-                  value ? 'text-gray-700' : 'text-gray-400',
-                )}
-              >
-                <span className={cn(!value && 'italic')}>
-                  {value || field.placeholder}
-                </span>
-                <span aria-hidden="true" className="text-[11px] text-gray-300 group-hover:text-teal-600">
-                  ✎
-                </span>
-              </button>
-            </RowFrame>
+            <Fragment key={field.key}>
+              <RowFrame label={field.label}>
+                <button
+                  type="button"
+                  data-testid={`label-edit-${field.key}`}
+                  onClick={startEditing}
+                  title="Edit operator, task and robot"
+                  className={cn(
+                    'group inline-flex items-center gap-1.5 rounded-[5px] px-1 py-0.5 text-left hover:bg-gray-50',
+                    value ? 'text-gray-700' : 'text-gray-500',
+                  )}
+                >
+                  <span className={cn(!value && 'italic')}>
+                    {value || field.placeholder}
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    className="text-[11px] text-gray-500 group-hover:text-teal-600"
+                  >
+                    ✎
+                  </span>
+                </button>
+              </RowFrame>
+              {field.key === 'task' && (
+                <RowFrame label="Condition">
+                  <span data-testid="review-condition">{displayedCondition}</span>
+                </RowFrame>
+              )}
+            </Fragment>
           );
         })}
       </>
@@ -125,20 +154,27 @@ export function LabelRows({
   return (
     <>
       {FIELDS.map((field) => (
-        <RowFrame key={field.key} label={field.label}>
-          <input
-            type="text"
-            data-testid={`label-input-${field.key}`}
-            aria-label={field.label}
-            value={draft[field.key]}
-            placeholder={field.placeholder}
-            disabled={editing.saving}
-            onChange={(e) =>
-              setDraft((cur) => ({ ...cur, [field.key]: e.target.value }))
-            }
-            className="w-full rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-500 focus:outline-none disabled:bg-gray-50"
-          />
-        </RowFrame>
+        <Fragment key={field.key}>
+          <RowFrame label={field.label}>
+            <input
+              type="text"
+              data-testid={`label-input-${field.key}`}
+              aria-label={field.label}
+              value={draft[field.key]}
+              placeholder={field.placeholder}
+              disabled={editing.saving}
+              onChange={(e) =>
+                setDraft((cur) => ({ ...cur, [field.key]: e.target.value }))
+              }
+              className="w-full rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-600 focus:outline-none disabled:bg-gray-50"
+            />
+          </RowFrame>
+          {field.key === 'task' && (
+            <RowFrame label="Condition">
+              <span data-testid="review-condition">{displayedCondition}</span>
+            </RowFrame>
+          )}
+        </Fragment>
       ))}
       <dt />
       <dd className="flex flex-col gap-1.5 pt-1">
@@ -157,7 +193,7 @@ export function LabelRows({
             data-testid="label-save"
             onClick={() => void submit()}
             disabled={editing.saving}
-            className="h-8 rounded-control bg-teal-600 px-3 text-[12px] font-bold text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-8 rounded-control bg-teal-700 px-3 text-[12px] font-bold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {editing.saving ? 'Saving…' : 'Save labels'}
           </button>
@@ -171,9 +207,9 @@ export function LabelRows({
             Cancel
           </button>
         </div>
-        <span className="text-[11px] leading-snug text-gray-400">
-          Clearing a field returns it to whatever the recording&apos;s own
-          manifest said.
+        <span className="text-[11px] leading-snug text-gray-500">
+          Clearing a field returns it to whatever the recording&apos;s own manifest
+          said.
         </span>
       </dd>
     </>
@@ -184,7 +220,7 @@ export function LabelRows({
 function RowFrame({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <>
-      <dt className="text-[11.5px] text-gray-400">{label}</dt>
+      <dt className="text-[11.5px] text-gray-500">{label}</dt>
       <dd className="text-[12.5px] text-gray-700">{children}</dd>
     </>
   );

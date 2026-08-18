@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // System status: one row per thing that can quietly stop working during a
 // take. The rows themselves are derived in useSystemRows — this card only
 // lays them out.
@@ -5,10 +7,14 @@
 import { Card, cn } from '../../../components/ui';
 import { SIDE_PAD } from '../compact';
 import { Chip } from './Chip';
+import { usePublishSystemRows } from './systemRowsStore';
 import { useSystemRows, type SystemRowsInput } from './useSystemRows';
 
 export function SystemStatusCard(props: SystemRowsInput) {
   const rows = useSystemRows(props);
+  // Shared with the Active warnings card below, which must not be able to say
+  // "no active warnings" while one of these rows says CHECK (#13).
+  usePublishSystemRows(rows);
 
   return (
     <Card
@@ -17,9 +23,9 @@ export function SystemStatusCard(props: SystemRowsInput) {
         SIDE_PAD,
       )}
     >
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         System status
-      </span>
+      </h2>
       {rows.map((r) => (
         <div
           key={r.label}

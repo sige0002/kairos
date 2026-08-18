@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Left column: the logical datasets (§6). One row per dataset — a name, the
 // operator/task it was created under, and an honest one-line aggregate over its
 // members. There is no tree here any more because there is nothing to nest: a
@@ -14,6 +16,7 @@
 // dataset" mean "move recordings into a directory", and the two must not be
 // confused while both are still in living memory.
 
+import { useRef } from 'react';
 import { Badge, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { CombineDatasetsDialog } from './CombineDatasetsDialog';
@@ -84,7 +87,7 @@ function DatasetListRow({ row, state }: { row: DatasetRow; state: DatasetsState 
         )}
       </span>
       {subtitle && (
-        <span className="truncate text-[10.5px] text-gray-400">{subtitle}</span>
+        <span className="truncate text-[10.5px] text-gray-500">{subtitle}</span>
       )}
       <SummaryLine segments={datasetSummarySegments(row)} />
     </div>
@@ -92,14 +95,40 @@ function DatasetListRow({ row, state }: { row: DatasetRow; state: DatasetsState 
 }
 
 /** The create form. Inline rather than a modal: it is three fields, and the
- *  list it adds to stays visible beside them. */
-function CreateForm({ state }: { state: DatasetsState }) {
+ *  list it adds to stays visible beside them.
+ *
+ *  A NAMED FORM, not a dialog. It has no overlay, traps no focus, and leaves
+ *  the page behind it live and reachable — that is the whole reason it is not
+ *  the shared modal — so `role="dialog"` would be both a lie about the
+ *  behaviour and, on a `<form>`, not a role the element may carry. Named, it is
+ *  a form landmark: findable by landmark navigation, honest about what it is.
+ *  What it does owe the keyboard is the dismissal the Cancel button offers the
+ *  mouse — Escape leaves without creating, and hands the cursor back. */
+function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () => void }) {
   return (
     <form
+      aria-label="New dataset"
       data-testid="new-dataset-form"
       onSubmit={(e) => {
         e.preventDefault();
         state.submitCreate();
+      }}
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape') return;
+        // An IME's own Escape closes its candidate window. Taking that
+        // keystroke as well would throw away the text being converted AND the
+        // form around it, from one press the typist meant for neither.
+        if (e.nativeEvent.isComposing) return;
+        // Mirrors Cancel, including its disabled state: once the POST is out
+        // there is nothing left to back out of, and closing would only hide the
+        // result of a write that is still going to land.
+        if (state.creating) return;
+        e.preventDefault();
+        // The shared Modal listens for Escape on the DOCUMENT, so a dialog open
+        // over this panel would otherwise be dismissed by the same press that
+        // dismisses the form under it.
+        e.stopPropagation();
+        onDismiss();
       }}
       className="flex flex-col gap-1.5 border-b border-gray-100 bg-gray-50 px-3 py-2.5"
     >
@@ -107,25 +136,28 @@ function CreateForm({ state }: { state: DatasetsState }) {
         data-testid="new-dataset-name"
         value={state.newName}
         onChange={(e) => state.setNewName(e.target.value)}
+        aria-label="Dataset name"
         placeholder="Dataset name"
         maxLength={200}
         autoFocus
-        className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"
+        className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-500"
       />
       <div className="flex gap-1.5">
         <input
           data-testid="new-dataset-operator"
           value={state.newOperator}
           onChange={(e) => state.setNewOperator(e.target.value)}
+          aria-label="Operator (optional)"
           placeholder="Operator (optional)"
-          className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-400"
+          className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-500"
         />
         <input
           data-testid="new-dataset-task"
           value={state.newTask}
           onChange={(e) => state.setNewTask(e.target.value)}
+          aria-label="Task (optional)"
           placeholder="Task (optional)"
-          className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-400"
+          className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-500"
         />
       </div>
       <p className="text-[10.5px] leading-relaxed text-gray-500">
@@ -139,14 +171,14 @@ function CreateForm({ state }: { state: DatasetsState }) {
           type="submit"
           data-testid="new-dataset-submit"
           disabled={state.newName.trim() === '' || state.creating}
-          className="rounded-chip bg-teal-600 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-700 disabled:opacity-40"
+          className="rounded-chip bg-teal-700 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-800 disabled:opacity-40"
         >
           {state.creating ? 'Creating…' : 'Create'}
         </button>
         <button
           type="button"
           data-testid="new-dataset-cancel"
-          onClick={state.cancelCreate}
+          onClick={onDismiss}
           disabled={state.creating}
           className="rounded-chip border border-gray-200 px-[11px] py-[5px] text-xs font-semibold text-gray-600 hover:bg-white disabled:opacity-40"
         >
@@ -160,13 +192,23 @@ function CreateForm({ state }: { state: DatasetsState }) {
 export function DatasetList({ state }: { state: DatasetsState }) {
   const hasAny = state.rows.length > 0;
   const searchActive = state.search.trim() !== '';
+  const newBtnRef = useRef<HTMLButtonElement>(null);
+
+  // Dismissing the form unmounts the field the cursor is sitting in. Left to
+  // itself the cursor falls to <body> and Tab restarts at the top of the
+  // document — so it goes back to the control that opened the form, which is
+  // where the operator was before and is still on screen.
+  const dismissCreate = () => {
+    state.cancelCreate();
+    newBtnRef.current?.focus();
+  };
 
   return (
     <div className="flex min-h-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
       <div className="flex shrink-0 items-center gap-2.5 border-b border-gray-100 px-4 py-[13px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Datasets
-        </span>
+        </h2>
         <div className="flex-1" />
         <button
           type="button"
@@ -178,16 +220,17 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           ⧉ Combine
         </button>
         <button
+          ref={newBtnRef}
           type="button"
           data-testid="new-dataset-btn"
           onClick={state.openCreate}
-          className="rounded-chip bg-teal-600 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-700"
+          className="rounded-chip bg-teal-700 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-800"
         >
           + New
         </button>
       </div>
 
-      {state.createOpen && <CreateForm state={state} />}
+      {state.createOpen && <CreateForm state={state} onDismiss={dismissCreate} />}
 
       {/* Toolbar: search, member facets + sort, operator, then the counter. */}
       <div className="flex shrink-0 flex-col gap-2 border-b border-gray-100 px-3 py-2.5">
@@ -196,8 +239,9 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           data-testid="dataset-search"
           value={state.search}
           onChange={(e) => state.setSearch(e.target.value)}
+          aria-label="Search datasets"
           placeholder="Search dataset, operator, task…"
-          className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-400"
+          className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-500"
         />
 
         <div className="flex items-center gap-1.5">
@@ -212,8 +256,8 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                 className={cn(
                   'rounded-chip px-2 py-0.5 text-[11px] font-semibold',
                   state.taskResultFilter === f.id
-                    ? 'bg-teal-600 text-white'
-                    : 'bg-gray-100 text-gray-500 hover:bg-gray-200',
+                    ? 'bg-teal-700 text-white'
+                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200',
                 )}
               >
                 {f.label}
@@ -240,6 +284,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
         {state.operatorOptions.length > 0 && (
           <select
             data-testid="dataset-operator-filter"
+            aria-label="Filter datasets by operator"
             value={state.operatorFilter}
             onChange={(e) => state.setOperatorFilter(e.target.value)}
             className="w-full rounded-control border border-gray-200 bg-white px-2 py-1 text-[12px] text-gray-600"
@@ -253,7 +298,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           </select>
         )}
 
-        <span data-testid="dataset-count" className="text-[11px] text-gray-400">
+        <span data-testid="dataset-count" className="text-[11px] text-gray-500">
           showing {state.shown} of {state.total}
         </span>
         <div className="flex items-center gap-1">
@@ -265,7 +310,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
             className={cn(
               'rounded-chip px-2 py-0.5 text-[11px] font-bold',
               state.datasetView === 'active'
-                ? 'bg-teal-600 text-white'
+                ? 'bg-teal-700 text-white'
                 : 'border border-gray-200 text-gray-600 hover:bg-gray-50',
             )}
           >
@@ -290,7 +335,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
       </div>
 
       {state.isLoading ? (
-        <div className="px-4 py-6 text-sm text-gray-400">Loading datasets…</div>
+        <div className="px-4 py-6 text-sm text-gray-500">Loading datasets…</div>
       ) : (
         <div data-testid="dataset-list-scroll" className="min-h-0 flex-1 overflow-y-auto p-2.5">
           {!hasAny ? (
@@ -298,7 +343,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
               {searchActive && state.total > 0 ? (
                 <>
                   <span className="text-sm text-gray-500">No datasets match.</span>
-                  <span className="text-xs leading-relaxed text-gray-400">
+                  <span className="text-xs leading-relaxed text-gray-500">
                     {state.total} dataset(s) are hidden by the search — clear it to see
                     them.
                   </span>
@@ -306,14 +351,14 @@ export function DatasetList({ state }: { state: DatasetsState }) {
               ) : (
                 <>
                   <span className="text-sm text-gray-500">No datasets yet.</span>
-                  <span className="text-xs leading-relaxed text-gray-400">
+                  <span className="text-xs leading-relaxed text-gray-500">
                     Create one with “+ New”, then add finished recordings to it from the
                     right-hand rail.
                   </span>
                 </>
               )}
               {state.isError && (
-                <span className="text-xs text-amber-600">
+                <span className="text-xs text-amber-700">
                   Couldn&apos;t reach the backend just now.
                 </span>
               )}

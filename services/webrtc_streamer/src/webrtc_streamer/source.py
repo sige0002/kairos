@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The image source seam: ROS image topic -> latest BGR frame.
 
 A :class:`FrameSource` produces decoded BGR frames into a :class:`LatestFrame`

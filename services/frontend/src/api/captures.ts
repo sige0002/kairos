@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Typed callers for the capture-store v2 API surface (contract §10). Every
 // screen goes through here rather than hand-writing paths, so the retirement of
 // /api/v1/runs and /api/v1/episodes is enforced by there being nothing to call.
@@ -16,12 +18,17 @@ import { apiDelete, apiGet, apiPatch, apiPost } from './client';
 import type {
   ArchiveConfig,
   Capture,
+  CaptureArchiveAccepted,
+  CaptureArchiveProgress,
   CaptureArchiveRequest,
   CaptureListItem,
-  CaptureArchiveResponse,
   CaptureDeleteRequest,
   CaptureDetail,
   CaptureListParams,
+  CaptureSearchRequest,
+  CaptureSearchResponse,
+  CaptureSelectionCreateRequest,
+  CaptureSelectionResponse,
   Dataset,
   DatasetArchiveProgress,
   DatasetArchiveRequest,
@@ -30,6 +37,10 @@ import type {
   DatasetUpdateRequest,
   DatasetListResponse,
   DatasetMember,
+  DatasetMembershipBulkRun,
+  DatasetMembershipBulkRunCreateRequest,
+  DatasetSelectionRecipe,
+  DatasetSelectionRecipeCreateRequest,
   Page,
   ReviewSaveRequest,
   StoreHealth,
@@ -81,6 +92,21 @@ export function listCaptures(
   });
 }
 
+/** One server-side filtered capture page plus the requested facets. */
+export function searchCaptures(
+  body: CaptureSearchRequest,
+  signal?: AbortSignal,
+): Promise<CaptureSearchResponse> {
+  return apiPost<CaptureSearchResponse>('/captures/search', body, { signal });
+}
+
+/** Freeze the server's ordered match set for one later bulk membership run. */
+export function createCaptureSelection(
+  body: CaptureSelectionCreateRequest,
+): Promise<CaptureSelectionResponse> {
+  return apiPost<CaptureSelectionResponse>('/capture-selections', body);
+}
+
 /**
  * Every capture matching *params*, following the cursor to exhaustion.
  *
@@ -113,7 +139,9 @@ export function getCapture(
   captureId: string,
   signal?: AbortSignal,
 ): Promise<CaptureDetail> {
-  return apiGet<CaptureDetail>(`/captures/${encodeURIComponent(captureId)}`, { signal });
+  return apiGet<CaptureDetail>(`/captures/${encodeURIComponent(captureId)}`, {
+    signal,
+  });
 }
 
 /**
@@ -153,14 +181,27 @@ export function getArchiveConfig(
   );
 }
 
-/** Copy a capture out, verify it, record it, then delete the source (§6). */
+/** Start archiving a capture out (§6): copy, verify, record, then delete the
+ *  source. 202-accepted — the copy runs server-side; poll
+ *  `getCaptureArchiveProgress` for the outcome (S2-1). */
 export function archiveCapture(
   captureId: string,
   body: CaptureArchiveRequest,
-): Promise<CaptureArchiveResponse> {
-  return apiPost<CaptureArchiveResponse>(
+): Promise<CaptureArchiveAccepted> {
+  return apiPost<CaptureArchiveAccepted>(
     `/captures/${encodeURIComponent(captureId)}/archive`,
     body,
+  );
+}
+
+/** Progress of a capture's archive run (`running → complete | failed`). */
+export function getCaptureArchiveProgress(
+  captureId: string,
+  signal?: AbortSignal,
+): Promise<CaptureArchiveProgress> {
+  return apiGet<CaptureArchiveProgress>(
+    `/captures/${encodeURIComponent(captureId)}/archive`,
+    { signal },
   );
 }
 
@@ -174,7 +215,9 @@ export function getDataset(
   datasetId: string,
   signal?: AbortSignal,
 ): Promise<DatasetDetail> {
-  return apiGet<DatasetDetail>(`/datasets/${encodeURIComponent(datasetId)}`, { signal });
+  return apiGet<DatasetDetail>(`/datasets/${encodeURIComponent(datasetId)}`, {
+    signal,
+  });
 }
 
 export function createDataset(body: DatasetCreateRequest): Promise<Dataset> {
@@ -199,9 +242,51 @@ export function addDatasetMember(
   datasetId: string,
   captureId: string,
 ): Promise<DatasetMember> {
-  return apiPost<DatasetMember>(
-    `/datasets/${encodeURIComponent(datasetId)}/members`,
-    { capture_id: captureId },
+  return apiPost<DatasetMember>(`/datasets/${encodeURIComponent(datasetId)}/members`, {
+    capture_id: captureId,
+  });
+}
+
+/** Start or recover one server-owned membership bulk run from a frozen set. */
+export function createDatasetMembershipBulkRun(
+  datasetId: string,
+  body: DatasetMembershipBulkRunCreateRequest,
+): Promise<DatasetMembershipBulkRun> {
+  return apiPost<DatasetMembershipBulkRun>(
+    `/datasets/${encodeURIComponent(datasetId)}/membership-bulk-runs`,
+    body,
+  );
+}
+
+export function getDatasetMembershipBulkRun(
+  datasetId: string,
+  runId: string,
+  signal?: AbortSignal,
+): Promise<DatasetMembershipBulkRun> {
+  return apiGet<DatasetMembershipBulkRun>(
+    `/datasets/${encodeURIComponent(datasetId)}/membership-bulk-runs/${encodeURIComponent(runId)}`,
+    { signal },
+  );
+}
+
+/** Retry only the server-recorded failed members as a new durable run. */
+export function retryDatasetMembershipBulkRun(
+  datasetId: string,
+  runId: string,
+): Promise<DatasetMembershipBulkRun> {
+  return apiPost<DatasetMembershipBulkRun>(
+    `/datasets/${encodeURIComponent(datasetId)}/membership-bulk-runs/${encodeURIComponent(runId)}/retry`,
+    {},
+  );
+}
+
+export function recordDatasetSelectionRecipe(
+  datasetId: string,
+  body: DatasetSelectionRecipeCreateRequest,
+): Promise<DatasetSelectionRecipe> {
+  return apiPost<DatasetSelectionRecipe>(
+    `/datasets/${encodeURIComponent(datasetId)}/selection-recipes`,
+    body,
   );
 }
 
@@ -236,6 +321,16 @@ export function getDatasetArchive(
   return apiGet<DatasetArchiveProgress>(
     `/datasets/${encodeURIComponent(datasetId)}/archive`,
     { signal },
+  );
+}
+
+/** Abandon a halted dataset archive attempt with zero completed members. */
+export function cancelDatasetArchiveAttempt(
+  datasetId: string,
+): Promise<DatasetArchiveProgress> {
+  return apiPost<DatasetArchiveProgress>(
+    `/datasets/${encodeURIComponent(datasetId)}/archive/cancel`,
+    {},
   );
 }
 

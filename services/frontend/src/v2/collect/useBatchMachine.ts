@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Collect screen state machine: batch -> episode -> phase. The batch grouping
 // and the per-take flow are frontend-local; everything that touches data is
 // real. startRecording()/stopRecording() call the orchestrator's /record/start
@@ -16,29 +18,21 @@
 // unit testing. Everything else in the hook (real API calls, event gates, toast,
 // modal/picker visibility) wraps it.
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '../../api/client';
-import { getRecordStatus, startRecord, stopRecord } from '../../api/record';
-import { getTransferStatus } from '../../api/transfer';
-import { patchBatch } from '../../api/batches';
+import { startRecord } from '../../api/record';
 import { getCapture, listCaptures, saveReview } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { useUiStore } from '../../store/uiStore';
-import { useOperators } from '../plans';
 import { useCaptureDeletion } from '../captures/useCaptureDeletion';
+import { useRobotCopyMayRemain } from '../captures/useSplitDeploy';
 import { needsReload } from '../captures/errors';
 import { useRecordStatus } from '../captures/useRecordStatus';
 import {
   ACTIVE_RECORD_STATES,
-  liveCaptureIds,
   type CaptureDetail,
+  type CollectionContextSnapshot,
   type Quality as ServerQuality,
   type QuickCheckVerdict,
   type RecordArming,
@@ -48,24 +42,30 @@ import {
   type ReviewSaveRequest,
 } from '../../api/types';
 import { useToast } from '../shared/useToast';
+import { useCancelledStartCleanup } from './hooks/useCancelledStartCleanup';
+import { useActivationGuard } from './hooks/useActivationGuard';
+import { useStopAndConfirm } from './hooks/useStopAndConfirm';
+import { useConfirmedBatchActions } from './hooks/useConfirmedBatchActions';
+import { useBatchCompletionConfirmation } from './hooks/useBatchCompletionConfirmation';
 
 // Public surface: everything Collect (and the tests) imported from this module
 // before the machine/ split keeps resolving here.
 export * from './machine/types';
-export {
-  batchMachineReducer,
-  createBatchMachineState,
-} from './machine/reducer';
+export { batchMachineReducer, createBatchMachineState } from './machine/reducer';
 export {
   __resetBatchStore,
   __rehydrateBatchStore,
   __resetStopFloorMs,
   __setStopFloorMs,
+  __resetStopConfirmMs,
+  __setStopConfirmMs,
 } from './machine/store';
 export * from './machine/contract';
 
 import {
+  ARMING_CANCEL_GUARD_MS,
   COLLECT_DISCARD_REASON,
+  OPERATOR_GATE_HINT,
   COLLECT_UNSAVED_DISCARD_REASON,
   RETAKE_DISCARD_REASON,
   SAVED_FLASH_MS,
@@ -94,6 +94,7 @@ import { usePreArm } from './hooks/usePreArm';
 import { useTakeClock } from './hooks/useTakeClock';
 import { useBatchLifecycle } from './hooks/useBatchLifecycle';
 import { useCollectContext } from './hooks/useCollectContext';
+import { useUnsavedTakeRecovery } from './hooks/useUnsavedTakeRecovery';
 
 /** Normalise a thrown error to a MachineError. A backend code passes through; a
  *  5xx or a transport failure (no code) is treated as an unreachable recorder so
@@ -130,11 +131,21 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // Resolves exactly like v1 LiveTab.tsx:940-948. The picker checkboxes live in
   // the Monitor screen (another agent) — Collect only READS the store values.
   const operator = useUiStore((s) => s.recordOperator);
-  // Attribution gate: once Settings holds a roster, a recording may not start
-  // without a picked name (that is the roster's entire point — no more
-  // unknown_operator shifts). An empty roster gates nothing.
-  const roster = useOperators();
-  const operatorMissing = roster.length > 0 && !operator.trim();
+  // Attribution gate: a recording may not start without a name, in EVERY
+  // configuration (#11).
+  //
+  // This used to read `roster.length > 0 && !operator.trim()`, so it gated only
+  // once Settings held a roster — and the roster starts empty, which is the
+  // shipped default. The result was that the gate never fired where it was
+  // needed most: the orchestrator substitutes `unknown_operator` for an absent
+  // name (record_service.py `default_meta`), and that placeholder is written
+  // into the capture's manifest, where it is nobody's to answer for. A beta
+  // capture was found carrying it (P1-1).
+  //
+  // The roster still decides HOW the name is given (a picker, so "yuki" and
+  // "Yuki" cannot both exist) — that is the chip's business, in the shell. All
+  // this decides is that there has to be one.
+  const operatorMissing = !operator.trim();
   const recordSelected = useUiStore((s) => s.recordSelected);
   const recordCustomized = useUiStore((s) => s.recordCustomized);
   const selection: RecordSelection = useMemo(() => {
@@ -216,8 +227,12 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     enabled: !!resultCaptureId,
     refetchInterval: (query) => {
       if (query.state.data?.quick_check?.verdict) return false; // settled -> stop
-      if (query.state.dataUpdateCount >= 3) return false; // bounded backstop
-      return 2000;
+      // Slow down, never stop (S3-8): settlement is sub-second in practice,
+      // but a slow settle used to outlive the old 3-fetch cap and leave
+      // "Quick check running…" on screen with nothing running underneath it.
+      // The query is enabled only while the operator is ON the result panel,
+      // so the tail poll is bounded by their stay, not by a counter.
+      return query.state.dataUpdateCount >= 3 ? 10_000 : 2000;
     },
   });
   const resultCapture: CaptureDetail | null = resultCaptureId
@@ -261,7 +276,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     state.phase === 'recording' ||
     state.phase === 'saving' ||
     state.phase === 'quickcheck';
-  const recorderActive = recorderState != null && ACTIVE_RECORD_STATES.has(recorderState);
+  const recorderActive =
+    recorderState != null && ACTIVE_RECORD_STATES.has(recorderState);
   const takeoverCaptureId =
     recorderActive && !localActive ? (liveCaptures?.[0] ?? null) : null;
   // The capture supplies the run_id, operator and topic count (RecordStatus
@@ -285,8 +301,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   // ---- pre-arm (two-phase start) -------------------------------------------
   // The engine lives in hooks/usePreArm.ts (config gate, visibility pause,
-  // keep-alive re-prepares); only the armed flag comes back.
-  const { preArmed } = usePreArm({
+  // keep-alive re-prepares); the armed flag and the degraded surface come back.
+  const { preArmed, preArmDegraded } = usePreArm({
     phase: state.phase,
     recorderState,
     noSelection,
@@ -324,7 +340,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       // mid-take still wrote whatever bytes it managed, and the operator is the
       // only one who can say whether they are worth keeping. Leaving it out is
       // why an interrupted take never appeared here at all.
-      if (capture.state !== 'completed' && capture.state !== 'interrupted') return false;
+      if (capture.state !== 'completed' && capture.state !== 'interrupted')
+        return false;
       if (capture.review_revision !== 0) return false;
       if (!capture.started_at) return false;
       const startedMs = Date.parse(capture.started_at);
@@ -362,6 +379,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   // ---- toast --------------------------------------------------------------
   const { toast, showToast } = useToast();
+  const { resumeUnsavedTake, recoveredBatchIdForCapture } = useUnsavedTakeRecovery({
+    showToast,
+  });
 
   // ---- save flash ----------------------------------------------------------
   // Briefly mark the just-saved episode's strip chip (a teal ring) so the save
@@ -383,13 +403,23 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // ---- batch lifecycle (server API) ----------------------------------------
   // Lazy batch creation + the once-per-load server reconcile live in
   // hooks/useBatchLifecycle.ts.
-  const { ensureBatch } = useBatchLifecycle();
+  const { ensureBatch, prepareRecordStartContext } = useBatchLifecycle();
 
   // ---- real recording API (mirrors LiveTab's start/stop wiring) -----------
   // Tracks a Cancel (during arming) or an end-batch-early confirmed while
   // arming/recording, so a start that lands late — or a stop that fails — is
   // reconciled instead of leaving an orphaned recorder session running.
   const cancelledStartRef = useRef(false);
+  // …and what to do about it once the start lands: stop, then discard, in that
+  // order (hooks/useCancelledStartCleanup.ts, #8).
+  const cancelledStart = useCancelledStartCleanup({ onToast: showToast });
+  // End/Reset may be requested while /record/start is still resolving. End
+  // discards the take it cancelled; Reset stops it and leaves it in Review.
+  // Keep the cleanup promise so End cannot PATCH the batch until the existing
+  // guarded stop-and-discard flow has finished.
+  const terminalStartCancellationRef = useRef(false);
+  const discardTerminalArmingTakeRef = useRef(false);
+  const terminalArmingCleanupRef = useRef<Promise<void> | null>(null);
   // Synchronous double-start guard. The phase check inside startRecording reads
   // the CLOSURE's `state.phase`, which does not update until the next render —
   // so two clicks (or two keypresses) landing in the same tick both saw
@@ -397,6 +427,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // few milliseconds the recorder managed before the first stop caught up. A
   // ref changes on assignment, so it closes the window the phase cannot.
   const startInFlightRef = useRef(false);
+  const startPromiseRef = useRef<Promise<unknown> | null>(null);
+  const stopAndConfirm = useStopAndConfirm();
 
   const startMutation = useMutation({
     mutationFn: (body: RecordStartRequest) => startRecord(body),
@@ -404,11 +436,24 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
       if (cancelledStartRef.current) {
         cancelledStartRef.current = false;
+        if (terminalStartCancellationRef.current) {
+          if (
+            discardTerminalArmingTakeRef.current &&
+            capture &&
+            capture.state !== 'failed'
+          ) {
+            terminalArmingCleanupRef.current = cancelledStart.reconcile(
+              capture.capture_id ?? null,
+            );
+          }
+          return;
+        }
         // The operator already backed out locally. If the recorder actually
-        // started server-side despite that, stop it now (best-effort) so it
-        // doesn't keep running unnoticed.
+        // started server-side despite that, stop it so it doesn't keep running
+        // unnoticed — AND discard the sub-second bag it wrote, which otherwise
+        // survives the cancel as a take nobody meant to make (#8).
         if (capture && capture.state !== 'failed') {
-          void stopRecord().catch(() => {});
+          void cancelledStart.reconcile(capture.capture_id ?? null);
         }
         return;
       }
@@ -430,6 +475,18 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     onError: (err) => {
       if (cancelledStartRef.current) {
         cancelledStartRef.current = false;
+        if (terminalStartCancellationRef.current) return;
+        // No cleanup here, deliberately. A transport failure means we never
+        // learned a capture_id, so the only way to name a target would be to
+        // read whatever is live off /record/status — and a live capture we
+        // cannot attribute may be another driver's take (D-1), which the
+        // cleanup path is careful NOT to touch for the same reason. Stopping
+        // and discarding on a guess trades an orphan for somebody else's lost
+        // recording, which is the worse of the two.
+        //
+        // It does not go unseen: the machine is back at `ready`, so a recorder
+        // that did start surfaces on the takeover card, and once stopped, on
+        // the unsaved-take banner. Tracked on #8 rather than closed with it.
         return;
       }
       dispatch({ type: 'START_FAILED', error: toMachineError(err) });
@@ -443,7 +500,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   const stopMutation = useMutation({
     mutationFn: async () => {
-      const capture = await stopRecord();
+      const capture = await stopAndConfirm();
       // A 200 does not on its own prove the recorder stopped. /record/stop is
       // idempotent and answers with the last capture when it finds nothing
       // active, so a recorder still holding the bag can look like success — and
@@ -453,28 +510,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       // routes to onError -> STOP_FAILED, which keeps the operator on SAVING
       // with the Retry-stop button instead of pretending the take is done.
       //
-      // `live_capture_ids` is read as a POSITIVE liveness signal only: an absent
-      // array means the recorder is unreachable, not that nothing is live (§10
-      // rev.2.4), so it can never be the thing that says "stopped" — the state
-      // field is.
-      const after = await getRecordStatus();
-      const stillLive =
-        ACTIVE_RECORD_STATES.has(after.state) ||
-        (capture?.capture_id != null &&
-          liveCaptureIds(after)?.includes(capture.capture_id) === true);
-      if (stillLive) {
-        throw new ApiError(
-          409,
-          {
-            error: {
-              code: 'stop_not_confirmed',
-              message: `The recorder is still ${after.state}. The recording was not stopped — retry.`,
-              details: {},
-            },
-          },
-          'the recorder did not stop',
-        );
-      }
+      // The confirmation loop itself is shared with Settings' stop-and-switch
+      // (stopConfirm.ts): poll until the recorder reports terminal, tolerate
+      // transient status-read failures, and only past the escalation budget
+      // surface stop_not_confirmed — that is when Retry becomes a meaningful
+      // offer rather than a reflex.
       return capture;
     },
     onSuccess: () => {
@@ -494,39 +534,75 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const startRecording = useCallback(() => {
     if (state.phase !== 'ready' || noSelection) return;
     if (operatorMissing) {
-      showToast('Pick your name first — OP chip, top right');
+      // Guarded here as well as on the control: R reaches startRecording
+      // without passing the disabled button.
+      showToast(OPERATOR_GATE_HINT);
       return;
     }
     if (startInFlightRef.current) return;
     startInFlightRef.current = true;
     cancelledStartRef.current = false;
-    // Lazily create the server batch (never blocks the recording; the save
-    // awaits the same promise).
-    void ensureBatch();
     dispatch({ type: 'START_REQUESTED' });
-    // Mirror v1 LiveTab.tsx:345-350: topics from the resolved selection, plus
-    // operator (from the header input, via uiStore) and task when non-empty.
-    const body: RecordStartRequest = { topics: selection.topics };
-    if (operator.trim()) body.operator = operator.trim();
-    if (state.task?.trim()) body.task = state.task.trim();
-    startMutation.mutate(body);
+    const pending = (async () => {
+      let collectionContext: CollectionContextSnapshot;
+      try {
+        collectionContext = await prepareRecordStartContext();
+      } catch (err) {
+        startInFlightRef.current = false;
+        dispatch({ type: 'START_FAILED', error: toMachineError(err) });
+        return;
+      }
+      // Cancel can land while batch creation is pending. Do not start a new
+      // recorder session after the operator has backed out of arming.
+      if (cancelledStartRef.current) {
+        startInFlightRef.current = false;
+        return;
+      }
+      const body: RecordStartRequest = {
+        topics: selection.topics,
+        collection_context: collectionContext,
+      };
+      if (collectionContext.operator) body.operator = collectionContext.operator;
+      if (collectionContext.task) body.task = collectionContext.task;
+      return startMutation.mutateAsync(body);
+    })();
+    startPromiseRef.current = pending;
+    void pending.then(
+      () => {
+        if (startPromiseRef.current === pending) startPromiseRef.current = null;
+      },
+      () => {
+        if (startPromiseRef.current === pending) startPromiseRef.current = null;
+      },
+    );
   }, [
     state.phase,
-    state.task,
     noSelection,
     operatorMissing,
     showToast,
     selection.topics,
-    operator,
     startMutation,
-    ensureBatch,
+    prepareRecordStartContext,
   ]);
+
+  // The arming Cancel ignores its first moments on screen (#8): it lands where
+  // Start was, so the second press of a double-click used to back out of the
+  // take the first press began. Kept in the machine rather than on the card
+  // because the Escape shortcut reaches `cancelArming` without going near the
+  // button — the same reason `canStop` lives here.
+  const canCancelArming = useActivationGuard(
+    state.phase === 'arming',
+    ARMING_CANCEL_GUARD_MS,
+  );
 
   const cancelArming = useCallback(() => {
     if (state.phase !== 'arming') return;
+    // Guarded here as well as on the control, so Escape cannot walk around the
+    // button's disabled state.
+    if (!canCancelArming) return;
     cancelledStartRef.current = true;
     dispatch({ type: 'CANCEL_ARMING' });
-  }, [state.phase]);
+  }, [state.phase, canCancelArming]);
 
   // ---- take clock + lifecycle gates (E-28 / E-32 / B1) ---------------------
   // The monotonic baseline, Stop floor, frozen elapsed timer, B1 recovery,
@@ -554,6 +630,25 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     stopMutation.mutate();
   }, [state.phase, canStop, stopMutation]);
 
+  // Honest progress for the confirmation wait above: seconds since Stop was
+  // pressed, shown on the SAVING card while the recorder drains. Null outside
+  // the wait, so the card's copy stays the plain one when nothing is flushing.
+  const [stopFlushSeconds, setStopFlushSeconds] = useState<number | null>(null);
+  const stopConfirming = state.phase === 'saving' && stopMutation.isPending;
+  useEffect(() => {
+    if (!stopConfirming) {
+      setStopFlushSeconds(null);
+      return;
+    }
+    const t0 = performance.now();
+    setStopFlushSeconds(0);
+    const id = setInterval(
+      () => setStopFlushSeconds(Math.floor((performance.now() - t0) / 1000)),
+      1000,
+    );
+    return () => clearInterval(id);
+  }, [stopConfirming]);
+
   const retryStop = useCallback(() => {
     if (getStoreSnapshot().phase !== 'saving') return;
     dispatch({ type: 'RETRY_STOP' });
@@ -580,12 +675,38 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // one thing this screen must never show (§12).
   const [saveError, setSaveError] = useState<unknown>(null);
   const [isSavingReview, setIsSavingReview] = useState(false);
+  const completionConfirmation = useBatchCompletionConfirmation();
   const dismissSaveError = useCallback(() => setSaveError(null), []);
 
   const confirmEpisode = useCallback(() => {
     if (state.phase !== 'result' || !state.pendingTask) return;
     if (state.pendingTask === 'fail' && !state.failReason) return;
     if (isSavingReview) return;
+    if (completionConfirmation.pendingCompletion) {
+      setIsSavingReview(true);
+      setSaveError(null);
+      void completionConfirmation
+        .retry((pendingCompletion) => {
+          dispatch({
+            type: 'CONFIRM_EPISODE',
+            quality: pendingCompletion.quality,
+            index: pendingCompletion.index,
+          });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
+          void queryClient.invalidateQueries({ queryKey: queryKeys.batches });
+          flashSaved(pendingCompletion.index);
+          const batchSeq = getStoreSnapshot().batchSeq;
+          const seqPart = batchSeq != null ? ` of Batch ${batchSeq}` : '';
+          showToast(
+            `Saved — Episode ${pendingCompletion.index}${seqPart}${operator.trim() ? ` · ${operator.trim()}` : ''}`,
+          );
+        })
+        .catch((err) => {
+          setSaveError(err);
+        })
+        .finally(() => setIsSavingReview(false));
+      return;
+    }
     // Monotone: the new episode's number follows the recorded count, so a prior
     // Review delete never causes a reused index_in_batch on the server.
     const nextIndex = state.recordedCount + 1;
@@ -626,7 +747,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       try {
         // A batch still being created has to land first: a batch_id that arrived
         // after the save would leave this capture ungrouped for good.
-        const batchId = await ensureBatch();
+        const recoveredBatchId = recoveredBatchIdForCapture(captureId);
+        const batchId =
+          recoveredBatchId === undefined ? await ensureBatch(false) : recoveredBatchId;
         const body: ReviewSaveRequest = {
           base_revision: baseRevision,
           task_result: isFail ? 'failure' : 'success',
@@ -650,9 +773,24 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         // different take until the next reload.
         const storedIndex =
           typeof saved?.index_in_batch === 'number' ? saved.index_in_batch : nextIndex;
-        dispatch({ type: 'CONFIRM_EPISODE', quality: localQuality, index: storedIndex });
-        if (willComplete && batchId)
-          void patchBatch(batchId, { status: 'completed' }).catch(() => {});
+        if (willComplete && batchId) {
+          try {
+            await completionConfirmation.confirm({
+              batchId,
+              index: storedIndex,
+              quality: localQuality,
+            });
+          } catch (err) {
+            throw new Error(
+              `The review was saved, but batch completion was not confirmed. Retry Save to finish the batch. (${toMachineError(err).message})`,
+            );
+          }
+        }
+        dispatch({
+          type: 'CONFIRM_EPISODE',
+          quality: localQuality,
+          index: storedIndex,
+        });
         // The capture now carries a review, so it is no longer an unsaved take.
         void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
         // The FIRST review save for a capture is what moves the batch's
@@ -716,9 +854,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     state.currentCaptureId,
     state.currentReviewRevision,
     isSavingReview,
+    completionConfirmation,
     autoQuality,
     operator,
     ensureBatch,
+    recoveredBatchIdForCapture,
     showToast,
     flashSaved,
     queryClient,
@@ -732,17 +872,12 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // identical everywhere a recording can be removed. A Collect-only modal would
   // be a second place for all of that to drift.
   // On a robot + recording-PC split, a discard removes only the copy on THIS
-  // machine, and the dialog is obliged to say so unprompted (§12) — letting an
+  // machine, and the toast is obliged to say so unprompted (§12) — letting an
   // operator believe the robot's copy went too is the failure that line exists
-  // to prevent. `/transfer/status` answers `available` only where the pull
-  // channel exists, which IS the split-mode signal (§10.6).
-  const transferQuery = useQuery({
-    queryKey: queryKeys.transferStatus,
-    queryFn: ({ signal }) =>
-      getTransferStatus({ signal }),
-    staleTime: 60_000,
-  });
-  const splitDeploy = transferQuery.data?.available === true;
+  // to prevent. The SHARED probe (useSplitDeploy.ts) replaced a third local
+  // policy on the same query key (S3-7), and the may-remain variant fails
+  // toward disclosing while the probe is unanswered or failing.
+  const splitDeploy = useRobotCopyMayRemain();
 
   const episodeDiscard = useCaptureDeletion({
     onDeleted: () => {
@@ -781,7 +916,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       { capture_id: captureId },
       COLLECT_DISCARD_REASON,
       splitDeploy
-        ? "Take discarded from this machine — the robot's own copy is untouched"
+        ? 'Take discarded from this machine — a copy may remain on the robot'
         : 'Take discarded — ready to re-record',
     );
   }, [episodeDiscard, splitDeploy, showToast]);
@@ -831,11 +966,16 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // as an unsaved take for labeling).
   const [takeoverStopModalOpen, setTakeoverStopModalOpen] = useState(false);
   const takeoverStopMutation = useMutation({
-    mutationFn: () => stopRecord(),
+    mutationFn: () => stopAndConfirm(),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
       void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
       setTakeoverStopModalOpen(false);
+    },
+    onError: (err) => {
+      showToast(
+        `Stop recording was not completed — it may still be running. Retry Stop recording. (${toMachineError(err).message})`,
+      );
     },
   });
   const openTakeoverStopModal = useCallback(() => setTakeoverStopModalOpen(true), []);
@@ -848,18 +988,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const labelUnsavedTake = useCallback(() => {
     const capture = unsavedCapture;
     if (!capture) return;
-    dispatch({
-      type: 'RESUME_TAKE',
-      captureId: capture.capture_id,
-      runLabel: capture.run_id ?? null,
-      // The capture's own revision is the compare-and-swap token; a recovered
-      // take was scanned as never-reviewed, so this is 0 unless it changed
-      // between the scan and now — in which case the save is correctly refused.
-      reviewRevision: capture.review_revision,
-    });
-    // Make sure there's a server batch to attach the recovered episode to.
-    void ensureBatch();
-  }, [unsavedCapture, ensureBatch]);
+    void resumeUnsavedTake(capture);
+  }, [unsavedCapture, resumeUnsavedTake]);
 
   const discardUnsavedTake = useCallback(() => {
     if (!unsavedCapture) return;
@@ -869,7 +999,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       unsavedCapture,
       COLLECT_UNSAVED_DISCARD_REASON,
       splitDeploy
-        ? "Interrupted take discarded from this machine — the robot's own copy is untouched"
+        ? 'Interrupted take discarded from this machine — a copy may remain on the robot'
         : 'Interrupted take discarded',
     );
   }, [unsavedCapture, unsavedDiscard, splitDeploy]);
@@ -901,80 +1031,6 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     (reason: string) => dispatch({ type: 'PICK_END_REASON', reason }),
     [],
   );
-  const confirmEndBatch = useCallback(() => {
-    if (!state.endReason) return;
-    if (state.phase === 'arming') {
-      // A start may still land after we've moved on — treat it like a manual
-      // cancel so it gets auto-stopped instead of orphaned.
-      cancelledStartRef.current = true;
-    } else if (
-      state.phase === 'recording' ||
-      state.phase === 'saving' ||
-      state.phase === 'quickcheck'
-    ) {
-      void stopRecord().catch(() => {});
-    }
-    // Mark the server batch ended-early (best-effort; only if one exists).
-    if (state.batchId) {
-      void patchBatch(state.batchId, {
-        status: 'ended_early',
-        ended_reason: state.endReason,
-      }).catch(() => {});
-    }
-    dispatch({ type: 'CONFIRM_END_BATCH' });
-    setEndModalOpen(false);
-    setBatchMenuOpen(false);
-  }, [state.endReason, state.phase, state.batchId]);
-
-  const startNextBatch = useCallback(() => {
-    if (state.phase !== 'ended' && state.phase !== 'completed') return;
-    // A completed batch that never received its terminal PATCH (completion can
-    // also be reached by lowering the target) must not stay 'active'
-    // server-side — the next hydrate would restore the OLD batch over the new
-    // one. Terminal-status PATCH is idempotent (ended_at stamps once).
-    if (state.phase === 'completed' && state.batchId) {
-      void patchBatch(state.batchId, { status: 'completed' }).catch(() => {});
-    }
-    dispatch({ type: 'START_NEXT_BATCH' });
-    // START_NEXT_BATCH cleared batchId/batchSeq; create the new server batch now
-    // (its batch_seq is assigned server-side).
-    ensureBatch();
-    showToast(`Next set ready — same condition, ${state.targetEpisodes} episodes`);
-  }, [state.targetEpisodes, state.phase, showToast, ensureBatch]);
-
-  // Reset the batch: close the current one and start fresh (counts → 0/30). The
-  // recordings already taken are NOT deleted — they stay in Review. Unlike
-  // start-next-batch, the new server batch is created LAZILY on the next start
-  // (ensureBatch), not now. Works with the API down: the local reset always
-  // happens and the toast says whether the server batch was closed.
-  const resetBatch = useCallback(() => {
-    // Abort any in-flight capture first so nothing is orphaned (as end-early).
-    if (state.phase === 'arming') {
-      cancelledStartRef.current = true;
-    } else if (
-      state.phase === 'recording' ||
-      state.phase === 'saving' ||
-      state.phase === 'quickcheck'
-    ) {
-      void stopRecord().catch(() => {});
-    }
-    const hadBatch = !!state.batchId;
-    if (state.batchId) {
-      void patchBatch(state.batchId, {
-        status: 'ended_early',
-        ended_reason: 'reset',
-      }).catch(() => {});
-    }
-    dispatch({ type: 'RESET_BATCH' });
-    setResetModalOpen(false);
-    setBatchMenuOpen(false);
-    showToast(
-      hadBatch
-        ? 'Set reset — recordings already taken stay in Review'
-        : 'Set reset (local) — recordings already taken stay in Review',
-    );
-  }, [state.phase, state.batchId, showToast]);
-
   // ---- context: project / task / condition ----------------------------------
   const ctxEditable =
     state.phase === 'ready' ||
@@ -988,7 +1044,6 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     projPickerOpen,
     taskPickerOpen,
     endModalOpen,
-    issueModalOpen,
     robotPickerOpen,
     condModalOpen,
     resetModalOpen,
@@ -1000,7 +1055,6 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     openTaskPicker,
     openCondModal,
     openEndModal,
-    openIssueModal,
     openResetModal,
     openTargetModal,
     openShortcuts,
@@ -1008,41 +1062,49 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     setProjPickerOpen,
     setTaskPickerOpen,
     setEndModalOpen,
-    setIssueModalOpen,
     setCondModalOpen,
     setResetModalOpen,
     setTargetModalOpen,
     setShortcutsOpen,
   } = useCollectOverlays({ ctxEditable, condAllowed });
 
-  const changeTarget = useCallback(
-    (target: number) => {
-      const t = Math.max(1, Math.min(500, Math.floor(target)));
-      if (!Number.isFinite(t)) return;
-      dispatch({ type: 'SET_TARGET', target: t });
-      setTargetModalOpen(false);
-      // Persist on the current server batch (best-effort; a batch created
-      // later takes the value from the machine state at create time).
-      if (state.batchId)
-        void patchBatch(state.batchId, { target_episodes: t }).catch(() => {});
-      showToast(`Set target: ${t} episodes`);
-    },
-    [state.batchId, showToast],
-  );
+  const { confirmEndBatch, resetBatch, startNextBatch, changeTarget } =
+    useConfirmedBatchActions({
+      phase: state.phase,
+      batchId: state.batchId,
+      targetEpisodes: state.targetEpisodes,
+      endReason: state.endReason,
+      startPromiseRef,
+      cancelledStartRef,
+      terminalStartCancellationRef,
+      discardTerminalArmingTakeRef,
+      terminalArmingCleanupRef,
+      stopAndConfirm,
+      dispatch,
+      toMachineError,
+      showToast,
+      closeEnd: () => {
+        setEndModalOpen(false);
+        setBatchMenuOpen(false);
+      },
+      closeReset: () => {
+        setResetModalOpen(false);
+        setBatchMenuOpen(false);
+      },
+      onTargetConfirmed: (target) => {
+        dispatch({ type: 'SET_TARGET', target });
+        setTargetModalOpen(false);
+      },
+      ensureBatch,
+    });
   const closeModals = useCallback(() => {
     setEndModalOpen(false);
-    setIssueModalOpen(false);
     setCondModalOpen(false);
     setResetModalOpen(false);
     setTargetModalOpen(false);
     setTakeoverStopModalOpen(false);
     setShortcutsOpen(false);
   }, []);
-  const submitIssue = useCallback(() => {
-    setIssueModalOpen(false);
-    showToast('Issue logged with episode context');
-  }, [showToast]);
-
   // ---- context: project / task / condition ----------------------------------
   // Pickers + the set-rollover rule live in hooks/useCollectContext.ts.
   const {
@@ -1080,7 +1142,6 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const anyOverlayOpen =
     robotPickerOpen ||
     endModalOpen ||
-    issueModalOpen ||
     condModalOpen ||
     resetModalOpen ||
     targetModalOpen ||
@@ -1142,6 +1203,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     recorderState,
     liveCaptures,
     preArmed,
+    preArmDegraded,
 
     takeover,
     takeoverResumedOwn,
@@ -1155,7 +1217,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     discardUnsavedTake,
     dismissUnsavedTake,
     unsavedTakeCount: unsavedCaptures.length,
-    currentTakeStartedAt: resultCaptureQuery.data?.started_at ?? status?.started_at ?? null,
+    currentTakeStartedAt:
+      resultCaptureQuery.data?.started_at ?? status?.started_at ?? null,
     unsavedDiscard,
 
     lastSavedIndex,
@@ -1178,7 +1241,6 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     projPickerOpen,
     taskPickerOpen,
     endModalOpen,
-    issueModalOpen,
     condModalOpen,
     resetModalOpen,
     targetModalOpen,
@@ -1190,7 +1252,6 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     openTargetModal,
     changeTarget,
     openEndModal,
-    openIssueModal,
     openResetModal,
     openShortcuts,
     closeModals,
@@ -1207,11 +1268,13 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
     startRecording,
     cancelArming,
+    canCancelArming,
     stopRecording,
     canStop,
     stopBlockedReason,
     recorderUnreachable: !recorderReachable,
     recorderStaleMs,
+    stopFlushSeconds,
     retryStop,
     pickSuccess,
     pickFailure,
@@ -1227,7 +1290,6 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     resumeBatch,
     pickEndReason,
     confirmEndBatch,
-    submitIssue,
     startNextBatch,
     resetBatch,
     pickProject,

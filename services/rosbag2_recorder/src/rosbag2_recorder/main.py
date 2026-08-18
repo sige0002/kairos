@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """rosbag2_recorder service entry point (Stage 1).
 
 ROS 2 topics -> MCAP, the canonical recording path. This module wires the
@@ -94,6 +96,17 @@ def create_recorder_app() -> FastAPI:
     @app.get("/record/status", response_model=RecordStatusResponse)
     def record_status() -> RecordStatusResponse:
         return session.status()
+
+    @app.get("/record/preflight")
+    def record_preflight() -> dict[str, bool]:
+        """Run the same storage/RAM checks as start, without recording.
+
+        This is intentionally an explicit diagnostic endpoint rather than an
+        automatic background probe. ``ApiError`` is allowed through so the
+        orchestrator can show the exact blocker and evidence to the operator.
+        """
+        session.ensure_ready()
+        return {"ready": True}
 
     @app.get("/record/metadata")
     def record_metadata() -> dict[str, Any]:

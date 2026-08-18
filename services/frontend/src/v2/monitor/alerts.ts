@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Pure mapping from the REAL alert buffer (AlertEvent[], accumulated in the
 // TanStack Query cache by useEventStream — a rolling max-100 of the monitor's
 // `alert` SSE snapshots) to the Monitor Events card's display rows.

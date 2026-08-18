@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // E-19 — the store changed underneath the screen.
 //
 // This screen is never the only writer. Another operator has the same page
@@ -26,7 +28,12 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import type { QueryClient } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
-import type { CaptureListItem, Dataset, DatasetMember, ReplicaState } from '../../api/types';
+import type {
+  CaptureListItem,
+  Dataset,
+  DatasetMember,
+  ReplicaState,
+} from '../../api/types';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { DatasetsScreen } from './DatasetsScreen';
 import { datasetTestId, memberTestId } from './data';
@@ -158,7 +165,9 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
       .replace(/^.*\/api\/v1/, '')
       .split('?')[0]!;
     backend.calls.push(`${method} ${path}`);
-    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    const body = init?.body
+      ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+      : {};
 
     // ---- adding a membership ---------------------------------------------
     const addMatch = path.match(/^\/datasets\/([^/]+)\/members$/);
@@ -185,9 +194,14 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
       const datasetId = decodeURIComponent(memberMatch[1]!);
       const membershipId = decodeURIComponent(memberMatch[2]!);
       if (!backend.datasets.some((d) => d.dataset_id === datasetId)) {
-        return errorResponse(404, 'dataset_not_found', `Dataset not found: ${datasetId}`, {
-          dataset_id: datasetId,
-        });
+        return errorResponse(
+          404,
+          'dataset_not_found',
+          `Dataset not found: ${datasetId}`,
+          {
+            dataset_id: datasetId,
+          },
+        );
       }
       const found = backend.members.find(
         (m) => m.membership_id === membershipId && m.dataset_id === datasetId,
@@ -210,9 +224,14 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
       const datasetId = decodeURIComponent(archiveMatch[1]!);
       const dataset = backend.datasets.find((d) => d.dataset_id === datasetId);
       if (!dataset) {
-        return errorResponse(404, 'dataset_not_found', `Dataset not found: ${datasetId}`, {
-          dataset_id: datasetId,
-        });
+        return errorResponse(
+          404,
+          'dataset_not_found',
+          `Dataset not found: ${datasetId}`,
+          {
+            dataset_id: datasetId,
+          },
+        );
       }
       if (method === 'POST') {
         dataset.status = 'archiving';
@@ -224,7 +243,8 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
             status: 'archiving',
             destination: dataset.archive_destination,
             mode: dataset.archive_mode,
-            member_total: backend.members.filter((m) => m.dataset_id === datasetId).length,
+            member_total: backend.members.filter((m) => m.dataset_id === datasetId)
+              .length,
             members_done: 0,
             running: true,
             error: null,
@@ -251,9 +271,14 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
       if (!found) {
         // The service raises this for GET, PATCH and DELETE alike: there is no
         // idempotent "already deleted, fine" answer to give.
-        return errorResponse(404, 'dataset_not_found', `Dataset not found: ${datasetId}`, {
-          dataset_id: datasetId,
-        });
+        return errorResponse(
+          404,
+          'dataset_not_found',
+          `Dataset not found: ${datasetId}`,
+          {
+            dataset_id: datasetId,
+          },
+        );
       }
       if (method === 'DELETE') {
         // A sealed dataset's row is what remembers where its recordings went,
@@ -313,7 +338,8 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
       });
     }
 
-    if (path === '/datasets') return jsonResponse({ items: backend.datasets.map(datasetOut) });
+    if (path === '/datasets')
+      return jsonResponse({ items: backend.datasets.map(datasetOut) });
     if (path === '/transfer/status') return jsonResponse({ available: false });
 
     // ---- captures ---------------------------------------------------------
@@ -321,6 +347,15 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
       return jsonResponse({
         enabled: backend.archiveRoots.length > 0,
         roots: backend.archiveRoots,
+      });
+    }
+    if (path === '/captures/search') {
+      const items = backend.captures.map(withMemberships);
+      return jsonResponse({
+        items,
+        next_cursor: null,
+        total: items.length,
+        facets: {},
       });
     }
     const captureMatch = path.match(/^\/captures\/([^/]+)$/);
@@ -342,7 +377,12 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
 
     // Loud rather than empty: an unhandled path that answered `{}` would let a
     // test pass on a request nobody modelled.
-    return errorResponse(500, 'unhandled_in_mock', `no handler for ${method} ${path}`, {});
+    return errorResponse(
+      500,
+      'unhandled_in_mock',
+      `no handler for ${method} ${path}`,
+      {},
+    );
   });
 
   return backend;
@@ -385,7 +425,9 @@ test('E-19a: the selected dataset deleted elsewhere is reported as gone, not as 
   const { client } = renderWithClient(<DatasetsScreen />);
 
   fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
-  await waitFor(() => expect(screen.getByTestId(memberTestId('m-1'))).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId(memberTestId('m-1'))).toBeInTheDocument(),
+  );
 
   // Another terminal: `curl -XDELETE .../datasets/ds-kitchen`. The memberships
   // go with it; the recordings do not.
@@ -407,9 +449,13 @@ test('E-19a: the selected dataset deleted elsewhere is reported as gone, not as 
   // It learned this from the list it refetched — not from a request it invented,
   // and least of all from a write.
   expect(backend.calls.filter((c) => c === 'GET /datasets').length).toBeGreaterThan(1);
-  expect(backend.calls.some((c) => c.startsWith('DELETE ') || c.startsWith('POST '))).toBe(
-    false,
-  );
+  expect(
+    backend.calls.some(
+      (c) =>
+        c.startsWith('DELETE ') ||
+        (c.startsWith('POST ') && !c.includes('/captures/search')),
+    ),
+  ).toBe(false);
 
   // And there is a way out that also clears the deep link, so a reload does not
   // land back on the same dead selection.
@@ -431,7 +477,9 @@ test('E-19a: a dataset merely hidden by the search is NOT reported as gone', asy
   renderWithClient(<DatasetsScreen />);
 
   fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
-  await waitFor(() => expect(screen.getByTestId(memberTestId('m-1'))).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId(memberTestId('m-1'))).toBeInTheDocument(),
+  );
 
   fireEvent.change(screen.getByTestId('dataset-search'), { target: { value: 'zzz' } });
   await screen.findByTestId('dataset-none-selected');
@@ -449,7 +497,9 @@ test('E-19b: Remove on a membership deleted elsewhere reports the server refusal
   renderWithClient(<DatasetsScreen />);
 
   fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
-  await waitFor(() => expect(screen.getByTestId(memberTestId('m-2'))).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId(memberTestId('m-2'))).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId(memberTestId('m-2')));
   await screen.findByTestId('remove-member-btn');
 
@@ -496,7 +546,9 @@ test('E-19b: Remove after the whole dataset went — the two sentences do not fu
   renderWithClient(<DatasetsScreen />);
 
   fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
-  await waitFor(() => expect(screen.getByTestId(memberTestId('m-1'))).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId(memberTestId('m-1'))).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId(memberTestId('m-1')));
   await screen.findByTestId('remove-member-btn');
 
@@ -622,7 +674,9 @@ test('E-19c: Delete pressed before the refetch — the 404 is shown with its cod
   fireEvent.click(screen.getByTestId('delete-dataset-confirm'));
 
   await waitFor(() =>
-    expect(backend.calls.filter((c) => c === 'DELETE /datasets/ds-kitchen')).toHaveLength(1),
+    expect(
+      backend.calls.filter((c) => c === 'DELETE /datasets/ds-kitchen'),
+    ).toHaveLength(1),
   );
   const dialog = await screen.findByTestId('delete-dataset-dialog');
   const alert = within(dialog).getByRole('alert');
@@ -690,7 +744,9 @@ test('E-19c: Save pressed before the refetch — the 404 is shown, and the dialo
   fireEvent.click(screen.getByTestId('edit-dataset-submit'));
 
   await waitFor(() =>
-    expect(backend.calls.filter((c) => c === 'PATCH /datasets/ds-kitchen')).toHaveLength(1),
+    expect(
+      backend.calls.filter((c) => c === 'PATCH /datasets/ds-kitchen'),
+    ).toHaveLength(1),
   );
   const dialog = await screen.findByTestId('edit-dataset-dialog');
   const alert = within(dialog).getByRole('alert');
@@ -737,7 +793,8 @@ test('E-19c: a dataset archived under an open Delete dialog is refused by the se
   // Someone archived it from another terminal: still in the catalog, no longer
   // on the Active shelf this operator is looking at.
   backend.datasets[0]!.status = 'archived';
-  backend.datasets[0]!.archive_destination = '/mnt/archive/op_a/pick_place/kitchen picks';
+  backend.datasets[0]!.archive_destination =
+    '/mnt/archive/op_a/pick_place/kitchen picks';
   await nextRefetch(client);
 
   const dialog = await screen.findByTestId('delete-dataset-dialog');
@@ -780,7 +837,8 @@ test('E-19c: a dataset archived under an open Edit dialog — Save is refused, a
   });
 
   backend.datasets[0]!.status = 'archived';
-  backend.datasets[0]!.archive_destination = '/mnt/archive/op_a/pick_place/kitchen picks';
+  backend.datasets[0]!.archive_destination =
+    '/mnt/archive/op_a/pick_place/kitchen picks';
   await nextRefetch(client);
 
   // Not "gone" — the dataset exists — so the form stays and Save stays live.
@@ -796,7 +854,9 @@ test('E-19c: a dataset archived under an open Edit dialog — Save is refused, a
   // membership path, so a refused LABEL edit answers about the member set.
   // That is the product's wording, and a mock that improved on it would hide
   // the mismatch an operator actually sees.
-  expect(alert).toHaveTextContent('Dataset kitchen picks is archived; its member set is frozen.');
+  expect(alert).toHaveTextContent(
+    'Dataset kitchen picks is archived; its member set is frozen.',
+  );
   // Nothing was renamed, and no toast says otherwise.
   expect(backend.datasets[0]!.name).toBe('kitchen picks');
   expect(screen.queryByTestId('toast')).not.toBeInTheDocument();
@@ -826,7 +886,9 @@ test('E-19c: the dataset deleted under an open Archive dialog — no run is star
   expect(screen.getByTestId('dataset-archive-confirm')).toBeDisabled();
 
   fireEvent.click(screen.getByTestId('dataset-archive-confirm'));
-  expect(backend.calls.some((c) => c === 'POST /datasets/ds-kitchen/archive')).toBe(false);
+  expect(backend.calls.some((c) => c === 'POST /datasets/ds-kitchen/archive')).toBe(
+    false,
+  );
 });
 
 // ---- (d) numbering after an out-of-band removal ---------------------------

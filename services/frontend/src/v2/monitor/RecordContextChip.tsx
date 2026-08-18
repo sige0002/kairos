@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Monitor context strip chip: the REAL current recording state (REC + run_id +
 // capture id + elapsed while a capture is running, STANDBY otherwise), from
 // /record/status — no invented episode number or time range. Shares the
@@ -27,9 +29,9 @@ export function RecordContextChip() {
 
   return (
     <Card className="flex items-center gap-2.5 px-3.5 py-2" data-testid="monitor-context">
-      <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+      <h2 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         Context
-      </span>
+      </h2>
       {ctx.recording ? (
         <>
           <span
@@ -48,7 +50,7 @@ export function RecordContextChip() {
             data-testid="context-capture"
             data-capture-id={ctx.captureId ?? ''}
             title={ctx.captureId ?? 'The recorder did not name the capture.'}
-            className="font-mono text-[11px] text-gray-400"
+            className="font-mono text-[11px] text-gray-500"
           >
             {ctx.captureId ? ctx.captureId.slice(0, 8) : '—'}
           </span>
@@ -57,14 +59,14 @@ export function RecordContextChip() {
       ) : isPending ? (
         <span
           data-testid="context-state"
-          className="inline-flex rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-400"
+          className="inline-flex rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-600"
         >
           CHECKING…
         </span>
       ) : ctx.liveKnown ? (
         <span
           data-testid="context-state"
-          className="inline-flex rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-500"
+          className="inline-flex rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-600"
         >
           STANDBY
         </span>

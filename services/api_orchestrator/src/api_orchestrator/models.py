@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Pydantic models and shared enums for the api_orchestrator capture store v2.
 
 These are the OpenAPI-visible request/response contracts for ``/api/v1``. The
@@ -14,6 +16,7 @@ joined to an ``Episode`` is now a single :class:`Capture`.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from kairos_common import Compression, Durability, JobState, Reliability
@@ -38,7 +41,7 @@ from kairos_common.contracts.jobs import (
     ValidationTemplateListResponse,
 )
 from kairos_common.rebuild import ReplicaState
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 __all__ = [
     "TERMINAL_STATES",
@@ -46,8 +49,11 @@ __all__ = [
     "UNFINALIZED_STATES",
     "Batch",
     "BatchCoverageResponse",
+    "BatchCoverageScope",
     "BatchCreateRequest",
     "BatchDetail",
+    "BatchLookupRequest",
+    "BatchLookupResponse",
     "BatchListResponse",
     "BatchPatchRequest",
     "BatchStatus",
@@ -58,6 +64,11 @@ __all__ = [
     "CaptureDetail",
     "CaptureError",
     "CaptureListResponse",
+    "CaptureSearchRequest",
+    "CaptureSearchResponse",
+    "CaptureSelectionCreateRequest",
+    "CaptureSelectionResponse",
+    "CollectionContextSnapshot",
     "CaptureState",
     "CaptureTopic",
     "DeleteKind",
@@ -264,6 +275,28 @@ class QuickCheck(BaseModel):
 # ---- captures --------------------------------------------------------------
 
 
+class CollectionContextSnapshot(BaseModel):
+    """The batch identity and labels frozen when a recording starts.
+
+    This API wrapper mirrors the shared sidecar model. Keeping it on each
+    capture makes a later review prove that the requested batch association is
+    the one the recorder started under rather than a mutable UI selection.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    batch_id: str | None = None
+    batch_seq: int | None = None
+    project_id: str | None = None
+    task_id: str | None = None
+    condition_id: str | None = None
+    project: str | None = None
+    task: str | None = None
+    condition: str | None = None
+    robot: str | None = None
+    operator: str | None = None
+
+
 class Replica(BaseModel):
     """Where one installation's copy of a capture stands (§8).
 
@@ -339,6 +372,7 @@ class CaptureListItem(BaseModel):
     validation_override: str | None = None
     batch_id: str | None = None
     index_in_batch: int | None = None
+    collection_context: CollectionContextSnapshot | None = None
     # ---- tombstone (§7); the row survives the deletion ----
     deleted_at: str | None = None
     delete_kind: DeleteKind | None = None
@@ -422,6 +456,112 @@ class CaptureListResponse(BaseModel):
 
     items: list[CaptureListItem]
     next_cursor: str | None = None
+
+
+# ---- server-side capture search / materialized selections -----------------
+
+CaptureSearchField = Literal[
+    "any",
+    "operator",
+    "task",
+    "condition",
+    "run_id",
+    "capture_id",
+    "task_result",
+    "failure_reason",
+    "quality",
+    "review_status",
+    "robot",
+    "batch_id",
+]
+CaptureSearchOperator = Literal["contains", "equals"]
+CaptureFacetField = Literal[
+    "operator",
+    "task",
+    "condition",
+    "task_result",
+    "failure_reason",
+    "quality",
+    "review_status",
+    "robot",
+    "batch_id",
+]
+
+
+class CaptureSearchPredicate(BaseModel):
+    field: CaptureSearchField
+    operator: CaptureSearchOperator
+    value: str = Field(min_length=1, max_length=500)
+
+    @field_validator("value")
+    @classmethod
+    def _nonblank_value(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be blank")
+        return value
+
+
+class CaptureSearchQuery(BaseModel):
+    """The portable selection language shared by search and snapshots."""
+
+    join: Literal["and", "or"] = "and"
+    predicates: list[CaptureSearchPredicate] = Field(
+        default_factory=list, max_length=20
+    )
+    states: list[CaptureState] = Field(default_factory=list)
+    review_statuses: list[ReviewStatus] = Field(default_factory=list)
+    started_from: datetime | None = None
+    started_to: datetime | None = None
+    present_on_instance: bool | None = None
+    exclude_dataset_id: str | None = None
+
+    @field_validator("started_from", "started_to")
+    @classmethod
+    def _require_aware_rfc3339(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("timestamp must include a timezone offset")
+        return value.astimezone(UTC) if value is not None else None
+
+    @model_validator(mode="after")
+    def _validate_started_range(self) -> CaptureSearchQuery:
+        if self.started_from is not None and self.started_to is not None:
+            if self.started_from >= self.started_to:
+                raise ValueError("started_from must be before started_to")
+        return self
+
+
+class CaptureFacetValue(BaseModel):
+    value: str | None = None
+    count: int
+
+
+class CaptureFacet(BaseModel):
+    values: list[CaptureFacetValue] = Field(default_factory=list)
+    truncated: bool = False
+    other_count: int = 0
+
+
+class CaptureSearchRequest(BaseModel):
+    query: CaptureSearchQuery = Field(default_factory=CaptureSearchQuery)
+    cursor: str | None = None
+    limit: int = Field(default=50, ge=1, le=1000)
+    facets: list[CaptureFacetField] = Field(default_factory=list, max_length=8)
+
+
+class CaptureSearchResponse(CaptureListResponse):
+    total: int
+    facets: dict[str, CaptureFacet] = Field(default_factory=dict)
+
+
+class CaptureSelectionCreateRequest(BaseModel):
+    query: CaptureSearchQuery = Field(default_factory=CaptureSearchQuery)
+
+
+class CaptureSelectionResponse(BaseModel):
+    selection_id: str
+    matched_count: int
+    expires_at: str
 
 
 class ReviewSaveRequest(BaseModel):
@@ -525,16 +665,115 @@ class CaptureArchiveResponse(BaseModel):
     bytes: int
     file_count: int
     files: list[ArchivedFile] = Field(default_factory=list)
-    verified: bool = True
+    # There is deliberately no `verified` flag: verification is not optional on
+    # this path (every file's hash is compared as it lands, and a mismatch
+    # fails the archive before anything is deleted), so a completed response
+    # IS the verification claim. The old always-True field only fed a UI
+    # warning branch that could never fire (timing sweep S4).
+
+
+class CaptureArchiveAccepted(BaseModel):
+    """``POST /captures/{id}/archive`` answer: the run was ACCEPTED (202).
+
+    The copy of a multi-GB capture takes longer than any proxy timeout, and
+    running it in-request produced the worst possible split: the server
+    completed the archive (and deleted the source) while the client saw a 504
+    "failure" (timing sweep S2-1). The run now executes server-side and the
+    client polls ``GET /captures/{id}/archive``.
+    """
+
+    capture_id: str
+    destination: str
+    state: str = "running"
+
+
+class CaptureArchiveProgress(BaseModel):
+    """``GET /captures/{id}/archive`` — polled while a run executes.
+
+    ``state`` walks ``running → complete | failed``. The terminal entry stays
+    readable until a new run replaces it, so a client that reconnects after
+    the copy finished still learns the outcome instead of a 404.
+    """
+
+    capture_id: str
+    destination: str
+    state: str
+    bytes_done: int = 0
+    bytes_total: int | None = None
+    error: CaptureError | None = None
+    result: CaptureArchiveResponse | None = None
 
 
 # ---- datasets (§6: rows + ledger events; no directory tree) ----------------
 
 
+class DatasetSelectionCondition(BaseModel):
+    field: Literal[
+        "any",
+        "operator",
+        "task",
+        "condition",
+        "run_id",
+        "capture_id",
+        "task_result",
+        "failure_reason",
+        "quality",
+        "review_status",
+        "robot",
+        "batch_id",
+    ]
+    operator: Literal["contains", "equals"]
+    value: str = Field(min_length=1, max_length=500)
+
+    @field_validator("value")
+    @classmethod
+    def _nonblank_value(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be blank")
+        return value
+
+
+class DatasetSelectionRecipeCreateRequest(BaseModel):
+    """One completed filtered Bulk Add run, recorded after member writes."""
+
+    kind: Literal["filtered_bulk"] = "filtered_bulk"
+    join: Literal["and", "or"]
+    conditions: list[DatasetSelectionCondition] = Field(default_factory=list)
+    # Full snapshot query for server-owned bulk runs. The older `join` and
+    # `conditions` fields remain as the browser's compact recipe vocabulary.
+    selection_query: CaptureSearchQuery | None = None
+    matched: int = Field(ge=0)
+    attempted: int = Field(ge=0)
+    succeeded: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    catalog_truncated: bool = False
+    # Added for server-owned snapshot bulk runs. Existing browser-written
+    # receipts leave these null and retain their original meaning.
+    bulk_run_id: str | None = None
+    attempt: int | None = Field(default=None, ge=1)
+    cumulative: bool = False
+
+    @model_validator(mode="after")
+    def _counts_match_run(self) -> DatasetSelectionRecipeCreateRequest:
+        if self.attempted != self.succeeded + self.failed:
+            raise ValueError("attempted must equal succeeded plus failed")
+        if self.succeeded > self.matched or self.attempted > self.matched:
+            raise ValueError("run counts cannot exceed matched")
+        return self
+
+
+class DatasetSelectionRecipe(DatasetSelectionRecipeCreateRequest):
+    recipe_id: str
+    recorded_at: str
+
+
 class Dataset(BaseModel):
     """A logical dataset: a named set of captures, with no physical tree.
 
-    ``status`` walks ``active → archiving → archived`` and never back (§6.x).
+    ``status`` normally walks ``active → archiving → archived`` (§6.x). A
+    durably canceled, zero-progress attempt is the sole ``archiving → active``
+    edge; ``archived`` never returns.
     The three ``archive*`` fields are the durable face of the archive run —
     they come from database columns replayed out of the ledger, so they
     survive a rebuild, unlike the in-flight progress served by
@@ -553,6 +792,7 @@ class Dataset(BaseModel):
     archive_mode: str | None = None
     archive_started_at: str | None = None
     archived_at: str | None = None
+    selection_recipes: list[DatasetSelectionRecipe] = Field(default_factory=list)
 
 
 class DatasetMember(BaseModel):
@@ -623,8 +863,127 @@ class DatasetArchiveProgress(BaseModel):
     current_capture_id: str | None = None
     current_bytes: int | None = None
     error: dict[str, Any] | None = None
+    # Server-authoritative: true only when a halted attempt has no durable
+    # completed member and can therefore be abandoned without claiming that
+    # copied/removed bytes were rolled back.
+    cancelable: bool = False
+    cancel_blocker: str | None = None
     archive_started_at: str | None = None
     archived_at: str | None = None
+
+
+class ExportsConfig(BaseModel):
+    """``GET /api/v1/exports/config`` — the §6.2 capability gate.
+
+    ``enabled: false`` (exporter overlay absent, or no profile library) means
+    the Convert control is not rendered at all: never offer what can only fail.
+    ``profiles`` is exporter-shaped and passed through untouched — the exporter
+    owns that schema, and re-modelling it here would just be a copy that drifts.
+    """
+
+    enabled: bool
+    profiles: list[dict[str, Any]] = Field(default_factory=list)
+    # True when the exporter is up but the bundled converter is not importable
+    # there, so every profile's ``valid`` is null (present but unverified) —
+    # the UI can then say WHY instead of showing an unexplained tri-state.
+    validator_unavailable: bool | None = None
+
+
+class ExportRequest(BaseModel):
+    """Body for ``POST /api/v1/datasets/{id}/export`` (§6.2).
+
+    Only what the dialog actually decides: the profile pick, the free memo
+    segment of the output name, and the task fallback for unlabeled captures.
+    fps / split / resampling live in the profile — a different recipe is a
+    different profile, not a request field.
+    """
+
+    profile: str = Field(min_length=1, max_length=200)
+    # Capped so the composed <operator>_<profile>_<memo> stays within the
+    # export-name length bound; compose_export_name also truncates the join, but
+    # rejecting an absurd memo here gives a cleaner error than a silent trim.
+    memo: str | None = Field(default=None, max_length=64)
+    task_fallback: str | None = None
+
+
+class ExportDropped(BaseModel):
+    """Members an export leaves out, each list saying why (§6.2)."""
+
+    not_local: list[str] = Field(default_factory=list)
+    excluded: list[str] = Field(default_factory=list)
+    recording: list[str] = Field(default_factory=list)
+
+    @property
+    def count(self) -> int:
+        return len(self.not_local) + len(self.excluded) + len(self.recording)
+
+
+class ExportTaskSummary(BaseModel):
+    """How the included captures' task labels resolve (§4.3 rule)."""
+
+    labeled: int
+    unlabeled: int
+    values: dict[str, int] = Field(default_factory=dict)
+
+
+class ExportCoverageGap(BaseModel):
+    """One capture missing topics the selected profile requires."""
+
+    capture_id: str
+    topics: list[str]
+
+
+class ExportPreflight(BaseModel):
+    """``GET /api/v1/datasets/{id}/export/preflight`` — checks without starting.
+
+    The dialog shows this the moment it opens, so a conversion that can only
+    fail is visible BEFORE the operator commits — same honesty contract as the
+    archive config gate, applied per selection.
+    """
+
+    dataset_id: str
+    profile: dict[str, Any]
+    output_name: str
+    output: str
+    output_exists: bool
+    member_total: int
+    included: int
+    dropped: ExportDropped
+    tasks: ExportTaskSummary
+    missing_topics: list[ExportCoverageGap] = Field(default_factory=list)
+    coverage_unknown: list[str] = Field(default_factory=list)
+
+
+class ExportSubmitResponse(BaseModel):
+    """``POST /api/v1/datasets/{id}/export`` answer: accepted (202)."""
+
+    export_id: str
+    dataset_id: str
+    output: str
+    included: int
+    dropped: ExportDropped
+
+
+class ExportStatus(BaseModel):
+    """``GET /api/v1/datasets/{id}/export`` — proxied exporter state + identity.
+
+    Volatile on both sides: the exporter forgets in-flight exports on restart
+    (they become ``failed`` here) and this row lives in orchestrator memory.
+    The durable record is the ``dataset_exported`` ledger line written when a
+    success is first observed.
+    """
+
+    dataset_id: str
+    export_id: str
+    output: str
+    state: str
+    queue_position: int | None = None
+    done: int = 0
+    failed: int = 0
+    total: int = 0
+    current_episode_pct: float | None = None
+    stalled: bool | None = None
+    message: str | None = None
 
 
 class DatasetCreateRequest(BaseModel):
@@ -654,6 +1013,32 @@ class DatasetMemberCreateRequest(BaseModel):
     capture_id: str
 
 
+class DatasetMembershipBulkRunCreateRequest(BaseModel):
+    """Start (or idempotently recover) one server-side snapshot add."""
+
+    selection_id: str
+    request_id: str = Field(min_length=1, max_length=128)
+
+
+class DatasetMembershipBulkFailure(BaseModel):
+    capture_id: str
+    code: str
+    message: str
+
+
+class DatasetMembershipBulkRun(BaseModel):
+    run_id: str
+    dataset_id: str
+    selection_id: str
+    state: Literal["pending", "running", "completed", "partial", "failed_receipt"]
+    matched_count: int
+    attempted: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    pending: int = 0
+    failures: list[DatasetMembershipBulkFailure] = Field(default_factory=list)
+
+
 class DatasetListResponse(BaseModel):
     """``GET /api/v1/datasets``."""
 
@@ -673,6 +1058,7 @@ class RecordStartRequest(BaseModel):
     qos_overrides: dict[str, TopicQos] | None = None
     operator: str | None = None
     task: str | None = None
+    collection_context: CollectionContextSnapshot | None = None
 
 
 class RecordPrepareResponse(BaseModel):
@@ -775,6 +1161,9 @@ class Batch(BaseModel):
 
     batch_id: str
     robot: str | None = None
+    project_id: str | None = None
+    task_id: str | None = None
+    condition_id: str | None = None
     # Optional because an empty plan catalog has no project to name. A console
     # that had to send SOMETHING filled the gap with the dash it displays for
     # "unset", writing a fabricated label into the catalog for good; null is
@@ -808,11 +1197,35 @@ class BatchCreateRequest(BaseModel):
     """Body for ``POST /api/v1/batches``."""
 
     robot: str | None = None
+    project_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    )
+    task_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    )
+    condition_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    )
     project: str | None = None
     task: str | None = None
     condition: str | None = None
     operator: str | None = None
     target_episodes: int = Field(default=30, ge=1)
+
+    @field_validator("project_id", "task_id", "condition_id", mode="before")
+    @classmethod
+    def _normalize_plan_ids(cls, value: object) -> object:
+        """Match the Plan catalog's canonical ID syntax at the HTTP boundary."""
+        return value.strip() if isinstance(value, str) else value
 
 
 class BatchPatchRequest(BaseModel):
@@ -820,10 +1233,36 @@ class BatchPatchRequest(BaseModel):
 
     status: BatchStatus | None = None
     ended_reason: str | None = None
+    robot: str | None = None
+    project_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    )
+    task_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    )
+    condition_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    )
     project: str | None = None
     task: str | None = None
     condition: str | None = None
+    operator: str | None = None
     target_episodes: int | None = Field(default=None, ge=1, le=500)
+
+    @field_validator("project_id", "task_id", "condition_id", mode="before")
+    @classmethod
+    def _normalize_plan_ids(cls, value: object) -> object:
+        """Match the Plan catalog's canonical ID syntax at the HTTP boundary."""
+        return value.strip() if isinstance(value, str) else value
 
 
 class BatchSummary(Batch):
@@ -862,10 +1301,39 @@ class BatchListResponse(BaseModel):
     total: int | None = None
 
 
+class BatchLookupRequest(BaseModel):
+    """Resolve a page's batch labels without downloading the catalog."""
+
+    batch_ids: list[str] = Field(min_length=1)
+
+    @field_validator("batch_ids")
+    @classmethod
+    def _dedupe_and_bound(cls, batch_ids: list[str]) -> list[str]:
+        unique: list[str] = []
+        seen: set[str] = set()
+        for batch_id in batch_ids:
+            value = batch_id.strip()
+            if not value:
+                raise ValueError("batch_ids must not contain blank values")
+            if value not in seen:
+                unique.append(value)
+                seen.add(value)
+        if len(unique) > 1000:
+            raise ValueError("at most 1000 distinct batch_ids are allowed")
+        return unique
+
+
+class BatchLookupResponse(BaseModel):
+    """Existing batch rows in request order; unknown IDs are absent."""
+
+    items: list[Batch] = Field(default_factory=list)
+
+
 class CoverageRow(BaseModel):
     """One condition's recorded total for a task (``GET /batches/coverage``)."""
 
     condition: str
+    condition_id: str | None = None
     # Sum of the batches' monotone ``episodes_recorded`` for this condition.
     recorded: int = 0
     # True when ANY batch in the sum carries ``episodes_recorded_is_floor``.
@@ -873,6 +1341,19 @@ class CoverageRow(BaseModel):
     # way to say which part is uncertain — so the flag propagates through the
     # addition rather than being reported per batch.
     is_floor: bool = False
+
+
+class BatchCoverageScope(BaseModel):
+    """The exact AND-scoped population used for a coverage aggregate."""
+
+    project_id: str | None = None
+    project: str | None = None
+    task_id: str | None = None
+    task: str | None = None
+    robot: str | None = None
+    operator: str | None = None
+    created_from: str | None = None
+    created_to: str | None = None
 
 
 class BatchCoverageResponse(BaseModel):
@@ -884,7 +1365,8 @@ class BatchCoverageResponse(BaseModel):
     invented rows for it would be reporting a plan, not a measurement.
     """
 
-    task: str
+    task: str | None = None
+    scope: BatchCoverageScope
     rows: list[CoverageRow] = Field(default_factory=list)
 
 

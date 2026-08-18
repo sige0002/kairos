@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The phase-driven control card (left column, top): READY / ARMING /
 // RECORDING / SAVING+QUICK-CHECK / EPISODE RESULT / PAUSED / ENDED / COMPLETED —
 // or, when a recording is running that this screen isn't driving, the takeover
@@ -55,11 +57,21 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   const startRef = useRef<HTMLButtonElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
   const stopRef = useRef<HTMLButtonElement>(null);
-  const savingTitleRef = useRef<HTMLSpanElement>(null);
+  const savingTitleRef = useRef<HTMLHeadingElement>(null);
   const saveRef = useRef<HTMLButtonElement>(null);
   const failReasonRef = useRef<HTMLButtonElement>(null);
   const takeoverStopRef = useRef<HTMLButtonElement>(null);
+  const armingTitleRef = useRef<HTMLHeadingElement>(null);
+  const readyTitleRef = useRef<HTMLHeadingElement>(null);
   const hasTakeover = !!takeover;
+  // Whether READY's Start can be focused at all (#11): the same two gates the
+  // button is disabled by.
+  const startBlocked = machine.noSelection || machine.operatorMissing;
+  // ARMING's Cancel is guarded for its first moments (#8). The flag is the
+  // machine's, not this card's, because the Escape shortcut reaches
+  // `cancelArming` without passing the button.
+  const cancelArmed = machine.canCancelArming;
+
   useEffect(() => {
     if (hasTakeover) {
       takeoverStopRef.current?.focus();
@@ -67,10 +79,22 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     }
     switch (phase) {
       case 'ready':
-        startRef.current?.focus();
+        // Start is disabled while a gate is up, and focus() on a disabled
+        // button is a no-op. Since #11 the operator gate fires in the shipped
+        // default, so this is the FIRST screen a new operator sees — landing
+        // focus on <body> there would mean the console opens keyboard-dead.
+        // The title holds it until Start can take it, as ARMING and SAVING do.
+        if (startBlocked) readyTitleRef.current?.focus();
+        else startRef.current?.focus();
         break;
       case 'arming':
-        cancelRef.current?.focus();
+        // Cancel is disabled for the guard window, and focus() on a disabled
+        // button is a no-op — which left focus on <body> for the whole of a
+        // fast pre-armed start (~16ms), where ARMING can come and go without
+        // the guard ever opening. The title holds focus until the button can
+        // take it.
+        if (cancelArmed) cancelRef.current?.focus();
+        else armingTitleRef.current?.focus();
         break;
       case 'recording':
         stopRef.current?.focus();
@@ -90,7 +114,19 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
     // without re-running when Stop becomes enabled focus stayed on <body> for
     // the WHOLE take. (Second effect-dependency bug of this shape: the logic was
     // right and the deps made it read a stale world.)
-  }, [phase, machine.pendingTask, hasTakeover, machine.canStop]);
+    //
+    // `cancelArmed` is here for exactly the same reason, one phase earlier.
+    //
+    // `startBlocked` likewise: filling in the operator name must hand focus to
+    // the Start button that just became usable.
+  }, [
+    phase,
+    machine.pendingTask,
+    hasTakeover,
+    machine.canStop,
+    cancelArmed,
+    startBlocked,
+  ]);
 
   // Quality override expander (D-2): collapsed by default; opening it reveals the
   // three chips. Auto-open once the operator has already overridden.
@@ -103,11 +139,15 @@ export function ControlCard({ machine }: { machine: BatchMachine }) {
   }
 
   if (phase === 'ready') {
-    return <ReadyCard machine={machine} startRef={startRef} />;
+    return (
+      <ReadyCard machine={machine} startRef={startRef} titleRef={readyTitleRef} />
+    );
   }
 
   if (phase === 'arming') {
-    return <ArmingCard machine={machine} cancelRef={cancelRef} />;
+    return (
+      <ArmingCard machine={machine} cancelRef={cancelRef} titleRef={armingTitleRef} />
+    );
   }
 
   if (phase === 'recording') {

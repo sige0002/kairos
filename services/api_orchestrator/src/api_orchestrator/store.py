@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """SQLite capture store v2 — the queryable cache in front of the sidecars.
 
 Contract §8. The v1 store treated ``kairos.db`` as the source of truth and the
@@ -39,6 +41,8 @@ import json
 import logging
 import os
 import sqlite3
+import unicodedata
+import uuid
 from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
@@ -88,6 +92,13 @@ logger = logging.getLogger("kairos")
 CATALOG_DIRNAME = "catalog"
 TEMPLATES_SIDECAR = "validation_templates.json"
 PLAN_CATALOG_SIDECAR = "plan_catalog.json"
+_PLAN_ID_NAMESPACE = uuid.UUID("7bb397a4-c9f4-5b87-8e90-fba28373bd77")
+
+
+def _search_fold(value: object) -> str:
+    """NFC + Unicode casefold, matching the Console's case-insensitive search."""
+    return unicodedata.normalize("NFC", "" if value is None else str(value)).casefold()
+
 
 # Replica states that mean "the bytes are on this machine right now". The §9-3
 # threshold guard counts these as its denominator, and the digest job only ever
@@ -104,6 +115,88 @@ TOMBSTONE_STATES: frozenset[str] = frozenset(
 )
 
 
+def _legacy_plan_id(kind: str, path: str) -> str:
+    """Stable deterministic ID used exactly when a pre-ID catalog is rebuilt."""
+    return f"legacy-{uuid.uuid5(_PLAN_ID_NAMESPACE, f'{kind}:{path}')}"
+
+
+def _legacy_plan_name(value: Any) -> str:
+    """Normalize readable legacy names without making a rebuild fail on whitespace."""
+    return unicodedata.normalize(
+        "NFC", value if isinstance(value, str) else str(value)
+    ).strip()
+
+
+def _canonical_plan_projects(projects: list[Any]) -> list[dict[str, Any]]:
+    """Convert the former name/string tree into the canonical ID-bearing tree.
+
+    This is intentionally only a persistence compatibility adapter. New API
+    writes are validated by the router and cannot submit the legacy shape.
+    """
+    canonical: list[dict[str, Any]] = []
+    for project_index, project_raw in enumerate(projects):
+        project = project_raw if isinstance(project_raw, dict) else {}
+        project_name = _legacy_plan_name(project.get("name", ""))
+        project_path = f"{project_index}:{project_name}"
+        tasks_raw = project.get("tasks", [])
+        tasks: list[dict[str, Any]] = []
+        if isinstance(tasks_raw, list):
+            for task_index, task_raw in enumerate(tasks_raw):
+                task = task_raw if isinstance(task_raw, dict) else {}
+                task_name = _legacy_plan_name(task.get("name", ""))
+                task_path = f"{project_path}/{task_index}:{task_name}"
+                conditions_raw = task.get("conditions", [])
+                conditions: list[dict[str, str]] = []
+                if isinstance(conditions_raw, list):
+                    for condition_index, condition_raw in enumerate(conditions_raw):
+                        condition = (
+                            condition_raw if isinstance(condition_raw, dict) else {}
+                        )
+                        condition_name = _legacy_plan_name(
+                            condition.get("name", condition_raw)
+                        )
+                        condition_path = (
+                            f"{task_path}/{condition_index}:{condition_name}"
+                        )
+                        condition_id = condition.get("condition_id")
+                        conditions.append(
+                            {
+                                "condition_id": (
+                                    str(condition_id).strip()
+                                    if isinstance(condition_id, str)
+                                    and condition_id.strip()
+                                    else _legacy_plan_id("condition", condition_path)
+                                ),
+                                "name": condition_name,
+                            }
+                        )
+                task_id = task.get("task_id")
+                tasks.append(
+                    {
+                        "task_id": (
+                            str(task_id).strip()
+                            if isinstance(task_id, str) and task_id.strip()
+                            else _legacy_plan_id("task", task_path)
+                        ),
+                        "name": task_name,
+                        "conditions": conditions,
+                    }
+                )
+        project_id = project.get("project_id")
+        canonical.append(
+            {
+                "project_id": (
+                    str(project_id).strip()
+                    if isinstance(project_id, str) and project_id.strip()
+                    else _legacy_plan_id("project", project_path)
+                ),
+                "name": project_name,
+                "tasks": tasks,
+            }
+        )
+    return canonical
+
+
 class CaptureExistsError(Exception):
     """A capture_id (or run_id) already has a row."""
 
@@ -118,6 +211,26 @@ class BatchExistsError(Exception):
     def __init__(self, batch_id: str) -> None:
         super().__init__(f"Batch already exists: {batch_id}")
         self.batch_id = batch_id
+
+
+class BatchLabelsFrozenError(Exception):
+    """A non-empty batch attempted to alter recording-provenance labels."""
+
+    def __init__(self, batch_id: str, fields: Iterable[str]) -> None:
+        self.batch_id = batch_id
+        self.fields = tuple(sorted(fields))
+        super().__init__(
+            f"Batch labels are frozen after recording begins: {batch_id} "
+            f"({', '.join(self.fields)})"
+        )
+
+
+class PlanCatalogConflictError(Exception):
+    """The caller attempted to replace an outdated plan catalog revision."""
+
+    def __init__(self, current_revision: int) -> None:
+        self.current_revision = current_revision
+        super().__init__(f"Plan catalog is at revision {current_revision}")
 
 
 class ArchiveDestinationTakenError(Exception):
@@ -149,6 +262,15 @@ class DatasetMemberExistsError(Exception):
         super().__init__(f"{capture_id} is already in dataset {dataset_id}")
         self.dataset_id = dataset_id
         self.capture_id = capture_id
+
+
+class DatasetNotActiveError(Exception):
+    """A membership write lost the race with archive/freeze."""
+
+    def __init__(self, dataset_id: str, status: str) -> None:
+        super().__init__(f"dataset {dataset_id} is {status}, not active")
+        self.dataset_id = dataset_id
+        self.status = status
 
 
 class CaptureStore:
@@ -300,7 +422,7 @@ class CaptureStore:
         """Return one capture with its local replica attached, or ``None``."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM captures WHERE capture_id = ?", (capture_id,)
+                "SELECT * FROM captures_with_lease WHERE capture_id = ?", (capture_id,)
             ).fetchone()
             if row is None:
                 return None
@@ -376,7 +498,8 @@ class CaptureStore:
 
         with self._conn() as conn:
             rows = conn.execute(
-                f"SELECT * FROM captures {where} ORDER BY seq DESC LIMIT ?", params
+                f"SELECT * FROM captures_with_lease {where} ORDER BY seq DESC LIMIT ?",
+                params,
             ).fetchall()
             has_more = len(rows) > limit
             page = rows[:limit]
@@ -385,6 +508,580 @@ class CaptureStore:
             self._attach_memberships(conn, captures)
         next_cursor = int(page[-1]["seq"]) if has_more and page else None
         return captures, next_cursor
+
+    def search_captures(
+        self,
+        limit: int,
+        cursor: int | None,
+        *,
+        query: dict[str, Any],
+        facets: list[str],
+        instance_id: str | None,
+    ) -> tuple[list[Capture], int | None, int, dict[str, dict[str, Any]]]:
+        """Search a coherent capture snapshot, including optional facets.
+
+        ``collection_context`` being present is decisive for condition lookup:
+        an explicit JSON null is recorded absence, not permission to consult a
+        subsequently edited Batch.  Only legacy rows with no context fall back
+        to the Batch's old label.
+        """
+        with self._conn() as conn:
+            conn.create_function("kairos_casefold", 1, _search_fold, deterministic=True)
+            conn.execute("BEGIN")
+            where, params = self._capture_search_where(query, instance_id)
+            cursor_where = list(where)
+            cursor_params = list(params)
+            if cursor is not None:
+                cursor_where.append("c.seq < ?")
+                cursor_params.append(cursor)
+            where_sql = f" WHERE {' AND '.join(cursor_where)}" if cursor_where else ""
+            rows = conn.execute(
+                "SELECT c.* FROM captures_with_lease c "
+                "LEFT JOIN batches b ON b.batch_id = c.batch_id"
+                f"{where_sql} ORDER BY c.seq DESC LIMIT ?",
+                (*cursor_params, limit + 1),
+            ).fetchall()
+            has_more = len(rows) > limit
+            page = rows[:limit]
+            captures = [self._capture_from_row(row) for row in page]
+            self._attach_replica(conn, captures, instance_id or self._instance_id)
+            self._attach_memberships(conn, captures)
+            base_sql = f" WHERE {' AND '.join(where)}" if where else ""
+            total = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM captures c "
+                    "LEFT JOIN batches b ON b.batch_id = c.batch_id" + base_sql,
+                    params,
+                ).fetchone()[0]
+            )
+            facet_data: dict[str, dict[str, Any]] = {}
+            for field in dict.fromkeys(facets):
+                expression = self._capture_search_expression(field)
+                if expression is None:
+                    continue
+                facet_query = dict(query)
+                facet_query["predicates"] = [
+                    predicate
+                    for predicate in query.get("predicates") or []
+                    if predicate["field"] != field
+                ]
+                facet_where, facet_params = self._capture_search_where(
+                    facet_query, instance_id
+                )
+                facet_where_sql = (
+                    f" WHERE {' AND '.join(facet_where)}" if facet_where else ""
+                )
+                rows_for_facet = conn.execute(
+                    f"SELECT {expression} AS value, COUNT(*) AS count "
+                    "FROM captures c LEFT JOIN batches b ON b.batch_id = c.batch_id"
+                    + facet_where_sql
+                    + f" GROUP BY {expression} ORDER BY count DESC, value LIMIT 101",
+                    facet_params,
+                ).fetchall()
+                values = [
+                    {"value": row["value"], "count": int(row["count"])}
+                    for row in rows_for_facet[:100]
+                ]
+                facet_total = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM captures c "
+                        "LEFT JOIN batches b ON b.batch_id = c.batch_id"
+                        + facet_where_sql,
+                        facet_params,
+                    ).fetchone()[0]
+                )
+                facet_data[field] = {
+                    "values": values,
+                    "truncated": len(rows_for_facet) > 100,
+                    "other_count": max(
+                        0, facet_total - sum(v["count"] for v in values)
+                    ),
+                }
+        next_cursor = int(page[-1]["seq"]) if has_more and page else None
+        return captures, next_cursor, total, facet_data
+
+    @staticmethod
+    def _capture_search_expression(field: str) -> str | None:
+        condition = (
+            "CASE WHEN c.collection_context IS NOT NULL "
+            "THEN json_extract(c.collection_context, '$.condition') "
+            "ELSE b.condition END"
+        )
+        return {
+            "operator": "c.operator",
+            "task": "c.task",
+            "condition": condition,
+            "run_id": "c.run_id",
+            "capture_id": "c.capture_id",
+            "task_result": "c.task_result",
+            "failure_reason": "c.failure_reason",
+            "quality": "c.quality",
+            "review_status": "c.review_status",
+            "robot": "c.robot",
+            "batch_id": "c.batch_id",
+        }.get(field)
+
+    def _capture_search_where(
+        self, query: dict[str, Any], instance_id: str | None
+    ) -> tuple[list[str], list[Any]]:
+        """Compile the public, value-bound selection DSL to SQLite clauses."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        states = query.get("states") or []
+        if states:
+            clauses.append("c.state IN (" + ", ".join("?" for _ in states) + ")")
+            params.extend(states)
+        else:
+            placeholders = ", ".join("?" for _ in TOMBSTONE_STATES)
+            clauses.append(f"c.state NOT IN ({placeholders})")
+            params.extend(sorted(TOMBSTONE_STATES))
+        review_statuses = query.get("review_statuses") or []
+        if review_statuses:
+            clauses.append(
+                "c.review_status IN (" + ", ".join("?" for _ in review_statuses) + ")"
+            )
+            params.extend(review_statuses)
+        started_from = query.get("started_from")
+        if started_from is not None:
+            clauses.append("julianday(c.started_at) >= julianday(?)")
+            params.append(started_from)
+        started_to = query.get("started_to")
+        if started_to is not None:
+            clauses.append("julianday(c.started_at) < julianday(?)")
+            params.append(started_to)
+        present = query.get("present_on_instance")
+        if present is not None:
+            owner = instance_id or self._instance_id
+            if owner is None:
+                clauses.append("0")
+            else:
+                states_sql = ", ".join("?" for _ in PRESENT_REPLICA_STATES)
+                exists = (
+                    "EXISTS (SELECT 1 FROM replicas r "
+                    "WHERE r.capture_id = c.capture_id "
+                    "AND r.instance_id = ? AND r.state IN (" + states_sql + "))"
+                )
+                clauses.append(exists if present else f"NOT {exists}")
+                params.append(owner)
+                params.extend(sorted(PRESENT_REPLICA_STATES))
+        excluded = query.get("exclude_dataset_id")
+        if excluded:
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM dataset_members dm "
+                "WHERE dm.dataset_id = ? AND dm.capture_id = c.capture_id)"
+            )
+            params.append(excluded)
+        predicates = query.get("predicates") or []
+        predicate_clauses: list[str] = []
+        for predicate in predicates:
+            field = predicate["field"]
+            value = _search_fold(predicate["value"])
+            expressions: list[str]
+            if field == "any":
+                expressions = [
+                    expr
+                    for name in (
+                        "operator",
+                        "task",
+                        "condition",
+                        "run_id",
+                        "capture_id",
+                        "task_result",
+                        "failure_reason",
+                        "quality",
+                        "review_status",
+                        "robot",
+                        "batch_id",
+                    )
+                    if (expr := self._capture_search_expression(name)) is not None
+                ]
+            else:
+                expression = self._capture_search_expression(field)
+                expressions = [expression] if expression is not None else []
+            comparisons: list[str] = []
+            for expression in expressions:
+                if predicate["operator"] == "equals":
+                    comparisons.append(
+                        f"kairos_casefold(COALESCE({expression}, '')) = ?"
+                    )
+                    params.append(value)
+                else:
+                    comparisons.append(
+                        f"kairos_casefold(COALESCE({expression}, '')) "
+                        "LIKE ? ESCAPE '\\'"
+                    )
+                    escaped = (
+                        value.replace("\\", "\\\\")
+                        .replace("%", "\\%")
+                        .replace("_", "\\_")
+                    )
+                    params.append(f"%{escaped}%")
+            predicate_clauses.append("(" + " OR ".join(comparisons or ["0"]) + ")")
+        if predicate_clauses:
+            joiner = " AND " if query.get("join", "and") == "and" else " OR "
+            clauses.append("(" + joiner.join(predicate_clauses) + ")")
+        return clauses, params
+
+    def create_capture_selection(
+        self, query: dict[str, Any], *, instance_id: str | None, expires_at: str
+    ) -> tuple[str, int]:
+        """Freeze matching capture IDs in one write transaction.
+
+        The selection is an expiring DB work item; it intentionally is not
+        rebuild truth.  Member rows/ledger are still the durable outcome.
+        """
+        selection_id = str(uuid.uuid4())
+        created_at = utc_now_iso8601()
+        with self._conn() as conn:
+            conn.create_function("kairos_casefold", 1, _search_fold, deterministic=True)
+            conn.execute("BEGIN IMMEDIATE")
+            # Bulk runs copy both frozen IDs and query provenance into their
+            # own rows. Once a selection expires, no consumer may resolve it;
+            # retaining its potentially huge item set would leak one catalog
+            # snapshot per Bulk Add forever.
+            expired = (
+                "SELECT s.selection_id FROM capture_selections s "
+                "WHERE s.expires_at <= ?"
+            )
+            conn.execute(
+                "DELETE FROM capture_selection_items WHERE selection_id IN ("
+                + expired
+                + ")",
+                (created_at,),
+            )
+            conn.execute(
+                "DELETE FROM capture_selections WHERE selection_id IN ("
+                + expired
+                + ")",
+                (created_at,),
+            )
+            where, params = self._capture_search_where(query, instance_id)
+            where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+            rows = conn.execute(
+                "SELECT c.capture_id FROM captures c LEFT JOIN batches b "
+                "ON b.batch_id = c.batch_id" + where_sql + " ORDER BY c.capture_id ASC",
+                params,
+            ).fetchall()
+            capture_ids = [str(row["capture_id"]) for row in rows]
+            conn.execute(
+                "INSERT INTO capture_selections "
+                "(selection_id, query_json, created_at, expires_at, matched_count) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    selection_id,
+                    json.dumps(query),
+                    created_at,
+                    expires_at,
+                    len(capture_ids),
+                ),
+            )
+            conn.executemany(
+                "INSERT INTO capture_selection_items "
+                "(selection_id, ordinal, capture_id) "
+                "VALUES (?, ?, ?)",
+                [
+                    (selection_id, ordinal, capture_id)
+                    for ordinal, capture_id in enumerate(capture_ids)
+                ],
+            )
+        return selection_id, len(capture_ids)
+
+    def capture_selection_capture_ids(self, selection_id: str) -> list[str]:
+        """Resolve a live snapshot without consuming its frozen ID order.
+
+        Selections are shared inputs: Dataset bulk and Validation may both use
+        the same immutable population before its expiry.  A missing or expired
+        header is intentionally indistinguishable to callers, because neither
+        can safely be retried as though it still described the current search.
+        """
+        with self._conn() as conn:
+            conn.execute("BEGIN")
+            selection = conn.execute(
+                "SELECT 1 FROM capture_selections WHERE selection_id = ? "
+                "AND expires_at > ?",
+                (selection_id, utc_now_iso8601()),
+            ).fetchone()
+            if selection is None:
+                raise KeyError(selection_id)
+            rows = conn.execute(
+                "SELECT capture_id FROM capture_selection_items "
+                "WHERE selection_id = ? ORDER BY ordinal",
+                (selection_id,),
+            ).fetchall()
+        return [str(row["capture_id"]) for row in rows]
+
+    def create_membership_bulk_run(
+        self, dataset_id: str, selection_id: str, request_id: str
+    ) -> dict[str, Any]:
+        """Create an idempotent work row from a still-valid frozen selection."""
+        now = utc_now_iso8601()
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM dataset_membership_bulk_runs "
+                "WHERE dataset_id = ? AND request_id = ?",
+                (dataset_id, request_id),
+            ).fetchone()
+            if existing is not None:
+                if existing["selection_id"] != selection_id:
+                    raise ValueError(
+                        "request_id was already used for another selection"
+                    )
+                return dict(existing)
+            selection = conn.execute(
+                "SELECT matched_count, query_json FROM capture_selections "
+                "WHERE selection_id = ? AND expires_at > ?",
+                (selection_id, now),
+            ).fetchone()
+            if selection is None:
+                raise KeyError(selection_id)
+            run_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO dataset_membership_bulk_runs "
+                "(run_id, dataset_id, selection_id, query_json, request_id, state, "
+                "matched_count, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                (
+                    run_id,
+                    dataset_id,
+                    selection_id,
+                    selection["query_json"],
+                    request_id,
+                    int(selection["matched_count"]),
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO dataset_membership_bulk_items (run_id, capture_id) "
+                "SELECT ?, capture_id FROM capture_selection_items "
+                "WHERE selection_id = ?",
+                (run_id, selection_id),
+            )
+            return dict(
+                conn.execute(
+                    "SELECT * FROM dataset_membership_bulk_runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+            )
+
+    def get_membership_bulk_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM dataset_membership_bulk_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            result = dict(row)
+            counts = conn.execute(
+                "SELECT COUNT(*) AS items, SUM(state = 'succeeded') AS succeeded, "
+                "SUM(state = 'failed') AS failed "
+                "FROM dataset_membership_bulk_items WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if int(counts["items"] or 0) > 0:
+                result["succeeded"] = int(counts["succeeded"] or 0)
+                result["failed"] = int(counts["failed"] or 0)
+                result["attempted"] = result["succeeded"] + result["failed"]
+            return result
+
+    def membership_bulk_query(self, run_id: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT query_json FROM dataset_membership_bulk_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(row["query_json"])
+        except (TypeError, ValueError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def mark_membership_bulk_receipt(self, run_id: str, state: str) -> None:
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET receipt_state = ?, "
+                "updated_at = ? "
+                "WHERE run_id = ?",
+                (state, utc_now_iso8601(), run_id),
+            )
+            if state == "recorded":
+                conn.execute(
+                    "DELETE FROM dataset_membership_bulk_items WHERE run_id = ? "
+                    "AND EXISTS (SELECT 1 FROM dataset_membership_bulk_runs "
+                    "WHERE run_id = ? AND state = 'completed')",
+                    (run_id, run_id),
+                )
+
+    def mark_membership_bulk_receipt_failed(self, run_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET state = 'failed_receipt', "
+                "receipt_state = 'failed', updated_at = ? WHERE run_id = ?",
+                (utc_now_iso8601(), run_id),
+            )
+
+    def pending_membership_bulk_runs(self) -> list[str]:
+        """Runs left by a normal process restart (not a schema rebuild)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT run_id FROM dataset_membership_bulk_runs "
+                "WHERE state IN ('pending', 'running') ORDER BY created_at"
+            ).fetchall()
+        return [str(row["run_id"]) for row in rows]
+
+    def membership_bulk_runs_needing_receipt(self) -> list[dict[str, Any]]:
+        """Terminal membership passes whose separate receipt did not land."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM dataset_membership_bulk_runs "
+                "WHERE state IN ('completed', 'partial', 'failed_receipt') "
+                "AND receipt_state != 'recorded' ORDER BY updated_at"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def reset_running_membership_bulk_runs(self) -> None:
+        """Make work abandoned by a stopped process claimable again."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET state = 'pending', "
+                "updated_at = ? WHERE state = 'running'",
+                (utc_now_iso8601(),),
+            )
+
+    def claim_membership_bulk_run(self, run_id: str) -> bool:
+        """Elect one worker; duplicate delivery must not rewrite item results."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET state = 'running', "
+                "updated_at = ? WHERE run_id = ? AND state IN ('pending', 'partial')",
+                (utc_now_iso8601(), run_id),
+            )
+        return cur.rowcount == 1
+
+    def requeue_failed_membership_bulk_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            claimed = conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET state = 'pending', "
+                "attempt = attempt + 1, receipt_state = 'pending', updated_at = ? "
+                "WHERE run_id = ? AND state IN ('partial', 'failed_receipt')",
+                (utc_now_iso8601(), run_id),
+            )
+            if claimed.rowcount != 1:
+                return None
+            conn.execute(
+                "UPDATE dataset_membership_bulk_items SET state = 'pending', "
+                "error_code = NULL, error_message = NULL WHERE run_id = ? "
+                "AND state = 'failed'",
+                (run_id,),
+            )
+            row = conn.execute(
+                "SELECT * FROM dataset_membership_bulk_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return dict(row)
+
+    def release_membership_bulk_run(self, run_id: str) -> None:
+        """Return an unexpectedly interrupted claimed run to its durable queue."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET state = 'pending', "
+                "updated_at = ? WHERE run_id = ? AND state = 'running'",
+                (utc_now_iso8601(), run_id),
+            )
+
+    def pending_membership_bulk_capture_ids(
+        self, run_id: str, *, retry_failed: bool
+    ) -> list[str]:
+        states = ("pending", "failed") if retry_failed else ("pending",)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT capture_id FROM dataset_membership_bulk_items WHERE run_id = ? "
+                "AND state IN ("
+                + ", ".join("?" for _ in states)
+                + ") ORDER BY capture_id",
+                (run_id, *states),
+            ).fetchall()
+        return [str(row["capture_id"]) for row in rows]
+
+    def mark_membership_bulk_item(
+        self,
+        run_id: str,
+        capture_id: str,
+        *,
+        success: bool,
+        code: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE dataset_membership_bulk_items SET state = ?, error_code = ?, "
+                "error_message = ? "
+                "WHERE run_id = ? AND capture_id = ?",
+                (
+                    "succeeded" if success else "failed",
+                    code,
+                    message,
+                    run_id,
+                    capture_id,
+                ),
+            )
+
+    def finish_membership_bulk_run(self, run_id: str) -> dict[str, Any] | None:
+        """Recount persisted item truth after a worker pass."""
+        now = utc_now_iso8601()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS pending, SUM(state = 'succeeded') AS succeeded, "
+                "SUM(state = 'failed') AS failed FROM dataset_membership_bulk_items "
+                "WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            pending = (
+                int(row["pending"] or 0)
+                - int(row["succeeded"] or 0)
+                - int(row["failed"] or 0)
+            )
+            succeeded = int(row["succeeded"] or 0)
+            failed = int(row["failed"] or 0)
+            state = (
+                "completed"
+                if not pending and not failed
+                else "partial"
+                if not pending
+                else "pending"
+            )
+            conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET state = ?, attempted = ?, "
+                "succeeded = ?, failed = ?, updated_at = ? WHERE run_id = ?",
+                (state, succeeded + failed, succeeded, failed, now, run_id),
+            )
+            saved = conn.execute(
+                "SELECT * FROM dataset_membership_bulk_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return dict(saved) if saved is not None else None
+
+    def membership_bulk_failures(self, run_id: str) -> list[dict[str, str]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT capture_id, error_code, error_message "
+                "FROM dataset_membership_bulk_items "
+                "WHERE run_id = ? AND state = 'failed' ORDER BY capture_id LIMIT 100",
+                (run_id,),
+            ).fetchall()
+        return [
+            {
+                "capture_id": str(row["capture_id"]),
+                "code": str(row["error_code"] or "bulk_failed"),
+                "message": str(row["error_message"] or "Membership was refused."),
+            }
+            for row in rows
+        ]
 
     def present_terminal_ids(
         self, states: Iterable[str], *, instance_id: str
@@ -421,7 +1118,8 @@ class CaptureStore:
         placeholders = ", ".join("?" for _ in values)
         with self._conn() as conn:
             rows = conn.execute(
-                f"SELECT * FROM captures WHERE state IN ({placeholders}) ORDER BY seq",
+                f"SELECT * FROM captures_with_lease "
+                f"WHERE state IN ({placeholders}) ORDER BY seq",
                 values,
             ).fetchall()
             captures = [self._capture_from_row(r) for r in rows]
@@ -465,7 +1163,7 @@ class CaptureStore:
         """Look a capture up by its display name (recorder correlation only)."""
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT * FROM captures WHERE run_id = ?", (run_id,)
+                "SELECT * FROM captures_with_lease WHERE run_id = ?", (run_id,)
             ).fetchone()
         return self._capture_from_row(row) if row is not None else None
 
@@ -501,6 +1199,13 @@ class CaptureStore:
         if unknown:
             raise KeyError(f"Not review fields: {sorted(unknown)}")
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            if base_revision == 0 and fields.get("batch_id"):
+                batch = conn.execute(
+                    "SELECT 1 FROM batches WHERE batch_id = ?", (fields["batch_id"],)
+                ).fetchone()
+                if batch is None:
+                    raise KeyError(fields["batch_id"])
             if renumber_index:
                 # BEGIN IMMEDIATE takes the write lock before the scan, so the
                 # number is allocated by the DATABASE rather than by this
@@ -534,6 +1239,64 @@ class CaptureStore:
                     base_revision,
                 ),
             )
+            if cur.rowcount > 0 and base_revision == 0 and fields.get("batch_id"):
+                conn.execute(
+                    "UPDATE batches SET episodes_recorded = episodes_recorded + 1 "
+                    "WHERE batch_id = ?",
+                    (fields["batch_id"],),
+                )
+        return cur.rowcount > 0
+
+    def adopt_review_from_sidecar(
+        self,
+        capture_id: str,
+        *,
+        base_revision: int,
+        revision: int,
+        fields: dict[str, Any],
+    ) -> bool:
+        """Atomically adopt an ahead ``record.json`` and its first-review count.
+
+        This is the crash-recovery sibling of :meth:`save_review_cas`: a
+        sidecar can be durable while its initial database transaction was not.
+        It must increment the batch in the same transaction, exactly once.
+        """
+        unknown = set(fields) - _REVIEW_COLUMNS
+        if unknown:
+            raise KeyError(f"Not review fields: {sorted(unknown)}")
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            before = conn.execute(
+                "SELECT 1 FROM captures WHERE capture_id = ? AND review_revision = ?",
+                (capture_id, base_revision),
+            ).fetchone()
+            if before is None:
+                return False
+            if base_revision == 0 and fields.get("batch_id"):
+                batch = conn.execute(
+                    "SELECT 1 FROM batches WHERE batch_id = ?", (fields["batch_id"],)
+                ).fetchone()
+                if batch is None:
+                    raise KeyError(fields["batch_id"])
+            assignments = ", ".join(f"{name} = ?" for name in fields)
+            cur = conn.execute(
+                f"UPDATE captures SET {assignments}, review_revision = ?, "
+                "updated_at = ? "
+                "WHERE capture_id = ? AND review_revision = ?",
+                (
+                    *fields.values(),
+                    revision,
+                    utc_now_iso8601(),
+                    capture_id,
+                    base_revision,
+                ),
+            )
+            if cur.rowcount > 0 and base_revision == 0 and fields.get("batch_id"):
+                conn.execute(
+                    "UPDATE batches SET episodes_recorded = episodes_recorded + 1 "
+                    "WHERE batch_id = ?",
+                    (fields["batch_id"],),
+                )
         return cur.rowcount > 0
 
     @staticmethod
@@ -579,55 +1342,135 @@ class CaptureStore:
     # ---- leases (§7.1) -----------------------------------------------------
 
     def acquire_lease(self, capture_id: str, owner: str, *, ttl_s: float) -> bool:
-        """Take or renew the lease on a capture. ``False`` = someone else holds it.
+        """Take or renew *owner*'s shared hold unless an exclusive writer owns it.
 
-        A job must hold this before touching ``objects/<capture_id>``, and
-        discard/delete refuse while it is live. An **expired** lease is not a
-        lease: a job that died holding one must not lock its capture out of
-        deletion forever, which is why the guard compares against now rather
-        than merely checking for a non-null owner.
+        §7.1's lease is SHARED: several readers may hold one capture at once,
+        which is what lets the N camera encoders of a single recording run in
+        parallel. So this no longer arbitrates between jobs — it records that
+        one more of them is touching ``objects/<capture_id>``, and the thing it
+        protects is unchanged: discard and delete refuse while any live holder
+        remains.
+
+        Renewal is the same statement as acquisition, scoped to this owner's row
+        by the primary key, so a poll for one job cannot extend another's.
+
+        Expired rows for this capture are swept here rather than by a timer.
+        An expired lease is already not a lease (every read compares against
+        now), so the sweep is hygiene, not correctness — which is exactly why it
+        can ride on a write that was happening anyway instead of needing a task
+        that could itself die.
         """
         now = datetime.now(UTC)
-        expires = utc_iso8601_of(now + timedelta(seconds=ttl_s))
         stamp = utc_iso8601_of(now)
+        expires = utc_iso8601_of(now + timedelta(seconds=ttl_s))
         with self._conn() as conn:
-            cur = conn.execute(
-                "UPDATE captures SET lease_owner = ?, lease_expires_at = ?, "
-                "updated_at = ? WHERE capture_id = ? AND ("
-                "  lease_owner IS NULL OR lease_owner = ? "
-                "  OR lease_expires_at IS NULL OR lease_expires_at <= ?)",
-                (owner, expires, stamp, capture_id, owner, stamp),
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "DELETE FROM capture_leases WHERE capture_id = ? AND expires_at <= ?",
+                (capture_id, stamp),
             )
-        return cur.rowcount > 0
+            writer = conn.execute(
+                "SELECT 1 FROM capture_leases WHERE capture_id = ? "
+                "AND owner LIKE 'writer:%' AND owner != ? AND expires_at > ? LIMIT 1",
+                (capture_id, owner, stamp),
+            ).fetchone()
+            if writer is not None:
+                return False
+            conn.execute(
+                "INSERT INTO capture_leases (capture_id, owner, expires_at, "
+                "acquired_at) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (capture_id, owner) DO UPDATE SET expires_at = "
+                "excluded.expires_at",
+                (capture_id, owner, expires, stamp),
+            )
+        return True
+
+    def acquire_writer_lease(
+        self, capture_id: str, owner: str, *, ttl_s: float
+    ) -> bool:
+        """Exclusively arbitrate a byte-moving writer against all readers."""
+        if not owner.startswith("writer:"):
+            raise ValueError("writer lease owners must start with 'writer:'")
+        now = datetime.now(UTC)
+        stamp = utc_iso8601_of(now)
+        expires = utc_iso8601_of(now + timedelta(seconds=ttl_s))
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "DELETE FROM capture_leases WHERE capture_id = ? AND expires_at <= ?",
+                (capture_id, stamp),
+            )
+            holder = conn.execute(
+                "SELECT 1 FROM capture_leases WHERE capture_id = ? "
+                "AND owner != ? AND expires_at > ? LIMIT 1",
+                (capture_id, owner, stamp),
+            ).fetchone()
+            if holder is not None:
+                return False
+            conn.execute(
+                "INSERT INTO capture_leases "
+                "(capture_id, owner, expires_at, acquired_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT (capture_id, owner) DO UPDATE SET "
+                "expires_at = excluded.expires_at",
+                (capture_id, owner, expires, stamp),
+            )
+        return True
 
     def release_lease(self, capture_id: str, owner: str) -> bool:
-        """Drop the lease if *owner* still holds it."""
+        """Drop *owner*'s hold. Other holders are untouched.
+
+        Owner-scoped for the same reason it always was: a stale poll for a
+        finished job must not be able to release the hold of a job that is still
+        working. With several holders that matters more, not less.
+        """
         with self._conn() as conn:
             cur = conn.execute(
-                "UPDATE captures SET lease_owner = NULL, lease_expires_at = NULL, "
-                "updated_at = ? WHERE capture_id = ? AND lease_owner = ?",
-                (utc_now_iso8601(), capture_id, owner),
+                "DELETE FROM capture_leases WHERE capture_id = ? AND owner = ?",
+                (capture_id, owner),
             )
         return cur.rowcount > 0
 
+    def lease_holders(self, capture_id: str) -> list[dict[str, str]]:
+        """Every live holder, soonest expiry first. ``[]`` = nobody.
+
+        The list is what a 409 reports: with N encoders running, "a job is
+        working on this" is true but useless, and an operator deciding whether
+        to wait needs to see how many and until when.
+        """
+        stamp = utc_now_iso8601()
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT owner, expires_at FROM capture_leases "
+                "WHERE capture_id = ? AND expires_at > ? ORDER BY expires_at, owner",
+                (capture_id, stamp),
+            ).fetchall()
+        return [
+            {"owner": row["owner"], "expires_at": row["expires_at"]} for row in rows
+        ]
+
     def has_live_lease(self, capture_id: str) -> bool:
-        """Whether an unexpired lease is held on this capture."""
+        """Whether ANY unexpired hold remains — the delete guard's question."""
         stamp = utc_now_iso8601()
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT 1 FROM captures WHERE capture_id = ? "
-                "AND lease_owner IS NOT NULL AND lease_expires_at > ?",
+                "SELECT 1 FROM capture_leases WHERE capture_id = ? "
+                "AND expires_at > ? LIMIT 1",
                 (capture_id, stamp),
             ).fetchone()
         return row is not None
 
     def holds_lease(self, capture_id: str, owner: str) -> bool:
-        """Whether *owner* still holds an unexpired lease (mid-job re-check)."""
+        """Whether *owner*'s own hold is still live (the mid-job re-check).
+
+        Unchanged in meaning by the shared rewrite: a job re-checks that IT
+        still holds the capture before its final write, and another reader
+        holding one says nothing about that.
+        """
         stamp = utc_now_iso8601()
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT 1 FROM captures WHERE capture_id = ? AND lease_owner = ? "
-                "AND lease_expires_at > ?",
+                "SELECT 1 FROM capture_leases WHERE capture_id = ? AND owner = ? "
+                "AND expires_at > ?",
                 (capture_id, owner, stamp),
             ).fetchone()
         return row is not None
@@ -741,7 +1584,10 @@ class CaptureStore:
                 WHERE r.instance_id = ?
                   AND r.state = ?
                   AND c.state IN ({placeholders})
-                  AND (c.lease_owner IS NULL OR c.lease_expires_at <= ?)
+                  AND NOT EXISTS (
+                        SELECT 1 FROM capture_leases l
+                         WHERE l.capture_id = c.capture_id AND l.expires_at > ?
+                      )
                 ORDER BY c.seq
                 """,
                 (
@@ -790,6 +1636,58 @@ class CaptureStore:
                 "UPDATE datasets SET name = ?, operator = ?, task = ? "
                 "WHERE dataset_id = ?",
                 (name, operator, task, dataset_id),
+            )
+        return cur.rowcount > 0
+
+    def append_dataset_selection_recipe(
+        self, dataset_id: str, recipe: dict[str, Any]
+    ) -> bool:
+        """Append one immutable Bulk Add provenance record to a dataset."""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT selection_recipes FROM datasets WHERE dataset_id = ?",
+                (dataset_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                recipes = json.loads(row["selection_recipes"] or "[]")
+            except (TypeError, ValueError):
+                recipes = []
+            if not isinstance(recipes, list):
+                recipes = []
+            recipes.append(recipe)
+            conn.execute(
+                "UPDATE datasets SET selection_recipes = ? WHERE dataset_id = ?",
+                (json.dumps(recipes), dataset_id),
+            )
+        return True
+
+    def remove_dataset_selection_recipe(self, dataset_id: str, recipe_id: str) -> bool:
+        """Remove only one just-appended recipe after its ledger append failed."""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT selection_recipes FROM datasets WHERE dataset_id = ?",
+                (dataset_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                recipes = json.loads(row["selection_recipes"] or "[]")
+            except (TypeError, ValueError):
+                return False
+            if not isinstance(recipes, list):
+                return False
+            remaining = [
+                recipe
+                for recipe in recipes
+                if not isinstance(recipe, dict) or recipe.get("recipe_id") != recipe_id
+            ]
+            cur = conn.execute(
+                "UPDATE datasets SET selection_recipes = ? WHERE dataset_id = ?",
+                (json.dumps(remaining), dataset_id),
             )
         return cur.rowcount > 0
 
@@ -884,6 +1782,13 @@ class CaptureStore:
         membership_id = membership_id or new_membership_id()
         created_at = utc_now_iso8601()
         with self._conn() as conn:
+            dataset = conn.execute(
+                "SELECT status FROM datasets WHERE dataset_id = ?", (dataset_id,)
+            ).fetchone()
+            if dataset is None:
+                raise KeyError(dataset_id)
+            if dataset["status"] != "active":
+                raise DatasetNotActiveError(dataset_id, str(dataset["status"]))
             if display_index is None:
                 row = conn.execute(
                     "SELECT index_high_water FROM datasets WHERE dataset_id = ?",
@@ -935,6 +1840,17 @@ class CaptureStore:
             row = conn.execute(
                 "SELECT * FROM dataset_members WHERE membership_id = ?",
                 (membership_id,),
+            ).fetchone()
+        return self._member_from_row(row) if row is not None else None
+
+    def get_dataset_membership(
+        self, dataset_id: str, capture_id: str
+    ) -> DatasetMember | None:
+        """Return the unique membership for one dataset/capture pair."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM dataset_members WHERE dataset_id = ? AND capture_id = ?",
+                (dataset_id, capture_id),
             ).fetchone()
         return self._member_from_row(row) if row is not None else None
 
@@ -995,6 +1911,7 @@ class CaptureStore:
         destination: str,
         mode: str = "move",
         at: str | None = None,
+        expected_capture_ids: list[str] | None = None,
     ) -> bool:
         """active → archiving, and the destination claimed with it.
 
@@ -1030,6 +1947,17 @@ class CaptureStore:
         operator clears the debris out of it, because Resume will come back.
         """
         with self._conn() as conn:
+            if expected_capture_ids is not None:
+                current = [
+                    str(row["capture_id"])
+                    for row in conn.execute(
+                        "SELECT capture_id FROM dataset_members "
+                        "WHERE dataset_id = ? ORDER BY display_index",
+                        (dataset_id,),
+                    ).fetchall()
+                ]
+                if current != expected_capture_ids:
+                    return False
             rows = conn.execute(
                 "SELECT dataset_id, archive_destination FROM datasets "
                 "WHERE dataset_id != ? AND archive_destination IS NOT NULL "
@@ -1074,8 +2002,8 @@ class CaptureStore:
 
     def abort_dataset_archive(self, dataset_id: str) -> None:
         """Roll archiving back to active — only for a start whose ledger append
-        failed, i.e. before any byte moved. Once a member has been copied the
-        run must go forward (resume), never back."""
+        failed, i.e. before a durable run exists. Operator cancellation uses a
+        separate ledger-first method and is never routed through this helper."""
         with self._conn() as conn:
             conn.execute(
                 "UPDATE datasets SET status = 'active', "
@@ -1084,6 +2012,18 @@ class CaptureStore:
                 "WHERE dataset_id = ? AND status = 'archiving'",
                 (dataset_id,),
             )
+
+    def cancel_dataset_archive(self, dataset_id: str) -> bool:
+        """Release a durably canceled, zero-progress archive attempt."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE datasets SET status = 'active', "
+                "archive_destination = NULL, archive_mode = NULL, "
+                "archive_started_at = NULL "
+                "WHERE dataset_id = ? AND status = 'archiving'",
+                (dataset_id,),
+            )
+        return cur.rowcount > 0
 
     def finish_dataset_archive(self, dataset_id: str, *, at: str | None = None) -> bool:
         """archiving → archived (terminal). ``False`` = it was not archiving."""
@@ -1120,6 +2060,17 @@ class CaptureStore:
                 "UPDATE datasets SET status = 'archived', archived_at = ? "
                 "WHERE dataset_id = ?",
                 (at, dataset_id),
+            )
+
+    def mark_dataset_archive_canceled(self, dataset_id: str) -> None:
+        """Replay form of :meth:`cancel_dataset_archive` — idempotent."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE datasets SET status = 'active', "
+                "archive_destination = NULL, archive_mode = NULL, "
+                "archive_started_at = NULL, archived_at = NULL "
+                "WHERE dataset_id = ? AND status != 'archived'",
+                (dataset_id,),
             )
 
     def count_archived_members(self, dataset_id: str) -> tuple[int, int]:
@@ -1171,14 +2122,18 @@ class CaptureStore:
                 conn.execute(
                     """
                     INSERT INTO batches
-                        (batch_id, robot, project, task, condition, operator,
+                        (batch_id, robot, project_id, task_id, condition_id,
+                         project, task, condition, operator,
                          target_episodes, status, ended_reason, created_at,
                          ended_at, batch_seq)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         batch.batch_id,
                         batch.robot,
+                        batch.project_id,
+                        batch.task_id,
+                        batch.condition_id,
                         batch.project,
                         batch.task,
                         batch.condition,
@@ -1228,14 +2183,18 @@ class CaptureStore:
             cur = conn.execute(
                 """
                 INSERT OR IGNORE INTO batches
-                    (batch_id, robot, project, task, condition, operator,
+                    (batch_id, robot, project_id, task_id, condition_id,
+                     project, task, condition, operator,
                      target_episodes, status, ended_reason, created_at,
                      ended_at, batch_seq)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch.batch_id,
                     batch.robot,
+                    batch.project_id,
+                    batch.task_id,
+                    batch.condition_id,
                     batch.project,
                     batch.task,
                     batch.condition,
@@ -1289,7 +2248,21 @@ class CaptureStore:
         current = row["m"] if row and row["m"] is not None else 0
         return int(current) + 1
 
-    def update_batch(self, batch_id: str, **fields: Any) -> Batch:
+    def update_batch(
+        self,
+        batch_id: str,
+        *,
+        enforce_label_invariant: bool = True,
+        **fields: Any,
+    ) -> Batch:
+        """Update a batch, freezing provenance labels once recording begins.
+
+        The capture-reference/count check and the update run in one immediate
+        SQLite transaction. This prevents a review save from assigning a
+        capture between an API-layer preflight check and the label update.
+        Ledger replay passes ``False`` because it faithfully reapplies history
+        after capture rows have already been rebuilt.
+        """
         if not fields:
             return self.get_batch_or_raise(batch_id)
         for name in fields:
@@ -1297,13 +2270,49 @@ class CaptureStore:
                 raise KeyError(f"Unknown batch field: {name}")
         assignments = ", ".join(f"{name} = ?" for name in fields)
         with self._conn() as conn:
+            # A deferred transaction would leave a window after this read for
+            # another writer to attach a capture. Reserve the sole SQLite
+            # writer before checking so the decision and UPDATE are atomic.
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT * FROM batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(batch_id)
+            if enforce_label_invariant:
+                provenance_labels = (
+                    "project",
+                    "task",
+                    "condition",
+                    "project_id",
+                    "task_id",
+                    "condition_id",
+                    "robot",
+                    "operator",
+                )
+                changed_labels = [
+                    name
+                    for name in provenance_labels
+                    if name in fields and fields[name] != row[name]
+                ]
+                if changed_labels:
+                    capture_exists = conn.execute(
+                        "SELECT 1 FROM captures WHERE batch_id = ? LIMIT 1",
+                        (batch_id,),
+                    ).fetchone()
+                    if capture_exists is not None or row["episodes_recorded"] > 0:
+                        raise BatchLabelsFrozenError(batch_id, changed_labels)
             cur = conn.execute(
                 f"UPDATE batches SET {assignments} WHERE batch_id = ?",
                 (*fields.values(), batch_id),
             )
             if cur.rowcount == 0:
                 raise KeyError(batch_id)
-        return self.get_batch_or_raise(batch_id)
+            updated = conn.execute(
+                "SELECT * FROM batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone()
+        assert updated is not None
+        return self._batch_from_row(updated)
 
     def rebuild_episodes_recorded(self, batch_id: str) -> int:
         """Set the counter to how many recordings name this batch. Returns it.
@@ -1313,8 +2322,10 @@ class CaptureStore:
         replay it from and the batch used to come back at 0 while its episodes
         sat on disk: Collect then showed ``0 / 30`` for a finished batch.
 
-        Counting the captures that name the batch is the best available answer
-        and is knowably a FLOOR, so the row is marked as one. Two things it
+        Counting reviewed captures that name the batch is the best available
+        answer and is knowably a FLOOR, so the row is marked as one. A start
+        now names its batch before a review, but that is provenance rather than
+        evidence that the first-review counter advanced. Two things it
         cannot see: a capture reviewed in and later deleted (its record.json
         went with it), and a capture reviewed more than once (which the live
         counter also only counts once). Tombstones ARE counted — the row
@@ -1323,7 +2334,8 @@ class CaptureStore:
         """
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT COUNT(*) AS n FROM captures WHERE batch_id = ?",
+                "SELECT COUNT(*) AS n FROM captures "
+                "WHERE batch_id = ? AND review_revision > 0",
                 (batch_id,),
             ).fetchone()
             counted = int(row["n"] or 0)
@@ -1355,6 +2367,25 @@ class CaptureStore:
         if batch is None:
             raise KeyError(batch_id)
         return batch
+
+    def batches_for_ids(self, batch_ids: list[str]) -> list[Batch]:
+        """Fetch known batches in caller order without an unbounded catalog read."""
+        if not batch_ids:
+            return []
+        found: dict[str, Batch] = {}
+        # SQLite's variable limit varies by build.  Chunk defensively even
+        # though the HTTP boundary caps a request at 1000 IDs.
+        for start in range(0, len(batch_ids), 500):
+            chunk = batch_ids[start : start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            with self._conn() as conn:
+                rows = conn.execute(
+                    f"SELECT * FROM batches WHERE batch_id IN ({placeholders})", chunk
+                ).fetchall()
+            found.update(
+                {str(row["batch_id"]): self._batch_from_row(row) for row in rows}
+            )
+        return [found[batch_id] for batch_id in batch_ids if batch_id in found]
 
     def batch_seqs_for_ids(self, batch_ids: list[str]) -> dict[str, int | None]:
         if not batch_ids:
@@ -1458,7 +2489,9 @@ class CaptureStore:
             ).fetchall()
         return [self._batch_from_row(r) for r in rows]
 
-    def coverage_by_condition(self, task: str) -> list[tuple[str, int, bool]]:
+    def coverage_by_condition(
+        self, scope: dict[str, str | None]
+    ) -> list[tuple[str, str | None, int, bool]]:
         """``(condition, recorded, is_floor)`` per condition of *task*, in SQL.
 
         Aggregated by the database rather than by summing a batch list: Collect
@@ -1479,18 +2512,41 @@ class CaptureStore:
         vocabulary in gets a stable list.
         """
         with self._conn() as conn:
+            clauses = ["condition IS NOT NULL", "condition NOT IN ('', '—')"]
+            params: list[str] = []
+            for name in (
+                "project_id",
+                "project",
+                "task_id",
+                "task",
+                "robot",
+                "operator",
+            ):
+                value = scope.get(name)
+                if value is not None:
+                    clauses.append(f"{name} = ?")
+                    params.append(value)
+            if scope.get("created_from") is not None:
+                clauses.append("created_at >= ?")
+                params.append(scope["created_from"])
+            if scope.get("created_to") is not None:
+                clauses.append("created_at < ?")
+                params.append(scope["created_to"])
             rows = conn.execute(
-                "SELECT condition, "
+                "SELECT condition_id, condition, "
                 "SUM(episodes_recorded) AS recorded, "
                 "MAX(episodes_recorded_is_floor) AS is_floor "
-                "FROM batches "
-                "WHERE task = ? AND condition IS NOT NULL "
-                "AND condition NOT IN ('', '—') "
-                "GROUP BY condition ORDER BY condition",
-                (task,),
+                "FROM batches WHERE " + " AND ".join(clauses) + " "
+                "GROUP BY condition_id, condition ORDER BY condition, condition_id",
+                params,
             ).fetchall()
         return [
-            (row["condition"], int(row["recorded"] or 0), bool(row["is_floor"]))
+            (
+                row["condition"],
+                row["condition_id"],
+                int(row["recorded"] or 0),
+                bool(row["is_floor"]),
+            )
             for row in rows
         ]
 
@@ -1506,7 +2562,7 @@ class CaptureStore:
         placeholders = ", ".join("?" for _ in TOMBSTONE_STATES)
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT * FROM captures WHERE batch_id = ? "
+                "SELECT * FROM captures_with_lease WHERE batch_id = ? "
                 f"AND state NOT IN ({placeholders}) "
                 "ORDER BY index_in_batch, seq",
                 (batch_id, *sorted(TOMBSTONE_STATES)),
@@ -1621,8 +2677,8 @@ class CaptureStore:
 
     def get_plan_catalog(
         self,
-    ) -> tuple[list[Any], list[str] | None, list[str] | None, str] | None:
-        """``(projects, failure_reasons, operators, updated_at)`` or ``None``.
+    ) -> tuple[list[Any], list[str] | None, list[str] | None, str, int] | None:
+        """``(projects, failure_reasons, operators, updated_at, revision)``.
 
         ``None`` is distinct from an explicitly emptied catalog (``([], ts)``):
         the client seeds the server from its local copy only in the never-set
@@ -1634,8 +2690,14 @@ class CaptureStore:
         """
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT payload, updated_at FROM plan_catalog WHERE id = 1"
+                "SELECT payload, updated_at, revision FROM plan_catalog WHERE id = 1"
             ).fetchone()
+        return self._plan_catalog_from_row(row)
+
+    @staticmethod
+    def _plan_catalog_from_row(
+        row: sqlite3.Row | None,
+    ) -> tuple[list[Any], list[str] | None, list[str] | None, str, int] | None:
         if row is None:
             return None
         try:
@@ -1643,10 +2705,11 @@ class CaptureStore:
         except ValueError:
             return None
         if isinstance(payload, list):  # pre-failure_reasons payload shape
-            return payload, None, None, row["updated_at"]
-        if not isinstance(payload, dict):
-            return None
-        if not isinstance(payload.get("projects"), list):
+            projects = _canonical_plan_projects(payload)
+            return projects, None, None, row["updated_at"], int(row["revision"])
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("projects"), list
+        ):
             return None
 
         def _str_list(key: str) -> list[str] | None:
@@ -1656,48 +2719,98 @@ class CaptureStore:
             return None
 
         return (
-            payload["projects"],
+            _canonical_plan_projects(payload["projects"]),
             _str_list("failure_reasons"),
             _str_list("operators"),
             row["updated_at"],
+            int(row["revision"]),
         )
 
-    def set_plan_catalog(
+    def replace_plan_catalog(
         self,
         projects: list[Any],
+        *,
+        base_revision: int,
         updated_at: str,
-        failure_reasons: list[str] | None = None,
-        operators: list[str] | None = None,
-    ) -> None:
-        """Replace the shared plan catalog and mirror it to disk.
+        failure_reasons: list[str] | None,
+        operators: list[str] | None,
+        keep_failure_reasons: bool,
+        keep_operators: bool,
+    ) -> tuple[list[Any], list[str] | None, list[str] | None, str, int]:
+        """CAS-replace the catalog and then best-effort mirror it to disk.
 
-        A ``None`` vocabulary (failure_reasons / operators) means "leave the
-        stored one as it is" (a client that predates the field must not wipe
-        it), so the effective values are re-read before writing.
+        The read, revision check and INSERT/UPDATE share one SQLite write
+        transaction.  The filesystem mirror cannot be atomic with SQLite, as
+        before; a failed mirror is logged and the next successful write heals
+        it, while the DB response remains truthful about the committed revision.
         """
-        if failure_reasons is None or operators is None:
-            stored = self.get_plan_catalog()
-            if stored is not None:
-                if failure_reasons is None:
-                    failure_reasons = stored[1]
-                if operators is None:
-                    operators = stored[2]
-        payload = json.dumps(
-            {
-                "projects": projects,
-                "failure_reasons": failure_reasons,
-                "operators": operators,
-            },
-            ensure_ascii=False,
-        )
+        conflict: PlanCatalogConflictError | None = None
+        result: (
+            tuple[list[Any], list[str] | None, list[str] | None, str, int] | None
+        ) = None
         with self._conn() as conn:
-            conn.execute(
-                "INSERT INTO plan_catalog (id, payload, updated_at) VALUES (1, ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET "
-                "payload = excluded.payload, updated_at = excluded.updated_at",
-                (payload, updated_at),
-            )
-        self._mirror_plan_catalog(projects, failure_reasons, operators, updated_at)
+            # The in-process connection lock serializes ordinary requests; the
+            # SQLite writer lock also closes the window if another process is
+            # pointed at the same store file.
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT payload, updated_at, revision FROM plan_catalog WHERE id = 1"
+            ).fetchone()
+            current = self._plan_catalog_from_row(row)
+            current_revision = 0 if current is None else current[4]
+            if current_revision != base_revision:
+                conflict = PlanCatalogConflictError(current_revision)
+            else:
+                effective_reasons = (
+                    current[1]
+                    if keep_failure_reasons and current is not None
+                    else failure_reasons
+                )
+                effective_operators = (
+                    current[2] if keep_operators and current is not None else operators
+                )
+                revision = current_revision + 1
+                payload = json.dumps(
+                    {
+                        "projects": projects,
+                        "failure_reasons": effective_reasons,
+                        "operators": effective_operators,
+                    },
+                    ensure_ascii=False,
+                )
+                if row is None:
+                    conn.execute(
+                        "INSERT INTO plan_catalog (id, payload, updated_at, revision) "
+                        "VALUES (1, ?, ?, ?)",
+                        (payload, updated_at, revision),
+                    )
+                else:
+                    updated = conn.execute(
+                        "UPDATE plan_catalog SET payload = ?, updated_at = ?, "
+                        "revision = ? "
+                        "WHERE id = 1 AND revision = ?",
+                        (payload, updated_at, revision, base_revision),
+                    ).rowcount
+                    if updated != 1:
+                        latest = conn.execute(
+                            "SELECT revision FROM plan_catalog WHERE id = 1"
+                        ).fetchone()
+                        conflict = PlanCatalogConflictError(
+                            0 if latest is None else int(latest["revision"])
+                        )
+                if conflict is None:
+                    result = (
+                        projects,
+                        effective_reasons,
+                        effective_operators,
+                        updated_at,
+                        revision,
+                    )
+        if conflict is not None:
+            raise conflict
+        assert result is not None
+        self._mirror_plan_catalog(*result)
+        return result
 
     def _catalog_dir(self) -> Path | None:
         return None if self._data_dir is None else self._data_dir / CATALOG_DIRNAME
@@ -1732,6 +2845,7 @@ class CaptureStore:
         failure_reasons: list[str] | None,
         operators: list[str] | None,
         updated_at: str,
+        revision: int,
     ) -> None:
         catalog = self._catalog_dir()
         if catalog is None:
@@ -1745,6 +2859,7 @@ class CaptureStore:
                     "failure_reasons": failure_reasons,
                     "operators": operators,
                     "updated_at": updated_at,
+                    "revision": revision,
                 },
             )
         except OSError as exc:
@@ -1793,23 +2908,44 @@ class CaptureStore:
 
             reasons = _side_list("failure_reasons")
             side_operators = _side_list("operators")
+            # A pre-CAS sidecar has no revision. It is nevertheless an already
+            # saved catalog, so it starts at 1; only a missing row means 0.
+            side_revision = plan.get("revision")
+            revision = (
+                side_revision
+                if isinstance(side_revision, int) and side_revision > 0
+                else 1
+            )
+            projects = _canonical_plan_projects(plan["projects"])
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO plan_catalog (id, payload, updated_at) "
-                    "VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET "
-                    "payload = excluded.payload, updated_at = excluded.updated_at",
+                    "INSERT INTO plan_catalog (id, payload, updated_at, revision) "
+                    "VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+                    "payload = excluded.payload, updated_at = excluded.updated_at, "
+                    "revision = excluded.revision",
                     (
                         json.dumps(
                             {
-                                "projects": plan["projects"],
+                                "projects": projects,
                                 "failure_reasons": reasons,
                                 "operators": side_operators,
                             },
                             ensure_ascii=False,
                         ),
                         plan.get("updated_at") or utc_now_iso8601(),
+                        revision,
                     ),
                 )
+            # Persist the normalization immediately: later rebuilds must not
+            # generate a different shape, and a subsequent rename needs these
+            # IDs rather than another legacy inference.
+            self._mirror_plan_catalog(
+                projects,
+                reasons,
+                side_operators,
+                plan.get("updated_at") or utc_now_iso8601(),
+                revision,
+            )
             restored["plan_catalog"] = 1
         return restored
 
@@ -1884,6 +3020,7 @@ class CaptureStore:
     def _upsert_rebuilt_capture(
         conn: sqlite3.Connection, row: CaptureRow, now: str
     ) -> None:
+        collection_context = getattr(row, "collection_context", None)
         columns: dict[str, Any] = {
             "capture_id": row.capture_id,
             "run_id": row.run_id,
@@ -1905,6 +3042,15 @@ class CaptureStore:
             "delete_reason": row.delete_reason,
             "archived_at": row.archived_at,
             "archive_destination": row.archive_destination,
+            "collection_context": (
+                json.dumps(
+                    collection_context.to_json()
+                    if hasattr(collection_context, "to_json")
+                    else collection_context
+                )
+                if collection_context is not None
+                else None
+            ),
             "updated_at": now,
         }
         if row.quick_check is not None:

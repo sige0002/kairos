@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Feature-based routers for the api_orchestrator public API (``/api/v1``).
 
 Each module is one feature group (``record``, ``captures``), kept loosely coupled

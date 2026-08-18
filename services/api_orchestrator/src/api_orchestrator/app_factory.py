@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Application factory for api_orchestrator — capture store v2.
 
 Builds the FastAPI app on ``kairos_common.create_app`` and wires the v2 stack:
@@ -26,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
@@ -48,6 +50,7 @@ from api_orchestrator import bag_import
 from api_orchestrator import views as views_mod
 from api_orchestrator.batch_service import BatchService
 from api_orchestrator.bootstrap import StoreStartupError, bootstrap_store, prepare_store
+from api_orchestrator.capture_archive import CaptureArchiveRuns
 from api_orchestrator.captures import CaptureService
 from api_orchestrator.config_catalog import ConfigCatalog
 from api_orchestrator.dataset_archive import DatasetArchiver
@@ -57,30 +60,37 @@ from api_orchestrator.dora_runner_client import DoraRunnerClient
 from api_orchestrator.events import EventHub
 from api_orchestrator.health import StoreHealth
 from api_orchestrator.importer_client import ImporterClient
+from api_orchestrator.lerobot_exporter_client import LerobotExporterClient
 from api_orchestrator.models import Capture
 from api_orchestrator.monitor_client import MonitorClient
 from api_orchestrator.reconciler import Reconciler
 from api_orchestrator.record_service import RecordService
 from api_orchestrator.recorder_client import RecorderClient
+from api_orchestrator.report_storage import ReportStorageService
 from api_orchestrator.routers import batches as batches_router
 from api_orchestrator.routers import captures as captures_router
 from api_orchestrator.routers import config as config_router
 from api_orchestrator.routers import datasets as datasets_router
 from api_orchestrator.routers import events as events_router
+from api_orchestrator.routers import exports as exports_router
 from api_orchestrator.routers import files as files_router
 from api_orchestrator.routers import imports as imports_router
 from api_orchestrator.routers import jobs as jobs_router
 from api_orchestrator.routers import pipelines as pipelines_router
 from api_orchestrator.routers import plans as plans_router
 from api_orchestrator.routers import record as record_router
+from api_orchestrator.routers import report_storage as report_storage_router
 from api_orchestrator.routers import retention as retention_router
 from api_orchestrator.routers import store as store_router
 from api_orchestrator.routers import system as system_router
 from api_orchestrator.routers import topics as topics_router
 from api_orchestrator.routers import transfer as transfer_router
 from api_orchestrator.routers import validation as validation_router
+from api_orchestrator.routers import validation_runs as validation_runs_router
 from api_orchestrator.store import CaptureStore
 from api_orchestrator.streamer_client import StreamerClient
+from api_orchestrator.validation_run_store import ValidationRunStore
+from api_orchestrator.validation_supervisor import ValidationRunSupervisor
 
 logger = logging.getLogger("kairos")
 
@@ -198,8 +208,13 @@ def create_orchestrator_app(
     dora_runner = DoraRunnerClient(
         f"http://{settings.dora_runner_host}:{settings.dora_runner_port}", client
     )
+    validation_run_store = ValidationRunStore(layout.data_dir / "validation_runs.db")
     importer = ImporterClient(
         f"http://{settings.importer_host}:{settings.importer_port}", client
+    )
+    lerobot_exporter = LerobotExporterClient(
+        f"http://{settings.lerobot_exporter_host}:{settings.lerobot_exporter_port}",
+        client,
     )
     event_hub = EventHub(monitor)
     config_catalog = ConfigCatalog(
@@ -213,14 +228,11 @@ def create_orchestrator_app(
     )
 
     async def on_first_review(capture: Capture) -> None:
-        """The side effects §4.1 moved off the retired ``POST /episodes``.
+        """Best-effort auto-pull after the review is durable.
 
-        Both are best-effort *after* the review is durable: the review is saved
-        whether or not the batch counter can be bumped or the robot is
-        reachable, because losing a label is worse than losing a count.
+        The batch counter is part of the review CAS transaction; only this
+        external side effect remains outside it.
         """
-        if capture.batch_id:
-            capture_store.increment_episodes_recorded(capture.batch_id)
         config = getattr(app.state, "recording_config", None)
         if config is None or not config.transfer.auto_pull_on_save:
             return
@@ -300,6 +312,14 @@ def create_orchestrator_app(
         recorder=recorder,
         on_settle=record_service.settle_adopted,
     )
+    validation_supervisor = ValidationRunSupervisor(
+        validation_run_store,
+        capture_store,
+        dora_runner,
+        layout.data_dir,
+        instance_id=instance_id,
+        config_catalog=config_catalog,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -342,9 +362,36 @@ def create_orchestrator_app(
             await record_service.reconcile_on_startup()
         except Exception:  # noqa: BLE001 - never block startup on reconcile
             logger.exception("startup reconciliation failed")
+
+        # The bulk-run claim is durable and chunked, so resuming a very large
+        # interrupted membership operation must not hold API readiness hostage.
+        # Keep the task owned by this app and cancel/await it at shutdown.
+        async def resume_membership_bulk_runs() -> None:
+            try:
+                await asyncio.to_thread(
+                    dataset_service.resume_pending_membership_bulk_runs
+                )
+            except Exception:  # noqa: BLE001 - resume remains durable for next boot
+                logger.exception("membership bulk-run resume failed")
+
+        membership_resume_task = asyncio.create_task(resume_membership_bulk_runs())
+        # Reacquire leases from durable run intent before requests can delete a
+        # capture whose dora worker survived only the orchestrator restart.
+        await validation_supervisor.start()
         await reconciler.start()
         yield
+        # Cancelling an ``asyncio.to_thread`` awaiter does not stop its worker
+        # thread.  Ask every membership worker to leave between member writes,
+        # wait until each durable claim is back in ``pending``, and only then
+        # tear down the services those threads use.
+        dataset_service.request_stop()
+        await asyncio.to_thread(dataset_service.wait_idle)
+        membership_resume_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await membership_resume_task
         await reconciler.stop()
+        await validation_supervisor.stop()
+        validation_run_store.close()
         # Before the views drain: a finishing archive run schedules one last
         # views refresh, which must still find a refresher to schedule on.
         await dataset_archiver.drain()
@@ -370,16 +417,27 @@ def create_orchestrator_app(
     app.state.views_refresher = views_refresh
     app.state.store_health = health
     app.state.data_layout = layout
+    app.state.report_storage_service = ReportStorageService(layout, capture_store)
     app.state.instance_id = instance_id
     app.state.recorder_client = recorder
     app.state.monitor_client = monitor
     app.state.streamer_client = streamer
     app.state.dora_runner_client = dora_runner
+    app.state.validation_run_store = validation_run_store
+    app.state.validation_supervisor = validation_supervisor
     app.state.importer_client = importer
+    app.state.lerobot_exporter_client = lerobot_exporter
+    # In-flight LeRobot exports (§6.2). Progress only — the durable outcome is
+    # the dataset_exported ledger line plus the output tree itself, so this is
+    # safe to lose on restart (the status endpoint then reports failed).
+    app.state.export_registry = exports_router.ExportRegistry()
     # In-flight bag imports. Progress only — the capture row and the bytes on
     # disk are the durable outcome, and both appear only once an import has
     # finalised, so this is safe to lose on restart.
     app.state.import_registry = bag_import.ImportRegistry()
+    # In-flight per-capture archives (S2-1: 202 + poll). Progress only, same
+    # rationale as the import registry: the ledger and the bytes are durable.
+    app.state.capture_archive_runs = CaptureArchiveRuns()
     # Per app, not per module. Two apps built in one process (every test that
     # constructs a second one) would otherwise share both: one app's imports
     # would hold the other's copy slots, and an asyncio.Semaphore binds to the
@@ -396,10 +454,15 @@ def create_orchestrator_app(
     app.state.recording_config = recording_config
     app.state.recording_config_path = resolve_config_path(settings.recording_config)
     app.state.stream_config = stream_config
+    # Where PUT /api/v1/config/stream writes. Set even when the file is absent
+    # (stream_config None) so a first save CREATES it; a config select re-points
+    # it (or sets it None for a robot without a stream aspect).
+    app.state.stream_config_path = resolve_config_path(settings.stream_config)
 
     app.include_router(config_router.router)
     app.include_router(record_router.router)
     app.include_router(captures_router.router)
+    app.include_router(captures_router.selection_router)
     app.include_router(batches_router.router)
     app.include_router(topics_router.router)
     app.include_router(system_router.router)
@@ -409,11 +472,14 @@ def create_orchestrator_app(
     app.include_router(jobs_router.router)
     app.include_router(validation_router.router)
     app.include_router(validation_router.presets_router)
+    app.include_router(validation_runs_router.router)
     app.include_router(files_router.router)
     app.include_router(datasets_router.router)
+    app.include_router(exports_router.router)
     app.include_router(store_router.router)
     app.include_router(store_router.views_router)
     app.include_router(retention_router.router)
+    app.include_router(report_storage_router.router)
     app.include_router(transfer_router.router)
     app.include_router(imports_router.router)
 

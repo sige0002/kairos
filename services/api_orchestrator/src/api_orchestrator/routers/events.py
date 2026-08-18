@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Aggregated SSE endpoint (``GET /api/v1/events``).
 
 Streams the multiplexed event feed from the :class:`~api_orchestrator.events.

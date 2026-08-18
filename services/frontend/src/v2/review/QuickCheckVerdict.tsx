@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Quick-check verdict for the Review detail: the "why is this needs_review"
 // answer surfaced inline, so nobody has to open the JSON sidecar to learn it
 // (persona OP2's friction). Renders NOTHING when the run has no quick_check
@@ -24,9 +26,9 @@ export function QuickCheckVerdict({ quickCheck }: { quickCheck?: QuickCheck | nu
       className="flex flex-col gap-1.5 rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-2.5"
     >
       <div className="flex items-center gap-2">
-        <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+        <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Quick check
-        </span>
+        </h3>
         {quality && (
           <Badge tone={quality === 'good' ? 'green' : 'amber'} dot>
             {quality === 'good' ? 'GOOD' : 'NEEDS REVIEW'}

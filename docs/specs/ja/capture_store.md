@@ -44,6 +44,8 @@
 ├── .trash/<capture_id>/               # 削除の中間状態（§7）。objects/ と同一 FS 必須
 ├── views/                             # 生成 symlink 木（§6）。全消し再生成可
 ├── report/<pipeline>/<capture_id>/    # dora_runner 成果物
+├── exports/<name>/                    # LeRobot export の成果物（§6.2）。派生物・再生成可
+│   └── (exports/.staging/<export_id>/ # 変換入力の symlink staging。ジョブ終了で消える)
 ├── catalog/                           # validation_templates / plan_catalog の sidecar 二重化
 ├── lifecycle.jsonl                    # §5
 ├── instance.json                      # §1
@@ -53,7 +55,7 @@
 ```
 
 - **パスに意味を持たせない。** capture のディレクトリ名は `capture_id` だけで、operator・task・番号は入らない。ラベルを直すたびにファイルを動かす必要がなくなり、「移動の途中で電源が落ちた」という状態が構造的に消える。
-- **予約名**（`data_dir` 直下）: `objects` / `views` / `.trash` / `.incoming` / `report` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db`。これらと衝突する名前は **dataset 作成時**（`POST /api/v1/datasets` の `name` / `operator` / `task`）に `400 reserved_name` で拒否する — その 3 つは `views/` のパス構成要素になるので、衝突するとストア自身のレイアウトを踏む。録画時の operator / task はパスにならないため、この検査の対象ではない。
+- **予約名**（`data_dir` 直下）: `objects` / `views` / `.trash` / `.incoming` / `report` / `exports` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db`。これらと衝突する名前は **dataset 作成時**（`POST /api/v1/datasets` の `name` / `operator` / `task`）に `400 reserved_name` で拒否する — その 3 つは `views/` のパス構成要素になるので、衝突するとストア自身のレイアウトを踏む。録画時の operator / task はパスにならないため、この検査の対象ではない。
 - **廃止**: 旧 `recorded/`、`<operator>/<task>/<NNN>` の 3 階層データセット木、`data/index.jsonl`。
 - **不変条件**: 完全でない capture ディレクトリが `objects/` 直下に現れるのは「**recorder が現在書いている live capture**」だけ。import・転送は必ず `.incoming/<capture_id>` に完成させてから `os.replace` で `objects/` へ入れる。したがって `objects/` に見えている（かつ live でない）ディレクトリは、常に完全なコピーである。
 - **起動時検査**: `objects/` と `.trash/` と `.incoming/` の `st_dev` 一致を検証する。不一致（`os.rename` が `EXDEV` になる構成）なら**削除・archive は要求ごとに `503 delete_unavailable` を返す**。ルート自体は登録されたまま残り、消えるのではなく**理由を述べて断る** — その理由は `GET /api/v1/store/health` の `delete_unavailable_reason` にも出るので、operator は「ボタンが無い」ではなく「なぜ使えないか」を読める。copy + delete への暗黙のフォールバックは禁止 — 「アトミックな移動」を約束しておいて実際には途中まで消える、という挙動を作らないため。
@@ -70,6 +72,11 @@ recorder が書く**監査記録**。v1 の `manifest.json` + `session.json` を
   "capture_id": "…", "source_instance_id": "…", "run_id": "run_…",
   "state": "recording|stopping|completed|interrupted|failed",
   "operator": …, "task": …, "robot": …,
+  "collection_context": {
+    "batch_id": null, "batch_seq": null,
+    "project": null, "task": null, "condition": null,
+    "robot": null, "operator": null
+  },
   "started_at": "<ISO8601>", "ended_at": "<ISO8601>|null",
   "topics": [ { "name": …, "type": …, "qos": … } … ],
   "message_count": N|null, "bytes": N|null,
@@ -77,10 +84,12 @@ recorder が書く**監査記録**。v1 の `manifest.json` + `session.json` を
   "integrity": "ok|dropped|failed|unknown", "error": str|null,
   "digest_state": "pending|complete",
   "files": null | [ { "path": …, "size": …, "sha256": … } … ],
-  "manifest_digest": null | "sha256:…"
+  "manifest_digest": null | "sha256:…",
+  "digest_sealed_by": null | "<instance_id>"   // 封印した instance（§10。旧 manifest は null）
 }
 ```
 
+- `collection_context` は**実際の Start 時点**の Batch と provenance labels のスナップショットである。7 フィールドは全て nullable、未知フィールドも同じオブジェクト内で保持して書き戻す。recording / stopping / failed-start / crash recovery の manifest はこの値を変更しない。top-level の `robot` / `operator` / `task` は既存互換の recorder metadata として引き続き保持する。
 - 契約に無いフィールドは `extra` として保持し、書き戻し時に再出力する（新しい recorder が足したフィールドを、古い digest ジョブが黙って落とさない）。
 - 読み取りの結果は **`ok` / `missing` / `corrupt` の 3 値**で返す。0 バイト・パース不能な manifest を「存在しない」と読むことは禁止（→ §8 rebuild 規則 4）。
 
@@ -107,6 +116,8 @@ root 所有のファイルでも tmp + replace なら uid 1000 から更新で�
 bag が 1 バイトも生まれなかった start は、ディレクトリではなく**兄弟ファイル**を残す（「`objects/` 直下のディレクトリ＝バイトが書かれた」という不変条件を守るため）。§3.1 のヘルパで書き、**書き込み失敗を握り潰さない** — error ログに加えて、start のエラーレスポンス（`507`）に失敗内容を含める（`failed_start_record_error`）。
 
 rebuild はこのファイルも読み、`state='failed'` の行を作る。削除系・reaper は capture の兄弟ファイル（`.failed.json` / `.qos.yaml`）も対象にする。
+
+**例外: 失敗した `prepare`（pre-arm probe）は filed されない**（2026-08-11, sweep S2-7）。prepare はコンソールが 30 秒ごとに繰り返す背景の keep-alive であり、operator の記録操作ではない。恒久的な arm 阻害（topic 不一致・disk full）があると、旧仕様では **30 秒に 1 つ** `.failed.json`＋failed 行が積み上がり、画面には何も出なかった。今は recorder が prepare 失敗にサイドカーを書かず（一時ファイルは掃除）、orchestrator も行を作らず、失敗はエラー応答としてコンソールへ返る — Collect が「pre-arm failing」を表示し、リトライは指数バックオフする。operator の `start` の失敗は従来どおり必ず filed される。
 
 > **実装上の注意（E2E §13-4 が発見）**: 失敗 start のサイドカーは、型の discovery が終わる前の topics を記録するため `type` が明示的な `null` になりうる。rebuild はそれを忠実に行にするので、`null` を受け付けない API モデルがあると **`GET /api/v1/captures` 全体が恒久的に `500`** になる（行が DB に残るため再起動でも直らない）。`null` は「未 discovery」＝空文字列に正規化する。
 
@@ -135,7 +146,8 @@ rebuild はこのファイルも読み、`state='failed'` の行を作る。削�
 - 「DB をロールバックする」とは言わない（sqlite3 + ファイルの組では約束できない）。約束するのは「**ディスクと DB は、どちらが先に進んでいても、同じ 1 つの判断に収束する**」こと。
 - グローバルなロックはこの用途に使わない（fsync をまたいで全リクエストを直列化してしまうため）。
 - **システム由来の書き換え**（quick_check 確定後の quality 再導出）も同じ経路を通り `revision` を進める（`quality_source=quick_check`）。その結果クライアントが `409` を受けるのは**正しい挙動**。
-- 旧 `POST /episodes` が持っていた副作用（`batches.episodes_recorded` の単調加算・auto-pull の起動）は、「**その capture への初回 review 保存**」へ移設した。
+- `collection_context.batch_id` が非 null の capture と Batch の関連付けは Start 時に確定する。Review は既存の同一 `batch_id` を維持して terminal 後にも保存できるが、別 Batch への変更・clear は拒否する。Start 時に `batch_id=null` だった capture だけは、初回 Review 保存時に snapshot の `robot` / `operator` / `project` / `task` / `condition` が完全一致する active Batch へ関連付けられる。そこで関連付けた後は同じ不変条件に入る。
+- `batches.episodes_recorded` の単調加算と auto-pull の起動は、その capture への**初回 review 保存**で起きる。review sidecar の CAS とこの初回カウンタ更新は同じ SQLite transaction で確定する。
 
 ### 4.2 `quick_check.json`（停止時 verdict のサイドカー）
 
@@ -196,13 +208,14 @@ review が書ける列は **measurement と label の区別**で決まる。
 | kind | payload |
 |---|---|
 | `capture_discarded` / `capture_deleted` | 墓標。理由等 |
-| `capture_archived` | `destination` / `run_id` / `operator` / `task` / `bytes` / `message_count` / `files: [{path,size,sha256}]`。dataset archive の member として書かれた場合は `dataset_id` / `membership_id` / `display_index` も（§6.1） |
+| `capture_archived` | `destination` / `run_id` / `operator` / `task` / `bytes` / `message_count` / `files: [{path,size,sha256}]` / `collection_context`（未知フィールドを含む）。source manifest が消えた後も収録来歴を ledger-only rebuild で復元する。dataset archive の member として書かれた場合は `dataset_id` / `membership_id` / `display_index` も（§6.1） |
 | `dataset_created` | `dataset_id` / `name` / `operator` / `task` |
 | `dataset_updated` | `dataset_id` / `name` / `operator` / `task`。**差分ではなく変更後の完全なラベル集合**（replay が直前のリネーム履歴を再構成せずに適用できるように） |
 | `dataset_member_added` | `dataset_id` / `membership_id` / `capture_id` / `display_index` / `operator` / `task` / `dataset_name` |
 | `dataset_member_removed` | `dataset_id` / `membership_id` |
 | `dataset_deleted` | `dataset_id` |
 | `dataset_archive_started` | `dataset_id` / `destination` / `dataset_name` / `mode?`（`copy`\|`move`、欠落 = `move`） / `operator?` / `task?` / `members: [{membership_id, capture_id, display_index}]` / `reason?`。**凍結された member 集合そのもの**（§6.1） |
+| `dataset_archive_canceled` | `dataset_id` / `destination` / `started_event_id` / `reason?`。完了 member 0 件の halted attempt を明示的に放棄した記録（§6.1） |
 | `dataset_archived` | `dataset_id` / `destination` / `dataset_name` / `mode?` / `member_total` / `bytes_total` / `manifest_sha256?`。run の封印（§6.1） |
 | `batch_created` | `batch_id` / `batch_seq` / `project` / `task` / `target_episodes` / `created_at` / `robot?` / `condition?` / `operator?`。**`status` は載せない** — 作成時点は常に `active` なので情報が無く、replay がそれを信じると終了済みバッチを「開いたまま」に復元してしまう（→ `batch_ended`） |
 | `batch_updated` | `batch_id` / `project` / `task` / `condition` / `target_episodes`。`dataset_updated` と同じく**差分ではなく変更後の完全な集合** |
@@ -210,7 +223,7 @@ review が書ける列は **measurement と label の区別**で決まる。
 
 - `capture_id` はイベントの **envelope** で運ぶ。`event_id` / `at` / `source_instance_id` も envelope 側が所有し、payload からは設定できない（呼び出し側が冪等キーや時刻を偽造できないようにするため）。
 - append は flush → fsync → 親 dir fsync。**全 kind で fatal** — 書けなければその操作を中止する。
-- `capture_archived` を**墓標に含めない**のが要点。バイトは operator が選んだ場所へ移っただけで capture は実在するので、「存在しなかったこと」に正規化してはならない。`dataset_archive_started` / `dataset_archived` も同様に墓標ではない。
+- `capture_archived` を**墓標に含めない**のが要点。バイトは operator が選んだ場所へ移っただけで capture は実在するので、「存在しなかったこと」に正規化してはならない。`dataset_archive_started` / `dataset_archive_canceled` / `dataset_archived` も同様に墓標ではない。
 - **録画系イベントの kind は追加しない**（安全原則 5 の不変条件。録画 start/stop が ledger の書き込み可能性に依存してはならない）。
 - **ENOSPC 対策**: 起動時に `.ledger-slack`（1MB）を確保する。append が `ENOSPC` になったとき、discard / delete の経路は slack を解放して append を再試行する（ディスクが埋まった状態から抜け出す唯一の経路が、ディスクを要求するせいで塞がる、を防ぐ）。
 - Review 編集は ledger に書かない（`record.json` が正）。
@@ -233,25 +246,59 @@ review が書ける列は **measurement と label の区別**で決まる。
   - **`KAIROS_ARCHIVE_ROOTS` の許可リストと、重なりの検査は別の問い**であり、前者を通ったことは後者の証拠にならない。許可リストは「どこへ書いてよいか」を言い、重なり検査は「その 2 つが同じバイトであってはならない」を言う。
   - 検査の対象は **解決後の書き込み先（target = `<destination>/<capture_id>`）** であって、許可ルートそのものではない。したがって **`data_dir` を含むルートを許可すること自体は禁止されない** — 実際 `KAIROS_ARCHIVE_ROOTS=/data` は operator がやりそうな設定で、許可リストだけなら `objects/<id>` を data_dir 配下へ archive することを通してしまい、その後の source 削除が**検証済みのコピーを原本もろとも消して**「成功しました、何も残っていません」になる。それを止めるのがこの独立した検査。
   - `realpath` で両側を解決し（symlink で重なりを偽装できない）、**包含は両方向**を見る（書き込み先が data_dir の中にある場合と、data_dir が書き込み先の中にある場合は、同じ災厄の裏表）。
+- **task.json の投影（行き先のみ）**: 検証済みコピーの完了後、capture に実効 task ラベル（§4.3 の override 適用後。row のキャッシュではなく**サイドカーから読む** — record.json の override、無ければ manifest。サイドカーが読めないときだけ row にフォールバック）があれば、行き先ディレクトリに rosbag2lerobot 互換の `task.json`（`{"task": "<label>"}`）を生成する。archive された木を LeRobot 変換器が kairos 抜きで直接読めるようにするため。適用は capture 単位 archive と dataset archive の member（move / copy とも）の全経路。ラベルが無い capture（import 等）はファイル自体を作らない。**源が自前の `task.json` を持っている場合（import された bag・再 import された archive）はそれをそのまま保持し、投影しない** — 源のファイルは subtasks 等の他に存在しない情報を運び得るし、kairos のラベルは `capture_archived` の `task` フィールドに残る。生成は**行き先だけ** — ライブの `objects/` には決して書かない（§4.3 のラベル編集で腐る写しになるため）。エントリ（`{path, size, sha256}`）は copy 結果に合流するので、`capture_archived` の `files`・dataset manifest の member `files` が生成ファイルもコピー済みバイトと同様に監査する。**行き先の task.json は「その member をコピーした時点」のラベルのスナップショット**であり、以後のラベル編集には追随しない — halt/resume を挟んだ dataset archive では、run 1 と run 2 の member が異なる時点の写しを運び得る（封印はそれを遡って揃えない）。
 
 ### 6.1 dataset の archive（確定と書き出し・終端遷移）
 
 dataset の終端。capture archive の語彙（copy → verify → remove）を dataset に持ち上げたもので、**v1 の「export = store 内の move」の復活ではない**: 出て行ったものはこの store から消え、**どこへ行ったかの記録が残ること**が目的そのもの。
 
-- **状態機械**: `datasets.status` は `active → archiving → archived` を一方向に歩く。`active → archiving` は DB の CAS（`UPDATE … WHERE status='active'`）で直列化し、二重開始を構造的に排除する。`archived` は終端。
+- **状態機械**: 通常は `datasets.status` が `active → archiving → archived` を一方向に歩く。`active → archiving` は DB の CAS（`UPDATE … WHERE status='active'`）で直列化し、二重開始を構造的に排除する。唯一の逆辺は、完了 member が 0 件の halted attempt を ledger に明記して放棄する `archiving → active`（下記 cancel）。`archived` は終端。
 - **2 つの mode**（`archive_mode` として行と ledger の両方に凍結される。resume で変更不可 — 409 `archive_mode_mismatch`）:
   - **`move`（既定）**: 検証済みの member から順に**源を削除**する。ディスクが空く。member は専有必須（他の active dataset と共有していれば 409）。
   - **`copy`**: 同じフォルダ・同じ manifest・同じ封印を作るが、**capture の行にもバイトにも一切触れない**。共有 member でも合法 — 合成で作った集合の標準の書き出し方。member ごとの `capture_archived` イベントは**書かない**（何も起きていない capture に「出て行った」と記録するのは嘘になる）— 完了 member の耐久記録は destination の manifest 自身で、resume はそれを読んで再開する。`delete_unavailable` の環境でも実行可能。
 - **copy で封印された dataset（archived × copy）の membership は、capture のローカルバイトへの主張ではない**: per-capture の delete / archive を**ブロックせず**、新しい dataset への追加も妨げない。これが無いと「copy 封印された dataset にしか属さない capture が、凍結された member 集合のせいで永久に消せない」罠になる。move の場合は従来どおり（§7 の guard は active な dataset と、bytes を主張する非 active = move 系のみを数える）。
-- **開始（`POST /api/v1/datasets/{id}/archive` → 202）**: 行き先は capture archive と同じ `KAIROS_ARCHIVE_ROOTS` 許可リスト＋重なり検査（§6 の 2 つの独立した問い。検査対象は解決後の dataset_dir）。**フォルダ名は operator のもの**: `path`（root 配下の相対パス。最終要素が dataset のフォルダ）を UI が views 形状 `<operator>/<task>/<name>` で先埋めし、自由に書き換えられる。省略時はサーバが同じ既定を sanitize して合成。エスケープ（`..` 等）は文字検査ではなく最終ディレクトリの realpath 再検証（許可リスト包含）で閉じ、**既存エクスポートとの衝突は `409 destination_not_empty` または `409 destination_claimed`**（この 2 つが重複チェックの実体）。後者は行き先を既に別の dataset が保持している場合で、空だが専有済みの窓 — 走者がまだ何も書いていない開始直後や、operator が中断した run の残骸を消した後 — を閉じる。member 0 件・共有 member（他 dataset にも属す capture、409 で全件列挙）・busy な member（各自の理由付きで全件列挙）・非空の行き先は開始前に拒否する。CAS 成功 → `dataset_archive_started` を append（**凍結された member 集合を運ぶ**。失敗したら CAS を戻す — バイトが動く前だけに許される唯一の rollback）。
+- **開始（`POST /api/v1/datasets/{id}/archive` → 202）**: 行き先は capture archive と同じ `KAIROS_ARCHIVE_ROOTS` 許可リスト＋重なり検査（§6 の 2 つの独立した問い。検査対象は解決後の dataset_dir）。**フォルダ名は operator のもの**: `path`（root 配下の相対パス。最終要素が dataset のフォルダ）を UI が views 形状 `<operator>/<task>/<name>` で先埋めし、自由に書き換えられる。省略時はサーバが同じ既定を sanitize して合成。エスケープ（`..` 等）は文字検査ではなく最終ディレクトリの realpath 再検証（許可リスト包含）で閉じ、**既存エクスポートとの衝突は `409 destination_not_empty` または `409 destination_claimed`**（この 2 つが重複チェックの実体）。後者は行き先を既に別の dataset が保持している場合で、空だが専有済みの窓 — 走者がまだ何も書いていない開始直後や、operator が中断した run の残骸を消した後 — を閉じる。member 0 件・共有 member（他 dataset にも属す capture、409 で全件列挙）・busy な member（各自の理由付きで全件列挙）・非空の行き先は開始前に拒否する。さらに選択 root 自身で probe file を作成・fsync・削除し、未 mount / 非 directory / 書き込み不可なら `503 archive_destination_unavailable` を返す。これらはすべて CAS より前なので、誤設定は dataset を凍結しない。CAS 成功 → `dataset_archive_started` を append（**凍結された member 集合を運ぶ**。失敗したら CAS を戻す — バイトが動く前だけに許される唯一の rollback）。
 - **run（orchestrator 内の in-process ランナー。dora_runner ではない — ファイルを動かす仕事はそこに無い）**: member を `display_index` 順に、per-capture archive と同一の §9-1 順序（copy → sha256 verify → `capture_archived`（dataset 注釈付き）→ 行更新 → trash 経由の source 削除・replica を同一クリティカルセクションで `trashed` へ）で搬出する。書き込み先は `<dataset_dir>/<NNN>/`。
 - **member guard の唯一の緩和**: §7 の「dataset member は archive 拒否」は、**当該 run 自身の dataset の membership に限って**免除される（他の dataset の membership は引き続き拒否）。HTTP 経路の per-capture archive の挙動は不変。
 - **`dataset_manifest.json`**: 最初の書き込みから dataset_dir に置き、member 完了ごとに atomic に書き直す — 途中で死んだフォルダが「dataset X の書き出し途中、001–002 は封印済み」と**自己申告する**ため。全 member 完了で `status: complete` に確定し、その bytes の sha256 を `dataset_archived`（封印イベント）が記録する。依存は manifest → ledger の一方向で、封印後に manifest を書き換えれば ledger 単独で検出できる。
 - **halt と resume**: 進めない member（lease 出現・append 失敗・行き先に未記録のバイト etc.）で run は**その場で止まり、`archiving` のまま**理由を報告する。何も rollback しない。再 POST（destination 省略、指定するなら記録と一致必須 — 違えば 409）が**耐久状態だけから**冪等に再開する: 行が言う完了 member はスキップ、ledger だけが言う member は行更新以降のみ、未記録の debris は**原本が健在なときに限り**作り直し、原本まで消えていれば人間を呼ぶ（唯一触ってはならない状態）。**起動時の自動 resume はしない** — operator が選んだ外部ストレージへの書き込みを再起動の副作用で続けない。UI は `archiving`＋`running: false` を Resume として提示する。
+- **halted attempt の cancel（`POST …/archive/cancel`）**: 走行中の stop や rollback ではない。`archiving`＋`running: false`、封印無し、DB / ledger / manifest の完了 member が 0 件、行き先が不存在または pending-only manifest だけ、とサーバが確認できる場合に限る。`dataset_archive_canceled` を先に append（`started_event_id` で対象 attempt を結ぶ）してから行を `active` に戻し、destination / mode / started_at の claim を解放する。destination の file は削除しない。1 件でも完了している、ledger / manifest を読めない、未知の file がある場合は `409 archive_cancel_unsafe` とし Resume だけを許す。append 後の DB reset が失敗して行が一時的に `archiving` のままでも、ledger の cancel が正本なので runner / Resume は同じ attempt を拒否する（API は `503 archive_cancel_catalog_pending`。再起動時の rebuild で `active` へ収束）。
 - **凍結**: `status != 'active'` の dataset は member の増減・削除を全て 409 で拒否する（resume は started イベントの凍結集合を再生するので、途中の増減は静かな乖離になる）。**archived の行は消させない** — 行は ledger の移行ログの照会キャッシュであり、「この dataset はどこへ行ったか」への答えそのもの（capture の墓標と同じ「行は消さない」原則）。逆向きの guard: archive 済み capture（bytes が無い）と、非 active な dataset の member（bytes が出て行く途中）は、新たな dataset に追加できない。
 - **views/**: `list_view_entries` が `status='active'` に限定する。archive 開始で dataset は views/ から**宣言として**消える — regenerate の「原本が無いから skip」経路に落とさない。
-- **rebuild**: `dataset_archive_started` は dataset 行と member 行を単独で再建し（truncated ledger 対策の自己完結 payload）、封印が無ければ **`archiving` のまま復元**する — resume 可能性は DB 全損を生き延びる。member の capture 行は既存の `capture_archived` 再構築がそのまま引き受ける。
-- **進捗**: 揮発（`GET /api/v1/datasets/{id}/archive`）。member 単位の完了数は行から導出し、コピー中のバイト数・halt 理由はプロセスメモリ — 再起動で正直にリセットされる。jobs テーブルには置かない（揮発・非 rebuild 契約）。
+- **rebuild**: `dataset_archive_started` は dataset 行と member 行を単独で再建し（truncated ledger 対策の自己完結 payload）、封印も cancel も無ければ **`archiving` のまま復元**する — resume 可能性は DB 全損を生き延びる。後続の `dataset_archive_canceled` は同じ行を `active` に戻して claim を消す。member の capture 行は既存の `capture_archived` 再構築がそのまま引き受ける。
+- **進捗**: 揮発（`GET /api/v1/datasets/{id}/archive`）。member 単位の完了数は行から導出し、コピー中のバイト数・halt 理由はプロセスメモリ — 再起動で正直にリセットされる。`cancelable` / `cancel_blocker` は耐久状態と行き先から毎回再判定する。started / canceled / sealed / capture_archived は poll ごとに 1 回だけ lifecycle ledger を読み、その snapshot からまとめて導出する。jobs テーブルには置かない（揮発・非 rebuild 契約）。
+
+### 6.2 dataset の LeRobot export（派生物の生成・非終端）
+
+dataset を学習用形式（LeRobot v3）へ変換して `exports/<name>/` に書き出す。archive と違い
+**非終端** — dataset の状態は変わらず、何度でも実行できる。実行主体は常駐の `lerobot_exporter`
+コンテナ（opt-in overlay。同梱の rosbag2lerobot を変換ごとに subprocess 起動）。
+
+- **入力のスナップショット**: orchestrator が `POST /api/v1/datasets/{id}/export` の時点で member を
+  capture リストへ解決し（`display_index` 順・ローカルバイト不在と review_status=excluded は落とす）、
+  各 capture の実効 task ラベルを **§4.3 の解決規則（record.json override → manifest → row
+  フォールバック）で capture mutex 下**に読んで固める。views/ の生木は使わない。
+- **lease**: 全対象 capture に共有 lease `export:<export_id>` を張る（queued の間も保持・
+  観測ごとに延長・終端で解放）。freeze はしない — スナップショット + lease が同じ保証を与える。
+- **staging**: `exports/.staging/<export_id>/<NNN>/` に実ディレクトリを作り、MCAP と
+  `metadata.yaml` だけを**ファイル単位 symlink**で張る。task ラベルがある episode には
+  `task.json` を書く（源 bag が自前の `task.json` を持つ場合はそれを優先し注入しない — §6 の
+  投影衝突ルールと同じ向き）。`objects/` へは一切書かない。staging はジョブ終了で削除。
+- **保存先と命名**: root は `exports/` 固定。名前は `<operator>_<profile名>_<メモ>`
+  （operator 混在は固定語 `mixed`。省略できるのは末尾のメモだけ。views と同じ sanitize）。
+  衝突は 409 `destination_not_empty`。パスの記録は data-root 相対で統一し、絶対パスを焼かない。
+  ホスト上の置き場所は `.env` の `EXPORTS_DIR`（既定 `<data_dir>/exports`）がマウントで決める。
+- **並行**: 受付は FIFO キューで無制限、実行スロットは既定 1（`KAIROS_LEROBOT_MAX_CONCURRENCY`）。
+  同一 dataset の多重投入だけ 409 `export_in_progress`。録画との同時実行は許可
+  （コンテナ `cpus:` 上限 + recorder のドロップ検出がガードレール）。
+- **記録**: 成功の終端を orchestrator が初めて観測したとき ledger に `dataset_exported` を
+  append（export_id・出力相対パス・profile + config sha256・capture スナップショット・件数）。
+  行は作らない（成果物は派生物で、正本は出力木自身の `meta/conversion_log.json`）。
+  `dataset_exported` は墓標ではない。
+- **削除**: `exports/<name>/` は派生物なので通常の削除でよく、trash 経路を通らない。
+  再生成は同じ dataset + 同じ profile で再実行するだけ。
+- **進捗**: 揮発。exporter が変換の heartbeat（`meta/progress.json`）を読んで
+  `queued/running/complete/failed/canceled` + episode 単位/episode 内の進捗 + stall を返す。
 
 ## 7. 削除の統一（trash 経由・墓標）
 
@@ -280,7 +327,30 @@ discard（未送信の破棄）と delete の共通経路。
 
 ### 7.1 capture lease
 
-`captures` に `lease_owner` / `lease_expires_at` を持つ。digest ジョブ・dora_runner ジョブは `objects/<id>` に触れる前に lease を取得する。discard / delete は live lease 中 `409`。
+**lease は共有（shared reader lease、rev.2.15）。** 1 つの capture を**複数の保持者が同時に持てる**。
+`capture_leases(capture_id, owner, expires_at, acquired_at)`（PK は `(capture_id, owner)`、
+`(capture_id, expires_at)` に index）に 1 保持者 = 1 行で持つ。digest ジョブ・dora_runner ジョブは
+`objects/<id>` に触れる前に保持を取得する。**discard / delete は live な保持者が 1 人でも居れば `409 capture_busy`。**
+
+- **なぜ共有にしたか**: 単一所有者の lease は「誰かが触っている」という記録と「ジョブ同士の排他」を
+  兼ねていたが、後者は目的ではなく、**同一 capture のカメラ N 本を並列にエンコードできない**という
+  実害だけを生んでいた（N は実運用で 2〜5）。よって排他をやめ、記録だけを残した。
+- **守る不変条件は不変**で、保持者ごとに再現される — 失効した保持は保持ではない（読み取りは常に now と
+  比較する）／保持者はそれぞれ独立に失効する／**最後の 1 人が居なくなった時点で capture は削除可能に
+  なる**。あらゆる失敗が「また削除できる」方向へ収束する性質は保たれている。
+- **取得は排他しない**（常に成功する）。したがって**ジョブ投入時の「他が保持しているか」の事前判定は
+  撤去した** — それこそが並列化を阻んでいた門であるため。
+- **GC タスクは持たない。** 失効行は次に同じ capture を取得したときに日和見的に削除する。失効した保持は
+  読み取り時点で既に保持ではないので、掃除は衛生であって正しさではない — だからこそ「死ぬかもしれない
+  常駐タスク」ではなく、どうせ起きる書き込みに相乗りさせられる。
+- **`409` の details は保持者の全リスト**: `{ capture_id, holders: [{owner, expires_at}, …],
+  lease_owner, lease_expires_at }`。`holders` は expires_at 昇順。`lease_owner` /
+  `lease_expires_at` は**最後に失効する保持者**を指すスカラ要約（＝「いつ再試行できるか」の答え）で、
+  単一所有者時代の形しか知らないクライアントのために維持する。
+- **`captures` の `lease_owner` / `lease_expires_at` 列は撤去した。** API 応答の同名フィールドは
+  view `captures_with_lease` が上記スカラ要約として供給する。lease は **volatile で rebuild 対象外**
+  （§8）— lease は「今走っているプロセス」の記述であり、rebuild が走るのはそんなプロセスが居ないとき
+  なので、復元すれば解放する者の居ない保持で capture を永久にロックすることになる。
 
 - lease を失った / state が terminal でなくなったジョブは**中断し何も書かない**。
 - **digest ジョブ**は lease を実行の全区間について取り、最終 manifest 書き込みの**直前に `captures.state` と lease 保持の両方を読み直す**。どちらかが崩れていれば（`delete_pending|discarded|deleted` になった、あるいは lease を失った）**そこで中止する — 更新はしない**。窓を閉じているのは DB のロックではなく **lease そのもの**で、最後の再読は「lease を失ったジョブは黙って諦め何も書かない」という §7.1 の要件を、書き込み可能な最後の瞬間に確認しているだけ。
@@ -288,7 +358,17 @@ discard（未送信の破棄）と delete の共通経路。
 - dora_runner のジョブは **lease 非認知のまま**でよい（書き込み先が `report/` のみで、`objects/` への書き込み禁止は構造的に守られる）。lease の管理は orchestrator 側が代行する: 投入時に取得、**status / result のポーリング観測時に非 terminal なら更新（renew-on-poll）**、terminal を観測したら owner スコープで解放。
   - **取得は job の作成より後になる**（順序は強制されている）。lease の owner 文字列は `job:<job_id>` で、`job_id` を発行するのは dora_runner だから、作成しないと owner が決まらない — その id こそが `409` で operator に見せる名前であり、解放時に照合する鍵でもある。したがって作成 → 取得の順を崩せない。**取得に失敗したら、たった今作った job を打ち消す**（補償的な cancel）。作成の前にも安価な事前チェックを 1 回入れて、この補償経路に入る頻度を下げている（権威ある判定はあくまで後段の取得）。
 - **TTL が保証しないもの（正直に述べる）**: renew-on-poll は「**誰かが観測している間は生きる**」という保証であって、**キュー待ちは保証しない**。dora_runner は並行度を絞るので、投入されたジョブは他のジョブの後ろで待つことがあり、その間に誰もポーリングしなければ lease は失効し delete が勝つ。そのジョブは後で `.trash` へ移ったディレクトリに対して**きれいに失敗する** — 遅い正常終了であって破損ではない。orchestrator が見ていないジョブのために更新ループを回すよりも、この失敗を受け入れる。
-- 失効した lease は lease ではない（`acquire_lease` は現在時刻と比較する）ので、プロセスが死んだジョブが capture を永久にロックすることはない。**あらゆる失敗が「また削除できる」方向へ収束する**のが、この設計が寄りかかっている性質。
+- 失効した lease は lease ではない（読み取りは現在時刻と比較する）ので、プロセスが死んだジョブが capture を永久にロックすることはない。**あらゆる失敗が「また削除できる」方向へ収束する**のが、この設計が寄りかかっている性質。
+- **既知の follow-up（rev.2.15）**: dataset archive の「live lease があれば halt」は今回変更していない。
+  保持者が増えれば halt する機会も増えるので、archive 側を「保持者を待つ」か「保持者ごとに判断する」形へ
+  変えるかは別途裁定する。
+- **同一 pipeline の同時実行（rev.2.15 で裁定済み）**: 投入時の排他が無くなったので、同一 capture に
+  同一 pipeline のジョブを複数投入できる。裁定は**許容** — カメラ用途（video_check）は成果物名が
+  topic 由来なので元から衝突せず、固定名 `summary.json` を書く pipeline も**全成果物書き込みを
+  atomic（tmp → rename）に統一した**ため、同時実行は**丸ごとの last-writer-wins** に正規化される。
+  これは逐次に 2 回走らせたときの「後勝ち」と意味的に同一で、破損（バイト混合・途中読み）は
+  起こらない。完全同一 (capture, pipeline, params) の重複投入を弾く dedup は必要になったときの
+  follow-up とする（UI は既に二重送信を抑止している）。
 
 ## 8. DB スキーマ v2 と再構築
 
@@ -344,7 +424,7 @@ recording ──▶ stopping ──▶ completed
 
 ### 8.2 rebuild（サイドカーからの全再構築）
 
-**入力**: `objects/*/object_manifest.json`、`objects/*.failed.json`、`record.json`、`quick_check.json`（§4.2）、`lifecycle.jsonl`。`jobs` は揮発として rebuild 対象外。`validation_templates` と `plan_catalog` は保存時に `catalog/*.json` へサイドカー二重化し、rebuild で復元する。dataset の archive 状態（§6.1: `archiving` / `archived`、destination 含む）は ledger の replay が復元する。
+**入力**: `objects/*/object_manifest.json`、`objects/*.failed.json`、`record.json`、`quick_check.json`（§4.2）、`lifecycle.jsonl`。`jobs` は揮発として rebuild 対象外。`validation_templates` と `plan_catalog` は保存時に `catalog/*.json` へサイドカー二重化し、rebuild で復元する。plan catalog sidecar は CAS `revision` と canonical project/task/condition IDs を含む。旧 name/string catalog は復元時に決定的 ID を与え、canonical sidecar として書き戻す。archive 済み capture の `collection_context` は `capture_archived` ledger payload から復元する。dataset の archive 状態（§6.1: `archiving` / `archived`、destination 含む）は ledger の replay が復元する。
 
 **起動時に rebuild する条件**: DB が無い / スキーマ版が違う / `KAIROS_REBUILD` による明示要求。毎回の起動で走るものではない。
 
@@ -355,14 +435,14 @@ recording ──▶ stopping ──▶ completed
 3. **墓標は ledger が manifest に優先**する。
 4. 0 バイト / パース不能な manifest は **CORRUPT として報告**する（「存在しない」扱いは禁止）。**この capture には `captures` 行を作らない** — その manifest だけが「この capture が何であるか」を言えたのだから、行を作れば捏造になる。代わりに (a) corrupt 一覧のエントリ（理由付き）と (b) `state=corrupt` の **replica 行**の 2 つを出す。行の集合そのものが「バイトはここにあるが、その説明が壊れている」と言えるようにするため。結果として `captures` と `replicas` を join すると corrupt な replica が相手なしで残る — **それがまさに修復すべき集合**なので、読み手はこの不一致を許容しなければならない。
 5. review 系は §4.1-4 の乖離規則（サイドカー優先・逆向きは警告）。
-6. **`batches` の行は ledger から rebuild される。** `batch_created` / `batch_updated` / `batch_ended`（§5）が正本で、`project` / `robot` / `condition` / `operator` / `target_episodes` / `batch_seq` / `status` はそこから戻る。replay は**冪等** — 値はすべてイベント側から読み、行から計算し直さないので、`KAIROS_REBUILD=1` を何度掛けても `batch_seq` は動かない。**このイベントより古い ledger には `batch_created` が 1 行も無い**ので、その設置では従来どおりバッチ行は戻らない（例外にも失敗にもせず、下の孤児報告に落ちる）。**これは欠落ではなく決定である**: メタデータは `kairos.db` にしか存在しなかったのだから、遡って埋める材料がどこにも無い。id だけ合っていて中身が空のバッチを作れば、operator には「正直に失われたバッチ」ではなく「存在するが空のバッチ」が見えることになり、修正の形をした新しい誤答になる。よって**このイベント以降に作られたバッチは残り、それ以前のバッチは残らない**。`captures` 側の `batch_id` / `index_in_batch` は従来どおり `record.json` から復元される。**`episodes_recorded` だけは event から戻せない**（review 保存という「出来事」の単調カウンタであり、ledger が記録するのは事実であって出来事の回数ではない）。よって replay は**そのバッチを名指ししている capture 行を数え直して**この値を入れ、行に `episodes_recorded_is_floor = 1` を立てる。これは**下限**である: review 済みで後に削除された capture は `record.json` ごと消えているので数えられない（tombstone 行は残るので数える）。0 を入れるのは下限ですらなく誤りだったので改めた — 表示用の `N / 30` は rebuild 後に減りうるが、減りうることが機械可読になっている。行の戻らないバッチを capture が指している場合は、その旨を rebuild 時に警告として報告する（store health の warnings に出る）。**id は再利用されない** — capture が名指ししている `batch_id` は取得済みとして扱う。
+6. **`batches` の行は ledger から rebuild される。** `batch_created` / `batch_updated` / `batch_ended`（§5）が正本で、`project` / `robot` / `condition` / `operator` / `target_episodes` / `batch_seq` / `status` はそこから戻る。replay は**冪等** — 値はすべてイベント側から読み、行から計算し直さないので、`KAIROS_REBUILD=1` を何度掛けても `batch_seq` は動かない。**このイベントより古い ledger には `batch_created` が 1 行も無い**ので、その設置では従来どおりバッチ行は戻らない（例外にも失敗にもせず、下の孤児報告に落ちる）。**これは欠落ではなく決定である**: メタデータは `kairos.db` にしか存在しなかったのだから、遡って埋める材料がどこにも無い。id だけ合っていて中身が空のバッチを作れば、operator には「正直に失われたバッチ」ではなく「存在するが空のバッチ」が見えることになり、修正の形をした新しい誤答になる。よって**このイベント以降に作られたバッチは残り、それ以前のバッチは残らない**。`captures` 側の `batch_id` は manifest の `collection_context.batch_id` が非 null ならそれを優先し、null なら `record.json` の値へ fallback する。`index_in_batch` は `record.json` から復元する。**`episodes_recorded` だけは event から戻せない**（review 保存という「出来事」の単調カウンタであり、ledger が記録するのは事実であって出来事の回数ではない）。replay は `review_revision > 0` の capture だけを batch ごとに数え直してこの値を入れ、行に `episodes_recorded_is_floor = 1` を立てる。これは**下限**である: review 済みで後に削除された capture は `record.json` ごと消えているので数えられない（tombstone 行は残るので数える）。0 を入れるのは下限ですらなく誤りだったので改めた — 表示用の `N / 30` は rebuild 後に減りうるが、減りうることが機械可読になっている。行の戻らないバッチを capture が指している場合は、その旨を rebuild 時に警告として報告する（store health の warnings に出る）。**id は再利用されない** — capture が名指ししている `batch_id` は取得済みとして扱う。
 
 ### 8.3 定期 reconciler
 
 rebuild とは別に、常時走る整合パス。次を拾う:
 
 - 有効な manifest を持つのに DB 行が無い `objects/<id>`（import のクラッシュ・rebuild とのレースの着地点）→ 行を採用。
-- `.incoming/<id>` に完成して残っているもの（rsync と rename の間で死んだ importer）→ `objects/` へ移して採用。
+- `.incoming/<id>` に完成して残っているもの（rsync と rename の間で死んだ importer）→ `objects/` へ移して採用。**「完成」の判定は terminal manifest だけでは足りない**（2026-08-11, sweep S1-5 — 従来の守りは「mcap がファイル名ソートで manifest より先に転送される」という偶然 1 枚だった）。採用前に 2 つの独立ゲートを通す: (a) **バイト完全性** — staging 内 `*.mcap` の合計サイズが manifest の `bytes`（recorder が finalise 時に実測した値）に達していること（`bytes` 未記載の manifest はスキップ）。(b) **静穏** — ディレクトリ内のどこにも直近 5 秒の書き込みが無いこと（orphan sweep と同じ全木 mtime 走査。rsync は完了時に mtime を転送元の値へ戻すので、完了済みは即座に通る）。どちらかに落ちたら**次の tick に回すだけ**で、何も破壊しない。この静穏ゲートは、import の `write_manifest` と `finalize` の 2 await の隙間に採用が割り込むレースも同時に閉じる。
 - terminal かつ `digest_state=pending` → digest キューへ再投入。
 - `delete_pending` の resume（§7）。
 - 消えたコピーの `missing_unmanaged` 化（**閾値ガード配下**、後述）。
@@ -397,6 +477,9 @@ rebuild とは別に、常時走る整合パス。次を拾う:
 - per-file sha256 → §3.3 の単一 atomic write で完成 → `replicas.manifest_digest` を記録 → `present_verified`。
 - 実行中は `digest_state=pending` を UI に出す（「検証済み」と「検証中」を混ぜない）。
 - クラッシュ後は reconciler が pending を再投入する（途中結果は捨てて最初からやり直す）。
+- **hash 対象から可変・派生サイドカーを除く**: `object_manifest.json`（書く対象自身）、`record.json`（可変）、加えて `quick_check.json`（2026-08-11 — settlement が stop 後に**自分の時計で**書くため、封印より後に着地すると以後の照合が「派生ファイルの到着」を capture の破損として誤読する）。
+- **封印済み manifest に対する未検証コピーは、本当に照合する**（2026-08-11, sweep S3-3）。`digest_state=complete` の manifest を持つ replica が `present_unverified` の場合、旧実装は 1 バイトも比べずに `present_verified` へ昇格していた（転送中に切断された bag が到着即 verified になり得た）。今はローカルの per-file hash を manifest の `files` と突き合わせ、一致で昇格、**不一致は replica を `corrupt`** にして manifest には触れない（manifest は証拠）。旧規約で `quick_check.json` を含めて封印された manifest は、そのエントリを無視して照合する（その場合 `manifest_digest` の照合はスキップ）。
+- **封印の出所を manifest に刻む**: 封印時に `digest_sealed_by`（封印した instance の id）を書く。**source で封印**された hash は録画そのものに遡って錨を下ろすが、**受信側で封印**された hash（robot 側は orchestrator を走らせないので、転送が封印より先行する）は「以後の整合性チェックの基準」であって**転送そのものの証明ではない** — UI の verified 文言もそう述べる。robot 側で digest を封印してから転送する受領書型の設計は §13 のまま TBD（D12）。
 
 ## 11. API（要約）
 
@@ -436,5 +519,5 @@ pytest 側は別の層を守る: §7 手順 1〜5 の各段での kill → 再�
 
 ## 13. スコープ外（次ブランチ）
 
-- edge → server の転送 subsystem・hub モード・receipt・drop-local（ロボット側に残置されたコピーの正式な replica 管理はここで解消する）。現状の split デプロイでは、discard は「**録画 PC 上のコピーの破棄**」であり、ロボット側にコピーが残っている可能性がある — UI はそれを正直に併記する。
+- edge → server の転送 subsystem・hub モード・receipt・drop-local（ロボット側に残置されたコピーの正式な replica 管理はここで解消する）。現状の split デプロイでは、discard は「**録画 PC 上のコピーの破棄**」であり、ロボット側にコピーが残っている可能性がある — UI はそれを正直に併記する。**暫定の再取得ガード**（2026-08-11, sweep S4）: importer の pull はローカル ledger の墓標（`capture_discarded` / `capture_deleted`）を持つ capture をスキップする — drop-local が無い間、`{"all": true}` の pull が削除済み capture をロボットから引き戻すのを防ぐ（削除に復元は無いので恒久スキップで安全）。
 - `task_revision_id`、retention / capacity の自動化（本ブランチは**表示定義の修正まで**）。

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import '@testing-library/jest-dom/vitest';
 
 // jsdom lacks matchMedia, which uPlot calls at import time (and at construction).

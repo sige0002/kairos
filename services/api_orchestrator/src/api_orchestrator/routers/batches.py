@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Batch endpoints (``/api/v1/batches``) — Collect's grouping of captures.
 
 A batch groups the captures recorded in one run of a task/condition. Under v2
@@ -23,14 +25,21 @@ from api_orchestrator.batch_service import BatchService
 from api_orchestrator.models import (
     Batch,
     BatchCoverageResponse,
+    BatchCoverageScope,
     BatchCreateRequest,
     BatchDetail,
     BatchListResponse,
+    BatchLookupRequest,
+    BatchLookupResponse,
     BatchPatchRequest,
     BatchSummary,
     CoverageRow,
 )
-from api_orchestrator.store import BatchExistsError, CaptureStore
+from api_orchestrator.store import (
+    BatchExistsError,
+    BatchLabelsFrozenError,
+    CaptureStore,
+)
 
 logger = logging.getLogger("kairos")
 
@@ -87,6 +96,9 @@ async def create_batch(request: Request, body: BatchCreateRequest) -> Batch:
         batch = Batch(
             batch_id=base if attempt == 0 else f"{base}_{attempt}",
             robot=_default_robot(request, body.robot),
+            project_id=body.project_id,
+            task_id=body.task_id,
+            condition_id=body.condition_id,
             project=body.project,
             task=body.task,
             condition=body.condition,
@@ -110,32 +122,42 @@ async def create_batch(request: Request, body: BatchCreateRequest) -> Batch:
 async def patch_batch(
     request: Request, batch_id: str, body: BatchPatchRequest
 ) -> Batch:
-    """Update a batch: early stop, or a project/task/condition relabel.
+    """Update a batch: operational fields, or an empty-batch relabel.
 
-    Entering a terminal status stamps ``ended_at`` once. ``project``/``task`` are
-    patchable for the empty-batch case: Collect relabels a not-yet-recorded
-    batch in place when the operator switches before the first recording.
+    Entering a terminal status stamps ``ended_at`` once. Recording-provenance
+    labels can be changed or explicitly cleared only before the batch has a
+    capture or a recorded-episode count. ``model_fields_set`` distinguishes an
+    omitted label from an explicit ``null`` clear.
     """
     store = _store(request)
     batch = store.get_batch(batch_id)
     if batch is None:
         raise _not_found(batch_id)
-    fields: dict[str, object] = {
-        name: value
-        for name, value in (
-            ("status", body.status),
-            ("ended_reason", body.ended_reason),
-            ("project", body.project),
-            ("task", body.task),
-            ("condition", body.condition),
-            ("target_episodes", body.target_episodes),
-        )
-        if value is not None
-    }
-    if body.status in _TERMINAL_BATCH_STATUSES and batch.ended_at is None:
+    fields = body.model_dump(exclude_unset=True)
+    # ``null`` is a meaningful clear for nullable labels, but not for the
+    # non-nullable operational columns. Keeping these absent preserves the
+    # established PATCH semantics for an accidental/null status or target.
+    for name in ("status", "target_episodes"):
+        if fields.get(name) is None:
+            fields.pop(name, None)
+    if (
+        "status" in fields
+        and body.status in _TERMINAL_BATCH_STATUSES
+        and batch.ended_at is None
+    ):
         fields["ended_at"] = utc_now_iso8601()
     try:
         return _service(request).update(batch_id, fields)
+    except BatchLabelsFrozenError as exc:
+        raise ApiError(
+            status_code=409,
+            code="batch_labels_frozen",
+            message=(
+                "Recording-provenance labels cannot change after a batch "
+                "has recorded captures."
+            ),
+            details={"fields": list(exc.fields)},
+        ) from exc
     except KeyError as exc:  # deleted between the read and the write
         raise _not_found(batch_id) from exc
 
@@ -177,14 +199,30 @@ async def list_batches(
     )
 
 
+@router.post("/lookup", response_model=BatchLookupResponse)
+async def lookup_batches(
+    request: Request, body: BatchLookupRequest
+) -> BatchLookupResponse:
+    """Resolve only the batch IDs a capture page actually references."""
+    return BatchLookupResponse(items=_store(request).batches_for_ids(body.batch_ids))
+
+
 # Declared BEFORE ``/{batch_id}``: Starlette matches routes in registration
 # order, so the parameterised route would otherwise swallow this path and
 # answer "Batch not found: coverage".
 @router.get("/coverage", response_model=BatchCoverageResponse)
 async def batch_coverage(
-    request: Request, task: str = Query(..., min_length=1)
+    request: Request,
+    project_id: str | None = Query(None),
+    project: str | None = Query(None),
+    task_id: str | None = Query(None),
+    task: str | None = Query(None),
+    robot: str | None = Query(None),
+    operator: str | None = Query(None),
+    created_from: str | None = Query(None),
+    created_to: str | None = Query(None),
 ) -> BatchCoverageResponse:
-    """Per-condition recorded totals for one task, aggregated in SQL.
+    """Per-condition recorded totals for an explicit AND-scoped population.
 
     Collect's Coverage card used to fetch every batch and add them up in the
     browser — 817 KiB every 30s at 5000 batches (E-27). Paging that list could
@@ -192,20 +230,94 @@ async def batch_coverage(
     short, which E-27 is precisely the rule against. So the SUM happens where
     the rows are, and the response carries one row per condition.
 
-    ``task`` is required (422 without it) because that is the only way the
-    figure is ever used — a coverage number spanning tasks would be adding up
-    unrelated work. Conditions the plan lists but nobody has recorded do NOT
-    appear: the plan catalog is the client's vocabulary, and the caller unions
-    its own zero rows in. This endpoint reports only what was measured.
+    One of ``task`` or ``task_id`` is required; every supplied project, task,
+    robot, operator, and UTC created-at axis is combined with AND. Conditions
+    the plan lists but nobody has recorded do NOT appear: the plan catalog is
+    the client's vocabulary, and the caller unions its own zero rows in. This
+    endpoint reports only what was measured.
     """
-    rows = _store(request).coverage_by_condition(task)
+    project_id = _normalise_scope_text(project_id, "project_id")
+    project = _normalise_scope_text(project, "project")
+    task_id = _normalise_scope_text(task_id, "task_id")
+    task = _normalise_scope_text(task, "task")
+    robot = _normalise_scope_text(robot, "robot")
+    operator = _normalise_scope_text(operator, "operator")
+    if task is None and task_id is None:
+        raise ApiError(
+            status_code=422,
+            code="invalid_coverage_scope",
+            message="task or task_id is required",
+        )
+    scope = BatchCoverageScope(
+        project_id=project_id,
+        project=project,
+        task_id=task_id,
+        task=task,
+        robot=robot,
+        operator=operator,
+        created_from=_utc_rfc3339(created_from, "created_from"),
+        created_to=_utc_rfc3339(created_to, "created_to"),
+    )
+    if (
+        scope.created_from is not None
+        and scope.created_to is not None
+        and scope.created_from >= scope.created_to
+    ):
+        raise ApiError(
+            status_code=422,
+            code="invalid_coverage_range",
+            message="created_from must be before created_to",
+        )
+    rows = _store(request).coverage_by_condition(scope.model_dump())
     return BatchCoverageResponse(
         task=task,
+        scope=scope,
         rows=[
-            CoverageRow(condition=condition, recorded=recorded, is_floor=is_floor)
-            for condition, recorded, is_floor in rows
+            CoverageRow(
+                condition=condition,
+                condition_id=condition_id,
+                recorded=recorded,
+                is_floor=is_floor,
+            )
+            for condition, condition_id, recorded, is_floor in rows
         ],
     )
+
+
+def _utc_rfc3339(value: str | None, name: str) -> str | None:
+    if value is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ApiError(
+            status_code=422,
+            code="invalid_coverage_range",
+            message=f"{name} must be RFC3339 UTC",
+        ) from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
+        raise ApiError(
+            status_code=422,
+            code="invalid_coverage_range",
+            message=f"{name} must be RFC3339 UTC",
+        )
+    return (
+        parsed.astimezone(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    )
+
+
+def _normalise_scope_text(value: str | None, name: str) -> str | None:
+    """Trim one scope axis; blanks are an input error, never a broad query."""
+    if value is None:
+        return None
+    normalised = value.strip()
+    if not normalised:
+        raise ApiError(
+            status_code=422,
+            code="invalid_coverage_scope",
+            message=f"{name} must not be blank",
+        )
+    return normalised
 
 
 @router.get("/{batch_id}", response_model=BatchDetail)

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // COMPLETED: the set hit its target. Same summary and same next-set control as
 // ENDED, in the one green frame the screen ever shows.
 
@@ -25,9 +27,9 @@ export function CompletedCard({
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="text-[15px] font-bold text-gray-900">
+        <h2 className="text-[15px] font-bold text-gray-900">
           Batch {machine.batchSeq ?? '—'} completed 🎉
-        </span>
+        </h2>
         <div className="flex-1" />
         <span className="rounded-chip bg-green-100 px-2 py-0.5 text-[11px] font-bold text-green-700">
           COMPLETE
@@ -43,8 +45,8 @@ export function CompletedCard({
         className={cn(
           'h-[46px] rounded-control text-sm font-bold text-white',
           confirmNextSet
-            ? 'bg-amber-600 hover:bg-amber-700'
-            : 'bg-teal-600 hover:bg-teal-700',
+            ? 'bg-amber-700 hover:bg-amber-800'
+            : 'bg-teal-700 hover:bg-teal-800',
         )}
       >
         {confirmNextSet ? 'Press again to start the next set' : 'Start next set'}

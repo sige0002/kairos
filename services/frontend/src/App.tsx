@@ -14,9 +14,11 @@ import { MonitorScreen } from './v2/monitor/MonitorScreen';
 import { SettingsScreen } from './v2/settings/SettingsScreen';
 import { resolveTabId, tabLabel, V2_TABS, type V2TabId } from './v2/tabs';
 import { useOnPopState } from './v2/shared/useOnPopState';
+import { HIT_AREA_CHIP, HIT_AREA_TAB } from './v2/shared/hitArea';
 import { PanelBoundary } from './components/ErrorBoundary';
 import { Hexagon, StatusDot, cn } from './components/ui';
-import type { SseStatus } from './store/uiStore';
+import { OPERATOR_STORAGE_KEY, type SseStatus } from './store/uiStore';
+import { StoreHealthBanner } from './v2/store/StoreHealthBanner';
 
 // ---- per-tab pages (deep link + pop-out) ------------------------------------
 // Each tab is addressable by URL (`?tab=<id>`); `?tab=<id>&solo=1` renders ONLY
@@ -112,7 +114,11 @@ function TabNav({ active }: { active: V2TabId }) {
     <nav
       role="tablist"
       aria-label="kairos tabs"
-      className="flex flex-wrap gap-[3px] rounded-[12px] border border-gray-200 bg-gray-100 p-1"
+      // gap-y-2 only: the tabs' hit areas reach 4px above and below each tab
+      // (HIT_AREA_TAB), so a wrapped nav at narrow widths needs 8px between
+      // ROWS or the two rows' targets would overlap. The 3px column gap is
+      // untouched — nothing expands sideways.
+      className="flex flex-wrap gap-x-[3px] gap-y-2 rounded-[12px] border border-gray-200 bg-gray-100 p-1"
     >
       {V2_TABS.map((tab) => {
         const on = tab.id === active;
@@ -126,9 +132,10 @@ function TabNav({ active }: { active: V2TabId }) {
             onClick={() => setActiveTab(tab.id)}
             className={cn(
               'rounded-[9px] px-[18px] py-2 text-[13.5px] transition-colors',
+              HIT_AREA_TAB,
               on
-                ? 'bg-teal-600 font-semibold text-white shadow-sm'
-                : 'font-medium text-gray-500 hover:text-gray-700',
+                ? 'bg-teal-700 font-semibold text-white shadow-sm'
+                : 'font-medium text-gray-600 hover:text-gray-800',
             )}
           >
             {tab.label}
@@ -196,32 +203,46 @@ function ConnectionBadge() {
     closed: 'disconnected',
   };
   const robotOffline = status === 'open' && bridge === 'down';
-  const live = status === 'open' && !robotOffline;
+  const checkingRobot = status === 'open' && bridge === null;
+  const live = status === 'open' && bridge === 'up';
   return (
     <span
       data-testid="connection-status"
       title={
         robotOffline
           ? 'The orchestrator is up, but the monitor (robot-edge) is unreachable — check the robot / ROBOT_IP.'
-          : undefined
+          : checkingRobot
+            ? 'The orchestrator is connected. Waiting for its robot-monitor status.'
+            : undefined
       }
       className={cn(
         'inline-flex items-center gap-2 rounded-control border px-3 py-2',
         live
           ? 'border-teal-200 bg-teal-100'
-          : robotOffline
+          : robotOffline || checkingRobot
             ? 'border-amber-200 bg-amber-50'
             : 'border-gray-200 bg-white',
       )}
     >
-      <StatusDot tone={robotOffline ? 'amber' : tone[status]} pulse={live} />
+      <StatusDot
+        tone={robotOffline || checkingRobot ? 'amber' : tone[status]}
+        pulse={live}
+      />
       <span
         className={cn(
           'font-mono text-[12.5px] font-semibold',
-          live ? 'text-teal-700' : robotOffline ? 'text-amber-700' : 'text-gray-600',
+          live
+            ? 'text-teal-700'
+            : robotOffline || checkingRobot
+              ? 'text-amber-700'
+              : 'text-gray-600',
         )}
       >
-        {robotOffline ? 'robot offline' : label[status]}
+        {robotOffline
+          ? 'robot offline'
+          : checkingRobot
+            ? 'checking robot…'
+            : label[status]}
       </span>
     </span>
   );
@@ -239,7 +260,7 @@ function DomainChip({ domainId }: { domainId?: number }) {
       title={`ROS 2 domain ${domainId} (ROS_DOMAIN_ID)`}
       className="inline-flex items-center gap-1.5 rounded-control border border-gray-200 bg-white px-3 py-2 font-mono text-[12.5px] font-semibold text-gray-600"
     >
-      <span className="uppercase tracking-[0.04em] text-gray-400">DOMAIN</span>
+      <span className="uppercase tracking-[0.04em] text-gray-500">DOMAIN</span>
       {domainId}
     </span>
   );
@@ -251,7 +272,33 @@ function EventStreamMount({ url }: { url: string }) {
   return null;
 }
 
-const OPERATOR_STORAGE_KEY = 'kairos.operator';
+/** Hydrates operator attribution at application startup, independently of the
+ * header chip. A solo Collect window has no main header, so the chip cannot be
+ * the source of truth. The storage listener keeps separate windows aligned. */
+function OperatorHydrationMount() {
+  const hydrate = useUiStore((s) => s.hydrateRecordOperator);
+  const setOperator = useUiStore((s) => s.setRecordOperator);
+
+  useEffect(() => {
+    let saved = '';
+    try {
+      saved = window.localStorage.getItem(OPERATOR_STORAGE_KEY) ?? '';
+    } catch {
+      // Storage can be denied. Mark hydration complete so the UI can show the
+      // honest empty-operator gate instead of waiting forever.
+    }
+    hydrate(saved);
+
+    const onStorage = (event: StorageEvent) => {
+      if (event.key !== OPERATOR_STORAGE_KEY) return;
+      setOperator(event.newValue ?? '');
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [hydrate, setOperator]);
+
+  return null;
+}
 
 /** Operator identity chip (v1's Live operator input, relocated): click to set
  *  the name recorded with each episode. Writes the SAME uiStore field the
@@ -266,21 +313,6 @@ function OperatorChip() {
   const roster = useOperators();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState('');
-
-  // Mount-only hydrate from localStorage (never overwrite a live edit). Storage
-  // access can THROW rather than return null (private mode, or site data blocked
-  // by policy) — and this runs at the shell, so an unguarded throw here reaches
-  // the root ErrorBoundary and takes the whole console down, not just the chip.
-  useEffect(() => {
-    if (!useUiStore.getState().recordOperator) {
-      try {
-        const saved = window.localStorage.getItem(OPERATOR_STORAGE_KEY);
-        if (saved) setOperator(saved);
-      } catch {
-        // No persisted name available; the chip just starts empty.
-      }
-    }
-  }, [setOperator]);
 
   const initials = operator.trim()
     ? operator
@@ -324,6 +356,7 @@ function OperatorChip() {
         }}
         className={cn(
           'flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold',
+          HIT_AREA_CHIP,
           operator.trim()
             ? 'border-teal-200 bg-teal-50 text-teal-700 hover:border-teal-400'
             : 'border-gray-200 bg-gray-100 text-gray-600 hover:border-gray-300',
@@ -335,7 +368,7 @@ function OperatorChip() {
         <div className="absolute right-0 top-full z-40 mt-2 w-72 rounded-card border border-gray-200 bg-white p-3 shadow-float">
           <label
             htmlFor="operator-name"
-            className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400"
+            className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500"
           >
             Operator — saved into each recording
           </label>
@@ -343,8 +376,8 @@ function OperatorChip() {
             <div className="flex flex-col gap-1" data-testid="operator-roster">
               {operator.trim() && !roster.includes(operator.trim()) && (
                 <p className="mb-1 rounded-control border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
-                  “{operator.trim()}” is not on the roster — pick a name below
-                  (Settings &gt; Operators edits the list).
+                  “{operator.trim()}” is not on the roster — pick a name below (Settings
+                  &gt; Operators edits the list).
                 </p>
               )}
               {roster.map((name) => (
@@ -373,28 +406,57 @@ function OperatorChip() {
               ))}
             </div>
           ) : (
-          <div className="flex gap-2">
-            <input
-              id="operator-name"
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') save();
-                if (e.key === 'Escape') setOpen(false);
-              }}
-              placeholder="e.g. sadasue"
-              autoFocus
-              data-testid="operator-input"
-              className="w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-500 focus:outline-none"
-            />
-            <button
-              type="button"
-              onClick={save}
-              className="rounded-control bg-teal-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-teal-700"
-            >
-              Save
-            </button>
-          </div>
+            <div className="flex gap-2">
+              <input
+                id="operator-name"
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  // Mid-conversion, both of these keys belong to the IME: Enter
+                  // confirms the candidate and Escape closes the candidate
+                  // window. Taking either would commit or discard on a press the
+                  // typist meant for neither — and, for Enter, would save the
+                  // UNCONVERTED text as the operator's name while swallowing the
+                  // very keystroke the IME was waiting for. Guarding the whole
+                  // handler rather than one branch, because the answer is the
+                  // same for both: this keystroke is not ours yet.
+                  if (e.nativeEvent.isComposing) return;
+                  if (e.key === 'Enter') {
+                    // The save lifts Collect's operator gate, and Collect hands
+                    // focus to the Start button it has just enabled — inside this
+                    // same event. Without cancelling the default action, the
+                    // browser then activates that freshly focused button, so
+                    // typing your name and pressing Enter STARTS A RECORDING
+                    // (#26; a 6-minute runaway take in the acceptance run).
+                    //
+                    // Same rule as the arming Cancel guard (#8): a control must
+                    // not answer the press that revealed it. Collect's own
+                    // commit-on-Enter field already does this (Modals.tsx); this
+                    // one was the outlier.
+                    //
+                    // No stopPropagation: the only window-level key listener
+                    // (useCollectShortcuts) already ignores events whose target
+                    // is an input, so nothing upstream acts on this. Stopping
+                    // propagation would buy nothing and would quietly break the
+                    // next global handler that legitimately wants to see it.
+                    e.preventDefault();
+                    save();
+                  }
+                  if (e.key === 'Escape') setOpen(false);
+                }}
+                placeholder="e.g. sadasue"
+                autoFocus
+                data-testid="operator-input"
+                className="w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-600 focus:outline-none"
+              />
+              <button
+                type="button"
+                onClick={save}
+                className="rounded-control bg-teal-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-teal-800"
+              >
+                Save
+              </button>
+            </div>
           )}
         </div>
       )}
@@ -424,7 +486,22 @@ function Header({ active, config }: { active: V2TabId; config: RuntimeConfig }) 
       <DomainChip domainId={config.defaults.ros_domain_id} />
       <ConnectionBadge />
       <OperatorChip />
+      <BatchRestoreNotice />
     </header>
+  );
+}
+
+function BatchRestoreNotice() {
+  const batchRestoreIssue = useUiStore((s) => s.batchRestoreIssue);
+  if (batchRestoreIssue !== 'ambiguous') return null;
+  return (
+    <span
+      role="status"
+      data-testid="batch-restore-issue"
+      className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-800"
+    >
+      More than one active batch matches this operator and robot. No batch was restored.
+    </span>
   );
 }
 
@@ -436,6 +513,7 @@ function Shell({ config }: { config: RuntimeConfig }) {
   return (
     <>
       <Header active={active} config={config} />
+      <StoreHealthBanner />
       <TabPanel active={active} />
     </>
   );
@@ -448,13 +526,33 @@ function Shell({ config }: { config: RuntimeConfig }) {
  * console. `tabId` is always a resolved v2 id (see `resolveTabId`).
  */
 function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) {
-  const label = tabLabel(tabId);
+  const activeTab = useUiStore((s) => s.activeTab);
+  const setActiveTab = useUiStore((s) => s.setActiveTab);
+  const [seeded, setSeeded] = useState(false);
+  // Always honour the URL on the first paint. A shared uiStore can still hold
+  // another tab from a previously-open console window; letting that win would
+  // make a direct `?tab=review&solo=1` request open the wrong screen.
+  const active = seeded && activeTab ? resolveTabId(activeTab) : tabId;
+  const label = tabLabel(active);
+
+  useEffect(() => {
+    if (!seeded) {
+      setActiveTab(tabId);
+      setSeeded(true);
+    }
+  }, [seeded, setActiveTab, tabId]);
+
+  useEffect(() => {
+    if (active === tabId) return;
+    window.history.replaceState(null, '', tabUrl(active, true));
+  }, [active, tabId]);
+
   return (
     <main className="flex h-screen flex-col bg-gray-50 px-[22px] pb-[22px] pt-2.5">
       <EventStreamMount url={config.endpoints.events} />
       <header className="mb-2 flex flex-wrap items-center gap-3">
         <a
-          href={tabUrl(tabId, false)}
+          href={tabUrl(active, false)}
           title="Back to the kairos console"
           className="flex items-center gap-2 rounded-control text-gray-600 hover:text-teal-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
         >
@@ -468,14 +566,17 @@ function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) 
         <div className="flex-1" />
         <DomainChip domainId={config.defaults.ros_domain_id} />
         <ConnectionBadge />
+        {active === 'collect' && <OperatorChip />}
+        <BatchRestoreNotice />
       </header>
+      <StoreHealthBanner solo />
       <section
         role="tabpanel"
         aria-label={label}
         className="min-h-0 flex-1 overflow-auto"
       >
-        <PanelBoundary resetKey={tabId} standalone>
-          <TabContent tabId={tabId} />
+        <PanelBoundary resetKey={active} standalone>
+          <TabContent tabId={active} />
         </PanelBoundary>
       </section>
     </main>
@@ -483,6 +584,7 @@ function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) 
 }
 
 export function App() {
+  const operatorHydrated = useUiStore((s) => s.operatorHydrated);
   // Render gate: wait for the backend config before showing the UI. config.ts
   // provides a dev-only fallback so the SPA renders without a backend. Still
   // fetched even though the v2 tab set is fixed client-side — this is where
@@ -499,19 +601,41 @@ export function App() {
     if (config) setApiBase(config.endpoints.api);
   }, [config]);
 
+  // This mount intentionally lives above both main and solo shells: identity
+  // is application context, not a header widget.
+  const operatorHydration = <OperatorHydrationMount />;
+
   if (isPending) {
     return (
-      <main className="flex min-h-screen items-center gap-3 bg-gray-50 p-[22px] text-gray-500">
-        <Hexagon size={22} />
-        Loading kairos…
-      </main>
+      <>
+        {operatorHydration}
+        <main className="flex min-h-screen items-center gap-3 bg-gray-50 p-[22px] text-gray-500">
+          <Hexagon size={22} />
+          Loading kairos…
+        </main>
+      </>
     );
   }
   if (isError) {
     return (
-      <main className="min-h-screen bg-gray-50 p-[22px] text-red-700">
-        Failed to load configuration: {String(error)}
-      </main>
+      <>
+        {operatorHydration}
+        <main className="min-h-screen bg-gray-50 p-[22px] text-red-700">
+          Failed to load configuration: {String(error)}
+        </main>
+      </>
+    );
+  }
+
+  if (!operatorHydrated) {
+    return (
+      <>
+        {operatorHydration}
+        <main className="flex min-h-screen items-center gap-3 bg-gray-50 p-[22px] text-gray-500">
+          <Hexagon size={22} />
+          Loading operator context…
+        </main>
+      </>
     );
   }
 
@@ -523,13 +647,21 @@ export function App() {
     if (resolved !== route.tab) {
       window.history.replaceState(null, '', tabUrl(resolved, true));
     }
-    return <SoloPage tabId={resolved} config={config} />;
+    return (
+      <>
+        {operatorHydration}
+        <SoloPage tabId={resolved} config={config} />
+      </>
+    );
   }
 
   return (
-    <main className="min-h-screen bg-gray-50 px-[22px] pb-[22px] pt-2.5 lg:flex lg:h-svh lg:min-h-0 lg:flex-col lg:overflow-hidden">
-      <EventStreamMount url={config.endpoints.events} />
-      <Shell config={config} />
-    </main>
+    <>
+      {operatorHydration}
+      <main className="min-h-screen bg-gray-50 px-[22px] pb-[22px] pt-2.5 lg:flex lg:h-svh lg:min-h-0 lg:flex-col lg:overflow-hidden">
+        <EventStreamMount url={config.endpoints.events} />
+        <Shell config={config} />
+      </main>
+    </>
   );
 }

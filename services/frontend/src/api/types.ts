@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Domain types for the api_orchestrator REST/SSE contract.
 // Source of truth: docs/specs/ja/api_orchestrator.md and config.md.
 
@@ -100,6 +102,20 @@ export interface ApiErrorBody {
 
 // ---- Record -------------------------------------------------------------
 
+/** Batch identity and labels frozen at the instant a recording starts. */
+export interface CollectionContextSnapshot {
+  batch_id: string | null;
+  batch_seq: number | null;
+  project_id: string | null;
+  task_id: string | null;
+  condition_id: string | null;
+  project: string | null;
+  task: string | null;
+  condition: string | null;
+  robot: string | null;
+  operator: string | null;
+}
+
 export interface RecordStartRequest {
   topics: string[] | 'all';
   compression?: 'none' | 'zstd';
@@ -108,9 +124,10 @@ export interface RecordStartRequest {
   operator?: string;
   /** Task / scenario being recorded (free text); saved likewise. */
   task?: string;
+  /** Immutable collection context, carried into the capture sidecar. */
+  collection_context?: CollectionContextSnapshot | null;
   [key: string]: unknown;
 }
-
 
 /**
  * Recorder "arming" state (OL-①.4): while start_paused is in effect the recorder
@@ -310,6 +327,7 @@ export interface CaptureListItem {
    *  reason). Null = no override; the gate stands. */
   validation_override?: string | null;
   batch_id?: string | null;
+  collection_context?: CollectionContextSnapshot | null;
   index_in_batch?: number | null;
 
   // ---- tombstone (§7): the row survives the deletion ----
@@ -377,7 +395,12 @@ export interface CaptureDetail extends Capture {
   manifest?: Record<string, unknown> | null;
   record?: Record<string, unknown> | null;
   validation?: Record<string, unknown> | null;
-  loss?: { capture_id?: string; topics?: LossTopic[]; checked_at?: string } | null;
+  loss?: {
+    capture_id?: string;
+    topics?: LossTopic[];
+    events?: LossEvent[];
+    checked_at?: string;
+  } | null;
   /** Validation verdict, DERIVED server-side from the gating pipelines'
    *  reports on every read. `unknown` means nothing has checked this capture —
    *  it is not a pass. Absent on an older backend. */
@@ -399,6 +422,81 @@ export interface CaptureListParams {
   cursor?: string;
   /** Widen the default working set to include tombstones (§7). */
   include_deleted?: boolean;
+}
+
+/** Portable server-side capture search and selection language. The values are
+ * deliberately closed to the orchestrator contract so a UI typo cannot turn
+ * a filtered Bulk Add into a broader query. */
+export type CaptureSearchField =
+  | 'any'
+  | 'operator'
+  | 'task'
+  | 'condition'
+  | 'run_id'
+  | 'capture_id'
+  | 'task_result'
+  | 'failure_reason'
+  | 'quality'
+  | 'review_status'
+  | 'robot'
+  | 'batch_id';
+/** Fields that the server can aggregate into categorical facet buckets. */
+export type CaptureFacetField = Exclude<
+  CaptureSearchField,
+  'any' | 'run_id' | 'capture_id'
+>;
+export type CaptureSearchOperator = 'contains' | 'equals';
+
+export interface CaptureSearchPredicate {
+  field: CaptureSearchField;
+  operator: CaptureSearchOperator;
+  value: string;
+}
+
+export interface CaptureSearchQuery {
+  join?: 'and' | 'or';
+  predicates?: CaptureSearchPredicate[];
+  states?: CaptureState[];
+  review_statuses?: ReviewStatus[];
+  present_on_instance?: boolean | null;
+  exclude_dataset_id?: string | null;
+  /** Inclusive RFC3339 creation/recording bounds interpreted by the server. */
+  started_from?: string | null;
+  started_to?: string | null;
+}
+
+export interface CaptureFacetValue {
+  value: string | null;
+  count: number;
+}
+
+export interface CaptureFacet {
+  values: CaptureFacetValue[];
+  truncated: boolean;
+  other_count: number;
+}
+
+export interface CaptureSearchRequest {
+  query: CaptureSearchQuery;
+  cursor?: string | null;
+  limit?: number;
+  facets?: CaptureFacetField[];
+}
+
+export interface CaptureSearchResponse extends Page<CaptureListItem> {
+  total: number;
+  facets: Partial<Record<CaptureFacetField, CaptureFacet>>;
+}
+
+/** A short-lived, materialized set consumed by a server-owned bulk run. */
+export interface CaptureSelectionCreateRequest {
+  query: CaptureSearchQuery;
+}
+
+export interface CaptureSelectionResponse {
+  selection_id: string;
+  matched_count: number;
+  expires_at: string;
 }
 
 /** Body of `PATCH /api/v1/captures/{id}/review` (§4.1).
@@ -459,13 +557,38 @@ export interface ArchivedFile {
  *  source is deleted moments after this is computed: these digests and the
  *  matching ledger event are the only things left that can answer "is the
  *  archived copy still intact?". */
+/** A COMPLETED archive is the verification claim: every file's hash was
+ *  compared as it landed, and a mismatch fails the run before anything is
+ *  deleted — so there is no `verified` flag to check (S4). */
 export interface CaptureArchiveResponse {
   capture_id: string;
   destination: string;
   bytes: number;
   file_count: number;
   files: ArchivedFile[];
-  verified: boolean;
+}
+
+/** `POST /captures/{id}/archive` answer: the run was ACCEPTED (202) and
+ *  executes server-side. Poll `GET /captures/{id}/archive` for the outcome —
+ *  a multi-GB copy outlives any proxy timeout, so waiting on the POST would
+ *  report "failed" for archives the server completed (S2-1). */
+export interface CaptureArchiveAccepted {
+  capture_id: string;
+  destination: string;
+  state: string;
+}
+
+/** `GET /captures/{id}/archive` — polled while a run executes. `state` walks
+ *  `running → complete | failed`; the terminal entry stays readable until a
+ *  new run replaces it. 404 = no run known (e.g. after a server restart). */
+export interface CaptureArchiveProgress {
+  capture_id: string;
+  destination: string;
+  state: 'running' | 'complete' | 'failed';
+  bytes_done: number;
+  bytes_total: number | null;
+  error: { code: string; message: string } | null;
+  result: CaptureArchiveResponse | null;
 }
 
 /**
@@ -518,6 +641,51 @@ export interface Dataset {
   archive_mode?: string | null;
   archive_started_at?: string | null;
   archived_at?: string | null;
+  selection_recipes?: DatasetSelectionRecipe[];
+}
+
+export interface DatasetSelectionCondition {
+  field:
+    | 'any'
+    | 'operator'
+    | 'task'
+    | 'condition'
+    | 'run_id'
+    | 'capture_id'
+    | 'task_result';
+  operator: 'contains' | 'equals';
+  value: string;
+}
+
+export interface DatasetSelectionRecipe {
+  recipe_id: string;
+  recorded_at: string;
+  kind: 'filtered_bulk';
+  join: 'and' | 'or';
+  conditions: DatasetSelectionCondition[];
+  /** Full server query for a bulk receipt; null on legacy recipes. */
+  selection_query?: CaptureSearchQuery | null;
+  matched: number;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  catalog_truncated: boolean;
+  /** Server bulk receipts identify the durable run and retry attempt. */
+  bulk_run_id?: string | null;
+  attempt?: number | null;
+  /** Later attempts report a cumulative receipt, not a second member add. */
+  cumulative: boolean;
+}
+
+export interface DatasetSelectionRecipeCreateRequest {
+  kind: 'filtered_bulk';
+  join: 'and' | 'or';
+  conditions: DatasetSelectionCondition[];
+  matched: number;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  catalog_truncated: boolean;
 }
 
 /** One capture's membership in a dataset. `display_index` is the number shown
@@ -529,6 +697,32 @@ export interface DatasetMember {
   capture_id: string;
   display_index: number;
   created_at?: string | null;
+}
+
+export interface DatasetMembershipBulkRunCreateRequest {
+  selection_id: string;
+  /** Caller-generated idempotency key for a click/reload retry. */
+  request_id: string;
+}
+
+export interface DatasetMembershipBulkFailure {
+  capture_id: string;
+  code: string;
+  message: string;
+}
+
+/** Server progress is authoritative: `partial` is an outcome, not success. */
+export interface DatasetMembershipBulkRun {
+  run_id: string;
+  dataset_id: string;
+  selection_id: string;
+  state: 'pending' | 'running' | 'completed' | 'partial' | 'failed_receipt';
+  matched_count: number;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  pending: number;
+  failures: DatasetMembershipBulkFailure[];
 }
 
 export interface DatasetDetail extends Dataset {
@@ -595,8 +789,155 @@ export interface DatasetArchiveProgress {
   current_capture_id?: string | null;
   current_bytes?: number | null;
   error?: { capture_id?: string; code?: string; message?: string } | null;
+  /** True only when the halted attempt has no completed member. */
+  cancelable?: boolean;
+  /** Machine-readable reason cancellation is unavailable. */
+  cancel_blocker?: string | null;
   archive_started_at?: string | null;
   archived_at?: string | null;
+}
+
+// ---- LeRobot export (§6.2: a dataset converted to LeRobot v3) -------------
+// A conversion READS the dataset and writes a new tree under exports/. Nothing
+// about the dataset changes — not its status, not its members — which is why
+// this is a separate surface from the archive above rather than a mode of it.
+
+/**
+ * One robot-config YAML in this installation's profile library.
+ *
+ * Every field but the name and the path is optional because the orchestrator
+ * passes the exporter's objects through UNTOUCHED (`list[dict[str, Any]]`) —
+ * the exporter owns this schema, and a second copy of it here would be a copy
+ * that drifts. The UI therefore reads each field defensively.
+ */
+export interface ExportProfile {
+  name: string;
+  path?: string;
+  /** `committed` = config/<robot>/lerobot/, `local` = the gitignored tree. */
+  source?: string;
+  /**
+   * The converter's own loader's verdict. `null`/absent is a THIRD answer —
+   * the converter is not installed in that image, so the profile was never
+   * checked — and must never be rendered as a pass.
+   */
+  valid?: boolean | null;
+  errors?: string[];
+  /** Topics the profile requires; what preflight's coverage check is against. */
+  topics?: string[];
+  fps?: number | null;
+}
+
+/** `GET /api/v1/exports/config` — the capability gate. `enabled: false` (no
+ *  exporter overlay, or an empty library) means the Convert control is not
+ *  rendered at all: never offer what can only fail. */
+export interface ExportsConfig {
+  enabled: boolean;
+  profiles: ExportProfile[];
+  /**
+   * True when the exporter is up but its bundled converter is not importable
+   * there, so every profile's `valid` comes back null. It is what lets the UI
+   * say WHY the library is unverified instead of showing a bare tri-state.
+   *
+   * `null`/absent is a third answer again: an exporter too old to report it.
+   * Only a literal `true` is a claim, so "we were not told" never renders as
+   * "the validator is missing".
+   */
+  validator_unavailable?: boolean | null;
+}
+
+/** Members an export leaves out, each list saying why. Each reason is
+ *  something the operator can act on — pull the bytes, un-exclude the take,
+ *  or wait for the recording to finish. */
+export interface ExportDropped {
+  not_local: string[];
+  excluded: string[];
+  recording: string[];
+}
+
+/** How the included captures' task labels resolve. `unlabeled > 0` is what
+ *  makes the dialog's fallback-task field appear, and required. */
+export interface ExportTaskSummary {
+  labeled: number;
+  unlabeled: number;
+  /** label -> how many captures carry it. */
+  values: Record<string, number>;
+}
+
+/** One capture missing topics the selected profile requires. */
+export interface ExportCoverageGap {
+  capture_id: string;
+  topics: string[];
+}
+
+/** `GET /api/v1/datasets/{id}/export/preflight` — every check the dialog shows
+ *  BEFORE the operator commits, so a conversion that can only fail is visible
+ *  while it still costs nothing. No side effects. */
+export interface ExportPreflight {
+  dataset_id: string;
+  profile: ExportProfile;
+  output_name: string;
+  /** `exports/<name>` — where the conversion would land, under the data dir. */
+  output: string;
+  /** The destination already holds files; the export would be refused (409). */
+  output_exists: boolean;
+  member_total: number;
+  included: number;
+  dropped: ExportDropped;
+  tasks: ExportTaskSummary;
+  missing_topics: ExportCoverageGap[];
+  /** Captures whose manifest could not be read, so coverage is UNKNOWN for
+   *  them — reported, never silently passed or failed. */
+  coverage_unknown: string[];
+}
+
+/** Body for `POST /api/v1/datasets/{id}/export`. Only what the dialog decides:
+ *  fps / split / resampling belong to the profile, and a different recipe is a
+ *  different profile rather than a request field. */
+export interface ExportRequest {
+  profile: string;
+  /** The free trailing segment of the output name `<operator>_<profile>_<memo>`. */
+  memo?: string | null;
+  /** Task for the captures that carry no label. Required when the preflight
+   *  reports `tasks.unlabeled > 0` (else 400 `task_required`). */
+  task_fallback?: string | null;
+}
+
+/** The 202 answer: the exporter took the job. */
+export interface ExportSubmitResponse {
+  export_id: string;
+  dataset_id: string;
+  output: string;
+  included: number;
+  dropped: ExportDropped;
+}
+
+export type ExportState = 'queued' | 'running' | 'complete' | 'failed' | 'canceled';
+
+/**
+ * `GET /api/v1/datasets/{id}/export` — the export as this orchestrator process
+ * remembers it, with the exporter's live counters proxied through.
+ *
+ * Volatile on both sides (a restart forgets an in-flight run, which surfaces
+ * here as `failed`), so 404 means "no export this process knows about" and is
+ * read as "there is no export", not as an error.
+ */
+export interface ExportStatus {
+  dataset_id: string;
+  export_id: string;
+  output: string;
+  state: ExportState | string;
+  /** Place in the exporter's FIFO queue, 1 = next to run. Queued only. */
+  queue_position?: number | null;
+  done: number;
+  failed: number;
+  total: number;
+  /** Progress WITHIN the episode being converted (0–100), so the bar can move
+   *  during a long episode instead of standing still between whole numbers. */
+  current_episode_pct?: number | null;
+  /** The converter has reported nothing for a while. Surfaced, never acted on:
+   *  the export keeps running. */
+  stalled?: boolean | null;
+  message?: string | null;
 }
 
 // ---- store health (§8 / §9-3) --------------------------------------------
@@ -689,6 +1030,19 @@ export interface LossTopic {
   loss_rate?: number | null;
   gap_max_ms?: number | null;
   median_interval_ms?: number | null;
+  gap_events?: LossEvent[];
+}
+
+/** One inferred cadence gap from loss_report, placed on the capture timeline. */
+export interface LossEvent {
+  topic: string;
+  start_offset_ms: number;
+  end_offset_ms: number;
+  gap_ms: number;
+  expected_interval_ms: number;
+  estimated_missing: number;
+  gap_ratio: number;
+  time_source?: 'publish_time' | 'log_time' | string;
 }
 
 /** Per-topic downsample metadata for a `signal_report` topic. */
@@ -809,6 +1163,40 @@ export interface TopicInfo {
   subscriber_count?: number;
   qos?: Record<string, unknown> | string;
   last_seen?: string;
+}
+
+// ---- Manual setup check -------------------------------------------------
+
+export type SetupCheckItemStatus = 'pass' | 'warning' | 'blocker' | 'unknown';
+
+export interface SetupCheckItem {
+  id: string;
+  label: string;
+  status: SetupCheckItemStatus;
+  summary: string;
+  code?: string;
+  details?: Record<string, unknown>;
+  action?: string | null;
+}
+
+export interface SetupTopicCheck {
+  pattern: string;
+  status: SetupCheckItemStatus;
+  summary: string;
+  matched_topics: string[];
+  receiving_topics: string[];
+  qos: Record<string, Record<string, unknown> | string | null>;
+  action?: string | null;
+}
+
+export interface SetupCheckReport {
+  status: 'ready' | 'attention' | 'blocked';
+  checked_at: string;
+  duration_ms: number;
+  robot?: string | null;
+  ros_domain_id?: number | null;
+  checks: SetupCheckItem[];
+  topics: SetupTopicCheck[];
 }
 
 /**
@@ -1017,6 +1405,7 @@ export interface JobSubmitRequest {
   pipeline: string;
   capture_id: string;
   params?: Record<string, unknown>;
+  idempotency_key?: string;
 }
 
 /**
@@ -1061,6 +1450,62 @@ export interface JobStatus {
   state: JobState;
   progress?: number;
   logs_tail?: string[];
+  /** A cancel was accepted but the work has not stopped yet: cancelling a
+   *  running job is cooperative, so `state` stays `running` until the worker
+   *  is actually dead and only then turns `canceled`. Keep polling. */
+  cancel_requested?: boolean;
+  /** A timed-out outcome can be terminal while its worker still owns bytes. */
+  execution_active?: boolean | null;
+}
+
+export type ValidationRunState =
+  | 'creating'
+  | 'running'
+  | 'cancel_requested'
+  | 'finished';
+export type ValidationRunDispatchState =
+  | 'pending_lease'
+  | 'submitting'
+  | 'accepted'
+  | 'submission_failed'
+  | 'canceled_before_submit';
+
+export interface ValidationRunCreateRequest {
+  pipeline: string;
+  /** Explicit targets. Omit when execution consumes a server selection. */
+  capture_ids?: string[];
+  /** Frozen All/Batch target set created by POST /capture-selections. */
+  selection_id?: string;
+  params?: Record<string, unknown>;
+  /** Caller-generated UUID; reusing it safely recovers a lost POST response. */
+  request_id: string;
+}
+
+export interface ValidationRunJob {
+  run_job_id: string;
+  capture_id: string;
+  attempt: number;
+  dispatch_state: ValidationRunDispatchState;
+  job?: JobStatus | null;
+  failure_code?: string | null;
+  failure_message?: string | null;
+  result?: JobResult | null;
+}
+
+export interface ValidationRun {
+  run_id: string;
+  pipeline: string;
+  params: Record<string, unknown>;
+  state: ValidationRunState;
+  cancel_requested: boolean;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+  jobs: ValidationRunJob[];
+}
+
+export interface ValidationRunListResponse {
+  items: ValidationRun[];
 }
 
 // ---- Cursor pagination --------------------------------------------------
@@ -1121,6 +1566,9 @@ export type BatchStatus = 'active' | 'completed' | 'ended_early';
 export interface Batch {
   batch_id: string;
   robot?: string | null;
+  project_id?: string | null;
+  task_id?: string | null;
+  condition_id?: string | null;
   /** Nullable since 2026-08-06: a deployment with an empty plan catalog has no
    *  project to name, and Collect used to send the `'—'` placeholder it
    *  DISPLAYS — writing a fabricated label into the shared catalog for good.
@@ -1180,9 +1628,15 @@ export interface BatchListResponse {
   items: BatchSummary[];
 }
 
+/** Ordered metadata resolution for only the batch ids in a capture page. */
+export interface BatchLookupResponse {
+  items: Batch[];
+}
+
 /** One condition's recorded total for a task (`GET /api/v1/batches/coverage`). */
 export interface CoverageRow {
   condition: string;
+  condition_id?: string | null;
   /** Sum of the batches' monotone `episodes_recorded` for this condition. */
   recorded: number;
   /** True when ANY batch in the sum carries `episodes_recorded_is_floor`. A sum
@@ -1199,12 +1653,27 @@ export interface CoverageRow {
  *  rows: the plan catalog is a client-side vocabulary, and a server inventing
  *  rows for it would be reporting a plan rather than a measurement. */
 export interface BatchCoverageResponse {
-  task: string;
+  task?: string | null;
+  scope: BatchCoverageScope;
   rows: CoverageRow[];
+}
+
+export interface BatchCoverageScope {
+  project_id?: string | null;
+  project?: string | null;
+  task_id?: string | null;
+  task?: string | null;
+  robot?: string | null;
+  operator?: string | null;
+  created_from?: string | null;
+  created_to?: string | null;
 }
 
 export interface BatchCreateRequest {
   robot?: string | null;
+  project_id?: string | null;
+  task_id?: string | null;
+  condition_id?: string | null;
   /** Omit (or send `null`) when there is no plan to name — never the display
    *  placeholder. See `Batch.project`. */
   project?: string | null;
@@ -1217,6 +1686,12 @@ export interface BatchCreateRequest {
 export interface BatchPatchRequest {
   status?: BatchStatus;
   ended_reason?: string | null;
+  /** Empty-batch identity update after an operator or robot switch. */
+  robot?: string | null;
+  project_id?: string | null;
+  task_id?: string | null;
+  condition_id?: string | null;
+  operator?: string | null;
   /** Empty-batch re-label only: Collect PATCHes project/task when the operator
    *  switches them before the batch's first recording (a batch with recordings
    *  rolls over to a new one instead). */

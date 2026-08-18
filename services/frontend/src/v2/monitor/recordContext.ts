@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Pure helpers for the Monitor context strip's REAL recording-state chip (no
 // fabricated episode numbering). Derives the chip from /record/status — the same
 // source Collect uses. Kept separate from the component so the active/elapsed

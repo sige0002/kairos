@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Unit tests for the recorder HTTP client: retry, timeout, error mapping.
 
 These drive the async client directly via ``asyncio.run`` to avoid an async
@@ -88,6 +90,17 @@ def test_healthz_never_raises() -> None:
         raise httpx.ConnectError("down")
 
     assert asyncio.run(_with_client(handler, "healthz")) is False
+
+
+def test_preflight_calls_read_only_recorder_endpoint() -> None:
+    seen: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path))
+        return httpx.Response(200, json={"ready": True})
+
+    assert asyncio.run(_with_client(handler, "preflight")) == {"ready": True}
+    assert seen == [("GET", "/record/preflight")]
 
 
 def _captured_read_timeout(call: str, *args: object) -> float | None:

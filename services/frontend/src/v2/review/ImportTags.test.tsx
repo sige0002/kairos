@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Bulk labels on an import.
 //
 // A bag recorded outside kairos carries no operator or task of its own — the

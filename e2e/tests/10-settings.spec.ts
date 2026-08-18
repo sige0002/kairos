@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings › Recording — the one screen that WRITES the config the rest of the
 // stack runs on.
 //
@@ -28,26 +30,86 @@
 // original bytes are put back in a `finally` so an acceptance run leaves no
 // diff behind.
 
-import { expect, test } from '@playwright/test';
-import { api } from '../fixtures/api';
-import { repoConfig } from '../fixtures/config';
-import { openRecordingJsonEditor, openRecordingSettings } from '../fixtures/ui';
+import { expect, test } from "@playwright/test";
+import { api } from "../fixtures/api";
+import { repoConfig } from "../fixtures/config";
+import {
+  openRecordingJsonEditor,
+  openRecordingSettings,
+  openTab,
+} from "../fixtures/ui";
 
-test.describe.configure({ mode: 'serial' });
+test.describe.configure({ mode: "serial" });
 
-test('Settings: the recording config loads, a broken edit is refused, and a save changes nothing', async ({
+test("Settings: setup check runs only on request and returns within five seconds", async ({
+  page,
+}) => {
+  const setupRequests: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/api/v1/system/setup-check")) {
+      setupRequests.push(request.method());
+    }
+  });
+
+  await openTab(page, "settings");
+  await expect(page.getByTestId("setup-check")).toBeVisible();
+  await expect(page.getByTestId("setup-check-result")).toHaveCount(0);
+  expect(
+    setupRequests,
+    "setup check ran merely because Settings opened",
+  ).toEqual([]);
+
+  const responsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes("/api/v1/system/setup-check") &&
+      response.request().method() === "POST",
+  );
+  await page.getByTestId("run-setup-check").click();
+  const response = await responsePromise;
+  expect(response.ok(), await response.text()).toBe(true);
+  const report = (await response.json()) as {
+    duration_ms: number;
+    checks: { id: string }[];
+  };
+  expect(report.duration_ms).toBeLessThan(5_000);
+  expect(report.checks.map((item) => item.id)).toEqual(
+    expect.arrayContaining([
+      "recording_config",
+      "recorder",
+      "topic_graph",
+      "monitor_intake",
+    ]),
+  );
+
+  const result = page.getByTestId("setup-check-result");
+  await expect(result).toBeVisible();
+  await expect(result).toContainText("Recorder preflight");
+  await expect(result).toContainText("Configured topic coverage");
+  expect(setupRequests).toEqual(["POST"]);
+});
+
+test("Settings: the recording config loads, a broken edit is refused, and a save changes nothing", async ({
   page,
 }) => {
   test.setTimeout(5 * 60_000);
 
   // ---- the truth the screen has to be showing -----------------------------
   const before = await api.recordingConfig();
-  expect(before.config, 'no recording config is loaded — the screen has nothing to show').not.toBeNull();
+  expect(
+    before.config,
+    "no recording config is loaded — the screen has nothing to show",
+  ).not.toBeNull();
   const cfg = before.config as Record<string, unknown>;
-  const robotName = String(cfg.robot_name ?? '');
+  const robotName = String(cfg.robot_name ?? "");
   const topics = (cfg.default_topics ?? []) as string[];
-  expect(robotName.length, 'the active recording config has no robot_name').toBeGreaterThan(0);
-  expect(topics.length, 'the active recording config has no default_topics').toBeGreaterThan(0);
+  expect(
+    robotName.length,
+    "the active recording config has no robot_name",
+  ).toBeGreaterThan(0);
+  expect(
+    topics.length,
+    "the active recording config has no default_topics",
+  ).toBeGreaterThan(0);
 
   // The bytes as the working tree has them right now. Read BEFORE anything is
   // driven, so the restore below is to the developer's file, not to whatever an
@@ -57,9 +119,9 @@ test('Settings: the recording config loads, a broken edit is refused, and a save
   try {
     // ---- PRIMARY: the screen shows the real config, not a placeholder ------
     await openRecordingSettings(page);
-    await expect(page.getByTestId('recording-robot')).toHaveText(robotName);
-    await expect(page.getByTestId('recording-topic-count')).toHaveText(
-      `${topics.length} topic${topics.length === 1 ? '' : 's'}`,
+    await expect(page.getByTestId("recording-robot")).toHaveText(robotName);
+    await expect(page.getByTestId("recording-topic-count")).toHaveText(
+      `${topics.length} topic${topics.length === 1 ? "" : "s"}`,
     );
     // Every configured topic is listed by name. A count with the wrong rows
     // behind it is the failure a count alone cannot catch.
@@ -75,12 +137,12 @@ test('Settings: the recording config loads, a broken edit is refused, and a save
     const loaded = (await editor.inputValue()).trim();
     expect(
       JSON.parse(loaded),
-      'the JSON in the editor is not the config the server reports',
+      "the JSON in the editor is not the config the server reports",
     ).toEqual(cfg);
-    await expect(page.getByText('Valid JSON', { exact: true })).toBeVisible();
+    await expect(page.getByText("Valid JSON", { exact: true })).toBeVisible();
 
-    const advanced = page.getByTestId('recording-advanced');
-    const save = advanced.getByRole('button', { name: 'Save' });
+    const advanced = page.getByTestId("recording-advanced");
+    const save = advanced.getByRole("button", { name: "Save" });
     await expect(save).toBeEnabled();
 
     // ---- PRIMARY: a broken edit never reaches the server ------------------
@@ -88,20 +150,27 @@ test('Settings: the recording config loads, a broken edit is refused, and a save
     // is wrong, and Save is taken away rather than left to produce a 422 that
     // reads like a server fault.
     await editor.fill('{ "robot_name": ');
-    await expect(page.getByText(/^Invalid JSON — /)).toBeVisible({ timeout: 30_000 });
-    await expect(save, 'Save stayed live on a buffer that is not JSON').toBeDisabled();
+    await expect(page.getByText(/^Invalid JSON — /)).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(
+      save,
+      "Save stayed live on a buffer that is not JSON",
+    ).toBeDisabled();
     // Nothing was sent: the file and the live config are still the originals.
     expect((await api.recordingConfig()).config).toEqual(cfg);
 
     // ---- PRIMARY: put it back, and save it --------------------------------
     await editor.fill(loaded);
-    await expect(page.getByText('Valid JSON', { exact: true })).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("Valid JSON", { exact: true })).toBeVisible({
+      timeout: 30_000,
+    });
     await expect(save).toBeEnabled();
     await save.click();
 
     await expect(
-      advanced.getByText('Saved', { exact: true }),
-      'the save never acknowledged',
+      advanced.getByText("Saved", { exact: true }),
+      "the save never acknowledged",
     ).toBeVisible({ timeout: 60_000 });
     // The acknowledgement is honest about WHEN it applies — the recorder's QoS
     // and the monitor's rates are read at service startup, and a screen that
@@ -113,7 +182,10 @@ test('Settings: the recording config loads, a broken edit is refused, and a save
     // the one it was". The editor is re-seeded from what the server actually
     // wrote, so the screen has to agree too.
     const after = await api.recordingConfig();
-    expect(after.config, 'saving the same config back changed what the server reads').toEqual(cfg);
+    expect(
+      after.config,
+      "saving the same config back changed what the server reads",
+    ).toEqual(cfg);
     expect(after.path).toBe(before.path);
     expect(JSON.parse((await editor.inputValue()).trim())).toEqual(cfg);
   } finally {
@@ -129,6 +201,6 @@ test('Settings: the recording config loads, a broken edit is refused, and a save
 
   expect(
     repoConfig.read(before.path),
-    'the acceptance run left the tracked recording config rewritten',
+    "the acceptance run left the tracked recording config rewritten",
   ).toBe(originalBytes);
 });

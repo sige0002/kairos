@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """api_orchestrator: API hub / job & state management (Stage 0 skeleton).
 
 The single public API the frontend talks to. Stage 0 provides only a runnable

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """fast_validation pipeline tests using a real sample MCAP.
 
 These are integration tests against a local recording under ``data/objects/``

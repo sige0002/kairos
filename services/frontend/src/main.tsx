@@ -1,3 +1,7 @@
+// FIRST import on purpose: repairs an Intl-invalid navigator.language
+// ("en-US@posix") before any module — uPlot via App's import chain — reads it
+// at module scope and blanks the console with a RangeError.
+import './localeGuard';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';

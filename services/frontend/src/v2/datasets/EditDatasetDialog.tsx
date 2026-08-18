@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Edit a dataset's three labels (§6). Identity is dataset_id, so a rename
 // changes what the dataset is CALLED, never what it IS: same members, same
 // numbers, same history. The views/ tree follows server-side — the labels are
@@ -88,7 +90,7 @@ function EditForm({ state }: { state: DatasetsState }) {
         <label className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Operator{' '}
-            <span className="font-normal normal-case text-gray-400">(optional)</span>
+            <span className="font-normal normal-case text-gray-500">(optional)</span>
           </span>
           <input
             data-testid="edit-dataset-operator"
@@ -100,7 +102,7 @@ function EditForm({ state }: { state: DatasetsState }) {
         <label className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Task{' '}
-            <span className="font-normal normal-case text-gray-400">(optional)</span>
+            <span className="font-normal normal-case text-gray-500">(optional)</span>
           </span>
           <input
             data-testid="edit-dataset-task"

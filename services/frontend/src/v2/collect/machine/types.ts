@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Domain vocabulary and constants of the Collect batch machine, split out of
 // useBatchMachine.ts (which re-exports everything here — external imports are
 // unchanged).
@@ -45,6 +47,17 @@ export type StopBlockedReason = 'floor' | null;
  *  press lands tens of milliseconds after the first (qa-ui measured 86ms), and
  *  no deliberate recording is a second long. */
 export const STOP_FLOOR_MS = 1000;
+
+/** The same double-click, one phase earlier (#8): ARMING replaces the Start
+ *  button with Cancel in nearly the same hit-area, so the second press landed
+ *  on Cancel and backed out of the take the first press had just begun. Cancel
+ *  therefore ignores its first this-many milliseconds on screen.
+ *
+ *  Well clear of the measured 86ms tail and far short of a deliberate press:
+ *  the operator has to read ARMING… before deciding to back out. Unlike the
+ *  Stop floor this is a property of the CONTROL, not of the take, so it is
+ *  armed by the card appearing rather than by the recorder's clock. */
+export const ARMING_CANCEL_GUARD_MS = 350;
 
 export interface EpisodeRecord {
   index: number;
@@ -164,6 +177,13 @@ export const UNSAVED_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const PREARM_KEEPALIVE_LEAD_MS = 20_000;
 // Retry cadence after a failed prepare (or when disarm_at is unknown).
 export const PREARM_RETRY_MS = 30_000;
+// Failed prepares back off (doubling from PREARM_RETRY_MS) up to this cap: a
+// persistent arm blocker does not need a probe every 30 s, and before the
+// recorder-side S2-7 fix each probe minted a failed capture.
+export const PREARM_RETRY_MAX_MS = 300_000;
+// Surface `preArmDegraded` only after this many CONSECUTIVE failures — a
+// single failure is usually a lost race with a start, not a condition.
+export const PREARM_DEGRADED_AFTER_FAILURES = 2;
 
 // The ledger reasons for Collect's one-click discards. Nobody typed these —
 // recording that no reason was asked is the honest entry, and it keeps the
@@ -175,3 +195,25 @@ export const COLLECT_DISCARD_REASON = 'Collect one-click discard (no reason aske
 export const RETAKE_DISCARD_REASON = 'Superseded by retake (Collect)';
 export const COLLECT_UNSAVED_DISCARD_REASON =
   'Collect recovery-banner discard of an unsaved take (no reason asked)';
+// A start the operator backed out of during ARMING still reaches the recorder,
+// so the sub-second bag it wrote is discarded rather than left in the catalog
+// as a take nobody meant to make (#8). The ledger says which gesture it was.
+export const CANCELLED_START_DISCARD_REASON =
+  'Start cancelled during arming (Collect)';
+
+/**
+ * Why Start is refused when nobody has said who is recording (#11).
+ *
+ * One string for two surfaces — the note under the disabled Start button, and
+ * the toast when the R shortcut walks around that button — because a gate the
+ * operator meets on their very first visit cannot afford two different
+ * accounts of itself.
+ *
+ * Written for someone who has never seen this console: the condition first (so
+ * it reads as a state, not a scolding), then the control BY THE LABEL PRINTED
+ * ON IT, then why it is worth the extra step. "OP" is what the chip in the
+ * header actually says while empty, so pointing at it needs no jargon.
+ */
+export const OPERATOR_GATE_HINT =
+  'No name set yet — click OP at the top right to add yours. ' +
+  'Every recording has to say who made it.';

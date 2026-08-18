@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The placeholders a RECORDED capture uses when it has no operator or task.
 
 Shared because both entry points into a recording must produce the *same*

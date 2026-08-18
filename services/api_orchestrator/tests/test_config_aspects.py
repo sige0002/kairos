@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Single-file aspect editor: ``GET/PUT /api/v1/config/alerts``.
 
 F2'': Settings > Data quality reads and writes a per-robot config file that is

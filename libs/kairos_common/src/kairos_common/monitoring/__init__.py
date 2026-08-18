@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared live-monitoring engine (ROS-free core) for kairos services.
 
 This package holds the windowed-metric math, the alert incident engine, and the

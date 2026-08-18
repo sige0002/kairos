@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Monitor tab (v2 IA) — absorbs the old Graph + Probe tabs plus the header's old
 // SystemInfo footer. All six §11 sub-views are built out on real data:
 //   Overview  — diagnostic landing (record context, topic-health tally, incidents)
@@ -25,6 +27,7 @@ import { LogsView } from './LogsView';
 import { RecordContextChip } from './RecordContextChip';
 import { SignalsView } from './signals/SignalsView';
 import { setPanelTopics, usePanels } from './panelStore';
+import { ScreenTitle } from '../shared/ScreenTitle';
 
 const MON_NAV = [
   'Overview',
@@ -37,6 +40,19 @@ const MON_NAV = [
 ] as const;
 type MonView = (typeof MON_NAV)[number];
 
+function routeMonView(): MonView {
+  return new URLSearchParams(window.location.search).get('view') === 'store'
+    ? 'Store'
+    : 'Overview';
+}
+
+function writeMonView(view: MonView): void {
+  const params = new URLSearchParams(window.location.search);
+  if (view === 'Store') params.set('view', 'store');
+  else params.delete('view');
+  window.history.replaceState(null, '', `${window.location.pathname}?${params}`);
+}
+
 export function MonitorScreen() {
   // Seeded by the app shell before any tab renders (see CollectScreen) — reads
   // the same cache instead of threading a `config` prop down from App.tsx.
@@ -47,7 +63,15 @@ export function MonitorScreen() {
   const setActiveTab = useUiStore((s) => s.setActiveTab);
   // Overview is the diagnostic landing (§11 order); the operator drills into the
   // other sub-views from there.
-  const [monView, setMonView] = useState<MonView>('Overview');
+  // Store health is the one Monitor sub-view reached from a global warning, so
+  // it is addressable and survives a reload/pop-out. Other sub-views remain
+  // local navigation; making only this safety-relevant destination routable
+  // avoids turning incidental chart state into a second router.
+  const [monView, setMonView] = useState<MonView>(routeMonView);
+  const selectMonView = (view: MonView) => {
+    setMonView(view);
+    writeMonView(view);
+  };
 
   // The Topics view's primary chart panel (index 0) is what Overview's "chart →"
   // links target: set its topic set, then switch to Topics so the click lands on
@@ -55,27 +79,28 @@ export function MonitorScreen() {
   const panels = usePanels();
   const openTopics = (topic?: string) => {
     if (topic && panels[0]) setPanelTopics(panels[0].id, [topic]);
-    setMonView('Topics');
+    selectMonView('Topics');
   };
 
   return (
     <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
+      <ScreenTitle>Monitor</ScreenTitle>
       <div className="flex shrink-0 flex-wrap items-center gap-2.5">
         <RecordContextChip />
 
-        <div className="flex gap-0.5 rounded-[11px] border border-gray-200 bg-gray-100 p-[3px]">
+        <div className="flex flex-wrap gap-0.5 rounded-[11px] border border-gray-200 bg-gray-100 p-[3px]">
           {MON_NAV.map((label) => (
             <button
               key={label}
               type="button"
               data-testid={`mon-nav-${label}`}
               aria-pressed={label === monView}
-              onClick={() => setMonView(label)}
+              onClick={() => selectMonView(label)}
               className={cn(
                 'rounded-lg px-3.5 py-1.5 text-[12.5px] font-medium transition-colors',
                 label === monView
-                  ? 'bg-teal-600 font-semibold text-white'
-                  : 'text-gray-500 hover:text-gray-700',
+                  ? 'bg-teal-700 font-semibold text-white'
+                  : 'text-gray-600 hover:text-gray-700',
               )}
             >
               {label}
@@ -94,12 +119,12 @@ export function MonitorScreen() {
       </div>
 
       {!config ? (
-        <div className="p-4 text-sm text-gray-400">Loading…</div>
+        <div className="p-4 text-sm text-gray-500">Loading…</div>
       ) : monView === 'Overview' ? (
         <OverviewView
           config={config}
           onOpenTopics={openTopics}
-          onOpenSignals={() => setMonView('Signals')}
+          onOpenSignals={() => selectMonView('Signals')}
         />
       ) : monView === 'Topics' ? (
         <TopicsView config={config} />

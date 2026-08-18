@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Config-driven defaults for the ``loss_report`` validator (OL-4.3).
 
 The ``loss_report`` thresholds and target-topic globs used to be hardcoded code

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """ROS-free tests for the rclpy subscriber's pure bookkeeping.
 
 ``RosProbeSubscriber`` imports rclpy lazily (only in ``start``/``_spin_up``), so

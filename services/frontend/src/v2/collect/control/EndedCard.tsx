@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // ENDED: the set stopped short of its target. The summary leads with what was
 // kept, because the operator's first question after an early end is whether
 // the episodes already recorded survived it.
@@ -26,9 +28,9 @@ export function EndedCard({
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="text-[15px] font-bold text-gray-900">
+        <h2 className="text-[15px] font-bold text-gray-900">
           Batch {machine.batchSeq ?? '—'} ended early
-        </span>
+        </h2>
         <div className="flex-1" />
         <span className="rounded-chip bg-amber-100 px-2 py-0.5 text-[11px] font-bold text-amber-800">
           INCOMPLETE
@@ -37,7 +39,7 @@ export function EndedCard({
       <span className="text-[12.5px] leading-relaxed text-gray-500">
         {endSummary}. All recorded episodes are saved and visible in Review.
       </span>
-      <span className="text-xs text-gray-400">Reason: {machine.endReason}</span>
+      <span className="text-xs text-gray-500">Reason: {machine.endReason}</span>
       <button
         type="button"
         data-testid="start-next-set"
@@ -45,8 +47,8 @@ export function EndedCard({
         className={cn(
           'h-[46px] rounded-control text-sm font-bold text-white',
           confirmNextSet
-            ? 'bg-amber-600 hover:bg-amber-700'
-            : 'bg-teal-600 hover:bg-teal-700',
+            ? 'bg-amber-700 hover:bg-amber-800'
+            : 'bg-teal-700 hover:bg-teal-800',
         )}
       >
         {confirmNextSet ? 'Press again to start the next set' : 'Start next set'}

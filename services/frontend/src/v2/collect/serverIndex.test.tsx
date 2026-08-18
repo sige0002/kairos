@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // E-7, the frontend half: the episode number the SERVER actually stored.
 //
 // `index_in_batch` is a proposal, not a decision. Collect sends
@@ -107,7 +109,10 @@ beforeEach(() => {
   __resetBatchStore();
   useUiStore.setState({
     activeTab: '',
-    recordOperator: '',
+    // Recording requires an operator since #11, in every configuration —
+    // so a suite that records has to say who is recording. The gate itself
+    // is exercised where it is the subject, not incidentally here.
+    recordOperator: 'tester',
     recordSelected: new Set<string>(),
     recordCustomized: false,
   });

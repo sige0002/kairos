@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Where the stack under test lives, and the few operations a scenario is
 // allowed to perform ON it (as opposed to through it).
 //

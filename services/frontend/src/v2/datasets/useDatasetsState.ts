@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Local state for the Datasets tab.
 //
 // A dataset is rows plus ledger events (§6): creating one writes a row, adding
@@ -24,30 +26,51 @@
 // pointed at a row that is no longer on screen.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import {
   addDatasetMember,
   archiveCapture,
   archiveDataset,
+  cancelDatasetArchiveAttempt,
+  createCaptureSelection,
   createDataset,
+  createDatasetMembershipBulkRun,
   deleteDataset,
   getArchiveConfig,
   getCapture,
+  getCaptureArchiveProgress,
   getDataset,
   getDatasetArchive,
-  listAllCaptures,
+  getDatasetMembershipBulkRun,
+  searchCaptures,
+  retryDatasetMembershipBulkRun,
   listDatasets,
   removeDatasetMember,
   updateDataset,
 } from '../../api/captures';
+import { lookupBatches } from '../../api/batches';
+import { ApiError } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import { DATASET_ARCHIVE_POLL_MS } from '../pollingPolicy';
-import { useSplitDeploy } from '../captures/useSplitDeploy';
+import { CAPTURE_ARCHIVE_POLL_MS, DATASET_ARCHIVE_POLL_MS } from '../pollingPolicy';
+import { useRobotCopyMayRemain } from '../captures/useSplitDeploy';
+import {
+  hasCollectionContext,
+  resolveCaptureCondition,
+  type CaptureConditionView,
+} from '../captures/recordingCondition';
 import { useBulkRun } from '../shared/useBulkRun';
 import { useOnPopState } from '../shared/useOnPopState';
 import type {
+  CaptureArchiveProgress,
   CaptureDetail,
   CaptureListItem,
+  CaptureSearchQuery,
+  BatchLookupResponse,
   Dataset,
   DatasetArchiveProgress,
 } from '../../api/types';
@@ -57,13 +80,19 @@ import {
   isDestructiveFailure,
   readCaptureError,
 } from '../captures/errors';
-import { useCaptureDeletion, type CaptureDeletionState } from '../captures/useCaptureDeletion';
+import {
+  useCaptureDeletion,
+  type CaptureDeletionState,
+} from '../captures/useCaptureDeletion';
+import { useLeRobotExport, type LeRobotExportState } from './useLeRobotExport';
 import {
   ANY_OPERATOR,
   MEMBER_PAGE_SIZE,
   addBlockedReason,
   aggregate,
   buildDatasetRows,
+  candidateMatchesConditions,
+  conditionDistribution,
   datasetMatchesSearch,
   distinctOperators,
   filterMembers,
@@ -72,15 +101,44 @@ import {
   joinMembers,
   membersByDataset,
   type DatasetAggregate,
+  type ConditionDistribution,
+  type CandidateFilterCondition,
+  type CandidateFilterField,
+  type CandidateFilterJoin,
+  type CandidateFilterOperator,
   type DatasetRow,
   type MemberRow,
   type SortMode,
   type TaskResultFilter,
 } from './data';
 import { readDatasetsUrl, writeDatasetsUrl } from './url';
+
+// How many consecutive failed progress reads end the archive watch with an
+// error. The run keeps going server-side either way; this only bounds how
+// long a dead server can hold a spinner.
+const ARCHIVE_POLL_MAX_FAILED_READS = 30;
+
+// Test seam (same shape as stopConfirm's): the archive watch is a real
+// wall-clock poll a unit test must not sit through.
+let captureArchivePollMs: number | null = null;
+export function __setCaptureArchivePollMs(ms: number): void {
+  captureArchivePollMs = ms;
+}
+export function __resetCaptureArchivePollMs(): void {
+  captureArchivePollMs = null;
+}
+function getCaptureArchivePollMs(): number {
+  return captureArchivePollMs ?? CAPTURE_ARCHIVE_POLL_MS;
+}
 import { useToast } from '../shared/useToast';
 
 export type { TaskResultFilter } from './data';
+export type {
+  CandidateFilterCondition,
+  CandidateFilterField,
+  CandidateFilterJoin,
+  CandidateFilterOperator,
+} from './data';
 
 /** This screen's own capture sweep: the whole catalog, because a dataset may
  *  cite any capture in it and the "add a capture" picker offers from all of it.
@@ -95,6 +153,57 @@ const ADDABLE_STATES = new Set(['completed', 'failed', 'interrupted']);
 /** How many candidate captures the rail builds at once. The rest are reachable
  *  by narrowing the search — the boundary is stated, never silent. */
 const CANDIDATE_LIMIT = 50;
+const BULK_INTENT_STORAGE_KEY = 'kairos:dataset-membership-bulk-intent:v1';
+
+interface BulkAddSnapshot {
+  datasetId: string;
+  datasetName: string;
+  join: CandidateFilterJoin;
+  conditions: Array<Omit<CandidateFilterCondition, 'id'>>;
+  selectionId: string | null;
+  expiresAt: string | null;
+  matched: number | null;
+  requestId: string;
+}
+
+interface PersistedBulkIntent {
+  snapshot: BulkAddSnapshot;
+  runId: string | null;
+  runRequested: boolean;
+}
+
+function readBulkIntent(): PersistedBulkIntent | null {
+  try {
+    const raw = sessionStorage.getItem(BULK_INTENT_STORAGE_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<PersistedBulkIntent>;
+    if (
+      !value.snapshot ||
+      typeof value.snapshot.datasetId !== 'string' ||
+      typeof value.snapshot.requestId !== 'string' ||
+      typeof value.runRequested !== 'boolean'
+    ) {
+      return null;
+    }
+    return {
+      snapshot: value.snapshot,
+      runId: value.runId ?? null,
+      runRequested: value.runRequested,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeBulkIntent(intent: PersistedBulkIntent | null): void {
+  try {
+    if (intent) sessionStorage.setItem(BULK_INTENT_STORAGE_KEY, JSON.stringify(intent));
+    else sessionStorage.removeItem(BULK_INTENT_STORAGE_KEY);
+  } catch {
+    // Storage can be unavailable in a hardened browser; the live run remains
+    // server-owned and the dialog continues to work for this page session.
+  }
+}
 
 /** The scope the center's summary describes: the selected dataset, or — when
  *  none is selected — every member of every dataset in view. */
@@ -104,10 +213,19 @@ export interface ScopeSummary {
   label: string;
   operator: string | null;
   task: string | null;
+  selectionRecipes: Dataset['selection_recipes'];
   aggregate: DatasetAggregate;
+  conditions: ConditionDistribution;
   /** Members the aggregate could say nothing about (§ see DatasetRow). */
   unresolved: number;
 }
+
+export interface BulkAddFailure {
+  captureId: string;
+  message: string;
+}
+
+export type { CaptureConditionView } from '../captures/recordingCondition';
 
 export interface DatasetsState {
   /** The dataset rows the left column renders (search-filtered, sorted). */
@@ -258,11 +376,32 @@ export interface DatasetsState {
   /** Finished captures not already in the selected dataset, newest first and
    *  capped at CANDIDATE_LIMIT. */
   candidates: CaptureListItem[];
+  /** Current server-page number in the candidate cursor history (one based). */
+  candidatePage: number;
+  canPreviousCandidatePage: boolean;
+  canNextCandidatePage: boolean;
+  previousCandidatePage: () => void;
+  nextCandidatePage: () => void;
   /** How many matched before the cap, so the rail can say what it is not
    *  showing. */
   candidateMatchCount: number;
-  candidateSearch: string;
-  setCandidateSearch: (s: string) => void;
+  candidateConditions: CandidateFilterCondition[];
+  candidateJoin: CandidateFilterJoin;
+  setCandidateJoin: (join: CandidateFilterJoin) => void;
+  addCandidateCondition: (
+    field: CandidateFilterField,
+    operator: CandidateFilterOperator,
+    value: string,
+  ) => void;
+  removeCandidateCondition: (id: number) => void;
+  clearCandidateConditions: () => void;
+  conditionFilterStatus: 'loading' | 'ready' | 'error';
+  /** Legacy candidates excluded from an active condition/any filter because
+   * their current Batch label is unavailable. */
+  unresolvedLegacyConditionCount: number;
+  /** Collection-time condition for a capture. Legacy Batch lookup failures and
+   *  genuinely absent labels stay distinct. */
+  conditionForCapture: (capture: CaptureListItem) => CaptureConditionView;
   addMember: (capture: CaptureListItem) => void;
   addingCaptureId: string | null;
   /** Candidates that cannot join today (not adopted / bytes elsewhere) are
@@ -270,6 +409,31 @@ export interface DatasetsState {
   showBlockedCandidates: boolean;
   toggleBlockedCandidates: () => void;
   blockedCandidateCount: number;
+
+  // ---- adding every matched capture ------------------------------------
+  bulkAddOpen: boolean;
+  bulkAddTargetDatasetName: string | null;
+  bulkAddTargetCount: number;
+  bulkAddExpiresAt: string | null;
+  bulkAddCatalogTruncated: boolean;
+  bulkAddPreflighting: boolean;
+  openBulkAdd: () => void;
+  cancelBulkAdd: () => void;
+  confirmBulkAdd: () => void;
+  refreshBulkAddSelection: () => void;
+  retryBulkAddFailures: () => void;
+  bulkAddBusy: boolean;
+  bulkAddDone: number;
+  bulkAddTotal: number;
+  bulkAddTerminal: boolean;
+  /** The frozen server set expired; it must be re-reviewed before a new run. */
+  bulkAddSelectionExpired: boolean;
+  /** A run POST may have reached the server even when its response was lost. */
+  bulkAddCanRetryRequest: boolean;
+  /** Members may be durable while only the provenance receipt needs retrying. */
+  bulkAddReceiptFailed: boolean;
+  bulkAddFailures: BulkAddFailure[];
+  bulkAddError: unknown;
 
   // ---- removing the bytes (§7, via the shared dialogs) -------------------
   deletion: CaptureDeletionState;
@@ -302,12 +466,14 @@ export interface DatasetsState {
   setArchiveReason: (s: string) => void;
   confirmArchive: () => void;
   archiving: boolean;
+  /** Live copy progress while the archive runs server-side (bytes). */
+  archiveProgress: { done: number; total: number | null } | null;
   archiveError: unknown;
 
   // ---- dataset archive (§6.x: the terminal transition) --------------------
   // Copy the WHOLE dataset out — views shape plus a manifest — verify every
-  // file, then remove the members from this machine. Terminal: the dataset's
-  // member set freezes at the start and its status never returns to active.
+  // file, then remove the members from this machine. A halted attempt with no
+  // completed member may be canceled; otherwise the frozen set goes forward.
   /** status ≠ 'active' — the dataset's member set is frozen (§6.x). */
   isDatasetFrozen: (datasetId: string) => boolean;
   /** The selected dataset may start an archive run right now. */
@@ -337,10 +503,21 @@ export interface DatasetsState {
   confirmDatasetArchive: () => void;
   /** Re-POST with no destination: continue a halted run where it stood. */
   resumeDatasetArchive: () => void;
+  /** Release a halted attempt only when the server proves zero progress. */
+  cancelDatasetArchiveRun: () => void;
   datasetArchiveStarting: boolean;
   datasetArchiveStartError: unknown;
+  datasetArchiveCanceling: boolean;
+  datasetArchiveCancelError: unknown;
   /** Live progress while the selected dataset is archiving (1 s poll). */
   datasetArchiveProgress: DatasetArchiveProgress | null;
+
+  // ---- LeRobot export (§6.2) ---------------------------------------------
+  // Converting READS the dataset and writes elsewhere, so unlike the archive
+  // above it changes nothing here — no status, no frozen member set. Its whole
+  // state lives in its own hook rather than in this file, which is already the
+  // screen's largest.
+  lerobotExport: LeRobotExportState;
 
   isLoading: boolean;
   isError: boolean;
@@ -381,24 +558,17 @@ function terminated(text: string): string {
   return /[.!?…—:]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
-/** Case-insensitive substring match over a capture's own identifying fields —
- *  the candidate picker's find. */
-function captureMatches(capture: CaptureListItem, query: string): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  return [capture.capture_id, capture.run_id, capture.operator, capture.task]
-    .filter((v): v is string => typeof v === 'string' && v !== '')
-    .some((v) => v.toLowerCase().includes(q));
-}
-
 export function useDatasetsState(): DatasetsState {
   const queryClient = useQueryClient();
+  const [restoredBulkIntent] = useState(readBulkIntent);
   // Seed every addressable field from the query string ONCE — this is what a
   // deep link, a reload, and a return to the tab (the shell unmounts this
   // screen on a tab switch) all restore from.
   const [seed] = useState(() => readDatasetsUrl(window.location.search));
 
-  const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(seed.datasetId);
+  const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(
+    seed.datasetId,
+  );
   const [selectedMembershipId, setSelectedMembershipId] = useState<string | null>(
     seed.membershipId,
   );
@@ -446,9 +616,43 @@ export function useDatasetsState(): DatasetsState {
   const [combineTask, setCombineTask] = useState('');
   const [combineSources, setCombineSources] = useState<string[]>([]);
   const combine = useBulkRun<{ captureId: string; message: string }>();
-  const [candidateSearch, setCandidateSearch] = useState('');
+  const nextCandidateConditionId = useRef(1);
+  const [candidateConditions, setCandidateConditions] = useState<
+    CandidateFilterCondition[]
+  >([]);
+  const [candidateJoin, setCandidateJoin] = useState<CandidateFilterJoin>('and');
+  // The search API deliberately exposes only a forward cursor. Keep the
+  // visited boundaries, rather than accumulating every older capture in the
+  // browser, so Previous remains possible without turning a large catalog into
+  // client state.
+  const [candidateCursorHistory, setCandidateCursorHistory] = useState<
+    Array<string | null>
+  >([null]);
   const [showBlockedCandidates, setShowBlockedCandidates] = useState(false);
+  const [bulkAddOpen, setBulkAddOpen] = useState(() => restoredBulkIntent !== null);
+  const [bulkAddSnapshot, setBulkAddSnapshot] = useState<BulkAddSnapshot | null>(
+    () => restoredBulkIntent?.snapshot ?? null,
+  );
+  const [bulkRunRef, setBulkRunRef] = useState<{
+    datasetId: string;
+    runId: string;
+  } | null>(() =>
+    restoredBulkIntent?.runId
+      ? {
+          datasetId: restoredBulkIntent.snapshot.datasetId,
+          runId: restoredBulkIntent.runId,
+        }
+      : null,
+  );
+  const [bulkRunRequested, setBulkRunRequested] = useState(
+    () => restoredBulkIntent?.runRequested ?? false,
+  );
+  const bulkRecoveryAttempted = useRef(false);
   const [archiveTarget, setArchiveTarget] = useState<CaptureListItem | null>(null);
+  const [archiveProgress, setArchiveProgress] = useState<{
+    done: number;
+    total: number | null;
+  } | null>(null);
   const [archiveRoot, setArchiveRoot] = useState('');
   const [archiveSubpath, setArchiveSubpath] = useState('');
   const [archiveReason, setArchiveReason] = useState('');
@@ -496,19 +700,98 @@ export function useDatasetsState(): DatasetsState {
     listQuery.isSuccess &&
     !datasets.some((d) => d.dataset_id === selectedDatasetId);
 
+  const candidateCursor = candidateCursorHistory.at(-1) ?? null;
+  const candidateQuery = useMemo(
+    () => ({
+      query: {
+        join: candidateJoin,
+        predicates: candidateConditions.map(({ field, operator, value }) => ({
+          field,
+          operator,
+          value,
+        })),
+        states: ['completed', 'failed', 'interrupted'],
+        exclude_dataset_id: selectedDatasetId,
+      } satisfies CaptureSearchQuery,
+      cursor: candidateCursor,
+      limit: 100,
+    }),
+    [candidateCursor, candidateConditions, candidateJoin, selectedDatasetId],
+  );
   const capturesQuery = useQuery({
-    queryKey: queryKeys.captureList(CAPTURE_SCOPE),
-    queryFn: ({ signal }) => listAllCaptures({}, signal),
+    queryKey: queryKeys.captureSearch(CAPTURE_SCOPE, candidateQuery),
+    queryFn: ({ signal }) => searchCaptures(candidateQuery, signal),
+    placeholderData: keepPreviousData,
   });
   const captures = useMemo(() => capturesQuery.data?.items ?? [], [capturesQuery.data]);
-  // `listAllCaptures` follows the cursor for at most MAX_PAGES and then stops,
-  // returning what it has WITH the unfinished cursor — so a non-null cursor
-  // here means the sweep did not reach the end of the catalog. The signal was
-  // already in the response and every consumer threw it away, which is how a
-  // rail that lists 10,000 of 12,000 recordings ends as quietly as one that
-  // lists all of them (E-27).
+  // The candidates rail deliberately holds one server page. A non-null cursor
+  // is visible to the operator rather than being followed into an unbounded
+  // browser-side catalog sweep.
   const catalogTruncated = capturesQuery.data?.next_cursor != null;
+  const resetCandidatePage = useCallback(() => setCandidateCursorHistory([null]), []);
+  // Changing the displayed target or a local candidate predicate changes what
+  // an operator is trying to inspect. Returning to its first page prevents a
+  // cursor boundary for the former scope from reading as a complete result.
+  useEffect(() => {
+    resetCandidatePage();
+  }, [selectedDatasetId, candidateConditions, candidateJoin, resetCandidatePage]);
+  const bulkRunQuery = useQuery({
+    queryKey: queryKeys.datasetMembershipBulkRun(
+      bulkRunRef?.datasetId ?? '',
+      bulkRunRef?.runId ?? '',
+    ),
+    queryFn: ({ signal }) =>
+      getDatasetMembershipBulkRun(bulkRunRef!.datasetId, bulkRunRef!.runId, signal),
+    enabled: bulkRunRef !== null,
+    refetchInterval: (query) => {
+      const state = query.state.data?.state;
+      return state === 'pending' || state === 'running' ? 1000 : false;
+    },
+  });
   const capturesById = useMemo(() => indexCaptures(captures), [captures]);
+  const pageBatchIds = useMemo(
+    () => [
+      ...new Set(
+        captures.flatMap((capture) => (capture.batch_id ? [capture.batch_id] : [])),
+      ),
+    ],
+    [captures],
+  );
+
+  // Only legacy captures need a current Batch lookup. A collection_context is
+  // immutable evidence from Start, so a later Batch edit cannot rewrite the
+  // condition shown or filtered here.
+  const batchesQuery = useQuery({
+    queryKey: ['batches', 'lookup', pageBatchIds],
+    queryFn: ({ signal }) => lookupBatches(pageBatchIds, signal),
+    enabled: pageBatchIds.length > 0,
+  });
+  const conditionByBatchId = useMemo(() => {
+    const byId = new Map<string, string | null>();
+    for (const batch of (batchesQuery.data as BatchLookupResponse | undefined)?.items ??
+      []) {
+      byId.set(batch.batch_id, batch.condition ?? null);
+    }
+    return byId;
+  }, [batchesQuery.data]);
+  const conditionForCapture = useCallback(
+    (capture: CaptureListItem): CaptureConditionView => {
+      if (!capture.batch_id) {
+        return resolveCaptureCondition(capture, { status: 'ready', value: null });
+      }
+      if (batchesQuery.isPending) {
+        return resolveCaptureCondition(capture, { status: 'loading' });
+      }
+      if (batchesQuery.isError || !conditionByBatchId.has(capture.batch_id)) {
+        return resolveCaptureCondition(capture, { status: 'unavailable' });
+      }
+      return resolveCaptureCondition(capture, {
+        status: 'ready',
+        value: conditionByBatchId.get(capture.batch_id),
+      });
+    },
+    [batchesQuery.isError, batchesQuery.isPending, conditionByBatchId],
+  );
 
   // The selected dataset's members come from its own endpoint rather than from
   // the memberships on the captures: it is the authority on what belongs to it,
@@ -524,7 +807,6 @@ export function useDatasetsState(): DatasetsState {
 
   const debouncedSearch = useDebounced(search, SEARCH_DEBOUNCE_MS);
   const debouncedMemberSearch = useDebounced(memberSearch, SEARCH_DEBOUNCE_MS);
-  const debouncedCandidateSearch = useDebounced(candidateSearch, SEARCH_DEBOUNCE_MS);
 
   const membersByDatasetId = useMemo(() => membersByDataset(captures), [captures]);
   // The list shows one shelf at a time: the working sets by default, the
@@ -590,6 +872,10 @@ export function useDatasetsState(): DatasetsState {
   );
 
   const scopeAggregate = useMemo(() => aggregate(scopeMembers), [scopeMembers]);
+  const scopeConditions = useMemo(
+    () => conditionDistribution(scopeMembers, conditionForCapture),
+    [scopeMembers, conditionForCapture],
+  );
   const scope: ScopeSummary = useMemo(() => {
     if (selectedRow) {
       return {
@@ -597,7 +883,9 @@ export function useDatasetsState(): DatasetsState {
         label: selectedRow.dataset.name,
         operator: selectedRow.dataset.operator ?? null,
         task: selectedRow.dataset.task ?? null,
+        selectionRecipes: selectedRow.dataset.selection_recipes ?? [],
         aggregate: scopeAggregate,
+        conditions: scopeConditions,
         unresolved: selectedRow.unresolved,
       };
     }
@@ -606,10 +894,12 @@ export function useDatasetsState(): DatasetsState {
       label: 'All datasets',
       operator: null,
       task: null,
+      selectionRecipes: [],
       aggregate: scopeAggregate,
+      conditions: scopeConditions,
       unresolved: rows.reduce((sum, row) => sum + row.unresolved, 0),
     };
-  }, [selectedRow, scopeAggregate, rows]);
+  }, [selectedRow, scopeAggregate, scopeConditions, rows]);
 
   const pageCount = Math.max(1, Math.ceil(matchedMembers.length / MEMBER_PAGE_SIZE));
   // Anything that changes WHICH members are on screen returns to page one —
@@ -617,7 +907,13 @@ export function useDatasetsState(): DatasetsState {
   // the operator did not ask to go there.
   useEffect(() => {
     setPage(1);
-  }, [selectedDatasetId, debouncedMemberSearch, debouncedSearch, taskResultFilter, operatorFilter]);
+  }, [
+    selectedDatasetId,
+    debouncedMemberSearch,
+    debouncedSearch,
+    taskResultFilter,
+    operatorFilter,
+  ]);
   // Clamp rather than trust: a page can fall out of range when rows disappear
   // under an already-open view (a removal, a refetch), and reading past the end
   // must never render a blank table.
@@ -657,7 +953,9 @@ export function useDatasetsState(): DatasetsState {
     setSelectedMembershipId(null);
   }, []);
   const selectMember = useCallback((row: MemberRow) => {
-    setSelectedMembershipId((cur) => (cur === row.membershipId ? null : row.membershipId));
+    setSelectedMembershipId((cur) =>
+      cur === row.membershipId ? null : row.membershipId,
+    );
   }, []);
   const selectSummary = useCallback(() => setSelectedMembershipId(null), []);
 
@@ -766,7 +1064,8 @@ export function useDatasetsState(): DatasetsState {
   });
 
   const removeMutation = useMutation({
-    mutationFn: (row: MemberRow) => removeDatasetMember(row.datasetId, row.membershipId),
+    mutationFn: (row: MemberRow) =>
+      removeDatasetMember(row.datasetId, row.membershipId),
     onSuccess: async (_res, row) => {
       await invalidateDatasets(row.datasetId);
       if (selectedMembershipId === row.membershipId) setSelectedMembershipId(null);
@@ -793,9 +1092,12 @@ export function useDatasetsState(): DatasetsState {
   });
 
   // §12 obliges the discard dialog to say that a copy may remain on the robot —
-  // but only where that is true. The shared probe is what makes this screen and
-  // Review agree about the deployment they are running on.
-  const splitDeploy = useSplitDeploy();
+  // but only where that can be true. The shared probe is what makes this screen
+  // and Review agree about the deployment they are running on, and the
+  // may-remain variant fails toward DISCLOSING: while the probe is unanswered
+  // or failing, a destructive dialog shows the note rather than dropping it
+  // (S3-7). Only a confirmed single-host answer suppresses it.
+  const splitDeploy = useRobotCopyMayRemain();
 
   const deletion = useCaptureDeletion({
     invalidate: useMemo(
@@ -826,7 +1128,8 @@ export function useDatasetsState(): DatasetsState {
     () => archiveConfigQuery.data?.roots ?? [],
     [archiveConfigQuery.data],
   );
-  const archiveEnabled = (archiveConfigQuery.data?.enabled ?? false) && archiveRoots.length > 0;
+  const archiveEnabled =
+    (archiveConfigQuery.data?.enabled ?? false) && archiveRoots.length > 0;
 
   // The backend refuses to archive a capture that still belongs to a dataset,
   // for the same reason it refuses to delete one: the dataset would be left
@@ -860,23 +1163,90 @@ export function useDatasetsState(): DatasetsState {
       : '';
 
   const archiveMutation = useMutation({
-    mutationFn: (capture: CaptureListItem) =>
-      archiveCapture(capture.capture_id, {
+    mutationFn: async (capture: CaptureListItem) => {
+      // 202: the copy runs SERVER-SIDE (S2-1). A multi-GB copy outlives any
+      // proxy timeout, and completing it in-request produced the worst split
+      // — the server finished (and deleted the source) while the client saw
+      // a 504 "failure". Poll the run to its end instead.
+      await archiveCapture(capture.capture_id, {
         destination: archiveDestination,
         operator: capture.operator ?? null,
         reason: archiveReason.trim() || null,
-      }),
+      });
+      let failedReads = 0;
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, getCaptureArchivePollMs()));
+        let progress: CaptureArchiveProgress;
+        try {
+          progress = await getCaptureArchiveProgress(capture.capture_id);
+          failedReads = 0;
+        } catch (e) {
+          if (e instanceof ApiError && e.status === 404) {
+            // The server restarted and lost the progress view. The DATA is
+            // fine either way (untouched source, or ledger-recorded copy) —
+            // say so instead of guessing an outcome.
+            throw new ApiError(
+              404,
+              {
+                error: {
+                  code: 'archive_progress_lost',
+                  message:
+                    'The server restarted while the archive ran; its outcome ' +
+                    'is in the catalog — refresh and check whether the ' +
+                    'recording is still listed.',
+                  details: {},
+                },
+              },
+              'archive progress lost',
+            );
+          }
+          // Transient read failure: the run keeps going server-side, so keep
+          // watching — bounded, so a dead server ends in an error, not a
+          // spinner.
+          failedReads += 1;
+          if (failedReads >= ARCHIVE_POLL_MAX_FAILED_READS) throw e;
+          continue;
+        }
+        setArchiveProgress({
+          done: progress.bytes_done,
+          total: progress.bytes_total,
+        });
+        if (progress.state === 'complete' && progress.result) {
+          return progress.result;
+        }
+        if (progress.state === 'failed') {
+          throw new ApiError(
+            500,
+            {
+              error: {
+                code: progress.error?.code ?? 'archive_failed',
+                message: progress.error?.message ?? 'The archive failed.',
+                details: {},
+              },
+            },
+            'the archive failed',
+          );
+        }
+      }
+    },
     onSuccess: async (res) => {
+      setArchiveProgress(null);
       await invalidateDatasets(selectedDatasetId);
       setArchiveTarget(null);
       setArchiveSubpath('');
       setArchiveReason('');
+      // A completed archive IS the verification claim (a hash mismatch fails
+      // the run before anything is deleted), so there is no unverified branch.
       showToast(
-        res.verified
-          ? `Archived to ${res.destination} — verified, then removed from this machine`
-          : `Copied to ${res.destination}, but it did NOT verify — check it before ` +
-              'trusting the copy',
+        `Archived to ${res.destination} — verified, then removed from this machine`,
       );
+    },
+    onError: async () => {
+      setArchiveProgress(null);
+      // The failure may have landed at ANY point — including after the copy
+      // and source deletion. Refresh so the list shows what actually
+      // happened, instead of keeping a capture that may no longer exist.
+      await invalidateDatasets(selectedDatasetId);
     },
   });
 
@@ -1041,7 +1411,8 @@ export function useDatasetsState(): DatasetsState {
   const datasetArchiveQuery = useQuery({
     queryKey: queryKeys.datasetArchive(selectedDatasetId ?? ''),
     queryFn: ({ signal }) => getDatasetArchive(selectedDatasetId ?? '', signal),
-    enabled: selectedDatasetId !== null && selectedDatasetRecord?.status === 'archiving',
+    enabled:
+      selectedDatasetId !== null && selectedDatasetRecord?.status === 'archiving',
     refetchInterval: DATASET_ARCHIVE_POLL_MS,
   });
   const datasetArchiveProgress = datasetArchiveQuery.data ?? null;
@@ -1067,6 +1438,20 @@ export function useDatasetsState(): DatasetsState {
     },
     // Same reasoning as the delete: a run that was refused (gone, already
     // archiving) means this screen's picture of the dataset is out of date.
+    onError: () => void invalidateDatasets(selectedDatasetId),
+  });
+
+  const datasetArchiveCancelMutation = useMutation({
+    mutationFn: (datasetId: string) => cancelDatasetArchiveAttempt(datasetId),
+    onSuccess: async (progress) => {
+      queryClient.setQueryData(queryKeys.datasetArchive(progress.dataset_id), progress);
+      setDatasetArchiveOpen(false);
+      await invalidateDatasets(progress.dataset_id);
+      showToast(
+        'Archive run canceled — the dataset is active again and the destination ' +
+          'claim was released. Destination files were not deleted',
+      );
+    },
     onError: () => void invalidateDatasets(selectedDatasetId),
   });
 
@@ -1123,8 +1508,18 @@ export function useDatasetsState(): DatasetsState {
     setDatasetArchiveReason('');
     setDatasetArchiveMode(datasetArchiveSharedCount > 0 ? 'copy' : 'move');
     datasetArchiveMutation.reset();
+    datasetArchiveCancelMutation.reset();
   };
   const cancelDatasetArchive = useCallback(() => setDatasetArchiveOpen(false), []);
+
+  // ---- LeRobot export ----------------------------------------------------
+
+  // Given the ROW rather than the id: the dialog prefills the fallback task
+  // from the dataset's own task, and the gate needs the member count.
+  const lerobotExport = useLeRobotExport({
+    dataset: selectedDatasetRecord,
+    onToast: showToast,
+  });
 
   // ---- candidates --------------------------------------------------------
 
@@ -1132,15 +1527,55 @@ export function useDatasetsState(): DatasetsState {
     () => new Set(scopeAllMembers.map((row) => row.captureId)),
     [scopeAllMembers],
   );
+  const hasConditionFilter = candidateConditions.some(
+    (condition) => condition.field === 'condition' || condition.field === 'any',
+  );
   const matchedCandidates = useMemo(
     () =>
-      captures.filter(
-        (capture) =>
-          ADDABLE_STATES.has(capture.state) &&
-          !memberCaptureIds.has(capture.capture_id) &&
-          captureMatches(capture, debouncedCandidateSearch),
-      ),
-    [captures, memberCaptureIds, debouncedCandidateSearch],
+      captures.filter((capture) => {
+        if (
+          !ADDABLE_STATES.has(capture.state) ||
+          memberCaptureIds.has(capture.capture_id)
+        ) {
+          return false;
+        }
+        // The server applies predicates to collection-context captures. Legacy
+        // rows still need this local check because their condition can only be
+        // resolved through a Batch lookup and may be unavailable.
+        if (hasCollectionContext(capture)) return true;
+        const condition = conditionForCapture(capture);
+        return candidateMatchesConditions(
+          capture,
+          candidateConditions,
+          candidateJoin,
+          condition.status === 'ready' ? condition.value : null,
+        );
+      }),
+    [
+      captures,
+      memberCaptureIds,
+      candidateConditions,
+      candidateJoin,
+      conditionForCapture,
+    ],
+  );
+  const unresolvedLegacyConditionCount = useMemo(
+    () =>
+      hasConditionFilter
+        ? captures.filter((capture) => {
+            if (
+              !ADDABLE_STATES.has(capture.state) ||
+              memberCaptureIds.has(capture.capture_id) ||
+              hasCollectionContext(capture) ||
+              !capture.batch_id
+            ) {
+              return false;
+            }
+            const condition = conditionForCapture(capture);
+            return condition.status === 'loading' || condition.status === 'unavailable';
+          }).length
+        : 0,
+    [captures, memberCaptureIds, hasConditionFilter, conditionForCapture],
   );
   // Blocked candidates (not adopted, bytes elsewhere) clutter the building
   // flow, so the rail leads with what can actually join — but the blocked
@@ -1149,7 +1584,196 @@ export function useDatasetsState(): DatasetsState {
     () => matchedCandidates.filter((c) => addBlockedReason(c) === null),
     [matchedCandidates],
   );
-  const visibleCandidates = showBlockedCandidates ? matchedCandidates : addableCandidates;
+  const visibleCandidates = showBlockedCandidates
+    ? matchedCandidates
+    : addableCandidates;
+
+  const addCandidateCondition = (
+    field: CandidateFilterField,
+    operator: CandidateFilterOperator,
+    rawValue: string,
+  ) => {
+    const value = rawValue.trim();
+    if (value === '') return;
+    const effectiveOperator = field === 'task_result' ? 'equals' : operator;
+    setCandidateConditions((current) => {
+      const duplicate = current.some(
+        (condition) =>
+          condition.field === field &&
+          condition.operator === effectiveOperator &&
+          condition.value.toLowerCase() === value.toLowerCase(),
+      );
+      if (duplicate) return current;
+      return [
+        ...current,
+        {
+          id: nextCandidateConditionId.current++,
+          field,
+          operator: effectiveOperator,
+          value,
+        },
+      ];
+    });
+  };
+
+  const previousCandidatePage = useCallback(() => {
+    setCandidateCursorHistory((history) =>
+      history.length > 1 ? history.slice(0, -1) : history,
+    );
+  }, []);
+  const nextCandidatePage = useCallback(() => {
+    const next = capturesQuery.data?.next_cursor;
+    if (!next) return;
+    setCandidateCursorHistory((history) =>
+      history.at(-1) === next ? history : [...history, next],
+    );
+  }, [capturesQuery.data?.next_cursor]);
+
+  const makeBulkRequestId = () =>
+    typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `bulk-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  const bulkSelectionMutation = useMutation({
+    mutationFn: async (snapshot: NonNullable<typeof bulkAddSnapshot>) => {
+      const selection = await createCaptureSelection({
+        query: {
+          join: snapshot.join,
+          predicates: snapshot.conditions,
+          states: ['completed', 'failed', 'interrupted'],
+          review_statuses: ['adopted'],
+          present_on_instance: true,
+          exclude_dataset_id: snapshot.datasetId,
+        },
+      });
+      return {
+        ...snapshot,
+        selectionId: selection.selection_id,
+        expiresAt: selection.expires_at,
+        matched: selection.matched_count,
+      };
+    },
+    onSuccess: setBulkAddSnapshot,
+  });
+
+  const openBulkAdd = () => {
+    if (!selectedDatasetRecord || selectedDatasetRecord.status !== 'active') {
+      return;
+    }
+    setBulkRunRef(null);
+    setBulkRunRequested(false);
+    bulkRecoveryAttempted.current = false;
+    const snapshot = {
+      datasetId: selectedDatasetRecord.dataset_id,
+      datasetName: selectedDatasetRecord.name,
+      join: candidateJoin,
+      conditions: candidateConditions.map(({ field, operator, value }) => ({
+        field,
+        operator,
+        value,
+      })),
+      selectionId: null,
+      expiresAt: null,
+      matched: null,
+      requestId: makeBulkRequestId(),
+    };
+    setBulkAddSnapshot(snapshot);
+    setBulkAddOpen(true);
+    bulkSelectionMutation.mutate(snapshot);
+  };
+
+  const startBulkAddMutation = useMutation({
+    mutationFn: async () => {
+      const snapshot = bulkAddSnapshot;
+      if (!snapshot) throw new Error('No capture selection is ready to add.');
+      if (!snapshot.selectionId)
+        throw new Error('The server selection is not ready yet.');
+      return createDatasetMembershipBulkRun(snapshot.datasetId, {
+        selection_id: snapshot.selectionId,
+        request_id: snapshot.requestId,
+      });
+    },
+    onSuccess: (run) => {
+      setBulkRunRef({ datasetId: run.dataset_id, runId: run.run_id });
+    },
+  });
+
+  useEffect(() => {
+    if (
+      !bulkRunRequested ||
+      bulkRunRef ||
+      !bulkAddSnapshot?.selectionId ||
+      bulkRecoveryAttempted.current
+    ) {
+      return;
+    }
+    bulkRecoveryAttempted.current = true;
+    startBulkAddMutation.mutate();
+  }, [
+    bulkAddSnapshot?.selectionId,
+    bulkRunRef,
+    bulkRunRequested,
+    startBulkAddMutation,
+  ]);
+
+  const retryBulkAddMutation = useMutation({
+    mutationFn: async () => {
+      if (!bulkRunRef) throw new Error('No partial bulk run is available to retry.');
+      return retryDatasetMembershipBulkRun(bulkRunRef.datasetId, bulkRunRef.runId);
+    },
+    onSuccess: (run) => {
+      setBulkRunRef({ datasetId: run.dataset_id, runId: run.run_id });
+      queryClient.setQueryData(
+        queryKeys.datasetMembershipBulkRun(run.dataset_id, run.run_id),
+        run,
+      );
+    },
+  });
+
+  const bulkRun = bulkRunQuery.data ?? null;
+  const bulkRunFinished =
+    bulkRun?.state === 'completed' ||
+    bulkRun?.state === 'partial' ||
+    bulkRun?.state === 'failed_receipt';
+  useEffect(() => {
+    if (!bulkRunFinished || !bulkRun) return;
+    void invalidateDatasets(bulkRun.dataset_id);
+  }, [bulkRun, bulkRunFinished, invalidateDatasets]);
+  useEffect(() => {
+    if (!bulkAddSnapshot) {
+      writeBulkIntent(null);
+      return;
+    }
+    writeBulkIntent({
+      snapshot: bulkAddSnapshot,
+      runId: bulkRunRef?.runId ?? null,
+      runRequested: bulkRunRequested,
+    });
+  }, [bulkAddSnapshot, bulkRunRef?.runId, bulkRunRequested]);
+
+  const closeCompletedBulkAdd = useCallback(() => {
+    const snapshot = bulkAddSnapshot;
+    if (!snapshot || !bulkRun || bulkRun.state !== 'completed') return;
+    setBulkAddOpen(false);
+    setBulkAddSnapshot(null);
+    setBulkRunRef(null);
+    setBulkRunRequested(false);
+    showToast(
+      `Added ${bulkRun.succeeded} recording${bulkRun.succeeded === 1 ? '' : 's'} to ` +
+        `“${snapshot.datasetName}” — nothing moved on disk`,
+    );
+  }, [bulkAddSnapshot, bulkRun, showToast]);
+
+  const retryBulkAddFailures = () => {
+    if (bulkRun?.state === 'partial' || bulkRun?.state === 'failed_receipt') {
+      retryBulkAddMutation.mutate();
+    }
+  };
+
+  const startBulkAddError = startBulkAddMutation.error;
+  const bulkAddSelectionExpired =
+    startBulkAddError instanceof ApiError &&
+    startBulkAddError.code === 'capture_selection_expired';
 
   return {
     rows,
@@ -1183,7 +1807,18 @@ export function useDatasetsState(): DatasetsState {
 
     createOpen,
     openCreate: () => setCreateOpen(true),
-    cancelCreate: () => setCreateOpen(false),
+    cancelCreate: () => {
+      setCreateOpen(false);
+      // A discard, like every other dialog on this screen (openEdit and
+      // openCombine both reset their fields and their mutation). Without the
+      // reset the next "+ New" opened onto the abandoned attempt: the old text
+      // still typed in, and the error banner from a POST nobody is waiting for
+      // any more back on screen as if it had just failed.
+      setNewName('');
+      setNewOperator('');
+      setNewTask('');
+      createMutation.reset();
+    },
     newName,
     setNewName,
     newOperator,
@@ -1266,7 +1901,9 @@ export function useDatasetsState(): DatasetsState {
       if (selectedDatasetId) deleteDatasetMutation.mutate(selectedDatasetId);
     },
     deletingDataset: deleteDatasetMutation.isPending,
-    datasetDeleteError: deleteDatasetMutation.isError ? deleteDatasetMutation.error : null,
+    datasetDeleteError: deleteDatasetMutation.isError
+      ? deleteDatasetMutation.error
+      : null,
 
     memberSearch,
     setMemberSearch,
@@ -1290,17 +1927,134 @@ export function useDatasetsState(): DatasetsState {
     detailError: selected !== null && captureDetailQuery.isError,
 
     removeMember: (row) => removeMutation.mutate(row),
-    removingMembershipId: removeMutation.isPending ? removeMutation.variables.membershipId : null,
+    removingMembershipId: removeMutation.isPending
+      ? removeMutation.variables.membershipId
+      : null,
 
     candidates: visibleCandidates.slice(0, CANDIDATE_LIMIT),
+    candidatePage: candidateCursorHistory.length,
+    canPreviousCandidatePage: candidateCursorHistory.length > 1,
+    canNextCandidatePage: catalogTruncated,
+    previousCandidatePage,
+    nextCandidatePage,
     candidateMatchCount: visibleCandidates.length,
-    candidateSearch,
-    setCandidateSearch,
+    candidateConditions,
+    candidateJoin,
+    setCandidateJoin,
+    addCandidateCondition,
+    removeCandidateCondition: (id) =>
+      setCandidateConditions((current) =>
+        current.filter((condition) => condition.id !== id),
+      ),
+    clearCandidateConditions: () => setCandidateConditions([]),
+    conditionFilterStatus: captures.some(
+      (capture) => !hasCollectionContext(capture) && Boolean(capture.batch_id),
+    )
+      ? batchesQuery.isPending
+        ? 'loading'
+        : batchesQuery.isError
+          ? 'error'
+          : 'ready'
+      : 'ready',
+    unresolvedLegacyConditionCount,
+    conditionForCapture,
     addMember: (capture) => addMutation.mutate(capture),
     addingCaptureId: addMutation.isPending ? addMutation.variables.capture_id : null,
     showBlockedCandidates,
     toggleBlockedCandidates: () => setShowBlockedCandidates((v) => !v),
     blockedCandidateCount: matchedCandidates.length - addableCandidates.length,
+
+    // A page is only an inspection aid. The dialog freezes its own complete
+    // server selection before it lets the operator confirm a membership run.
+    // The rail is only a page inspector. It must not call a page total the
+    // full server-side eligibility count; opening Bulk Add always preflights
+    // the complete query and reports zero honestly there.
+    bulkAddOpen,
+    bulkAddTargetDatasetName: bulkAddSnapshot?.datasetName ?? null,
+    // The server's materialized selection is the only execution count.
+    bulkAddTargetCount: bulkRun?.matched_count ?? bulkAddSnapshot?.matched ?? 0,
+    bulkAddExpiresAt: bulkAddSnapshot?.expiresAt ?? null,
+    bulkAddCatalogTruncated: false,
+    bulkAddPreflighting: bulkSelectionMutation.isPending,
+    openBulkAdd,
+    cancelBulkAdd: () => {
+      if (
+        bulkSelectionMutation.isPending ||
+        startBulkAddMutation.isPending ||
+        retryBulkAddMutation.isPending
+      )
+        return;
+      setBulkAddOpen(false);
+      setBulkAddSnapshot(null);
+      setBulkRunRef(null);
+      setBulkRunRequested(false);
+      bulkRecoveryAttempted.current = false;
+      bulkSelectionMutation.reset();
+      startBulkAddMutation.reset();
+      retryBulkAddMutation.reset();
+    },
+    confirmBulkAdd: () => {
+      if (bulkRun?.state === 'completed') {
+        closeCompletedBulkAdd();
+      } else if (
+        bulkAddSnapshot?.selectionId &&
+        !bulkSelectionMutation.isPending &&
+        !bulkRun
+      ) {
+        // Persist before POST: a navigation or a lost response immediately
+        // after Confirm must recover this exact idempotency key on reload.
+        writeBulkIntent({
+          snapshot: bulkAddSnapshot,
+          runId: null,
+          runRequested: true,
+        });
+        setBulkRunRequested(true);
+        startBulkAddMutation.mutate();
+      }
+    },
+    refreshBulkAddSelection: () => {
+      const snapshot = bulkAddSnapshot;
+      if (!snapshot || bulkSelectionMutation.isPending || bulkRun) return;
+      const refreshed = {
+        ...snapshot,
+        selectionId: null,
+        expiresAt: null,
+        matched: null,
+        requestId: makeBulkRequestId(),
+      };
+      setBulkAddSnapshot(refreshed);
+      setBulkRunRequested(false);
+      bulkRecoveryAttempted.current = false;
+      startBulkAddMutation.reset();
+      bulkSelectionMutation.mutate(refreshed);
+    },
+    retryBulkAddFailures,
+    bulkAddBusy:
+      bulkSelectionMutation.isPending ||
+      startBulkAddMutation.isPending ||
+      retryBulkAddMutation.isPending ||
+      bulkRun?.state === 'pending' ||
+      bulkRun?.state === 'running',
+    bulkAddDone: bulkRun?.attempted ?? 0,
+    bulkAddTotal: bulkRun?.matched_count ?? bulkAddSnapshot?.matched ?? 0,
+    bulkAddTerminal: bulkRunFinished,
+    bulkAddReceiptFailed: bulkRun?.state === 'failed_receipt',
+    bulkAddSelectionExpired,
+    bulkAddCanRetryRequest:
+      startBulkAddMutation.isError &&
+      !bulkAddSelectionExpired &&
+      Boolean(bulkAddSnapshot?.selectionId) &&
+      !bulkRun,
+    bulkAddFailures: (bulkRun?.failures ?? []).map((failure) => ({
+      captureId: failure.capture_id,
+      message: failure.message,
+    })),
+    bulkAddError:
+      bulkSelectionMutation.error ??
+      startBulkAddMutation.error ??
+      retryBulkAddMutation.error ??
+      bulkRunQuery.error ??
+      null,
 
     deletion,
     splitDeploy,
@@ -1323,6 +2077,7 @@ export function useDatasetsState(): DatasetsState {
       if (archiveTarget) archiveMutation.mutate(archiveTarget);
     },
     archiving: archiveMutation.isPending,
+    archiveProgress,
     archiveError: archiveMutation.isError ? archiveMutation.error : null,
 
     isDatasetFrozen,
@@ -1349,11 +2104,20 @@ export function useDatasetsState(): DatasetsState {
     resumeDatasetArchive: () => {
       if (selectedDatasetId) datasetArchiveMutation.mutate({ resume: true });
     },
+    cancelDatasetArchiveRun: () => {
+      if (selectedDatasetId) datasetArchiveCancelMutation.mutate(selectedDatasetId);
+    },
     datasetArchiveStarting: datasetArchiveMutation.isPending,
     datasetArchiveStartError: datasetArchiveMutation.isError
       ? datasetArchiveMutation.error
       : null,
+    datasetArchiveCanceling: datasetArchiveCancelMutation.isPending,
+    datasetArchiveCancelError: datasetArchiveCancelMutation.isError
+      ? datasetArchiveCancelMutation.error
+      : null,
     datasetArchiveProgress,
+
+    lerobotExport,
 
     isLoading: listQuery.isPending || capturesQuery.isPending,
     isError: listQuery.isError || capturesQuery.isError,

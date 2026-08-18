@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Tests for the shared FastAPI app factory."""
 
 from __future__ import annotations

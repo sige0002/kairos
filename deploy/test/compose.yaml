@@ -48,7 +48,7 @@ services:
       RMW_IMPLEMENTATION: ${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}
     volumes:
       # Share recorded bags read-only (repo data/ -> /data).
-      - ../../data:/data:ro
+      - ${KAIROS_TEST_DATA_DIR:-../../data}:/data:ro
       # Custom-message overlays (whole tree, read-only). `ros2 bag play` needs the
       # typesupport to PUBLISH custom-type topics, so the player sources the same
       # robot overlay the recorder/monitor use (selected by MSGS_OVERLAY_DIR).
@@ -81,7 +81,7 @@ services:
       REFRESH: ${REFRESH:-1.0}
       DURATION: ${DURATION:-}
     volumes:
-      - ../../data:/data:ro
+      - ${KAIROS_TEST_DATA_DIR:-../../data}:/data:ro
       # The live-table script (mounted, so editing it needs no rebuild).
       - ./topic_table.py:/topic_table.py:ro
       # Custom-message overlays (same mount as rosbag_player): without the

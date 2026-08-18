@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Deletion (§7): the trash pathway, its guards, and resuming a crash.
 
 §7's five steps are ordered so that every prefix of them is recoverable, and

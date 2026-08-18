@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Alert incident evaluation with hysteresis (the unit-testable core).
 
 Each :class:`~kairos_common.monitoring.models.AlertRule` watches one metric

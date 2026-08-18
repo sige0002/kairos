@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Archive the WHOLE selected dataset to an allow-listed path (§6.x) — the
 // dataset's terminal transition, and the only control on the screen that both
 // moves data off this machine and freezes what it leaves behind:
@@ -151,7 +153,7 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
           spellCheck={false}
           className="rounded-control border border-gray-200 bg-white px-2 py-1.5 font-mono text-[12px] text-gray-700"
         />
-        <span className="text-[11px] text-gray-400">
+        <span className="text-[11px] text-gray-500">
           Yours to rename — the last folder is the dataset's. Prefilled with the
           views shape; a path that already holds files is refused, so two
           exports cannot land on each other.
@@ -182,7 +184,7 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
 
       <label className="flex flex-col gap-1">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Reason <span className="font-normal normal-case text-gray-400">(optional)</span>
+          Reason <span className="font-normal normal-case text-gray-500">(optional)</span>
         </span>
         <input
           data-testid="dataset-archive-reason"
@@ -204,7 +206,14 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
 
 function ProgressBody({ state }: { state: DatasetsState }) {
   const progress = state.datasetArchiveProgress;
-  const halted = progress != null && !progress.running && progress.error != null;
+  // Halted = the run is NOT running (and we are not mid-resume) — the same
+  // definition the Resume button below uses. This used to also require an
+  // error, so a run stopped by an orchestrator restart (no error recorded)
+  // wore a teal "archiving" badge for hours next to a Resume button that knew
+  // better (S3-8/D5). A copy that is not copying is halted, error or not.
+  const halted =
+    progress != null && !progress.running && !state.datasetArchiveStarting;
+  const cancellationRecorded = progress?.cancel_blocker === 'archive_canceled';
   const haltGuidance = readCaptureCode(
     progress?.error?.code,
     progress?.error?.message,
@@ -286,8 +295,26 @@ function ProgressBody({ state }: { state: DatasetsState }) {
             </span>
           )}
           <span>
-            Recordings already archived stay archived; Resume continues from the
-            first unfinished one.
+            {cancellationRecorded
+              ? 'Cancellation is recorded durably. This attempt cannot resume; close this dialog and rebuild the catalog if the dataset remains Archiving.'
+              : progress.cancelable
+              ? 'Resume retries from the first recording.'
+              : 'Recordings already archived stay archived; Resume continues from the first unfinished one.'}
+          </span>
+        </div>
+      )}
+
+      {halted && progress.cancelable && (
+        <div
+          data-testid="dataset-archive-cancel-available"
+          className="flex flex-col gap-1 rounded-control border border-gray-200 bg-gray-50 px-3 py-2 text-[12.5px] leading-relaxed text-gray-700"
+        >
+          <span className="font-semibold text-gray-900">
+            No completed recording is recorded for this attempt.
+          </span>
+          <span>
+            Canceling releases the frozen destination and returns the dataset to
+            Active. It does not delete anything already present at the destination.
           </span>
         </div>
       )}
@@ -295,6 +322,11 @@ function ProgressBody({ state }: { state: DatasetsState }) {
       <ArchiveError
         error={state.datasetArchiveStartError}
         testIdPrefix="dataset-archive-error"
+        resolveDatasetName={state.datasetName}
+      />
+      <ArchiveError
+        error={state.datasetArchiveCancelError}
+        testIdPrefix="dataset-archive-cancel-error"
         resolveDatasetName={state.datasetName}
       />
     </div>
@@ -309,6 +341,8 @@ export function DatasetArchiveDialog({ state }: { state: DatasetsState }) {
     state.datasetArchiveProgress != null &&
     !state.datasetArchiveProgress.running &&
     !state.datasetArchiveStarting;
+  const cancellationRecorded =
+    state.datasetArchiveProgress?.cancel_blocker === 'archive_canceled';
   // Deleted underneath the dialog. There is no run to start and no progress to
   // report, so the dialog drops both faces and says only that — with the button
   // dead, because the one thing it must not do is look like it did something.
@@ -325,15 +359,30 @@ export function DatasetArchiveDialog({ state }: { state: DatasetsState }) {
             <Button
               variant="ghost"
               onClick={state.cancelDatasetArchive}
+              disabled={state.datasetArchiveCanceling}
               data-testid="dataset-archive-close"
             >
               Close
             </Button>
-            {halted && (
+            {halted && state.datasetArchiveProgress?.cancelable && (
+              <Button
+                variant="danger"
+                onClick={state.cancelDatasetArchiveRun}
+                disabled={
+                  state.datasetArchiveStarting || state.datasetArchiveCanceling
+                }
+                data-testid="dataset-archive-cancel-run"
+              >
+                {state.datasetArchiveCanceling ? 'Canceling…' : 'Cancel archive run'}
+              </Button>
+            )}
+            {halted && !cancellationRecorded && (
               <Button
                 variant="primary"
                 onClick={state.resumeDatasetArchive}
-                disabled={state.datasetArchiveStarting}
+                disabled={
+                  state.datasetArchiveStarting || state.datasetArchiveCanceling
+                }
                 data-testid="dataset-archive-resume"
               >
                 {state.datasetArchiveStarting ? 'Resuming…' : 'Resume'}

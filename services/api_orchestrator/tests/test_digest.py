@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The digest job (§11, gated by §9-4): hashing a finished capture once.
 
 ``present_verified`` is the only claim in the system that a copy is intact, and
@@ -118,6 +120,72 @@ class TestCompletion:
         assert run_digests(client) == 0
         after = read_object_manifest(layout.capture_dir(capture_id)).manifest
         assert after.manifest_digest == before.manifest_digest
+
+    def test_sealing_stamps_which_instance_sealed(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        # S3-3: "verified" means different things depending on WHERE the hashes
+        # were minted (source vs a receiver that got the bytes before any
+        # digest ran). The stamp is what lets a reader tell them apart.
+        capture_id = _finished_capture(client, layout)
+        run_digests(client)
+        manifest = read_object_manifest(layout.capture_dir(capture_id)).manifest
+        assert manifest.digest_sealed_by == client.app.state.instance_id
+
+    def test_an_unverified_copy_of_a_sealed_manifest_is_actually_compared(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        """An intact copy passes real verification (not a rubber stamp)."""
+        capture_id = _finished_capture(client, layout)
+        store = client.app.state.capture_store
+        instance = client.app.state.instance_id
+        run_digests(client)
+        sealed = read_object_manifest(layout.capture_dir(capture_id)).manifest
+
+        # Model an arrival elsewhere: the manifest is sealed, the local copy
+        # has not been verified yet.
+        store.upsert_replica(
+            capture_id,
+            instance,
+            ReplicaState.present_unverified,
+            path=str(layout.capture_dir(capture_id)),
+        )
+        assert run_digests(client) == 1
+        replica = store.get_replica(capture_id, instance)
+        assert replica.state == ReplicaState.present_verified
+        # Verification never rewrites a sealed manifest.
+        after = read_object_manifest(layout.capture_dir(capture_id)).manifest
+        assert after.manifest_digest == sealed.manifest_digest
+
+    def test_a_copy_that_disagrees_with_its_seal_is_marked_corrupt(
+        self, client: TestClient, layout: DataLayout
+    ) -> None:
+        """S3-3's worst edge: a truncated arrival with a sealed manifest.
+
+        The old "already complete" branch promoted to present_verified without
+        comparing a single byte — a bag cut short in transit would have worn
+        the green badge. The comparison is the whole point of the state.
+        """
+        capture_id = _finished_capture(client, layout)
+        store = client.app.state.capture_store
+        instance = client.app.state.instance_id
+        run_digests(client)
+
+        # The bytes rot (a truncated transfer, disk damage) AFTER sealing.
+        (layout.capture_dir(capture_id) / "bag_0.mcap").write_bytes(b"\x89MC")
+        store.upsert_replica(
+            capture_id,
+            instance,
+            ReplicaState.present_unverified,
+            path=str(layout.capture_dir(capture_id)),
+        )
+
+        assert run_digests(client) == 0  # nothing completed
+        replica = store.get_replica(capture_id, instance)
+        assert replica.state == ReplicaState.corrupt
+        # The sealed manifest is evidence — never overwritten by the check.
+        manifest = read_object_manifest(layout.capture_dir(capture_id)).manifest
+        assert manifest.digest_state == "complete"
 
 
 class TestGuards:

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Bringing a capture's bytes into ``objects/`` — imports and robot pulls.
 
 Contract §2's invariant and §10.6. Anything arriving from outside — an operator
@@ -26,7 +28,6 @@ from pathlib import Path
 
 from kairos_common.atomic_io import fsync_dir
 from kairos_common.capture_sidecars import (
-    OBJECT_MANIFEST_FILENAME,
     RECORD_FILENAME,
     SidecarStatus,
     read_record,
@@ -158,8 +159,3 @@ def _merge_record(final: Path, staging: Path, capture_id: str) -> None:
         extra={"capture_id": capture_id},
     )
     shutil.copy2(final / RECORD_FILENAME, staging / RECORD_FILENAME)
-
-
-def is_manifest_present(layout: DataLayout, capture_id: str) -> bool:
-    """Whether a capture's manifest is at its FINAL path (arrival complete)."""
-    return (layout.capture_dir(capture_id) / OBJECT_MANIFEST_FILENAME).is_file()

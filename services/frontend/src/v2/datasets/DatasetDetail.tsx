@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The selected member's capture — rendered BELOW the member table inside the
 // center column. Real capture fields (`GET /api/v1/captures/{id}`): messages,
 // size, topics, the label chips, and the reused inspection (loss report / video
@@ -15,6 +17,7 @@ import { Badge } from '../../components/ui';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { availabilityOf } from '../captures/availability';
 import { CaptureLabelChips } from '../episodeChips';
+import { CaptureConditionLabel } from './CaptureConditionLabel';
 import { DatasetInspection } from './DatasetInspection';
 import { formatBytes, formatCount, formatWhen, type MemberRow } from './data';
 import type { DatasetsState } from './useDatasetsState';
@@ -122,6 +125,11 @@ export function DatasetDetail({
             recording that is gone.
           </p>
           <CaptureLabelChips capture={capture} testId="dataset-member-labels" />
+          <CaptureConditionLabel
+            capture={capture}
+            state={state}
+            testId="dataset-detail-condition"
+          />
         </>
       )}
 
@@ -132,9 +140,9 @@ export function DatasetDetail({
           here.
         </p>
       ) : detailLoading ? (
-        <span className="text-sm text-gray-400">Loading capture…</span>
+        <span className="text-sm text-gray-500">Loading capture…</span>
       ) : detailError ? (
-        <span className="text-sm text-amber-600">Couldn&apos;t load this capture.</span>
+        <span className="text-sm text-amber-700">Couldn&apos;t load this capture.</span>
       ) : detail ? (
         <>
           <div className="grid grid-cols-4 gap-2" data-testid="dataset-member-stats">
@@ -170,7 +178,7 @@ function Stat({ value, label }: { value: string; label: string }) {
   return (
     <div className="flex flex-col gap-0.5 rounded-[11px] border border-gray-100 px-[14px] py-[11px]">
       <span className="font-mono text-[21px] font-semibold text-gray-900">{value}</span>
-      <span className="text-[11.5px] text-gray-400">{label}</span>
+      <span className="text-[11.5px] text-gray-500">{label}</span>
     </div>
   );
 }

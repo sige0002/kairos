@@ -35,7 +35,7 @@ never imports. The acceptance layer is a separate project with its own
 | `07-dataset-archive.spec.ts` | §6.1 | When I archive a finished dataset, the dialog shows me the exact folder it will land in, every recording is copied and hash-verified before its copy here is removed, the folder describes itself with a manifest the ledger can vouch for — and even after the database is destroyed, kairos still says the dataset is archived and where it went. |
 | `08-validation.spec.ts` | screen | I run the required-topic check on a recording from the Validation screen, and it comes back naming every topic the template demands with a tick or a cross beside it — and the report it leaves on disk says the same thing as the screen did. |
 | `09-monitor.spec.ts` | screen | The topics my robot config asks the monitor to watch show live rates on the Monitor screen; the ones it was never asked to watch say nothing rather than reading zero. |
-| `10-settings.spec.ts` | screen | Settings shows me the recording config that is actually loaded, refuses an edit that is not valid JSON before it can reach the server, and saving it back leaves what the stack reads exactly as it was. |
+| `10-settings.spec.ts` | screen | Setup check does not run on page load, runs once on explicit request, and returns structured evidence within five seconds. Settings also shows the recording config that is actually loaded, refuses an edit that is not valid JSON before it can reach the server, and saving it back leaves what the stack reads exactly as it was. |
 
 `01`–`07` are the §13 acceptance minimum. `08`–`10` are not part of it: they
 cover the three screens that minimum never enumerated — Validation, Monitor and
@@ -185,6 +185,33 @@ npx playwright show-report
 bash e2e/scripts/stack.sh down
 ```
 
+Before it changes the stack, `up` validates that the selected bag directory
+contains `metadata.yaml` and at least one readable MCAP file. After starting the
+player it waits for three separate facts: the player container is still alive,
+a configured topic has a ROS publisher, and the monitor has received at least
+one sample from a configured topic. A missing fixture, a player that exits, or
+a DDS graph that discovers no live data therefore stops the gate before the
+browser suite. The failure includes the player state and logs plus the current
+topic and metrics responses.
+
+`data/*` is gitignored, so a linked worktree does not inherit the sample bags
+from the checkout that created it. Point the acceptance harness at that
+checkout's data directory explicitly:
+
+```bash
+E2E_REPLAY_DATA_DIR=/absolute/path/to/kairos/data make test-e2e
+```
+
+The directory is mounted read-only as the replay container's `/data`; the E2E
+capture-store output remains the isolated `e2e/.run/data`. Run the fast fixture
+checks alone with `make test-e2e-harness` or validate the currently selected
+fixture without starting Docker with:
+
+```bash
+E2E_REPLAY_DATA_DIR=/absolute/path/to/kairos/data \
+  bash e2e/scripts/stack.sh replay-check
+```
+
 **One acceptance run at a time.** `up` claims a lease on the stack for the whole
 run, so a second run is refused with *another acceptance run holds the stack —
 pid N, started …* rather than tearing down the first one's containers and wiping
@@ -295,6 +322,18 @@ recording`), which is what the operator reads anyway.
 
 If a scenario needs a testid the app does not have, the fix belongs in
 `services/frontend` — not in a brittle selector here.
+
+## Recording needs an operator
+
+Start is disabled until the OP chip carries a name, in every configuration, and
+every test gets a fresh browser context — so any scenario that records calls
+`ensureOperator(page)` (`fixtures/ui.ts`) first. `recordThroughUi` does it for
+its callers; a scenario that drives Start itself does it itself.
+
+The helper clicks the chip and types, rather than seeding the chip's
+localStorage key. Writing the app's private storage would keep this suite green
+after the chip stopped saving anything — the opposite of what an acceptance
+gate is for.
 
 ## Layout
 

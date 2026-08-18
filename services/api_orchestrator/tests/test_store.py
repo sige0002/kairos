@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Capture store v2 — schema, CAS review saves, leases, replicas, datasets.
 
 The store is the queryable cache in front of the sidecars, so the tests that
@@ -10,6 +12,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -28,6 +31,8 @@ from api_orchestrator.store import (
     BatchExistsError,
     CaptureStore,
     DatasetMemberExistsError,
+    DatasetNotActiveError,
+    PlanCatalogConflictError,
 )
 from kairos_common.ids import new_capture_id, new_dataset_id
 from kairos_common.rebuild import CaptureRow, ReplicaRow, ReplicaState
@@ -294,10 +299,23 @@ class TestLease:
         assert loaded is not None
         assert loaded.lease_owner == "digest"
 
-    def test_a_second_owner_cannot_take_a_live_lease(self, store: CaptureStore) -> None:
+    def test_a_second_owner_may_hold_it_too(self, store: CaptureStore) -> None:
+        """§7.1 leases are SHARED (rev.2.15), so this no longer arbitrates.
+
+        Was ``test_a_second_owner_cannot_take_a_live_lease``. The single-owner
+        rule is what stopped the N camera encoders of one recording running in
+        parallel; what the lease protects — deletion refused while anyone holds
+        it — is asserted below and is unchanged.
+        """
         capture = store.create_capture(_make_capture())
         store.acquire_lease(capture.capture_id, "digest", ttl_s=60)
-        assert store.acquire_lease(capture.capture_id, "export", ttl_s=60) is False
+
+        assert store.acquire_lease(capture.capture_id, "export", ttl_s=60) is True
+        assert [h["owner"] for h in store.lease_holders(capture.capture_id)] == [
+            "digest",
+            "export",
+        ]
+        assert store.has_live_lease(capture.capture_id) is True
 
     def test_the_same_owner_may_renew(self, store: CaptureStore) -> None:
         capture = store.create_capture(_make_capture())
@@ -311,6 +329,28 @@ class TestLease:
         # lock its capture out of deletion forever (§7.1).
         assert store.has_live_lease(capture.capture_id) is False
         assert store.acquire_lease(capture.capture_id, "export", ttl_s=60) is True
+
+    def test_writer_lease_atomically_excludes_readers(
+        self, store: CaptureStore
+    ) -> None:
+        capture = store.create_capture(_make_capture())
+        writer = f"writer:archive:{capture.capture_id}"
+        assert store.acquire_writer_lease(capture.capture_id, writer, ttl_s=60)
+        assert store.acquire_lease(capture.capture_id, "job:late", ttl_s=60) is False
+        assert store.release_lease(capture.capture_id, writer)
+        assert store.acquire_lease(capture.capture_id, "job:late", ttl_s=60) is True
+
+    def test_writer_lease_refuses_existing_reader(self, store: CaptureStore) -> None:
+        capture = store.create_capture(_make_capture())
+        assert store.acquire_lease(capture.capture_id, "job:live", ttl_s=60)
+        assert (
+            store.acquire_writer_lease(
+                capture.capture_id,
+                f"writer:delete:{capture.capture_id}",
+                ttl_s=60,
+            )
+            is False
+        )
 
     def test_release_only_succeeds_for_the_holder(self, store: CaptureStore) -> None:
         capture = store.create_capture(_make_capture())
@@ -453,6 +493,31 @@ class TestDatasetArchive:
         assert row["archive_destination"] == "/mnt/nas/ds"
         assert row["archive_started_at"] is not None
 
+    def test_start_rejects_a_member_snapshot_that_changed(
+        self, store: CaptureStore
+    ) -> None:
+        dataset_id = self._dataset(store)
+        first = store.create_capture(_make_capture(run_id="run_archive_first"))
+        second = store.create_capture(_make_capture(run_id="run_archive_second"))
+        store.add_dataset_member(dataset_id, first.capture_id)
+        frozen = [first.capture_id]
+        store.add_dataset_member(dataset_id, second.capture_id)
+
+        assert not store.begin_dataset_archive(
+            dataset_id,
+            destination="/mnt/nas/ds",
+            expected_capture_ids=frozen,
+        )
+        assert store.get_dataset(dataset_id)["status"] == "active"
+
+    def test_archiving_dataset_refuses_a_late_member(self, store: CaptureStore) -> None:
+        dataset_id = self._dataset(store)
+        assert store.begin_dataset_archive(dataset_id, destination="/mnt/nas/ds")
+        capture = store.create_capture(_make_capture(run_id="run_archive_late"))
+
+        with pytest.raises(DatasetNotActiveError):
+            store.add_dataset_member(dataset_id, capture.capture_id)
+
     def test_abort_rolls_an_unledgered_start_back(self, store: CaptureStore) -> None:
         dataset_id = self._dataset(store)
         store.begin_dataset_archive(dataset_id, destination="/mnt/nas/ds")
@@ -540,6 +605,30 @@ class TestDatasetArchive:
 
 
 class TestCatalogSidecars:
+    def test_concurrent_catalog_cas_allows_exactly_one_winner(
+        self, store: CaptureStore
+    ) -> None:
+        def replace(name: str) -> str:
+            try:
+                store.replace_plan_catalog(
+                    [{"project_id": name, "name": name, "tasks": []}],
+                    base_revision=0,
+                    updated_at="2026-08-01T00:00:00.000Z",
+                    failure_reasons=None,
+                    operators=None,
+                    keep_failure_reasons=False,
+                    keep_operators=False,
+                )
+            except PlanCatalogConflictError:
+                return "conflict"
+            return "saved"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(executor.map(replace, ("p1", "p2")))
+        assert sorted(outcomes) == ["conflict", "saved"]
+        catalog = store.get_plan_catalog()
+        assert catalog is not None and catalog[4] == 1
+
     def test_a_saved_template_is_mirrored_to_the_catalog_dir(
         self, store: CaptureStore, tmp_path: Path
     ) -> None:
@@ -553,20 +642,33 @@ class TestCatalogSidecars:
     def test_the_plan_catalog_is_mirrored_too(
         self, store: CaptureStore, tmp_path: Path
     ) -> None:
-        store.set_plan_catalog(
-            [{"name": "proj"}], "2026-08-01T00:00:00.000Z", ["Robot fault"]
+        store.replace_plan_catalog(
+            [{"project_id": "p", "name": "proj", "tasks": []}],
+            base_revision=0,
+            updated_at="2026-08-01T00:00:00.000Z",
+            failure_reasons=["Robot fault"],
+            operators=None,
+            keep_failure_reasons=False,
+            keep_operators=False,
         )
         sidecar = tmp_path / "catalog" / "plan_catalog.json"
         assert sidecar.is_file()
         mirrored = json.loads(sidecar.read_text())
         assert mirrored["projects"][0]["name"] == "proj"
         assert mirrored["failure_reasons"] == ["Robot fault"]
+        assert mirrored["revision"] == 1
 
     def test_catalog_sidecars_restore_into_a_fresh_db(self, tmp_path: Path) -> None:
         first = CaptureStore(tmp_path / "kairos.db", data_dir=tmp_path)
         first.create_template(ValidationTemplate(name="t", version=3))
-        first.set_plan_catalog(
-            [{"name": "proj"}], "2026-08-01T00:00:00.000Z", ["Robot fault"]
+        first.replace_plan_catalog(
+            [{"project_id": "p", "name": "proj", "tasks": []}],
+            base_revision=0,
+            updated_at="2026-08-01T00:00:00.000Z",
+            failure_reasons=["Robot fault"],
+            operators=None,
+            keep_failure_reasons=False,
+            keep_operators=False,
         )
         first.close()
         (tmp_path / "kairos.db").unlink()
@@ -576,9 +678,44 @@ class TestCatalogSidecars:
         templates, _ = second.list_templates(limit=10)
         assert [(t.name, t.version) for t in templates] == [("t", 3)]
         catalog = second.get_plan_catalog()
-        assert catalog is not None and catalog[0] == [{"name": "proj"}]
+        assert catalog is not None and catalog[0] == [
+            {"project_id": "p", "name": "proj", "tasks": []}
+        ]
         assert catalog[1] == ["Robot fault"]
+        assert catalog[4] == 1
         second.close()
+
+    def test_legacy_plan_sidecar_is_canonicalized_with_stable_ids(
+        self, tmp_path: Path
+    ) -> None:
+        sidecar = tmp_path / "catalog" / "plan_catalog.json"
+        sidecar.parent.mkdir()
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "projects": [
+                        {
+                            "name": "P",
+                            "tasks": [{"name": "T", "conditions": ["C"]}],
+                        }
+                    ],
+                    "updated_at": "2026-08-01T00:00:00.000Z",
+                }
+            )
+        )
+        store = CaptureStore(tmp_path / "kairos.db", data_dir=tmp_path)
+        store.restore_catalog_from_sidecars()
+        catalog = store.get_plan_catalog()
+        assert catalog is not None
+        project = catalog[0][0]
+        assert project["project_id"].startswith("legacy-")
+        assert project["tasks"][0]["task_id"].startswith("legacy-")
+        assert project["tasks"][0]["conditions"][0]["condition_id"].startswith(
+            "legacy-"
+        )
+        assert catalog[4] == 1
+        assert json.loads(sidecar.read_text())["projects"] == catalog[0]
+        store.close()
 
 
 class TestBatches:

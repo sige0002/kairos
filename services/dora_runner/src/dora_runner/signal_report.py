@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """``signal_report`` pipeline: post-hoc numeric time-series for Review charts.
 
 Event-driven (button -> job), post-hoc, and read-only with respect to the
@@ -59,6 +61,7 @@ from __future__ import annotations
 import json
 import math
 import statistics
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -69,6 +72,7 @@ from kairos_common import (
     iter_numeric_fields,
     utc_now_iso8601,
 )
+from kairos_common.atomic_io import atomic_write_text
 
 from dora_runner.mcap_utils import (
     enumerate_topics,
@@ -77,6 +81,7 @@ from dora_runner.mcap_utils import (
     resolve_source_dir,
     source_times,
 )
+from dora_runner.models import JobCanceled
 
 # Pipeline identity stamped into the summary (reproducibility contract, shared
 # with the other bundled pipelines).
@@ -397,6 +402,7 @@ def run_signal_report(
     data_dir: Path,
     topics: list[str] | None = None,
     max_points: int = DEFAULT_MAX_POINTS,
+    cancel: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Extract per-topic numeric time-series from a capture's MCAP into a sidecar.
 
@@ -424,6 +430,9 @@ def run_signal_report(
     accums: dict[str, _TopicAccum] = {}
     if scan_targets:
         for decoded in iter_decoded_ros2_messages(mcap_path, topics=scan_targets):
+            # Cancellation checkpoint: the decode pass is the job's wall time.
+            if cancel is not None and cancel.is_set():
+                raise JobCanceled
             topic = decoded.channel.topic
             if topic in skipped:
                 # Already ruled out (no numeric leaves on its first message).
@@ -479,5 +488,5 @@ def run_signal_report(
     report_dir = data_dir / "report" / "signal_report" / capture_id
     report_dir.mkdir(parents=True, exist_ok=True)
     summary_path = report_dir / "summary.json"
-    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    atomic_write_text(summary_path, json.dumps(summary, indent=2))
     return {"summary": summary, "artifacts": [str(summary_path)]}

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Pydantic models for the topic_monitor API (Stage 2).
 
 These shapes are the public contract of topic_monitor (consumed by

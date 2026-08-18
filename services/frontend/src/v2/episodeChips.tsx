@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Shared label chips used by BOTH Review and Datasets, so a recording reads
 // identically at every pipeline step (Console v2 pipeline UX).
 //
@@ -65,7 +67,7 @@ function qualityTone(q: DisplayQuality): Tone {
 }
 
 export function QualityChip({ quality }: { quality: DisplayQuality | null }) {
-  if (!quality) return <span className="font-mono text-xs text-gray-400">—</span>;
+  if (!quality) return <span className="font-mono text-xs text-gray-500">—</span>;
   return (
     <Badge tone={qualityTone(quality)} className="w-fit whitespace-nowrap">
       {quality.toUpperCase()}
@@ -82,7 +84,7 @@ export function TaskResultChip({
    *  chip's tooltip so the WHY is one hover away wherever the chip appears. */
   reason?: string | null;
 }) {
-  if (!task) return <span className="font-mono text-xs text-gray-400">—</span>;
+  if (!task) return <span className="font-mono text-xs text-gray-500">—</span>;
   const title = task === 'Failure' && reason ? `Failure reason: ${reason}` : undefined;
   return (
     <span title={title} className="w-fit">

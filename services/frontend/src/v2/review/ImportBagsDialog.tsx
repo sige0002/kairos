@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Review > Import bags — bring recordings made outside kairos into the catalog.
 //
 // The shape is "look before you copy": the operator names a FOLDER (a server
@@ -69,9 +71,39 @@ interface ScanResult {
 
 type RowState =
   | { phase: 'idle' }
-  | { phase: 'importing' }
+  | { phase: 'importing' } // POST in flight
+  | {
+      // Accepted (202) and copying server-side. The 202 is only "queued" —
+      // with two copy slots the tail of a bulk run finishes long after the
+      // POSTs — so the row watches GET /imports/{id} to its real end (S3-2).
+      phase: 'copying';
+      importId: string;
+      captureId?: string;
+      done: number;
+      total: number | null;
+    }
   | { phase: 'done'; captureId?: string }
   | { phase: 'failed'; error: string };
+
+/** One import's server-side record (`GET /imports/{id}`). */
+interface ImportRecord {
+  import_id: string;
+  capture_id?: string;
+  state: 'running' | 'succeeded' | 'failed';
+  bytes_total?: number | null;
+  bytes_copied?: number | null;
+  error?: { code: string; message: string } | null;
+}
+
+// Test seam: the watch is a real wall-clock poll.
+let importWatchMs: number | null = null;
+export function __setImportWatchMs(ms: number): void {
+  importWatchMs = ms;
+}
+export function __resetImportWatchMs(): void {
+  importWatchMs = null;
+}
+const IMPORT_WATCH_MS = 1500;
 
 function summarize(bag: ScannedBag): string {
   const parts: string[] = [];
@@ -114,6 +146,9 @@ export function ImportBagsDialog({
   const [tagError, setTagError] = useState<string | null>(null);
   const operators = useOperators();
   const [running, setRunning] = useState(false);
+  // True only while the POSTs go out. `running` covers the whole watch too,
+  // during which closing is allowed — the imports continue server-side.
+  const [posting, setPosting] = useState(false);
   const [rows, setRows] = useState<Record<string, RowState>>({});
   // Two guards on the run itself:
   //  * runInFlight — `running` is state, so it is still false inside the same
@@ -190,24 +225,40 @@ export function ImportBagsDialog({
     setTagError(null);
     runInFlight.current = true;
     setRunning(true);
+    setPosting(true);
     let anySucceeded = false;
+    // path -> import_id for every accepted POST, watched below.
+    const watches = new Map<string, string>();
     for (const bag of targets) {
       if (!alive.current) break; // dialog closed — stop queueing more
       setRows((r) => ({ ...r, [bag.path]: { phase: 'importing' } }));
       try {
-        // POST returns 202 as soon as the copy is queued; the capture appears
-        // in Review when the staged copy has been moved into place. We report
-        // "queued" honestly rather than claiming the bytes have landed.
-        const started = await apiPost<{ capture_id?: string }>('/imports', {
+        const started = await apiPost<ImportRecord>('/imports', {
           source_path: bag.path,
           move,
           ...labels,
         });
-        setRows((r) => ({
-          ...r,
-          [bag.path]: { phase: 'done', captureId: started.capture_id },
-        }));
-        anySucceeded = true;
+        if (started.import_id) {
+          watches.set(bag.path, started.import_id);
+          setRows((r) => ({
+            ...r,
+            [bag.path]: {
+              phase: 'copying',
+              importId: started.import_id,
+              captureId: started.capture_id,
+              done: 0,
+              total: started.bytes_total ?? null,
+            },
+          }));
+        } else {
+          // A server without the import registry in its answer: the ack is
+          // all there is to watch, so the row reports what is known.
+          setRows((r) => ({
+            ...r,
+            [bag.path]: { phase: 'done', captureId: started.capture_id },
+          }));
+          anySucceeded = true;
+        }
       } catch (err) {
         // Skip and keep going — this is the whole point of a bulk run.
         setRows((r) => ({
@@ -218,6 +269,60 @@ export function ImportBagsDialog({
           },
         }));
       }
+    }
+    setPosting(false);
+    // Watch every accepted import to its ACTUAL end (S3-2). The 202 says only
+    // "queued": with two copy slots the tail of a bulk run finishes long after
+    // the POSTs, and a copy that dies in staging used to stay ✓ forever with
+    // nothing on screen ever learning otherwise. Closing the dialog stops the
+    // watch, not the imports — they continue server-side.
+    while (alive.current && watches.size > 0) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, importWatchMs ?? IMPORT_WATCH_MS),
+      );
+      let landedThisRound = false;
+      for (const [bagPath, importId] of [...watches]) {
+        if (!alive.current) break;
+        try {
+          const rec = await apiGet<ImportRecord>(
+            `/imports/${encodeURIComponent(importId)}`,
+          );
+          if (rec.state === 'succeeded') {
+            watches.delete(bagPath);
+            anySucceeded = true;
+            landedThisRound = true;
+            setRows((r) => ({
+              ...r,
+              [bagPath]: { phase: 'done', captureId: rec.capture_id },
+            }));
+          } else if (rec.state === 'failed') {
+            watches.delete(bagPath);
+            setRows((r) => ({
+              ...r,
+              [bagPath]: {
+                phase: 'failed',
+                error: rec.error?.message ?? 'Import failed on the server.',
+              },
+            }));
+          } else {
+            setRows((r) => ({
+              ...r,
+              [bagPath]: {
+                phase: 'copying',
+                importId,
+                captureId: rec.capture_id,
+                done: rec.bytes_copied ?? 0,
+                total: rec.bytes_total ?? null,
+              },
+            }));
+          }
+        } catch {
+          // Transient read failure: the import keeps running server-side.
+        }
+      }
+      // As each one LANDS, let Review refetch — the recordings appear as they
+      // arrive, not only when the whole bulk run ends.
+      if (landedThisRound) onImported();
     }
     runInFlight.current = false;
     setRunning(false);
@@ -235,8 +340,12 @@ export function ImportBagsDialog({
       title="Import bags recorded outside kairos"
       footer={
         <>
-          <Button variant="ghost" onClick={onClose} disabled={running}>
-            {imported > 0 && !running ? 'Close' : 'Cancel'}
+          <Button variant="ghost" onClick={onClose} disabled={posting}>
+            {running && !posting
+              ? 'Close — imports continue on the server'
+              : imported > 0 && !running
+                ? 'Close'
+                : 'Cancel'}
           </Button>
           <Button
             data-testid="import-run"
@@ -277,7 +386,7 @@ export function ImportBagsDialog({
               }
             }}
             placeholder="/data/incoming-bags"
-            className="w-full rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-500 focus:outline-none"
+            className="w-full rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-600 focus:outline-none"
           />
           <Button
             data-testid="import-scan"
@@ -361,7 +470,7 @@ export function ImportBagsDialog({
                       // The refusal was about what was there before.
                       setTagError(null);
                     }}
-                    className="rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-500 focus:outline-none disabled:bg-gray-100"
+                    className="rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-600 focus:outline-none disabled:bg-gray-100"
                   />
                 ))}
               </div>
@@ -382,7 +491,7 @@ export function ImportBagsDialog({
                   {tagError} Nothing was imported — fix the labels and run it again.
                 </span>
               ) : (
-                <span className="text-[11px] leading-snug text-gray-400">
+                <span className="text-[11px] leading-snug text-gray-500">
                   A bag recorded outside kairos carries no operator or task of its
                   own. Left blank, it arrives without them.
                 </span>
@@ -420,7 +529,7 @@ export function ImportBagsDialog({
                       onClick={() => void runScan(n.path)}
                       className="rounded-control border border-gray-300 bg-white px-2.5 py-1 font-mono text-[11.5px] text-gray-700 hover:bg-gray-100 disabled:opacity-50"
                     >
-                      {n.name} <span className="text-gray-400">({n.bags})</span>
+                      {n.name} <span className="text-gray-500">({n.bags})</span>
                     </button>
                   ))}
                 </div>
@@ -496,10 +605,21 @@ export function ImportBagsDialog({
                     </div>
                     <span className="shrink-0 text-[11px] font-semibold">
                       {state.phase === 'importing' && (
-                        <span className="text-teal-700">copying…</span>
+                        <span className="text-teal-700">queueing…</span>
+                      )}
+                      {state.phase === 'copying' && (
+                        <span className="text-teal-700">
+                          copying…
+                          {state.total
+                            ? ` ${Math.min(
+                                100,
+                                Math.round((state.done / state.total) * 100),
+                              )}%`
+                            : ''}
+                        </span>
                       )}
                       {state.phase === 'done' && (
-                        <span className="text-teal-700">queued ✓</span>
+                        <span className="text-teal-700">imported ✓</span>
                       )}
                       {state.phase === 'failed' && (
                         <span className="text-red-700">failed</span>

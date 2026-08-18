@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Module-level external store for the batch machine (state that must survive
 // the Collect screen's unmount on a tab switch), plus its localStorage
 // persistence and the Phase 2 server restore. Split out of useBatchMachine.ts.
@@ -479,6 +481,16 @@ export function __rehydrateBatchStore(): void {
 // The hook half (useBatchMachine.ts) reads AND writes these module-level
 // values. An ESM import binding is read-only on the importing side, so writes
 // have to come back through functions defined here.
+
+// The stop-confirmation seam moved to the shared module (Settings'
+// stop-and-switch confirms through the same loop now); re-exported here so
+// every existing import through useBatchMachine keeps resolving.
+export {
+  __resetStopConfirmMs,
+  __setStopConfirmMs,
+  getStopConfirmMaxMs,
+  getStopConfirmPollMs,
+} from '../../captures/stopConfirm';
 
 export function getStopFloorMs(): number {
   return stopFloorMs;

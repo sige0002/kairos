@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // How often each thing in the console re-reads itself.
 //
 // These were literals scattered across ~15 files, and the drift was already
@@ -17,10 +19,37 @@
 // per-frame/1 Hz UI tickers that drive a clock or an animation without touching
 // the network.
 
+/** The post-stop confirmation poll: after POST /record/stop returns, the
+ *  machine re-reads /record/status at this cadence until the recorder reports
+ *  a terminal state. 1 s because the wait is a rosbag2 cache flush measured in
+ *  seconds — the mean detection lag is half this interval, imperceptible
+ *  against the flush, while anything faster just hammers a recorder that is
+ *  busy fsyncing. The count shown to the operator also ticks per second. */
+export const STOP_CONFIRM_POLL_MS = 1000;
+
+/** How long the machine lets that confirmation run before calling the stop
+ *  failed. Sized to the recorder's full escalation chain — SIGINT 30 s +
+ *  SIGTERM 30 s + SIGKILL 5 s — plus margin: inside this window a still-active
+ *  status is a recorder CORRECTLY draining or escalating, and surfacing an
+ *  error there converts normal seconds-long behavior into a false failure. */
+export const STOP_CONFIRM_MAX_MS = 70_000;
+
 /** Dataset archive progress. The run is server-owned and this poll is its only
  *  window, so it is the fastest in the console — a full second slower than
  *  nothing, and still finer than the job polls below. */
 export const DATASET_ARCHIVE_POLL_MS = 1000;
+
+/** Per-capture archive progress (S2-1: the copy runs server-side and answers
+ *  202). Same cadence and same rationale as the dataset archive's. */
+export const CAPTURE_ARCHIVE_POLL_MS = 1000;
+
+/** A dataset's LeRobot export while it is queued or running (§6.2). Same
+ *  cadence and same rationale as the archive polls above — the conversion is
+ *  owned by another service and this poll is the console's only window onto
+ *  it — with one addition: the exporter's `stalled` flag is only as fresh as
+ *  this interval, and "no progress for a while" is the one thing the operator
+ *  must not learn late. Stops at a terminal state. */
+export const DATASET_EXPORT_POLL_MS = 1000;
 
 /** Validation's job hook (useJobResult), until the job reaches a terminal
  *  state. Distinct from INSPECTION_JOB_POLL_MS below purely because that is how

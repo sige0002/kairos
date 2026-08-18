@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared fixtures: an in-process fake recorder and a wired v2 app.
 
 The fake recorder is an ``httpx.MockTransport`` implementing just enough of the
@@ -26,6 +28,7 @@ from fastapi.testclient import TestClient
 from kairos_common import Settings
 from kairos_common.capture_sidecars import (
     OBJECT_MANIFEST_FILENAME,
+    CollectionContextSnapshotV1,
     ObjectManifestV2,
     write_object_manifest,
 )
@@ -48,6 +51,7 @@ class FakeRecorder:
         # Stamped from the start request's optional `robot` (§10) so the
         # manifest — not the orchestrator's row — is authoritative for it.
         self.robot: str | None = None
+        self.collection_context: CollectionContextSnapshotV1 | None = None
         self.finalized: bool = False
         # Terminal state the recorder reports after stop; tests set this to
         # "failed"/"interrupted" to exercise a non-completed finalize.
@@ -90,6 +94,14 @@ class FakeRecorder:
         # Answer /record/stop but write no terminal manifest — killed between
         # acknowledging and finalising.
         self.seal_on_stop: bool = True
+        # Answer /record/stop with ``stopping`` and KEEP flushing: the recorder
+        # seals and reports ``final_state`` only after this many further status
+        # reads (delayed success — the finaliser still writing after the stop
+        # response). ``None`` (default) seals at stop; a huge number models a
+        # recorder that never settles. This is the poll-count seam: tests drive
+        # slowness by counting reads, never by sleeping.
+        self.settle_after_status_polls: int | None = None
+        self._polls_until_settle: int | None = None
         # Whether the fake writes objects/<capture_id>/ on start. Off lets a
         # test drive the API without any bytes on disk.
         self.writes_sidecars: bool = True
@@ -138,6 +150,8 @@ class FakeRecorder:
             return self._stop()
         if path == "/record/status":
             return self._status()
+        if path == "/record/preflight":
+            return httpx.Response(200, json={"ready": True})
         if path == "/record/metadata":
             return self._metadata()
         return httpx.Response(
@@ -195,6 +209,30 @@ class FakeRecorder:
         self.prepared_run_id = None
         self.state = "recording"
         self.robot = self.last_start_payload.get("robot")
+        context = self.last_start_payload.get("collection_context")
+        if isinstance(context, dict):
+            context_fields = {
+                "batch_id",
+                "batch_seq",
+                "project_id",
+                "task_id",
+                "condition_id",
+                "project",
+                "task",
+                "condition",
+                "robot",
+                "operator",
+            }
+            self.collection_context = CollectionContextSnapshotV1(
+                **{name: context.get(name) for name in context_fields},
+                extra={
+                    name: value
+                    for name, value in context.items()
+                    if name not in context_fields
+                },
+            )
+        else:
+            self.collection_context = None
         self.started_at = "2026-08-01T00:00:00.000Z"
         self.finalized = False
         requested = self.last_start_payload["topics"]
@@ -238,13 +276,12 @@ class FakeRecorder:
             self.prepared_run_id = None
             self.state = "idle"
         if self.state in ("recording", "stopping"):
-            self.state = self.final_state
-            self.finalized = True
-            self.message_count = 1234
-            self.bytes = 567890
-            if self.writes_sidecars and self.seal_on_stop:
-                self._write_bag()
-                self._write_manifest(self.final_state)
+            if self.settle_after_status_polls is not None:
+                # Still flushing: the stop is acknowledged but not finished.
+                self.state = "stopping"
+                self._polls_until_settle = self.settle_after_status_polls
+            else:
+                self._finalize()
         body: dict[str, Any] = {
             "state": self.state,
             "run_id": self.run_id,
@@ -257,7 +294,26 @@ class FakeRecorder:
             self.transport_down = True
         return httpx.Response(200, json=body)
 
+    def _finalize(self) -> None:
+        """Seal the session: terminal state, counters, bag + manifest on disk."""
+        self.state = self.final_state
+        self.finalized = True
+        self.message_count = 1234
+        self.bytes = 567890
+        if self.writes_sidecars and self.seal_on_stop:
+            self._write_bag()
+            self._write_manifest(self.final_state)
+        self._polls_until_settle = None
+
     def _status(self) -> httpx.Response:
+        # A deferred settle (settle_after_status_polls) counts down HERE: the
+        # flush outlives the stop response, and each status read is one tick of
+        # the caller's confirmation poll.
+        if self.state == "stopping" and self._polls_until_settle is not None:
+            if self._polls_until_settle <= 0:
+                self._finalize()
+            else:
+                self._polls_until_settle -= 1
         armed = self.state == "armed" and self.prepared_capture_id is not None
         body: dict[str, Any] = {
             "state": self.state,
@@ -395,6 +451,7 @@ class FakeRecorder:
                 operator=(self.last_start_payload or {}).get("operator"),
                 task=(self.last_start_payload or {}).get("task"),
                 robot=self.robot,
+                collection_context=self.collection_context,
                 topics=tuple(
                     {"name": name, "type": self.topic_type, "qos": None}
                     for name in self.topic_names
@@ -526,6 +583,9 @@ class FakeImporter:
         self.present: bool = False
         self.pulled: list[str | None] = []
         self.pull_bodies: list[dict[str, object]] = []
+        # capture_id -> per-pull state (the sidecar's S3-1 failure channel);
+        # tests seed it to model a pull that failed after its 202.
+        self.pull_states: dict[str, dict[str, object]] = {}
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         if not self.present:
@@ -544,6 +604,14 @@ class FakeImporter:
             self.pull_bodies.append(body)
             self.pulled.append(body.get("capture_id"))
             return httpx.Response(202, json={"queued": True})
+        if request.url.path.startswith("/pull/") and request.method == "GET":
+            capture_id = request.url.path[len("/pull/") :]
+            state = self.pull_states.get(capture_id)
+            if state is None:
+                return httpx.Response(
+                    404, json={"error": "no pull is known for this capture"}
+                )
+            return httpx.Response(200, json={"capture_id": capture_id, **state})
         return httpx.Response(404, json={"error": {"code": "nf", "message": "?"}})
 
 

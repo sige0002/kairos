@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // E-32's sibling in Monitor: the "(Ns so far)" caveat is a DURATION.
 //
 // The Topics view says how long the chart buffer has actually been

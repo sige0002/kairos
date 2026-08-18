@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The rclpy-backed :class:`~kairos_common.monitoring.subscriber.TopicSubscriber`.
 
 This is the real ROS seam: an rclpy node that subscribes to the allowlist

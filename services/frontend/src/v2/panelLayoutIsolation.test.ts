@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // E-33: two windows of the same console (`?tab=…&solo=1` opens a second one)
 // and whether a layout change in one silently moves the other.
 //

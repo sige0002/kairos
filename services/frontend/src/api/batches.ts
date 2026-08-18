@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Typed callers for `/api/v1/batches` — Collect's grouping of captures.
 //
 // A batch groups the captures recorded in one run of a task/condition. There is
@@ -11,9 +13,11 @@ import { apiGet, apiPatch, apiPost } from './client';
 import type {
   Batch,
   BatchCoverageResponse,
+  BatchCoverageScope,
   BatchCreateRequest,
   BatchDetail,
   BatchListResponse,
+  BatchLookupResponse,
   BatchPatchRequest,
 } from './types';
 
@@ -45,6 +49,18 @@ export function listBatches(
   return apiGet<BatchListResponse>('/batches', { signal, query });
 }
 
+/** Resolve only the Batch metadata referenced by the current capture page. */
+export function lookupBatches(
+  batchIds: string[],
+  signal?: AbortSignal,
+): Promise<BatchLookupResponse> {
+  return apiPost<BatchLookupResponse>(
+    '/batches/lookup',
+    { batch_ids: batchIds },
+    { signal },
+  );
+}
+
 /**
  * Per-condition recorded totals for ONE task, summed in SQL.
  *
@@ -58,12 +74,18 @@ export function listBatches(
  * be adding up unrelated work.
  */
 export function getBatchCoverage(
-  task: string,
+  requestedScope: BatchCoverageScope | string,
   signal?: AbortSignal,
 ): Promise<BatchCoverageResponse> {
+  const scope: BatchCoverageScope =
+    typeof requestedScope === 'string' ? { task: requestedScope } : requestedScope;
+  const query: Record<string, string> = {};
+  for (const [name, value] of Object.entries(scope)) {
+    if (typeof value === 'string' && value) query[name] = value;
+  }
   return apiGet<BatchCoverageResponse>('/batches/coverage', {
     signal,
-    query: { task },
+    query,
   });
 }
 

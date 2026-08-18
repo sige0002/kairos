@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Shared plan catalog (``/api/v1/plans``) — the batch-label vocabulary.
 
 Pins the seed/adopt contract the frontend relies on: a never-set catalog is
@@ -13,16 +15,27 @@ from fastapi.testclient import TestClient
 CATALOG = {
     "projects": [
         {
+            "project_id": "project-tabletop",
             "name": "Tabletop Manipulation",
             "tasks": [
                 {
+                    "task_id": "task-pick-place",
                     "name": "Pick and Place",
-                    "conditions": ["Object: Left", "Object: Right"],
+                    "conditions": [
+                        {"condition_id": "condition-left", "name": "Object: Left"},
+                        {"condition_id": "condition-right", "name": "Object: Right"},
+                    ],
                 },
-                {"name": "Stacking", "conditions": ["Blocks: 3"]},
+                {
+                    "task_id": "task-stacking",
+                    "name": "Stacking",
+                    "conditions": [
+                        {"condition_id": "condition-blocks-3", "name": "Blocks: 3"}
+                    ],
+                },
             ],
         },
-        {"name": "Bin Picking", "tasks": []},
+        {"project_id": "project-bin", "name": "Bin Picking", "tasks": []},
     ]
 }
 
@@ -35,15 +48,17 @@ def test_get_never_set_is_null(client: TestClient) -> None:
         "failure_reasons": None,
         "operators": None,
         "updated_at": None,
+        "revision": 0,
     }
 
 
 def test_put_then_get_round_trips(client: TestClient) -> None:
-    put = client.put("/api/v1/plans", json=CATALOG)
+    put = client.put("/api/v1/plans", json={"base_revision": 0, **CATALOG})
     assert put.status_code == 200, put.text
     body = put.json()
     assert body["projects"] == CATALOG["projects"]
     assert body["updated_at"]  # stamped server-side
+    assert body["revision"] == 1
 
     got = client.get("/api/v1/plans").json()
     assert got["projects"] == CATALOG["projects"]
@@ -51,8 +66,8 @@ def test_put_then_get_round_trips(client: TestClient) -> None:
 
 
 def test_put_empty_is_distinct_from_never_set(client: TestClient) -> None:
-    client.put("/api/v1/plans", json=CATALOG)
-    resp = client.put("/api/v1/plans", json={"projects": []})
+    client.put("/api/v1/plans", json={"base_revision": 0, **CATALOG})
+    resp = client.put("/api/v1/plans", json={"base_revision": 1, "projects": []})
     assert resp.status_code == 200
     got = client.get("/api/v1/plans").json()
     # Explicitly emptied: [] with a timestamp — the client must NOT re-seed.
@@ -62,19 +77,34 @@ def test_put_empty_is_distinct_from_never_set(client: TestClient) -> None:
 
 def test_put_rejects_malformed_shapes(client: TestClient) -> None:
     # conditions must be a list of strings, tasks a list of objects.
-    bad = {"projects": [{"name": "P", "tasks": [{"name": "T", "conditions": [1]}]}]}
+    bad = {
+        "base_revision": 0,
+        "projects": [{"name": "P", "tasks": [{"name": "T", "conditions": [1]}]}],
+    }
     assert client.put("/api/v1/plans", json=bad).status_code == 422
-    assert client.put("/api/v1/plans", json={"projects": "nope"}).status_code == 422
-    # A valid catalog normalizes absent fields (tasks/conditions default []).
-    ok = client.put("/api/v1/plans", json={"projects": [{"name": "P"}]})
+    assert (
+        client.put(
+            "/api/v1/plans", json={"base_revision": 0, "projects": "nope"}
+        ).status_code
+        == 422
+    )
+    # IDs and canonical condition objects are mandatory in the rollout shape.
+    ok = client.put(
+        "/api/v1/plans",
+        json={"base_revision": 0, "projects": [{"project_id": "p", "name": "P"}]},
+    )
     assert ok.status_code == 200
-    assert ok.json()["projects"] == [{"name": "P", "tasks": []}]
+    assert ok.json()["projects"] == [{"project_id": "p", "name": "P", "tasks": []}]
 
 
 def test_failure_reasons_round_trip(client: TestClient) -> None:
     put = client.put(
         "/api/v1/plans",
-        json={**CATALOG, "failure_reasons": ["Grasp missed", "Other"]},
+        json={
+            "base_revision": 0,
+            **CATALOG,
+            "failure_reasons": ["Grasp missed", "Other"],
+        },
     )
     assert put.status_code == 200, put.text
     assert put.json()["failure_reasons"] == ["Grasp missed", "Other"]
@@ -87,8 +117,11 @@ def test_put_without_failure_reasons_preserves_stored_vocabulary(
     client: TestClient,
 ) -> None:
     # A client that predates the field (projects-only PUT) must not wipe it.
-    client.put("/api/v1/plans", json={**CATALOG, "failure_reasons": ["Robot fault"]})
-    resp = client.put("/api/v1/plans", json=CATALOG)
+    client.put(
+        "/api/v1/plans",
+        json={"base_revision": 0, **CATALOG, "failure_reasons": ["Robot fault"]},
+    )
+    resp = client.put("/api/v1/plans", json={"base_revision": 1, **CATALOG})
     assert resp.status_code == 200
     assert resp.json()["failure_reasons"] == ["Robot fault"]
     assert client.get("/api/v1/plans").json()["failure_reasons"] == ["Robot fault"]
@@ -96,23 +129,155 @@ def test_put_without_failure_reasons_preserves_stored_vocabulary(
 
 def test_failure_reasons_before_first_push_is_null(client: TestClient) -> None:
     # A catalog set before the field existed: projects stored, reasons never set.
-    client.put("/api/v1/plans", json=CATALOG)
+    client.put("/api/v1/plans", json={"base_revision": 0, **CATALOG})
     got = client.get("/api/v1/plans").json()
     assert got["projects"] == CATALOG["projects"]
     assert got["failure_reasons"] is None
 
 
 def test_failure_reasons_rejects_non_strings(client: TestClient) -> None:
-    bad = {**CATALOG, "failure_reasons": [1, "ok"]}
+    bad = {"base_revision": 0, **CATALOG, "failure_reasons": [1, "ok"]}
     assert client.put("/api/v1/plans", json=bad).status_code == 422
+
+
+def test_shared_vocabularies_are_normalized_and_reject_ambiguous_labels(
+    client: TestClient,
+) -> None:
+    normalized = client.put(
+        "/api/v1/plans",
+        json={
+            "base_revision": 0,
+            **CATALOG,
+            "failure_reasons": ["  Cafe\u0301  "],
+            "operators": ["  Alice  "],
+        },
+    )
+    assert normalized.status_code == 200
+    assert normalized.json()["failure_reasons"] == ["Café"]
+    assert normalized.json()["operators"] == ["Alice"]
+    duplicate = client.put(
+        "/api/v1/plans",
+        json={
+            "base_revision": 1,
+            **CATALOG,
+            "failure_reasons": ["Café", "Cafe\u0301"],
+            "operators": ["—"],
+        },
+    )
+    assert duplicate.status_code == 422
 
 
 def test_operator_roster_rides_the_catalog(client: TestClient) -> None:
     # Attribution roster (NOT auth): same never-set / omitted-keeps semantics
     # as failure_reasons.
-    put = client.put("/api/v1/plans", json={**CATALOG, "operators": ["alice", "bob"]})
+    put = client.put(
+        "/api/v1/plans",
+        json={"base_revision": 0, **CATALOG, "operators": ["alice", "bob"]},
+    )
     assert put.status_code == 200, put.text
     assert put.json()["operators"] == ["alice", "bob"]
     # A projects-only PUT (older client) must not wipe the roster.
-    client.put("/api/v1/plans", json=CATALOG)
+    client.put("/api/v1/plans", json={"base_revision": 1, **CATALOG})
     assert client.get("/api/v1/plans").json()["operators"] == ["alice", "bob"]
+
+
+def test_put_requires_a_matching_revision_and_does_not_overwrite(
+    client: TestClient,
+) -> None:
+    assert client.put("/api/v1/plans", json=CATALOG).status_code == 422
+    first = client.put("/api/v1/plans", json={"base_revision": 0, **CATALOG})
+    assert first.status_code == 200
+    changed = {**CATALOG, "projects": [{**CATALOG["projects"][0], "name": "Renamed"}]}
+    stale = client.put("/api/v1/plans", json={"base_revision": 0, **changed})
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "plans_conflict"
+    assert stale.json()["error"]["details"] == {
+        "current_revision": 1,
+        "base_revision": 0,
+    }
+    assert client.get("/api/v1/plans").json()["projects"] == CATALOG["projects"]
+
+
+def test_labels_are_canonicalized_and_invalid_duplicates_are_rejected(
+    client: TestClient,
+) -> None:
+    catalog = {
+        "base_revision": 0,
+        "projects": [
+            {
+                "project_id": "p",
+                "name": "  Cafe\u0301  ",
+                "tasks": [
+                    {
+                        "task_id": "t",
+                        "name": " T ",
+                        "conditions": [{"condition_id": "c", "name": " C "}],
+                    }
+                ],
+            }
+        ],
+    }
+    assert (
+        client.put("/api/v1/plans", json=catalog).json()["projects"][0]["name"]
+        == "Café"
+    )
+    duplicate = {
+        "base_revision": 1,
+        "projects": [
+            {"project_id": "p1", "name": "P", "tasks": []},
+            {"project_id": "p2", "name": "P", "tasks": []},
+        ],
+    }
+    assert client.put("/api/v1/plans", json=duplicate).status_code == 422
+    reserved = {
+        "base_revision": 1,
+        "projects": [{"project_id": "p", "name": "—", "tasks": []}],
+    }
+    assert client.put("/api/v1/plans", json=reserved).status_code == 422
+
+
+def test_entity_ids_cannot_be_reused_under_different_parents(
+    client: TestClient,
+) -> None:
+    reused_task = {
+        "base_revision": 0,
+        "projects": [
+            {
+                "project_id": "p1",
+                "name": "P1",
+                "tasks": [{"task_id": "shared-task", "name": "T1", "conditions": []}],
+            },
+            {
+                "project_id": "p2",
+                "name": "P2",
+                "tasks": [{"task_id": "shared-task", "name": "T2", "conditions": []}],
+            },
+        ],
+    }
+    assert client.put("/api/v1/plans", json=reused_task).status_code == 422
+    reused_condition = {
+        "base_revision": 0,
+        "projects": [
+            {
+                "project_id": "p1",
+                "name": "P1",
+                "tasks": [
+                    {
+                        "task_id": "t1",
+                        "name": "T1",
+                        "conditions": [
+                            {"condition_id": "shared-condition", "name": "C1"}
+                        ],
+                    },
+                    {
+                        "task_id": "t2",
+                        "name": "T2",
+                        "conditions": [
+                            {"condition_id": "shared-condition", "name": "C2"}
+                        ],
+                    },
+                ],
+            }
+        ],
+    }
+    assert client.put("/api/v1/plans", json=reused_condition).status_code == 422

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """object_manifest.json / record.json: what they must reject, and never lose."""
 
 from __future__ import annotations
@@ -9,6 +11,7 @@ from pathlib import Path
 import pytest
 from kairos_common import capture_sidecars as sidecars
 from kairos_common.capture_sidecars import (
+    CollectionContextSnapshotV1,
     ManifestFile,
     ObjectManifestV2,
     RecordV2,
@@ -134,6 +137,66 @@ def test_a_manifest_survives_a_write_read_cycle_unchanged(tmp_path: Path) -> Non
     sidecars.write_object_manifest(tmp_path, manifest)
 
     assert sidecars.read_object_manifest(tmp_path).manifest == manifest
+
+
+def test_collection_context_survives_a_manifest_write_read_cycle(
+    tmp_path: Path,
+) -> None:
+    context = CollectionContextSnapshotV1(
+        batch_id="batch_20260802_101500",
+        batch_seq=4,
+        project_id="project-kitchen",
+        task_id="task-pick",
+        condition_id="condition-low-light",
+        project="kitchen",
+        task="pick",
+        condition="low_light",
+        robot="robot_a",
+        operator="op_a",
+        extra={"future_label": "kept"},
+    )
+    manifest = _manifest(collection_context=context)
+
+    sidecars.write_object_manifest(tmp_path, manifest)
+
+    payload = json.loads((tmp_path / "object_manifest.json").read_text())
+    assert payload["collection_context"] == {
+        "batch_id": "batch_20260802_101500",
+        "batch_seq": 4,
+        "project_id": "project-kitchen",
+        "task_id": "task-pick",
+        "condition_id": "condition-low-light",
+        "project": "kitchen",
+        "task": "pick",
+        "condition": "low_light",
+        "robot": "robot_a",
+        "operator": "op_a",
+        "future_label": "kept",
+    }
+    assert sidecars.read_object_manifest(tmp_path).manifest == manifest
+
+
+def test_missing_collection_context_in_an_existing_manifest_reads_as_none(
+    tmp_path: Path,
+) -> None:
+    payload = _manifest().to_json()
+    payload.pop("collection_context", None)
+    path = tmp_path / "object_manifest.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    manifest = sidecars.read_object_manifest(path).manifest
+
+    assert manifest is not None
+    assert manifest.collection_context is None
+
+
+def test_collection_context_must_be_a_json_object(tmp_path: Path) -> None:
+    payload = _manifest().to_json()
+    payload["collection_context"] = ["not", "an", "object"]
+    path = tmp_path / "object_manifest.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    assert sidecars.read_object_manifest(path).status is SidecarStatus.corrupt
 
 
 def test_unknown_fields_survive_the_digest_jobs_rewrite(tmp_path: Path) -> None:

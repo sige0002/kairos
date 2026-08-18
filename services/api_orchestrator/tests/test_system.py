@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Tests for ``GET /api/v1/system`` (host CPU/GPU info).
 
 The CPU probe reads ``/proc/cpuinfo`` and the GPU probe shells out to

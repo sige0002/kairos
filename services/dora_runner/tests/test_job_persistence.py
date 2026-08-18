@@ -1,13 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Job/template persistence + restart reconciliation for dora_runner.
 
 The store is SQLite-backed, so a restart no longer orphans in-flight work (F4).
 A job the previous process left ``queued``/``running`` is reconciled to a terminal
 ``failed`` carrying an honest interrupted reason. Because that lands on ``failed``
 (the shared ``JobState`` has no ``interrupted`` member) with the cause under
-``summary.error``, the orchestrator's ``run_job_to_completion`` — which treats
-succeeded/failed/canceled as terminal and reads ``summary.error`` via
-``datasets._job_failure_reason`` — and the Validation UI's generic renderer surface
-it to the user with no changes on their side. These tests exercise that path.
+``summary.error``, every consumer of the terminal set — the orchestrator's
+``datasets._job_failure_reason`` and the Validation UI's generic renderer —
+surfaces it to the user with no changes on their side. These tests exercise
+that path.
 """
 
 from __future__ import annotations
@@ -16,6 +18,7 @@ import asyncio
 import time
 from pathlib import Path
 
+import httpx
 from dora_runner.main import create_dora_app
 from dora_runner.models import JobResult, RequiredTopicTemplate, ValidationTemplate
 from dora_runner.store import JobRecord, RunnerStore
@@ -59,6 +62,7 @@ def test_reconcile_marks_inflight_jobs_failed_interrupted(tmp_path: Path) -> Non
     for job_id in ("j_queued", "j_running"):
         status = reopened.get_persisted_job(job_id)
         assert status is not None and status.state is JobState.failed
+        assert status.execution_active is False
         result = reopened.get_persisted_result(job_id)
         assert result is not None
         assert result.summary["reason"] == "interrupted"
@@ -95,6 +99,37 @@ def test_reconcile_leaves_terminal_jobs_untouched(tmp_path: Path) -> None:
     assert result is not None and result.summary["result"] == "pass"
     # A second reconcile is still a no-op.
     assert reopened.reconcile_interrupted_jobs() == 0
+
+
+def test_reconcile_clears_terminal_worker_that_died_with_process(
+    tmp_path: Path,
+) -> None:
+    """A terminal timeout label may still have a live non-cooperative worker."""
+    db = str(tmp_path / "dora_runner.db")
+    store = RunnerStore(db)
+    timed_out = JobRecord(
+        job_id="j_timeout_worker",
+        capture_id=CAPTURE_ID,
+        pipeline="fast_validation",
+        params={},
+    )
+    timed_out.state = JobState.failed
+    timed_out.progress = 1.0
+    timed_out.execution_active = True
+    timed_out.result = JobResult(
+        summary={"result": "fail", "reason": "timeout"}, artifacts=[]
+    )
+    store.persist_job(timed_out)
+    store.close()
+
+    reopened = RunnerStore(db)
+    assert reopened.reconcile_interrupted_jobs() == 1
+    status = reopened.get_persisted_job("j_timeout_worker")
+    assert status is not None
+    assert status.state is JobState.failed
+    assert status.execution_active is False
+    result = reopened.get_persisted_result("j_timeout_worker")
+    assert result is not None and result.summary["reason"] == "timeout"
 
 
 def test_app_restart_surfaces_interrupted_via_http(tmp_path: Path) -> None:
@@ -167,6 +202,36 @@ def test_completed_job_survives_restart(tmp_path: Path) -> None:
         assert client.get(f"/jobs/{job_id}/status").json()["state"] == "failed"
         body = client.get(f"/jobs/{job_id}/result").json()
         assert body["summary"]["error"]["error"]["code"] == "topic_required"
+
+
+def test_concurrent_idempotency_key_creates_one_job(tmp_path: Path) -> None:
+    """The lookup and SQLite reservation share the runner's async lock."""
+    app = create_dora_app(Settings(data_dir=str(tmp_path)))
+
+    async def submit_twice() -> list[httpx.Response]:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            return list(
+                await asyncio.gather(
+                    *[
+                        client.post(
+                            "/jobs",
+                            json={
+                                "capture_id": CAPTURE_ID,
+                                "pipeline": "video_check",
+                                "params": {},
+                                "idempotency_key": "response-loss-test",
+                            },
+                        )
+                        for _ in range(2)
+                    ]
+                )
+            )
+
+    responses = asyncio.run(submit_twice())
+    assert [response.status_code for response in responses] == [201, 201]
+    assert len({response.json()["job_id"] for response in responses}) == 1
 
 
 def test_templates_persist_across_restart(tmp_path: Path) -> None:

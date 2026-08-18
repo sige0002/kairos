@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """ROS image message -> BGR ``numpy`` array conversions (OpenCV).
 
 These helpers turn ``sensor_msgs/Image`` and ``sensor_msgs/CompressedImage``

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Wire models that more than one kairos service has to agree on.
 
 A contract lives here only when two services exchange it and both sides must

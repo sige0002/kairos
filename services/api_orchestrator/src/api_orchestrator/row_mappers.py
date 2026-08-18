@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Row ↔ model conversion for the capture store.
 
 Pure functions split out of ``store.py``: each one renders a model into its
@@ -20,6 +22,7 @@ from api_orchestrator.models import (
     Capture,
     CaptureState,
     CaptureTopic,
+    CollectionContextSnapshot,
     DatasetMember,
     JobStatus,
     QuickCheck,
@@ -78,16 +81,22 @@ def capture_columns(capture: Capture) -> dict[str, Any]:
         "review_revision": capture.review_revision,
         "batch_id": capture.batch_id,
         "index_in_batch": capture.index_in_batch,
+        "collection_context": encode_field(
+            "collection_context", capture.collection_context
+        ),
         "deleted_at": capture.deleted_at,
         "delete_kind": capture.delete_kind,
         "delete_reason": capture.delete_reason,
         "archived_at": capture.archived_at,
         "archive_destination": capture.archive_destination,
-        "lease_owner": capture.lease_owner,
-        "lease_expires_at": capture.lease_expires_at,
         "created_at": capture.created_at,
         "updated_at": capture.updated_at,
     }
+
+
+def _optional_column(row: sqlite3.Row, name: str) -> Any:
+    """A column that only some of the capture SELECTs project."""
+    return row[name] if name in row.keys() else None
 
 
 def capture_from_row(row: sqlite3.Row) -> Capture:
@@ -95,6 +104,8 @@ def capture_from_row(row: sqlite3.Row) -> Capture:
     split_raw = json.loads(row["split"]) if row["split"] else None
     error_raw = json.loads(row["error"]) if row["error"] else None
     qc_raw = json.loads(row["quick_check"]) if row["quick_check"] else None
+    context_value = _optional_column(row, "collection_context")
+    context_raw = json.loads(context_value) if context_value else None
     return Capture(
         capture_id=row["capture_id"],
         run_id=row["run_id"],
@@ -121,13 +132,20 @@ def capture_from_row(row: sqlite3.Row) -> Capture:
         validation_override=row["validation_override"],
         batch_id=row["batch_id"],
         index_in_batch=row["index_in_batch"],
+        collection_context=(
+            CollectionContextSnapshot.model_validate(context_raw)
+            if context_raw
+            else None
+        ),
         deleted_at=row["deleted_at"],
         delete_kind=row["delete_kind"],
         delete_reason=row["delete_reason"],
         archived_at=row["archived_at"],
         archive_destination=row["archive_destination"],
-        lease_owner=row["lease_owner"],
-        lease_expires_at=row["lease_expires_at"],
+        # Present when the row came from ``captures_with_lease`` (every path
+        # that serves a capture to a client); absent on a raw ``captures`` row.
+        lease_owner=_optional_column(row, "lease_owner"),
+        lease_expires_at=_optional_column(row, "lease_expires_at"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -179,6 +197,9 @@ def batch_from_row(row: sqlite3.Row) -> Batch:
     return Batch(
         batch_id=row["batch_id"],
         robot=row["robot"],
+        project_id=row["project_id"],
+        task_id=row["task_id"],
+        condition_id=row["condition_id"],
         project=row["project"],
         task=row["task"],
         condition=row["condition"],

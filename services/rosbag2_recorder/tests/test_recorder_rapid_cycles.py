@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """E-39, recorder side: forty start/stop cycles and what they leave running.
 
 Every recording starts a size-watcher thread whenever either cap is configured

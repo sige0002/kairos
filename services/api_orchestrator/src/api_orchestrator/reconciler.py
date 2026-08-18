@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The periodic pass that keeps the catalog and the disk agreeing.
 
 Contract §8 (adoption, digest re-enqueue), §7 (delete resume, the reaper) and
@@ -67,6 +69,13 @@ logger = logging.getLogger("kairos")
 # that an abandoned partial does not hold its bytes until somebody notices a
 # disk filling up.
 INCOMING_ORPHAN_GRACE_S = 3600.0
+
+# _adopt_incoming's quiescence gate (S1-5): a staging dir is only published
+# when nothing inside it was written for this long. Small on purpose — an
+# active transfer touches its in-flight file continuously, so a few quiet
+# seconds separate "still copying" from "done"; a dir that just finished is
+# picked up one tick later at worst.
+ADOPT_QUIET_S = 5.0
 
 
 def _last_touched(path: Path) -> float:
@@ -371,6 +380,17 @@ class Reconciler:
         anything else is a transfer still in flight (or one that died mid-copy),
         and moving it into ``objects/`` would break §2's invariant that an
         incomplete directory there can only be a live recording.
+
+        A terminal manifest alone is NOT completeness (timing sweep S1-5): it
+        proves that file finished arriving, and says nothing about the bag
+        next to it. The old code's only real protection was that rsync
+        transfers files in sorted order and the mcap shards happen to sort
+        before ``object_manifest.json`` — a filename convention, not a
+        contract. ``_staging_complete`` adds the actual test: the on-disk
+        mcap bytes match what the manifest measured at finalise, and nothing
+        inside the dir was written within the last few seconds. An incomplete
+        dir is simply left for a later tick — the transfer's own completion,
+        or the orphan sweep, resolves it.
         """
         published: list[str] = []
         try:
@@ -387,6 +407,8 @@ class Reconciler:
             if read.status is not SidecarStatus.ok or read.manifest is None:
                 continue
             if read.manifest.state not in TERMINAL_STATES:
+                continue
+            if not self._staging_complete(entry, read.manifest):
                 continue
             try:
                 transfer.adopt_incoming(self._layout, capture_id)
@@ -411,6 +433,48 @@ class Reconciler:
                     extra={"capture_id": capture_id},
                 )
         return tuple(published)
+
+    def _staging_complete(self, entry: Path, manifest: Any) -> bool:
+        """Whether a terminal-manifest staging dir is actually all there (S1-5).
+
+        Two independent gates, either of which alone would have holes:
+
+        * **Bytes vs the manifest's own measurement.** The recorder's finalise
+          stats the ``*.mcap`` shards and writes the sum as ``bytes``, so the
+          staged shards summing below it means the transfer has not finished
+          delivering them — whatever order it sends files in. Skipped when the
+          manifest carries no ``bytes`` (imports written before measuring).
+        * **Quiescence.** Nothing anywhere inside written within the last
+          ``ADOPT_QUIET_S`` — the same whole-tree mtime walk the orphan sweep
+          uses, and the gate that holds even for a manifest that arrived
+          early. rsync sets final mtimes back to the source's on completion,
+          so a finished transfer passes immediately; only in-flight writes
+          (and the just-created entries themselves) look fresh.
+
+        A dir failing either gate is left in staging for a later tick; this
+        must never destroy anything.
+        """
+        if manifest.bytes is not None:
+            total = 0
+            for mcap in entry.glob("*.mcap"):
+                try:
+                    total += mcap.stat().st_size
+                except OSError:
+                    continue
+            if total < manifest.bytes:
+                logger.info(
+                    "staged capture not yet complete: %d of %d mcap bytes",
+                    total,
+                    manifest.bytes,
+                    extra={"capture_id": entry.name},
+                )
+                return False
+        try:
+            if time.time() - _last_touched(entry) < ADOPT_QUIET_S:
+                return False
+        except OSError:
+            return False
+        return True
 
     @dataclass
     class _Scan:

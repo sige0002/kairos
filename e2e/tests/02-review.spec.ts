@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Contract §13, scenario 2 — Review.
 //
 //   save labels → assert through the UI (the revision line and the conflict
@@ -12,7 +14,13 @@
 import { expect, test } from '@playwright/test';
 import { api, until } from '../fixtures/api';
 import { store } from '../fixtures/store';
-import { openTab, recordThroughUi, selectReviewRow, shownRevision } from '../fixtures/ui';
+import {
+  openTab,
+  recordThroughUi,
+  reviewRow,
+  selectReviewRow,
+  shownRevision,
+} from '../fixtures/ui';
 
 test.describe.configure({ mode: 'serial' });
 
@@ -117,4 +125,68 @@ test('§13-2 Review: a save against a stale revision is refused and the UI says 
   await openTab(page, 'review');
   await selectReviewRow(page, captureId);
   expect(await shownRevision(page)).toBe(onScreen + 1);
+});
+
+// Contract §13, scenario 2b — Exclude is undoable in one action (issue #12).
+//
+//   adopt → exclude (which overwrites BOTH review_status and quality) → Undo →
+//   the capture is adopted again, with the quality it had, in one click.
+//
+// The unit tests pin the transitions; what only a real browser can show is that
+// the affordance is REACHABLE. Excluding drops the row out of the default view,
+// so an undo attached to the row would be behind "Show excluded" — this asserts
+// that the operator never has to go looking: the row goes, the offer appears,
+// and one click brings the row back in the state it left.
+//
+// It restores what it changes, so it costs no recording and leaves the capture
+// as it found it (two more revisions on it, which nothing here asserts an
+// absolute value for).
+test('§13-2b Review: excluding is undoable in one action, and the offer is reachable', async ({
+  page,
+}) => {
+  const captureId = await reviewableCapture(page);
+  await selectReviewRow(page, captureId);
+
+  // ---- arrange: make the prior state something Return could not restore ----
+  // An adopted capture is the case the issue is about: Return writes `pending`,
+  // so before this change getting back to adopted took a second decision.
+  const adopt = page.getByTestId('review-mark-ok');
+  if (await adopt.isVisible()) {
+    await adopt.click();
+    await expect(page.getByTestId('review-toast')).toBeVisible({ timeout: 30_000 });
+  }
+  await expect
+    .poll(async () => (await api.getCapture(captureId)).review_status, {
+      message: 'the capture never reached adopted, so the undo has nothing to restore',
+      timeout: 30_000,
+    })
+    .toBe('adopted');
+  const quality = (await api.getCapture(captureId)).quality ?? null;
+
+  // ---- PRIMARY: exclude from the row, then take it back -------------------
+  await page.getByTestId(`review-exclude-${captureId}`).click();
+
+  // The row leaves the default view — and the way back does NOT go with it.
+  await expect(reviewRow(page, captureId)).toBeHidden({ timeout: 30_000 });
+  const undo = page.getByTestId('review-exclude-undo');
+  await expect(undo).toBeVisible({ timeout: 30_000 });
+  await expect(undo).toContainText('the recording is kept');
+
+  await page.getByTestId('review-exclude-undo-btn').click();
+
+  // One click, and the capture is back in the lane it was in — not `pending`,
+  // which is all Return could ever have given it.
+  await expect(reviewRow(page, captureId)).toBeVisible({ timeout: 30_000 });
+  await expect(undo).toBeHidden();
+
+  // ---- SECONDARY: the store agrees, quality included ----------------------
+  await expect
+    .poll(async () => (await api.getCapture(captureId)).review_status, {
+      message: 'the undo did not restore the adopted status',
+      timeout: 30_000,
+    })
+    .toBe('adopted');
+  const after = await api.getCapture(captureId);
+  expect(after.quality ?? null, 'the exclude left not_usable behind').toBe(quality);
+  expect(store.record(captureId)!.review_status).toBe('adopted');
 });

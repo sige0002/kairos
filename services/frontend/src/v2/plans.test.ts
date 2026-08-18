@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { jsonResponse } from '../test/renderWithClient';
 import {
@@ -9,8 +11,11 @@ import {
   clonePlans,
   findProject,
   findTask,
+  getPlansConflict,
   getFailReasons,
   getPlans,
+  adoptServerCatalog,
+  resolvePlanIds,
   setFailReasons,
   setPlans,
 } from './plans';
@@ -29,7 +34,17 @@ test('a fresh store holds the default catalog', () => {
 
 test('setPlans updates the snapshot and persists to localStorage', () => {
   const next = clonePlans(getPlans());
-  next.push({ name: 'Warehouse Sort', tasks: [{ name: 'Sort bins', conditions: ['Bin: A'] }] });
+  next.push({
+    project_id: 'project-warehouse-sort',
+    name: 'Warehouse Sort',
+    tasks: [
+      {
+        task_id: 'task-sort-bins',
+        name: 'Sort bins',
+        conditions: [{ condition_id: 'condition-bin-a', name: 'Bin: A' }],
+      },
+    ],
+  });
   setPlans(next);
 
   expect(getPlans().some((p) => p.name === 'Warehouse Sort')).toBe(true);
@@ -43,7 +58,10 @@ test('a persisted catalog is restored on (re)hydration', () => {
     JSON.stringify([{ name: 'Saved', tasks: [{ name: 'S', conditions: ['x'] }] }]),
   );
   __rehydratePlansStore();
-  expect(getPlans()).toEqual([{ name: 'Saved', tasks: [{ name: 'S', conditions: ['x'] }] }]);
+  expect(getPlans()[0]).toMatchObject({
+    name: 'Saved',
+    tasks: [{ name: 'S', conditions: [{ name: 'x' }] }],
+  });
 });
 
 test('a corrupt persisted catalog is ignored, falling back to defaults', () => {
@@ -58,8 +76,8 @@ test('findProject / findTask fall back gracefully (never throw)', () => {
   expect(findProject(plans, 'nope').name).toBe(plans[0]!.name);
   expect(findTask(plans, 'nope', 'nope').name).toBe(plans[0]!.tasks[0]!.name);
   // An empty catalog yields an empty placeholder rather than crashing.
-  expect(findProject([], 'x')).toEqual({ name: '—', tasks: [] });
-  expect(findTask([], 'x', 'y')).toEqual({ name: '—', conditions: [] });
+  expect(findProject([], 'x')).toMatchObject({ name: '—', tasks: [] });
+  expect(findTask([], 'x', 'y')).toMatchObject({ name: '—', conditions: [] });
 });
 
 test('a rename mutation (via setPlans) replaces the stored value', () => {
@@ -78,7 +96,7 @@ test('removing a project (via setPlans) drops it and persists the rest', () => {
   expect(persisted.some((p) => p.name === 'Bin Picking')).toBe(false);
 });
 
-test('an empty catalog is not persisted — a reload restores the defaults', () => {
+test('an explicitly empty catalog persists across a reload', () => {
   // Why the Settings editor blocks removing the LAST project: setPlans([]) does
   // write an empty array this session, but readInitial() treats a zero-length
   // catalog as absent and restores the seed, so an all-deleted catalog would
@@ -87,7 +105,7 @@ test('an empty catalog is not persisted — a reload restores the defaults', () 
   setPlans([]);
   expect(getPlans()).toEqual([]);
   __rehydratePlansStore();
-  expect(getPlans().map((p) => p.name)).toEqual(DEFAULT_PLANS.map((p) => p.name));
+  expect(getPlans()).toEqual([]);
 });
 
 // ---------------------------------------------------------------------------
@@ -95,6 +113,7 @@ test('an empty catalog is not persisted — a reload restores the defaults', () 
 // ---------------------------------------------------------------------------
 
 interface PutCall {
+  base_revision: number;
   projects: { name: string }[];
   operators?: string[];
   failure_reasons?: string[];
@@ -106,7 +125,10 @@ function mockPlansFetch(getBody: unknown, opts: { putFails?: boolean } = {}) {
     const url = String(input);
     const method = (init?.method ?? 'GET').toUpperCase();
     if (url.includes('/plans') && method === 'GET') {
-      return Promise.resolve(jsonResponse(getBody));
+      const body = getBody as { projects?: unknown } | null;
+      return Promise.resolve(
+        jsonResponse({ revision: Array.isArray(body?.projects) ? 1 : 0, ...body }),
+      );
     }
     if (url.includes('/plans') && method === 'PUT') {
       const body = JSON.parse(String(init?.body)) as PutCall;
@@ -114,7 +136,9 @@ function mockPlansFetch(getBody: unknown, opts: { putFails?: boolean } = {}) {
       if (opts.putFails) {
         return Promise.resolve(jsonResponse({ error: { code: 'io', message: 'down' } }, 500));
       }
-      return Promise.resolve(jsonResponse({ ...body, updated_at: 't1' }));
+      return Promise.resolve(
+        jsonResponse({ ...body, updated_at: 't1', revision: body.base_revision + 1 }),
+      );
     }
     return Promise.resolve(jsonResponse({}));
   });
@@ -142,7 +166,9 @@ test('the server catalog is adopted when no local edits are unsynced', async () 
   await vi.waitFor(() => expect(getPlans()[0]?.name).toBe('Server Project'));
   // Adopted (both halves), persisted, and NOT pushed back.
   expect(getFailReasons()).toEqual(['Server reason']);
-  expect(JSON.parse(window.localStorage.getItem(KEY)!)).toEqual(server);
+  expect(JSON.parse(window.localStorage.getItem(KEY)!)).toMatchObject([
+    { name: 'Server Project', tasks: [{ name: 'T', conditions: [{ name: 'C' }] }] },
+  ]);
   expect(puts).toHaveLength(0);
 });
 
@@ -186,6 +212,75 @@ test('a failed push keeps the dirty flag so the edit retries later', async () =>
   expect(getPlans()[0]!.name).toBe('Offline Edit'); // the edit itself is kept
 });
 
+test('a 409 keeps the local draft and only an explicit server adopt clears it', async () => {
+  const server = [
+    { project_id: 'server-p', name: 'Server project', tasks: [] },
+  ];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const method = (init?.method ?? 'GET').toUpperCase();
+    if (String(input).includes('/plans') && method === 'PUT') {
+      return Promise.resolve(
+        jsonResponse(
+          { error: { code: 'plans_conflict', message: 'changed elsewhere' } },
+          409,
+        ),
+      );
+    }
+    return Promise.resolve(jsonResponse({ projects: server, revision: 3, updated_at: 't3' }));
+  });
+  const local = clonePlans(getPlans());
+  local[0]!.name = 'Local draft';
+  setPlans(local);
+  await vi.waitFor(() => expect(getPlansConflict()).toBe(true));
+  expect(getPlans()[0]!.name).toBe('Local draft');
+  adoptServerCatalog();
+  await vi.waitFor(() => expect(getPlansConflict()).toBe(false));
+  expect(getPlans()[0]!.name).toBe('Server project');
+});
+
+test('a response for an older generation cannot clear a newer dirty edit', async () => {
+  const resolvers: ((response: Response) => void)[] = [];
+  const bodies: PutCall[] = [];
+  vi.spyOn(globalThis, 'fetch').mockImplementation((_input, init) => {
+    bodies.push(JSON.parse(String(init?.body)) as PutCall);
+    return new Promise<Response>((resolve) => resolvers.push(resolve));
+  });
+  const first = clonePlans(getPlans());
+  first[0]!.name = 'First';
+  setPlans(first);
+  const second = clonePlans(first);
+  second[0]!.name = 'Second';
+  setPlans(second);
+  await vi.waitFor(() => expect(bodies).toHaveLength(1));
+  expect(bodies[0]!.base_revision).toBe(0);
+  resolvers.shift()!(jsonResponse({ revision: 1, updated_at: 't1' }));
+  await vi.waitFor(() => expect(bodies).toHaveLength(2));
+  expect(bodies[1]!.base_revision).toBe(1);
+  resolvers.shift()!(jsonResponse({ revision: 2, updated_at: 't2' }));
+  await vi.waitFor(() =>
+    expect(window.localStorage.getItem('kairos.v2.plans.dirty.v1')).toBeNull(),
+  );
+  expect(getPlans()[0]!.name).toBe('Second');
+});
+
+test('legacy local storage receives deterministic IDs and labels resolve without guessing customs', () => {
+  window.localStorage.setItem(
+    KEY,
+    JSON.stringify([{ name: 'P', tasks: [{ name: 'T', conditions: ['C'] }] }]),
+  );
+  __rehydratePlansStore();
+  const plans = getPlans();
+  const first = resolvePlanIds(plans, 'P', 'T', 'C');
+  expect(first.project_id).toMatch(/^legacy-project-/);
+  expect(first.task_id).toMatch(/^legacy-task-/);
+  expect(first.condition_id).toMatch(/^legacy-condition-/);
+  expect(resolvePlanIds(plans, 'P', 'custom task', 'C')).toEqual({
+    project_id: first.project_id,
+    task_id: null,
+    condition_id: null,
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Failure-reason vocabulary (the Collect "What failed?" chips).
 // ---------------------------------------------------------------------------
@@ -220,7 +315,7 @@ test('a never-set server vocabulary is seeded from this browser', async () => {
     (puts[0] as unknown as { failure_reasons: string[] }).failure_reasons,
   ).toEqual(DEFAULT_FAIL_REASONS);
   // The projects half was still adopted, not clobbered by the seed push.
-  expect(getPlans()).toEqual([{ name: 'P', tasks: [] }]);
+  expect(getPlans()).toMatchObject([{ name: 'P', tasks: [] }]);
 });
 
 test('an EMPTY server vocabulary is neither adopted nor re-pushed', async () => {
@@ -231,7 +326,7 @@ test('an EMPTY server vocabulary is neither adopted nor re-pushed', async () => 
     updated_at: 't0',
   });
   ensurePlansSynced();
-  await vi.waitFor(() => expect(getPlans()).toEqual([{ name: 'P', tasks: [] }]));
+  await vi.waitFor(() => expect(getPlans()).toMatchObject([{ name: 'P', tasks: [] }]));
   expect(getFailReasons()).toEqual(DEFAULT_FAIL_REASONS); // local copy stands
   expect(puts).toHaveLength(0);
 });
@@ -305,7 +400,7 @@ test('a catalog write that fails leaves no dirty claim behind (write ORDER)', as
   const puts = mockPlansFetch(TEAM_SERVER);
   __rehydratePlansStore();
   ensurePlansSynced();
-  await vi.waitFor(() => expect(getPlans()).toEqual(TEAM_CATALOG));
+  await vi.waitFor(() => expect(getPlans()[0]).toMatchObject({ name: 'Team Catalog' }));
   expect(pushedVocabularies(puts)).toEqual([]);
 });
 
@@ -324,7 +419,7 @@ test('a corrupt stored catalog does not push the seeds over the server', async (
   // asserted FIRST and a regression prints what it destroyed.
   await vi.waitFor(() => expect(window.localStorage.getItem(DIRTY)).toBeNull());
   expect(pushedVocabularies(puts)).toEqual([]);
-  await vi.waitFor(() => expect(getPlans()).toEqual(TEAM_CATALOG));
+  await vi.waitFor(() => expect(getPlans()[0]).toMatchObject({ name: 'Team Catalog' }));
 });
 
 test('a catalog from an OLDER schema does not push the seeds over the server', async () => {
@@ -342,7 +437,7 @@ test('a catalog from an OLDER schema does not push the seeds over the server', a
 
   await vi.waitFor(() => expect(window.localStorage.getItem(DIRTY)).toBeNull());
   expect(pushedVocabularies(puts)).toEqual([]);
-  await vi.waitFor(() => expect(getPlans()).toEqual(TEAM_CATALOG));
+  await vi.waitFor(() => expect(getPlans()[0]).toMatchObject({ name: 'Team Catalog' }));
   expect(getPlans().some((p) => p.name === 'Old Schema')).toBe(false);
 });
 
@@ -393,7 +488,7 @@ test('an edit made while the reconcile is in flight is kept, not overwritten', a
 
   // The reconcile finds the flag, sees a real in-session edit behind it, and
   // re-pushes rather than adopting the server copy over the operator's work.
-  await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(2));
+  await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
   expect(getPlans()[0]!.name).toBe('Edited before the sync landed');
   expect(puts.some((p) => p.projects.some((x) => x.name === 'Edited before the sync landed'))).toBe(
     true,

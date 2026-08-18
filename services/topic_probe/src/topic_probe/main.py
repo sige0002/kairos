@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """topic_probe service entry point (OL-3.3).
 
 Generic numeric-field live plotter. A SEPARATE ROS 2 service from the monitor /

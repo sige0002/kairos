@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { expect, test } from 'vitest';
 import { initialTransferSlot, serverTransferPhase, transferReducer } from './transfer';
 import type { CaptureListItem, ReplicaState } from '../../api/types';

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Deployment-wide reads that belong to no one screen: host/disk facts, the
 // advisory retention candidates, and ROS 2 graph discovery.
 

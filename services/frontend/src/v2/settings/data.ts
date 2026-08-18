@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Mock catalogs for the Settings screen (design mock:
 // .dev/kairos-console-v2.dc.html, data-screen-label="Settings", script ~L1563-1665).
 // Robots is now real (RobotsSection.tsx → GET /api/v1/config/options); only the

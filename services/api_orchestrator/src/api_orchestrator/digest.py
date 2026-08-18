@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The digest job: hashing a finished capture and sealing the result.
 
 Contract §11, gated by §9-4. Once the recorder has finalised a capture, nothing
@@ -38,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from kairos_common.capture_sidecars import (
+    QUICK_CHECK_FILENAME,
     TERMINAL_STATES,
     DigestState,
     ManifestFile,
@@ -199,10 +202,31 @@ class DigestJob:
                 )
             manifest = read.manifest
             if manifest.digest_state == DigestState.complete:
-                # Already sealed. Promote the replica in case a previous run
-                # died between the manifest write and the row update.
+                # Already sealed — which is the ONE case where hashing here is
+                # a genuine verification (S3-3): the reference exists and was
+                # written by someone else (the source instance, or a previous
+                # run of this job). The old code promoted to present_verified
+                # WITHOUT comparing — so a bag transferred with a sealed
+                # manifest, truncated in transit, would have been labelled
+                # verified on arrival. Hash the local bytes and compare.
+                files = await asyncio.to_thread(self._hash_files, capture_dir)
+                mismatch = _sealed_mismatch(manifest, files)
+                if mismatch is not None:
+                    self._store.upsert_replica(
+                        capture_id,
+                        self._instance_id,
+                        ReplicaState.corrupt,
+                        path=str(capture_dir),
+                    )
+                    logger.error(
+                        "local copy does not match its sealed manifest",
+                        extra={"capture_id": capture_id, "mismatch": mismatch},
+                    )
+                    return DigestOutcome(
+                        capture_id, False, f"sealed manifest mismatch: {mismatch}"
+                    )
                 self._promote(capture_id, capture_dir, manifest.manifest_digest)
-                return DigestOutcome(capture_id, True, "already complete")
+                return DigestOutcome(capture_id, True, "verified against seal")
 
             files = await asyncio.to_thread(self._hash_files, capture_dir)
 
@@ -217,11 +241,19 @@ class DigestJob:
                 return DigestOutcome(capture_id, False, "copy removed during hashing")
 
             digest = manifest_digest(files)
+            # ``digest_sealed_by`` is the honesty stamp (S3-3): sealing on the
+            # SOURCE instance anchors the hashes to the recording itself, while
+            # sealing on a receiver (a bag transferred before any digest ran —
+            # the robot side runs no orchestrator) mints the reference from the
+            # received bytes. Those hashes still anchor every FUTURE integrity
+            # check; what they cannot do is prove the transfer, and the stamp
+            # is what lets a reader tell the two apart.
             sealed = replace(
                 manifest,
                 files=tuple(files),
                 manifest_digest=digest,
                 digest_state=DigestState.complete.value,
+                digest_sealed_by=self._instance_id,
             )
             # One atomic write, once, for the whole manifest (§3.3). tmp+replace
             # is also what lets this uid-1000 process update a root-owned file.
@@ -296,6 +328,54 @@ class DigestJob:
         # which is indistinguishable from not having asked — and §9-4 needs a
         # positive "not holding it" before any hashing starts.
         return _holds(live_capture_ids(status), capture_id)
+
+
+def _sealed_mismatch(manifest: Any, files: list[ManifestFile]) -> str | None:
+    """How the local bytes disagree with a SEALED manifest, or None if they match.
+
+    Compares the freshly hashed file set against ``manifest.files`` (path, size,
+    sha256 — the same triple the capture digest is built from) and the recorded
+    ``manifest_digest``. A sealed manifest with no file list cannot be checked
+    and is reported as its own mismatch: promoting on an uncheckable seal would
+    be the exact rubber stamp this comparison replaces.
+
+    Manifests sealed before ``quick_check.json`` left the digest's input may
+    list it; those entries are ignored (a derived sidecar's churn is not
+    corruption of the recording), and because ignoring them changes the input
+    set, the ``manifest_digest`` cross-check is skipped for such legacy seals.
+    """
+    if manifest.files is None:
+        return "manifest is sealed but carries no file list"
+    legacy_dropped = any(f.path == QUICK_CHECK_FILENAME for f in manifest.files)
+    sealed = {
+        f.path: (f.size, f.sha256)
+        for f in manifest.files
+        if f.path != QUICK_CHECK_FILENAME
+    }
+    local = {f.path: (f.size, f.sha256) for f in files}
+    if sealed != local:
+        missing = sorted(set(sealed) - set(local))
+        extra = sorted(set(local) - set(sealed))
+        changed = sorted(
+            path for path in set(sealed) & set(local) if sealed[path] != local[path]
+        )
+        parts = []
+        if missing:
+            parts.append(f"missing: {', '.join(missing)}")
+        if extra:
+            parts.append(f"unexpected: {', '.join(extra)}")
+        if changed:
+            parts.append(f"content differs: {', '.join(changed)}")
+        return "; ".join(parts) or "file sets differ"
+    if legacy_dropped:
+        return None
+    recomputed = manifest_digest(files)
+    if manifest.manifest_digest is not None and recomputed != manifest.manifest_digest:
+        return (
+            f"manifest_digest {manifest.manifest_digest} does not match "
+            f"recomputed {recomputed}"
+        )
+    return None
 
 
 def _holds(live: set[str] | None, capture_id: str) -> bool | None:

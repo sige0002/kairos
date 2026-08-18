@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > Projects & tasks (the mock's "Plans" section) — projects list
 // (middle column) + selected project's tasks/conditions editor (right
 // column). Edits funnel through the SHARED plans store (src/v2/plans.ts):
@@ -39,16 +41,16 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
     <>
       <Card className="flex flex-col overflow-auto" data-testid="plan-projects">
         <div className="border-b border-gray-100 px-4 py-[13px]">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Projects
-          </span>
+          </h2>
         </div>
         <div className="flex flex-col gap-1.5 p-3">
           {plans.map((p, i) => {
             const nConditions = p.tasks.reduce((n, t) => n + t.conditions.length, 0);
             return (
               <div
-                key={p.name}
+                key={p.project_id}
                 data-testid={`plan-project-${i}`}
                 className={cn(
                   'flex items-center gap-2 rounded-[11px] border px-[13px] py-[11px]',
@@ -61,7 +63,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                   className="flex min-w-0 flex-1 flex-col gap-0.5 text-left"
                 >
                   <span className="text-[13px] font-semibold text-gray-900">{p.name}</span>
-                  <span className="text-[11.5px] text-gray-400">
+                  <span className="text-[11.5px] text-gray-500">
                     {p.tasks.length} task{p.tasks.length === 1 ? '' : 's'} · {nConditions} conditions
                   </span>
                 </button>
@@ -69,7 +71,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                   type="button"
                   onClick={() => removeProject(i)}
                   title="Remove project"
-                  className="shrink-0 px-0.5 text-xs text-gray-300 hover:text-gray-500"
+                  className="shrink-0 px-0.5 text-xs text-gray-500 hover:text-gray-500"
                 >
                   ✕
                 </button>
@@ -90,9 +92,9 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
         {project ? (
           <>
             <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-[13px]">
-              <span data-testid="plan-project-name" className="text-[15px] font-bold text-gray-900">
+              <h2 data-testid="plan-project-name" className="text-[15px] font-bold text-gray-900">
                 {project.name}
-              </span>
+              </h2>
               <button
                 type="button"
                 onClick={renameProject}
@@ -101,17 +103,17 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                 Rename
               </button>
               <div className="flex-1" />
-              <span className="text-xs text-gray-400">used by Collect pickers &amp; batch plans</span>
+              <span className="text-xs text-gray-500">used by Collect pickers &amp; batch plans</span>
             </div>
 
             <div className="grid min-h-0 flex-1 grid-cols-[280px_1fr]">
               <div className="flex flex-col gap-2 overflow-auto border-r border-gray-100 p-4">
-                <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+                <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
                   Tasks
-                </span>
+                </h3>
                 {project.tasks.map((t, i) => (
                   <div
-                    key={t.name}
+                    key={t.task_id}
                     data-testid={`plan-task-${i}`}
                     className={cn(
                       'flex items-center gap-2 rounded-control border px-3 py-[9px]',
@@ -125,14 +127,14 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                     >
                       {t.name}
                     </button>
-                    <span className="font-mono text-[11px] text-gray-400">
+                    <span className="font-mono text-[11px] text-gray-500">
                       {t.conditions.length} cond
                     </span>
                     <button
                       type="button"
                       onClick={() => removeTask(i)}
                       title="Remove task"
-                      className="px-0.5 text-xs text-gray-300 hover:text-gray-500"
+                      className="px-0.5 text-xs text-gray-500 hover:text-gray-500"
                     >
                       ✕
                     </button>
@@ -149,9 +151,9 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
 
               <div className="flex min-w-0 flex-col gap-2 overflow-auto px-[18px] py-[14px]">
                 <div className="flex items-center gap-2">
-                  <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+                  <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
                     Conditions — {task?.name ?? '—'}
-                  </span>
+                  </h3>
                   <button
                     type="button"
                     onClick={renameTask}
@@ -171,20 +173,20 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                     pick a task to edit it, so nothing is changed on a task you did not choose.
                   </p>
                 )}
-                {(task?.conditions ?? []).map((label, i) => (
+                {(task?.conditions ?? []).map((condition, i) => (
                   <div
-                    key={`${label}-${i}`}
+                    key={condition.condition_id}
                     data-testid={`plan-condition-${i}`}
                     className="flex items-center gap-2.5 rounded-control border border-gray-100 px-[13px] py-[9px]"
                   >
                     <span className="h-[7px] w-[7px] shrink-0 rounded-sm bg-teal-600" />
-                    <span className="text-[13px] text-gray-700">{label}</span>
+                    <span className="text-[13px] text-gray-700">{condition.name}</span>
                     <div className="flex-1" />
                     <button
                       type="button"
                       onClick={() => renameCondition(i)}
                       disabled={taskSelectionLost}
-                      className="text-[11.5px] font-semibold text-gray-400 hover:text-teal-700 disabled:opacity-40"
+                      className="text-[11.5px] font-semibold text-gray-500 hover:text-teal-700 disabled:opacity-40"
                     >
                       edit
                     </button>
@@ -193,7 +195,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                       onClick={() => removeCondition(i)}
                       disabled={taskSelectionLost}
                       title="Remove condition"
-                      className="px-0.5 text-xs text-gray-300 hover:text-gray-500 disabled:opacity-40"
+                      className="px-0.5 text-xs text-gray-500 hover:text-gray-500 disabled:opacity-40"
                     >
                       ✕
                     </button>
@@ -231,7 +233,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
               type="button"
               data-testid="plan-add-first"
               onClick={addProject}
-              className="mt-1 rounded-control bg-teal-600 px-4 py-2 text-[12.5px] font-semibold text-white shadow-btn hover:bg-teal-700"
+              className="mt-1 rounded-control bg-teal-700 px-4 py-2 text-[12.5px] font-semibold text-white shadow-btn hover:bg-teal-800"
             >
               + Add the first project
             </button>

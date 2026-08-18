@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Readings of the capture-store error codes — the part of an error the backend
 // cannot write for itself: what the operator should DO next.
 //
@@ -10,6 +12,8 @@ import { ApiError } from '../../api/client';
 import {
   captureErrorText,
   isDestructiveFailure,
+  isTransportCode,
+  needsReload,
   readCaptureCode,
   readCaptureError,
 } from './errors';
@@ -198,4 +202,97 @@ test('a halt with no code and no message degrades to empty, not to "undefined"',
   expect(reading.message).toBe('');
   expect(reading.guidance).toBe('');
   expect(reading.code).toBe('');
+});
+
+// ---- failures with no envelope at all ------------------------------------
+//
+// #9, beta case A-05: a validation run whose POST never reached the server put
+// the browser's own "Failed to fetch" in the Review panel, beside an untouched
+// PASS badge. The string names no subject and no next step, and read against
+// the badge it did not even make clear that what failed was the attempt.
+
+test('a fetch that never reached the server reads as a reachability problem', () => {
+  const reading = readCaptureError(new TypeError('Failed to fetch'), 'job');
+  expect(reading.code).toBe('network_unreachable');
+  // The defect itself: the browser's sentence is no longer what the operator
+  // is shown.
+  expect(reading.message).not.toMatch(/failed to fetch/i);
+  expect(reading.message).toMatch(/could not reach the server/i);
+  expect(reading.guidance).toMatch(/orchestrator is running/i);
+  // And it does not overclaim: a dead connection says nothing about whether
+  // the request arrived, so the guidance names how to find out instead of
+  // promising that nothing happened.
+  expect(reading.guidance).toMatch(/not known/i);
+  // Kept for a bug report, but off the screen — being shown it is the defect.
+  expect(reading.details.transport_message).toBe('Failed to fetch');
+});
+
+test('the reachability reading speaks in the voice of the action that failed', () => {
+  const job = readCaptureError(new TypeError('Failed to fetch'), 'job');
+  const review = readCaptureError(new TypeError('Failed to fetch'), 'review');
+  expect(job.guidance).toMatch(/if a retry comes back busy/i);
+  expect(review.guidance).toMatch(/reload the recording/i);
+  expect(job.guidance).not.toBe(review.guidance);
+});
+
+test('the same failure is recognised across browsers, not just Chromium', () => {
+  // The beta ran on Chromium; Firefox and Safari word it differently, and the
+  // test runner's fetch (undici) differently again. A mapping that only knew
+  // one of them would quietly regress to the raw string for everyone else.
+  for (const message of [
+    'NetworkError when attempting to fetch resource.',
+    'Load failed',
+    'Network request failed',
+    'fetch failed',
+  ]) {
+    expect(readCaptureError(new TypeError(message)).code).toBe('network_unreachable');
+  }
+});
+
+test('the client deadline reads as its own thing, not as a dead network', () => {
+  // api/client.ts arms AbortSignal.timeout on every request, so this is what a
+  // server that accepted the work and then went quiet looks like — and the
+  // advice is the opposite of a retry.
+  const reading = readCaptureError(new DOMException('signal timed out', 'TimeoutError'), 'job');
+  expect(reading.code).toBe('network_timeout');
+  expect(reading.message).toMatch(/did not answer in time/i);
+  expect(reading.guidance).toMatch(/may still be going/i);
+});
+
+test('a TypeError that is not a fetch failure is not diagnosed as one', () => {
+  // The honesty half. A bug in our own call arrives as a TypeError too, and
+  // reading it as a network fault would send the operator to check a cable
+  // that was never the problem — so it degrades exactly as before.
+  const reading = readCaptureError(
+    new TypeError("Cannot read properties of undefined (reading 'topics')"),
+  );
+  expect(reading.code).toBe('unknown');
+  expect(reading.guidance).toBe('');
+  expect(reading.message).toMatch(/Cannot read properties/);
+});
+
+test('a transport failure destroys nothing and triggers no blind refetch', () => {
+  // Two switches other screens read off this reading: `isDestructiveFailure`
+  // forces a dismissed banner, `needsReload` fires an automatic refetch. A
+  // screen that cannot reach the server has nothing to refetch WITH, and
+  // nothing was lost, so both stay off.
+  const error = new TypeError('Failed to fetch');
+  expect(isDestructiveFailure(error)).toBe(false);
+  expect(needsReload(error)).toBe(false);
+});
+
+test('the one-line toast form carries the reading, not the browser string', () => {
+  const text = captureErrorText(new TypeError('Failed to fetch'), 'job');
+  expect(text).not.toMatch(/failed to fetch/i);
+  expect(text).toMatch(/could not reach the server/i);
+  expect(text).toMatch(/orchestrator/i);
+});
+
+test('the transport codes are identifiable as a family, not by their spelling', () => {
+  // Surfaces that announce a refusal ask this to word themselves honestly (the
+  // Collect save banner). Asked here so the judgement stays with the codes.
+  expect(isTransportCode('network_unreachable')).toBe(true);
+  expect(isTransportCode('network_timeout')).toBe(true);
+  expect(isTransportCode('review_conflict')).toBe(false);
+  expect(isTransportCode('unknown')).toBe(false);
 });

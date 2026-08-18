@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Post-hoc inspection of the selected member's capture — the v2-styled wrapper
 // around the SHARED inspect pieces (src/v2/captures/inspect.tsx): the
 // loss_report table, the on-demand video_check mp4 players, and the raw JSON
@@ -16,7 +18,14 @@ import { queryKeys } from '../../api/queryKeys';
 import { INSPECTION_JOB_POLL_MS } from '../pollingPolicy';
 import type { CaptureDetail, JobStatus, LossTopic } from '../../api/types';
 import { JobErrorNote } from '../captures/JobErrorNote';
-import { JsonBlock, LossTable, TERMINAL, VideoCheckSection } from '../captures/inspect';
+import {
+  JsonBlock,
+  LossTable,
+  TERMINAL,
+  VideoCheckSection,
+  checkedAt,
+  formatWhen,
+} from '../captures/inspect';
 import { isCapturePresent } from '../captures/availability';
 
 /** The `loss` sidecar is a free-form dict on the wire; only its topic list is
@@ -65,13 +74,26 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
   });
 
   const topics = lossTopics(detail);
+  const lossCheckedAt = checkedAt(detail.loss);
 
   return (
     <div className="flex flex-col gap-4" data-testid="dataset-inspection">
       <section>
         <div className="mb-1.5 flex items-center justify-between gap-2">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-            Loss report
+          <span className="flex items-baseline gap-1.5">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+              Loss report
+            </h3>
+            {/* Dated for the same reason as Review's (#9): a table a failed
+                attempt calls "the last completed report" has to be datable, or
+                the operator cannot tell which run produced it. */}
+            {topics && (
+              <span data-testid="dataset-loss-checked" className="text-[11px] text-gray-500">
+                {lossCheckedAt
+                  ? `checked ${formatWhen(lossCheckedAt)}`
+                  : 'last completed report'}
+              </span>
+            )}
           </span>
           <button
             type="button"
@@ -88,7 +110,22 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
             {lossJobId ? 'Analyzing…' : lossMutation.isPending ? 'Starting…' : 'Run loss report'}
           </button>
         </div>
-        <JobErrorNote error={lossMutation.isError ? lossMutation.error : null} testId="dataset-loss-error" />
+        {/* Same shape as Review's sections (#9): the note sits directly above a
+            table the server stored earlier, so it says which of the two this
+            is and carries the way to try again. */}
+        <JobErrorNote
+          error={lossMutation.isError ? lossMutation.error : null}
+          testId="dataset-loss-error"
+          staleNote={
+            topics
+              ? `The table below is the last completed loss report` +
+                `${lossCheckedAt ? ` (${formatWhen(lossCheckedAt)})` : ''}, not this attempt.`
+              : undefined
+          }
+          onRetry={() => lossMutation.mutate()}
+          retryDisabled={!present || lossMutation.isPending || !!lossJobId}
+          retryLabel="Retry loss report"
+        />
         {topics ? (
           <LossTable topics={topics} />
         ) : (
@@ -103,9 +140,9 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
         <VideoCheckSection topics={detail.topics ?? []} captureId={captureId} />
       ) : (
         <section>
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Video check
-          </span>
+          </h3>
           <p className="mt-1.5 text-xs leading-relaxed text-gray-500">
             No readable copy of this recording on this machine, so there are no frames
             to decode. The membership is unaffected — a dataset may cite a capture
@@ -115,9 +152,9 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
       )}
 
       <section className="flex flex-col gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Sidecars
-        </span>
+        </h3>
         <JsonBlock label="Object manifest" value={detail.manifest} />
         <JsonBlock label="Record (review)" value={detail.record} />
         <JsonBlock label="Validation" value={detail.validation} />

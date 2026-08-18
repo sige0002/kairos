@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Validation template + one-click preset endpoints."""
 
 from __future__ import annotations

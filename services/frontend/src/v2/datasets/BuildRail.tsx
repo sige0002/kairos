@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Right column: building the selected dataset by adding captures to it.
 //
 // This is the whole of "assembling a training set" under §6 — a membership row
@@ -22,6 +24,9 @@
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { CaptureLabelChips } from '../episodeChips';
 import { ArchiveDialog } from './ArchiveDialog';
+import { BulkAddDialog } from './BulkAddDialog';
+import { CandidateFilterBuilder } from './CandidateFilterBuilder';
+import { CaptureConditionLabel } from './CaptureConditionLabel';
 import {
   addBlockedReason,
   captureFacts,
@@ -32,7 +37,13 @@ import {
 import type { CaptureListItem } from '../../api/types';
 import type { DatasetsState } from './useDatasetsState';
 
-function CandidateRow({ capture, state }: { capture: CaptureListItem; state: DatasetsState }) {
+function CandidateRow({
+  capture,
+  state,
+}: {
+  capture: CaptureListItem;
+  state: DatasetsState;
+}) {
   const adding = state.addingCaptureId === capture.capture_id;
   const memberships = capture.memberships ?? [];
   // A frozen dataset (§6.x) cannot take members any more than no dataset can —
@@ -70,13 +81,18 @@ function CandidateRow({ capture, state }: { capture: CaptureListItem; state: Dat
       )}
       <span
         title={capture.capture_id}
-        className="truncate font-mono text-[10.5px] text-gray-400"
+        className="truncate font-mono text-[10.5px] text-gray-500"
       >
         {capture.run_id ?? shortCaptureId(capture.capture_id)}
       </span>
       <CaptureLabelChips capture={capture} />
+      <CaptureConditionLabel
+        capture={capture}
+        state={state}
+        testId={`dataset-candidate-condition-${capture.capture_id}`}
+      />
       {memberships.length > 0 && (
-        <span className="text-[10.5px] text-gray-400">
+        <span className="text-[10.5px] text-gray-500">
           already in {memberships.map((m) => m.dataset_name ?? m.dataset_id).join(', ')}
         </span>
       )}
@@ -85,7 +101,7 @@ function CandidateRow({ capture, state }: { capture: CaptureListItem; state: Dat
           type="button"
           data-testid={`dataset-add-${capture.capture_id}`}
           onClick={() => state.addMember(capture)}
-          disabled={noTarget || blocked !== null || adding}
+          disabled={noTarget || blocked !== null || adding || state.bulkAddBusy}
           // The row's own reason outranks "pick a dataset": choosing one would
           // not make this capture addable, and sending the operator to do it
           // would be sending them nowhere.
@@ -96,7 +112,7 @@ function CandidateRow({ capture, state }: { capture: CaptureListItem; state: Dat
               ? 'Select a dataset first'
               : 'Add this recording to the selected dataset. Nothing moves on disk.')
           }
-          className="rounded-chip bg-teal-600 px-2.5 py-[3px] text-[11px] font-bold text-white hover:bg-teal-700 disabled:opacity-40"
+          className="rounded-chip bg-teal-700 px-2.5 py-[3px] text-[11px] font-bold text-white hover:bg-teal-800 disabled:opacity-40"
         >
           {adding ? 'Adding…' : '+ Add'}
         </button>
@@ -123,53 +139,120 @@ export function BuildRail({ state }: { state: DatasetsState }) {
   return (
     <div className="flex min-h-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
       <div className="shrink-0 border-b border-gray-100 px-[18px] py-[13px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Build dataset
-        </span>
+        </h2>
       </div>
 
       <div className="shrink-0 border-b border-gray-100 px-[18px] py-[13px]">
         {target && state.isDatasetFrozen(target.dataset.dataset_id) ? (
-          <p data-testid="build-target-frozen" className="break-words text-[12.5px] leading-relaxed text-gray-500">
-            <span className="font-semibold text-gray-800">{target.dataset.name}</span> is{' '}
-            {target.dataset.status} — its member set is frozen and takes no more
+          <p
+            data-testid="build-target-frozen"
+            className="break-words text-[12.5px] leading-relaxed text-gray-500"
+          >
+            <span className="font-semibold text-gray-800">{target.dataset.name}</span>{' '}
+            is {target.dataset.status} — its member set is frozen and takes no more
             recordings. Select an active dataset to keep building.
           </p>
         ) : target ? (
-          <p data-testid="build-target" className="break-words text-[12.5px] leading-relaxed text-gray-600">
-            Adding to <span className="font-semibold text-gray-900">{target.dataset.name}</span> —{' '}
+          <p
+            data-testid="build-target"
+            className="break-words text-[12.5px] leading-relaxed text-gray-600"
+          >
+            Adding to{' '}
+            <span className="font-semibold text-gray-900">{target.dataset.name}</span> —{' '}
             {memberCount(target.dataset.member_count)}. Each recording gets the next
             number, and a number retired by a removal is never handed out again.
           </p>
         ) : (
-          <p data-testid="build-no-target" className="text-[12.5px] leading-relaxed text-gray-500">
+          <p
+            data-testid="build-no-target"
+            className="text-[12.5px] leading-relaxed text-gray-500"
+          >
             Select a dataset on the left (or create one) to add recordings to it.
           </p>
         )}
       </div>
 
       <div className="flex shrink-0 flex-col gap-2 border-b border-gray-100 px-[18px] py-[11px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Recordings
-        </span>
-        <input
-          type="search"
-          data-testid="dataset-candidate-search"
-          value={state.candidateSearch}
-          onChange={(e) => state.setCandidateSearch(e.target.value)}
-          placeholder="Find run, capture, operator, task…"
-          className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-400"
-        />
+        </h3>
+        <CandidateFilterBuilder state={state} />
+        {state.unresolvedLegacyConditionCount > 0 && (
+          <p
+            data-testid="dataset-legacy-condition-excluded"
+            className="text-[11px] leading-relaxed text-amber-700"
+          >
+            {state.unresolvedLegacyConditionCount} legacy recording
+            {state.unresolvedLegacyConditionCount === 1 ? '' : 's'} could not be
+            evaluated and will not be included.
+          </p>
+        )}
+        <button
+          type="button"
+          data-testid="dataset-bulk-add-open"
+          onClick={state.openBulkAdd}
+          disabled={
+            !target ||
+            state.isDatasetFrozen(target.dataset.dataset_id) ||
+            state.addingCaptureId !== null ||
+            state.bulkAddBusy
+          }
+          className="w-full cursor-pointer rounded-control bg-teal-700 px-3 py-2 text-[12px] font-bold text-white shadow-btn transition-colors hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Check matching recordings
+        </button>
       </div>
 
-      <div data-testid="dataset-candidates" className="min-h-0 flex-1 overflow-y-auto px-[14px] py-2.5">
+      <div
+        data-testid="dataset-candidates"
+        className="min-h-0 flex-1 overflow-y-auto px-[14px] py-2.5"
+      >
+        <div
+          data-testid="dataset-candidate-pagination"
+          className="mb-2 flex items-center gap-2 px-1 text-[11px] text-gray-500"
+        >
+          <button
+            type="button"
+            data-testid="dataset-candidates-previous"
+            onClick={state.previousCandidatePage}
+            disabled={!state.canPreviousCandidatePage}
+            className="rounded-chip border border-gray-200 px-2 py-0.5 font-semibold hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span aria-live="polite">Page {state.candidatePage}</span>
+          <button
+            type="button"
+            data-testid="dataset-candidates-next"
+            onClick={state.nextCandidatePage}
+            disabled={!state.canNextCandidatePage}
+            className="rounded-chip border border-gray-200 px-2 py-0.5 font-semibold hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
         {state.candidates.length === 0 ? (
-          <p data-testid="dataset-candidates-empty" className="px-1 py-3 text-[12.5px] text-gray-400">
-            {state.candidateSearch.trim() !== ''
-              ? 'No recording matches that search.'
-              : target
-                ? 'Every finished recording is already in this dataset.'
-                : 'Every finished recording already belongs to a dataset.'}
+          <p
+            data-testid="dataset-candidates-empty"
+            className="px-1 py-3 text-[12.5px] text-gray-500"
+          >
+            {state.candidateConditions.some(
+              (condition) =>
+                condition.field === 'condition' || condition.field === 'any',
+            ) && state.conditionFilterStatus === 'loading'
+              ? 'Loading legacy recording conditions… Snapshot matches remain available.'
+              : state.candidateConditions.some(
+                    (condition) =>
+                      condition.field === 'condition' || condition.field === 'any',
+                  ) && state.conditionFilterStatus === 'error'
+                ? 'Some legacy recording conditions could not be loaded. Snapshot matches remain available.'
+                : state.candidateConditions.length > 0
+                  ? 'No recording matches those filters.'
+                  : target
+                    ? 'Every finished recording is already in this dataset.'
+                    : 'Every finished recording already belongs to a dataset.'}
           </p>
         ) : (
           <div className="flex flex-col gap-1.5">
@@ -177,7 +260,10 @@ export function BuildRail({ state }: { state: DatasetsState }) {
               <CandidateRow key={capture.capture_id} capture={capture} state={state} />
             ))}
             {hidden > 0 && (
-              <span data-testid="dataset-candidates-more" className="px-1 py-1 text-[11px] text-gray-400">
+              <span
+                data-testid="dataset-candidates-more"
+                className="px-1 py-1 text-[11px] text-gray-500"
+              >
                 {hidden} more match — narrow the search to reach them.
               </span>
             )}
@@ -191,9 +277,9 @@ export function BuildRail({ state }: { state: DatasetsState }) {
             data-testid="catalog-truncated"
             className="mt-1.5 rounded-control border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800"
           >
-            This is not the whole catalog — there are more recordings than one
-            sweep fetches, so the oldest are not listed here. Narrow the search
-            to reach a specific one.
+            This is page {state.candidatePage}, not the whole catalog. Use Next to
+            inspect older recordings; Bulk Add asks the server to evaluate and freeze
+            the full current filter before it changes membership.
           </p>
         )}
         {state.blockedCandidateCount > 0 && (
@@ -213,13 +299,14 @@ export function BuildRail({ state }: { state: DatasetsState }) {
 
       <p
         data-testid="views-note"
-        className="shrink-0 border-t border-gray-100 px-[18px] py-[11px] text-[11px] leading-relaxed text-gray-400"
+        className="shrink-0 border-t border-gray-100 px-[18px] py-[11px] text-[11px] leading-relaxed text-gray-500"
       >
-        The browsable views/ tree is regenerated by the server after every change
-        here. There is nothing to refresh from this screen.
+        The browsable views/ tree is regenerated by the server after every change here.
+        There is nothing to refresh from this screen.
       </p>
 
       <ArchiveDialog state={state} />
+      <BulkAddDialog state={state} />
     </div>
   );
 }

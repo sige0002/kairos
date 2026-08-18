@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """video_check pipeline tests.
 
 The pure helpers (topic -> filename sanitization, fps estimate, frame cap) are
@@ -28,6 +30,9 @@ from dora_runner.video_check import (
     MAX_FRAMES,
     PIPELINE_VERSION,
     _encode_cap_from_env,
+    _encode_crf_from_env,
+    _encode_preset_from_env,
+    _encode_threads_from_env,
     estimate_fps,
     run_video_check,
     sanitize_topic,
@@ -76,6 +81,23 @@ def test_estimate_fps_clamps_and_defaults() -> None:
     # Very fast cadence clamps to the 60 fps ceiling.
     fast = [i * _MS for i in range(100)]  # 1 ms spacing = 1000 Hz
     assert estimate_fps(fast) == 60
+
+
+def test_encoder_knobs_default_to_quality_and_are_env_overridable() -> None:
+    # threads: capped at 4 by default (one preview must not saturate the box);
+    # 0 = x264 auto; garbage falls back to the cap.
+    assert _encode_threads_from_env(None) == 4
+    assert _encode_threads_from_env("0") == 0
+    assert _encode_threads_from_env("8") == 8
+    assert _encode_threads_from_env("nope") == 4
+    # preset/crf: the defaults ARE x264's own (medium / 23) — the knobs exist
+    # to trade quality for speed explicitly, never silently.
+    assert _encode_preset_from_env(None) == "medium"
+    assert _encode_preset_from_env("VeryFast") == "veryfast"
+    assert _encode_preset_from_env("mush") == "medium"
+    assert _encode_crf_from_env(None) == 23
+    assert _encode_crf_from_env("28") == 28
+    assert _encode_crf_from_env("99") == 23
 
 
 def test_default_encode_cap_is_full_episode_and_env_overridable() -> None:

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Measure an element's live content-box height (rounded px) via ResizeObserver.
 // The Monitor chart canvas is a fixed-px uPlot surface; a hardcoded height gets
 // clipped by a shorter overflow-hidden slot (I-4: the below-expected region of a

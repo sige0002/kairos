@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Capture verdict (§ validation gating): what validation says about a capture.
 
 The problem this exists for: validation was a side channel. A capture could

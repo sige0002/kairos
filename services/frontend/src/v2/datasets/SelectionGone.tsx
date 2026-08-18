@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // What the screen says when the dataset it is pointed at stops existing.
 //
 // This screen is one of several writers. Another operator has the same page

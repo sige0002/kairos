@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Review screen state: fetches captures, maps them to rows (mapCaptures.ts),
 // and drives the operator's decisions back to the server.
 //
@@ -16,24 +18,27 @@
 // removes the source. Keeping the old name next to the new endpoint would be
 // the most dangerous kind of familiar.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { listAllCaptures } from '../../api/captures';
+import { searchCaptures } from '../../api/captures';
 import { getRetention } from '../../api/system';
-import { pullCapture } from '../../api/transfer';
-import { listBatches } from '../../api/batches';
+import { getPullStatus, pullCapture } from '../../api/transfer';
+import { lookupBatches } from '../../api/batches';
 import { queryKeys } from '../../api/queryKeys';
 import { TRANSFER_PROGRESS_POLL_MS } from '../pollingPolicy';
 import type {
-  BatchListResponse,
+  BatchLookupResponse,
   CaptureListItem,
+  CaptureSearchQuery,
   Quality,
+  QualitySource,
   ReviewStatus,
   TaskResult,
 } from '../../api/types';
 import { useUiStore } from '../../store/uiStore';
 import { useCaptureDeletion } from '../captures/useCaptureDeletion';
 import { useBulkRun } from '../shared/useBulkRun';
+import { displayQuality } from '../episodeChips';
 import { mapCapturesToEpisodes, type BatchSeqLookup } from './mapCaptures';
 import { initialTransferSlot, transferReducer } from './transfer';
 import { setSplitMode, useSplitMode } from '../captures/splitMode';
@@ -44,7 +49,6 @@ import {
   type ReviewSaveResult,
   type ReviewSaveState,
 } from './useReviewSave';
-import { episodeLabel } from './types';
 import type {
   DecoratedEpisode,
   Decision,
@@ -55,9 +59,9 @@ import type {
   TransferSlot,
 } from './types';
 import { useToast } from '../shared/useToast';
+import { readReviewSearch, writeReviewSearch } from './url';
 
-/** Review's own fetch scope: one sweep of everything reviewable, a different
- *  shape from any per-page list, so it gets its own cache entry. */
+/** Review's bounded server-search scope, distinct from generic capture lists. */
 const REVIEW_SCOPE = 'review';
 
 const QUALITY_ORDER: DisplayQuality[] = ['Good', 'Needs review', 'Not usable'];
@@ -68,6 +72,13 @@ const LANE_ORDER: Record<ReviewLane, number> = {
   needs_check: 0,
   ready: 1,
   excluded: 2,
+};
+
+const utcDayStart = (day: string) => `${day}T00:00:00.000Z`;
+const utcDayAfter = (day: string) => {
+  const date = new Date(`${day}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString();
 };
 
 // ---- display vocabulary -> the server enums the API takes ------------------
@@ -85,18 +96,65 @@ function toServerReview(d: Decision): ReviewStatus {
   return 'pending';
 }
 
+/** How a capture is named in a message: its episode number when it has one,
+ *  then the run id, then the raw id. Module-level and pure so a caller holding
+ *  a row can name it without taking a dependency on the hook's render. */
+function subjectOf(row: Pick<DecoratedEpisode, 'ep' | 'runId' | 'captureId'>): string {
+  if (row.ep != null) return `Episode #${row.ep}`;
+  return row.runId ?? row.captureId;
+}
+
+/** What an undo put back, in the screen's own vocabulary ("Adopted · Good").
+ *  The toast says the state by name rather than "restored": an operator who
+ *  mis-clicked needs to see WHICH state came back, not that something did. */
+function describePrior(prior: ExcludeUndo['prior']): string {
+  const status =
+    prior.review_status === 'adopted'
+      ? 'Adopted'
+      : prior.review_status === 'excluded'
+        ? 'Excluded'
+        : 'Pending';
+  const quality = displayQuality(prior.quality);
+  return quality ? `${status} · ${quality}` : status;
+}
+
 /** Sentinel option value for "any operator" in the operator filter. */
 export const ALL_OPERATORS = '__all__';
+
+/** What an exclude overwrote, so it can be put back exactly.
+ *
+ *  Excluding writes BOTH `review_status` and `quality` (→ excluded /
+ *  not_usable), and Return only ever writes `pending` — so before this, taking
+ *  back a mis-click on an adopted capture meant Return, then Adopt, and the
+ *  quality it had been carrying was simply gone. The three fields below are the
+ *  three the exclude touches, read off the STORED capture rather than the
+ *  optimistic overlay, and `quality_source` travels with `quality` because
+ *  restoring a validator's verdict as an operator's would put a human's name on
+ *  a machine's judgement. */
+export interface ExcludeUndo {
+  captureId: string;
+  /** "Episode #3" / the run id — resolved when the exclude happened, because
+   *  the row it names is filtered out of the table the moment it is excluded. */
+  subject: string;
+  prior: {
+    review_status: ReviewStatus;
+    quality: Quality | null;
+    quality_source: QualitySource | null;
+  };
+}
 
 export interface ReviewState {
   isLoading: boolean;
   isError: boolean;
   errorMessage: string | null;
-  /** True when the capture sweep hit its page cap and stopped short of the end
-   *  of the catalog. The rows below — and every tally, lane count and bulk set
-   *  taken over them — are then about what was fetched, not about everything
-   *  there is, which is a difference the screen has to say out loud (E-27). */
+  /** True when this server page has a following page. All row-derived counts
+   *  are intentionally page-scoped and the screen says so explicitly. */
   catalogTruncated: boolean;
+  serverTotal: number;
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
+  nextPage: () => void;
+  previousPage: () => void;
 
   rows: DecoratedEpisode[];
   /** Count of NEEDS CHECK exceptions — the operator's work queue. */
@@ -111,6 +169,17 @@ export interface ReviewState {
   operatorFilter: string;
   setOperatorFilter: (v: string) => void;
   operatorOptions: string[];
+  qualityFilter: Quality | null;
+  setQualityFilter: (v: Quality | null) => void;
+  resultFilter: TaskResult | null;
+  setResultFilter: (v: TaskResult | null) => void;
+  conditionFilter: string;
+  setConditionFilter: (v: string) => void;
+  conditionOptions: string[];
+  startedFrom: string | null;
+  setStartedFrom: (v: string | null) => void;
+  startedTo: string | null;
+  setStartedTo: (v: string | null) => void;
   clearFilters: () => void;
 
   // ---- batch filter + batch-level bulk decisions --------------------------
@@ -143,14 +212,18 @@ export interface ReviewState {
   /** Exclude / restore one capture. Reversible — a review label, not a
    *  deletion; the recording stays exactly where it is. */
   requestExclude: (captureId: string) => void;
-  /** True while the exclude confirmation is open. Deliberately not derived
-   *  from the episode number: a capture with no `index_in_batch` has none, and
-   *  gating the dialog on it left that capture unable to be excluded at all. */
-  excludePending: boolean;
-  /** The episode label for the confirmation's title ("#3" or "—"). */
-  pendingExcludeLabel: string | null;
-  confirmExclude: () => void;
-  cancelExclude: () => void;
+  /** The last exclude that can still be taken back, or null. Session-scoped
+   *  and client-held by design: the store has no "previous review" to ask for,
+   *  and inventing one server-side would make an undo affordance out of a
+   *  schema change. Keyed by capture id, never by row identity — the detail
+   *  poll replaces row objects underneath a held reference. */
+  excludeUndo: ExcludeUndo | null;
+  /** Put the remembered {review_status, quality, quality_source} back in one
+   *  save. Kept on failure so it can be tried again; cleared only when the
+   *  restore actually lands. */
+  undoExclude: () => void;
+  /** Drop the offer without restoring anything. */
+  dismissExcludeUndo: () => void;
 
   // ---- removal (§7): two separate intents, never one control -------------
   /** Excluded captures — the set the bulk controls act on. */
@@ -219,28 +292,192 @@ const batchFailure = (
 
 export function useReviewState(): ReviewState {
   const queryClient = useQueryClient();
-  const capturesQuery = useQuery({
-    queryKey: queryKeys.captureList(REVIEW_SCOPE),
-    // Follow the cursor to exhaustion: the lane counts and the bulk sets must
-    // cover EVERY reviewable capture, and a single page silently drops the tail
-    // once the catalog outgrows it.
-    queryFn: ({ signal }) => listAllCaptures({}, signal),
+  const [search, setSearchValue] = useState(() => readReviewSearch().q);
+  const [operatorFilter, setOperatorFilterValue] = useState(
+    () => readReviewSearch().operator ?? ALL_OPERATORS,
+  );
+  const [batchFilter, setBatchFilter] = useState(() => readReviewSearch().batch);
+  const [qualityFilter, setQualityFilterValue] = useState<Quality | null>(
+    () => readReviewSearch().quality,
+  );
+  const [resultFilter, setResultFilterValue] = useState<TaskResult | null>(
+    () => readReviewSearch().result,
+  );
+  const [conditionFilter, setConditionFilterValue] = useState(
+    () => readReviewSearch().condition ?? '',
+  );
+  const [startedFrom, setStartedFromValue] = useState(() => readReviewSearch().from);
+  const [startedTo, setStartedToValue] = useState(() => readReviewSearch().to);
+  const [cursorStack, setCursorStack] = useState<string[]>(() => {
+    const cursor = readReviewSearch().cursor;
+    return cursor ? [cursor] : [];
   });
-  // The sweep stops after MAX_PAGES and returns what it has WITH the unfinished
-  // cursor, so a non-null cursor means it never reached the end of the catalog.
+  const currentCursor = cursorStack.at(-1) ?? null;
+  const resetPage = useCallback(() => setCursorStack([]), []);
+  const setSearch = useCallback(
+    (value: string) => {
+      setSearchValue(value);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const setOperatorFilter = useCallback(
+    (value: string) => {
+      setOperatorFilterValue(value);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const setQualityFilter = useCallback(
+    (value: Quality | null) => {
+      setQualityFilterValue(value);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const setResultFilter = useCallback(
+    (value: TaskResult | null) => {
+      setResultFilterValue(value);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const setConditionFilter = useCallback(
+    (value: string) => {
+      setConditionFilterValue(value);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const setStartedFrom = useCallback(
+    (value: string | null) => {
+      setStartedFromValue(value ? utcDayStart(value) : null);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const setStartedTo = useCallback(
+    (value: string | null) => {
+      setStartedToValue(value ? utcDayAfter(value) : null);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const searchQuery = useMemo<CaptureSearchQuery>(() => {
+    const predicates: NonNullable<CaptureSearchQuery['predicates']> = [];
+    if (search.trim())
+      predicates.push({ field: 'any', operator: 'contains', value: search.trim() });
+    if (operatorFilter !== ALL_OPERATORS)
+      predicates.push({ field: 'operator', operator: 'equals', value: operatorFilter });
+    if (batchFilter)
+      predicates.push({ field: 'batch_id', operator: 'equals', value: batchFilter });
+    if (qualityFilter)
+      predicates.push({ field: 'quality', operator: 'equals', value: qualityFilter });
+    if (resultFilter)
+      predicates.push({
+        field: 'task_result',
+        operator: 'equals',
+        value: resultFilter,
+      });
+    if (conditionFilter.trim())
+      predicates.push({
+        field: 'condition',
+        operator: 'equals',
+        value: conditionFilter.trim(),
+      });
+    return { predicates, started_from: startedFrom, started_to: startedTo };
+  }, [
+    batchFilter,
+    conditionFilter,
+    operatorFilter,
+    qualityFilter,
+    resultFilter,
+    search,
+    startedFrom,
+    startedTo,
+  ]);
+  useEffect(() => {
+    writeReviewSearch({
+      q: search,
+      operator: operatorFilter === ALL_OPERATORS ? null : operatorFilter,
+      batch: batchFilter,
+      quality: qualityFilter,
+      result: resultFilter,
+      condition: conditionFilter.trim() || null,
+      from: startedFrom,
+      to: startedTo,
+      cursor: currentCursor,
+    });
+  }, [
+    batchFilter,
+    conditionFilter,
+    currentCursor,
+    operatorFilter,
+    qualityFilter,
+    resultFilter,
+    search,
+    startedFrom,
+    startedTo,
+  ]);
+  const capturesQuery = useQuery({
+    queryKey: queryKeys.captureSearch(REVIEW_SCOPE, {
+      query: searchQuery,
+      cursor: currentCursor,
+    }),
+    // One bounded server page. Do not recreate the retired whole-catalog walk
+    // in the browser: server total/facets and explicit paging own that job.
+    queryFn: ({ signal }) =>
+      searchCaptures(
+        {
+          query: searchQuery,
+          cursor: currentCursor,
+          limit: 100,
+          facets: ['operator', 'condition', 'quality', 'task_result'],
+        },
+        signal,
+      ),
+  });
+  // A cursor means this is one server page, not a local whole-catalog sweep.
   const catalogTruncated = capturesQuery.data?.next_cursor != null;
+  const nextPage = useCallback(() => {
+    const cursor = capturesQuery.data?.next_cursor;
+    if (cursor) setCursorStack((current) => [...current, cursor]);
+  }, [capturesQuery.data?.next_cursor]);
+  const previousPage = useCallback(
+    () => setCursorStack((current) => current.slice(0, -1)),
+    [],
+  );
+  const pageBatchIds = useMemo(
+    () => [
+      ...new Set(
+        (capturesQuery.data?.items ?? []).flatMap((capture) =>
+          capture.batch_id ? [capture.batch_id] : [],
+        ),
+      ),
+    ],
+    [capturesQuery.data],
+  );
 
   // Batch numbers for the row labels. A separate, best-effort read: the batch
   // is display metadata, so a failure costs a "—" in one column rather than
   // the screen.
   const batchesQuery = useQuery({
-    queryKey: queryKeys.batches,
-    queryFn: ({ signal }) => listBatches({}, signal),
+    queryKey: ['batches', 'lookup', pageBatchIds],
+    queryFn: ({ signal }) => lookupBatches(pageBatchIds, signal),
+    enabled: pageBatchIds.length > 0,
   });
   const batchSeq: BatchSeqLookup = useMemo(() => {
-    const byId = new Map<string, { seq: number | null; createdAt: string | null }>();
-    for (const b of (batchesQuery.data as BatchListResponse | undefined)?.items ?? []) {
-      byId.set(b.batch_id, { seq: b.batch_seq ?? null, createdAt: b.created_at ?? null });
+    const byId = new Map<
+      string,
+      { seq: number | null; createdAt: string | null; condition: string | null }
+    >();
+    for (const b of (batchesQuery.data as BatchLookupResponse | undefined)?.items ??
+      []) {
+      byId.set(b.batch_id, {
+        seq: b.batch_seq ?? null,
+        createdAt: b.created_at ?? null,
+        condition: b.condition ?? null,
+      });
     }
     return (batchId) => (batchId ? (byId.get(batchId) ?? null) : null);
   }, [batchesQuery.data]);
@@ -271,15 +508,19 @@ export function useReviewState(): ReviewState {
     // dataset.
     () =>
       capturesQuery.data
-        ? mapCapturesToEpisodes(capturesQuery.data.items, batchSeq)
+        ? mapCapturesToEpisodes(
+            capturesQuery.data.items,
+            batchSeq,
+            batchesQuery.isPending ? 'loading' : 'unavailable',
+          )
         : [],
-    [capturesQuery.data, batchSeq],
+    [capturesQuery.data, batchSeq, batchesQuery.isPending],
   );
 
   // ---- toast --------------------------------------------------------------
   const { toast, showToast } = useToast();
 
-  const reviewSave = useReviewSave(REVIEW_SCOPE);
+  const reviewSave = useReviewSave();
 
   // ---- optimistic overlay -------------------------------------------------
   // The ONLY local state over the server's values: what the operator just
@@ -293,6 +534,12 @@ export function useReviewState(): ReviewState {
     >
   >({});
   const [transfers, setTransfers] = useState<Record<string, TransferSlot>>({});
+  // A save banner can outlive a server-side filter change. Retain only the
+  // small, human-readable subject fields for pages this session has already
+  // seen, so the banner never degrades to an opaque capture id.
+  const seenSubjects = useRef(
+    new Map<string, Pick<DecoratedEpisode, 'captureId' | 'ep' | 'runId'>>(),
+  );
 
   const clearPending = useCallback((captureId: string) => {
     setPending((cur) => {
@@ -331,6 +578,9 @@ export function useReviewState(): ReviewState {
       }),
     [baseEpisodes, pending, transfers],
   );
+  useEffect(() => {
+    for (const row of decorated) seenSubjects.current.set(row.captureId, row);
+  }, [decorated]);
 
   // The two batch-level bulk runs (their operations are further down). They are
   // declared up here because the batch FILTER also clears the return notice —
@@ -343,16 +593,17 @@ export function useReviewState(): ReviewState {
   // ---- filters / search ---------------------------------------------------
   const [showExcluded, setShowExcluded] = useState(false);
   const toggleExcluded = useCallback(() => setShowExcluded((v) => !v), []);
-  const [search, setSearch] = useState('');
-  const [operatorFilter, setOperatorFilter] = useState<string>(ALL_OPERATORS);
-  const [batchFilter, setBatchFilter] = useState<string | null>(null);
-  const toggleBatchFilter = useCallback((batchId: string | null) => {
-    // Drop any previous batch's return failures: the notice names a count with
-    // no batch on it, so carrying it across a filter change would pin one
-    // batch's failure onto another.
-    resetReturnBatch();
-    setBatchFilter((cur) => (batchId === null || cur === batchId ? null : batchId));
-  }, [resetReturnBatch]);
+  const toggleBatchFilter = useCallback(
+    (batchId: string | null) => {
+      // Drop any previous batch's return failures: the notice names a count with
+      // no batch on it, so carrying it across a filter change would pin one
+      // batch's failure onto another.
+      resetReturnBatch();
+      setBatchFilter((cur) => (batchId === null || cur === batchId ? null : batchId));
+      resetPage();
+    },
+    [resetPage, resetReturnBatch],
+  );
 
   // ---- retention (advisory) ----------------------------------------------
   const [retentionFilterActive, setRetentionFilterActive] = useState(false);
@@ -379,63 +630,57 @@ export function useReviewState(): ReviewState {
     (!retentionBannerDismissed || retentionFilterActive);
 
   const clearFilters = useCallback(() => {
-    setSearch('');
-    setOperatorFilter(ALL_OPERATORS);
+    setSearchValue('');
+    setOperatorFilterValue(ALL_OPERATORS);
     setBatchFilter(null);
+    setQualityFilterValue(null);
+    setResultFilterValue(null);
+    setConditionFilterValue('');
+    setStartedFromValue(null);
+    setStartedToValue(null);
+    resetPage();
     setRetentionFilterActive(false);
-  }, []);
+  }, [resetPage]);
 
   const operatorOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const e of baseEpisodes) if (e.operator) set.add(e.operator);
-    return [...set].sort((a, b) => a.localeCompare(b));
-  }, [baseEpisodes]);
+    const options = (capturesQuery.data?.facets?.operator?.values ?? []).flatMap(
+      (entry) => (entry.value ? [entry.value] : []),
+    );
+    if (operatorFilter !== ALL_OPERATORS && !options.includes(operatorFilter)) {
+      options.push(operatorFilter);
+    }
+    return options.sort((a, b) => a.localeCompare(b));
+  }, [capturesQuery.data?.facets?.operator, operatorFilter]);
+  const conditionOptions = useMemo(() => {
+    const options = (capturesQuery.data?.facets?.condition?.values ?? []).flatMap(
+      (entry) => (entry.value ? [entry.value] : []),
+    );
+    if (conditionFilter && !options.includes(conditionFilter)) {
+      options.push(conditionFilter);
+    }
+    return options.sort((a, b) => a.localeCompare(b));
+  }, [capturesQuery.data?.facets?.condition, conditionFilter]);
 
   const rows = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return decorated
-      .filter((r) => showExcluded || !r.isExcluded)
-      .filter((r) => operatorFilter === ALL_OPERATORS || r.operator === operatorFilter)
-      .filter((r) => !batchFilter || r.batchId === batchFilter)
-      .filter((r) => !retentionFilterActive || retentionCandidateIds.has(r.captureId))
-      .filter((r) => {
-        if (!q) return true;
-        // Every on-screen identity is searchable: the operator reads run_id,
-        // a capture_id pasted from a log or a URL must find its row, and the
-        // operator NAME the row displays must match too (typing "ux-audit"
-        // returned "0 shown" while the Operator column said exactly that —
-        // audit P2).
-        return (
-          // Only a real number is searchable; an unnumbered row must not be
-          // findable by typing "null".
-          (r.ep !== null && `#${r.ep}`.includes(q)) ||
-          r.captureId.toLowerCase().includes(q) ||
-          (r.runId?.toLowerCase().includes(q) ?? false) ||
-          (r.operator?.toLowerCase().includes(q) ?? false)
-        );
-      })
-      // Lane first (the work queue), then newest recording first WITHIN a lane.
-      // Deliberately NOT by `ep`: that is index_in_batch, which restarts at 1
-      // in every batch, so ordering by it interleaves two batches into a
-      // meaningless 3,2,2,1,1. started_at is a global ordering; capture_id is
-      // the tiebreak because UUIDv7 is time-ordered, so it agrees with it.
-      .sort((a, b) => {
-        const lane = LANE_ORDER[a.reviewLane] - LANE_ORDER[b.reviewLane];
-        if (lane !== 0) return lane;
-        const ta = a.startedAt ? Date.parse(a.startedAt) : NaN;
-        const tb = b.startedAt ? Date.parse(b.startedAt) : NaN;
-        if (!Number.isNaN(ta) && !Number.isNaN(tb) && ta !== tb) return tb - ta;
-        return b.captureId.localeCompare(a.captureId);
-      });
-  }, [
-    decorated,
-    search,
-    operatorFilter,
-    batchFilter,
-    showExcluded,
-    retentionFilterActive,
-    retentionCandidateIds,
-  ]);
+    return (
+      decorated
+        .filter((r) => showExcluded || !r.isExcluded)
+        .filter((r) => !retentionFilterActive || retentionCandidateIds.has(r.captureId))
+        // Lane first (the work queue), then newest recording first WITHIN a lane.
+        // Deliberately NOT by `ep`: that is index_in_batch, which restarts at 1
+        // in every batch, so ordering by it interleaves two batches into a
+        // meaningless 3,2,2,1,1. started_at is a global ordering; capture_id is
+        // the tiebreak because UUIDv7 is time-ordered, so it agrees with it.
+        .sort((a, b) => {
+          const lane = LANE_ORDER[a.reviewLane] - LANE_ORDER[b.reviewLane];
+          if (lane !== 0) return lane;
+          const ta = a.startedAt ? Date.parse(a.startedAt) : NaN;
+          const tb = b.startedAt ? Date.parse(b.startedAt) : NaN;
+          if (!Number.isNaN(ta) && !Number.isNaN(tb) && ta !== tb) return tb - ta;
+          return b.captureId.localeCompare(a.captureId);
+        })
+    );
+  }, [decorated, showExcluded, retentionFilterActive, retentionCandidateIds]);
 
   const nExcluded = useMemo(
     () => decorated.filter((r) => r.isExcluded).length,
@@ -448,7 +693,10 @@ export function useReviewState(): ReviewState {
 
   // ---- selection ----------------------------------------------------------
   const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
-  const select = useCallback((captureId: string) => setSelectedCaptureId(captureId), []);
+  const select = useCallback(
+    (captureId: string) => setSelectedCaptureId(captureId),
+    [],
+  );
   useEffect(() => {
     if (selectedCaptureId || decorated.length === 0) return;
     // Same global newest-first order as the table sort above — `ep` is
@@ -475,9 +723,10 @@ export function useReviewState(): ReviewState {
   // a later edit that reads a different list without updating the deps would
   // answer from a stale one, which is the same bug wearing a cache. Read live.
   const captureSubject = (captureId: string) => {
-    const row = decorated.find((r) => r.captureId === captureId);
-    if (row?.ep != null) return `Episode #${row.ep}`;
-    return row?.runId ?? captureId;
+    const row =
+      decorated.find((r) => r.captureId === captureId) ??
+      seenSubjects.current.get(captureId);
+    return row ? subjectOf(row) : captureId;
   };
 
   /** Apply one review change optimistically, then save. A refusal drops the
@@ -485,7 +734,11 @@ export function useReviewState(): ReviewState {
   const applyReview = useCallback(
     async (
       row: DecoratedEpisode,
-      overlay: { quality?: DisplayQuality; task?: DisplayTaskResult; status?: ReviewStatus },
+      overlay: {
+        quality?: DisplayQuality;
+        task?: DisplayTaskResult;
+        status?: ReviewStatus;
+      },
       changes: Parameters<ReviewSaveState['save']>[1],
       options?: Parameters<ReviewSaveState['save']>[2],
     ): Promise<ReviewSaveResult> => {
@@ -495,7 +748,10 @@ export function useReviewState(): ReviewState {
       // unanswered — the row would snap back to the stored value mid-flight.
       if (reviewSave.isSaving(row.captureId))
         return { capture: null, error: null, skipped: true };
-      setPending((cur) => ({ ...cur, [row.captureId]: { ...cur[row.captureId], ...overlay } }));
+      setPending((cur) => ({
+        ...cur,
+        [row.captureId]: { ...cur[row.captureId], ...overlay },
+      }));
       const result = await reviewSave.save(row.capture, changes, options);
       clearPending(row.captureId);
       return result;
@@ -504,49 +760,158 @@ export function useReviewState(): ReviewState {
   );
 
   // ---- exclude / restore (a review label; the recording is untouched) -----
-  const [pendingExcludeId, setPendingExcludeId] = useState<string | null>(null);
+  //
+  // No confirmation dialog on either entry point, and one shared path for both.
+  // Excluding keeps every byte and is now undoable in one action, so a modal in
+  // front of it would be a speed bump on the most repeated action of an
+  // exception-review pass — and the kind of speed bump that teaches an operator
+  // to confirm without reading. The dialogs that remain are the ones guarding
+  // something that cannot be taken back: Discard and Delete.
+  const [excludeUndo, setExcludeUndo] = useState<ExcludeUndo | null>(null);
+  const dismissExcludeUndo = useCallback(() => setExcludeUndo(null), []);
+
+  /** Exclude one capture, remembering what it overwrote. */
+  const excludeCapture = useCallback(
+    (row: DecoratedEpisode) => {
+      // Read off the STORED capture, not `effective*`: the overlay may still be
+      // carrying an optimistic value from a save that has not been answered,
+      // and restoring that would put back something never written.
+      const prior: ExcludeUndo['prior'] = {
+        review_status: row.capture.review_status,
+        quality: row.capture.quality ?? null,
+        quality_source: row.capture.quality_source ?? null,
+      };
+      const subject = subjectOf(row);
+      void applyReview(
+        row,
+        { status: 'excluded', quality: 'Not usable' },
+        {
+          review_status: 'excluded',
+          quality: 'not_usable',
+          quality_source: 'operator',
+        },
+      ).then(({ capture }) => {
+        // Only offer to undo a write that actually landed. A refusal has
+        // already reverted the row, so there is nothing to take back — and an
+        // Undo sitting under a conflict banner would invite the operator to
+        // "restore" a capture this screen never changed.
+        if (!capture) return;
+        setExcludeUndo({ captureId: row.captureId, subject, prior });
+        // The undo band announces itself (role="status"), so this does not
+        // repeat the offer — two live regions saying "Undo available" in the
+        // same breath is noise, and the band is the one with the button in it.
+        showToast(`${subject} → Not usable · Excluded (recording kept)`);
+      });
+    },
+    [applyReview, showToast],
+  );
+
   const requestExclude = useCallback(
     (captureId: string) => {
       const row = decorated.find((r) => r.captureId === captureId);
       if (!row) return;
       if (row.isExcluded) {
+        // The offer is for THIS exclusion, and the operator is undoing it by
+        // another door. Dropping the memo here (the guard above already stops
+        // it being shown) keeps it from coming back if the capture is excluded
+        // again later by something that does not go through this function.
+        if (excludeUndo?.captureId === captureId) setExcludeUndo(null);
         void applyReview(row, { status: 'pending' }, { review_status: 'pending' }).then(
           ({ capture }) => {
+            // Says the step that is still outstanding. "Restored" read as
+            // finished, and the capture sat at `pending` — invisible to
+            // Datasets, which take adopted captures only.
             if (capture)
-              showToast(`Episode ${episodeLabel(row.ep)} restored — no longer excluded`);
+              showToast(
+                `${subjectOf(row)} returned to review — Adopt to include in datasets`,
+              );
           },
         );
         return;
       }
-      setPendingExcludeId(captureId);
+      excludeCapture(row);
     },
-    [decorated, applyReview, showToast],
+    [decorated, applyReview, showToast, excludeCapture, excludeUndo],
   );
-  const confirmExclude = useCallback(() => {
-    if (!pendingExcludeId) return;
-    const row = decorated.find((r) => r.captureId === pendingExcludeId);
-    setPendingExcludeId(null);
-    if (!row) return;
+
+  const undoExclude = useCallback(() => {
+    const memo = excludeUndo;
+    if (!memo) return;
+    const row = decorated.find((r) => r.captureId === memo.captureId);
+    if (!row) {
+      // The capture left the catalog (deleted or discarded from elsewhere).
+      // There is nothing to restore it onto, and keeping the offer would sit
+      // there failing.
+      setExcludeUndo(null);
+      return;
+    }
+    // The precondition, re-checked at the moment of the write and not only at
+    // render: an undo is only ever an undo while the exclusion it remembers is
+    // still the capture's state. Excluding a PENDING capture and then adopting
+    // it instead used to leave this offer standing, and taking it wrote
+    // `pending` over the adoption — a silent demotion, reported as a success.
+    // Whoever the second decision came from, theirs is the newer one.
+    if (!row.isExcluded) {
+      setExcludeUndo(null);
+      return;
+    }
     void applyReview(
       row,
-      { status: 'excluded', quality: 'Not usable' },
       {
-        review_status: 'excluded',
-        quality: 'not_usable',
-        quality_source: 'operator',
+        status: memo.prior.review_status,
+        // Only when there is a value to show. `undefined` leaves the overlay
+        // alone, which is right: a prior of "no quality set" cannot be drawn
+        // optimistically, and it settles on the server's answer either way.
+        ...(memo.prior.quality
+          ? { quality: displayQuality(memo.prior.quality) ?? undefined }
+          : {}),
+      },
+      {
+        review_status: memo.prior.review_status,
+        // Sent explicitly, nulls included. The server tells "omitted" from
+        // "null" by `model_fields_set`, and an omitted field means "leave it" —
+        // which is how the capture would keep the `not_usable` the exclude
+        // wrote on it. A null does NOT land as null, though: the server refills
+        // an explicitly-null quality from the capture's own quick-check verdict
+        // and marks it `quick_check`. That is the honest end state for a
+        // quality no operator ever set — machine-judged again, rather than
+        // carrying a verdict this screen put there and just took back.
+        quality: memo.prior.quality,
+        quality_source: memo.prior.quality_source,
       },
     ).then(({ capture }) => {
-      if (capture) {
-        showToast(
-          `Episode ${episodeLabel(row.ep)} → Not usable · Excluded (recording kept, restorable)`,
-        );
-      }
+      // Kept on failure. The conflict/failure banner says what went wrong, and
+      // the offer is still the operator's way to try again.
+      if (!capture) return;
+      setExcludeUndo(null);
+      showToast(
+        `${memo.subject} restored to ${describePrior(memo.prior)}` +
+          // Said out loud, because the screen cannot put back a quality that
+          // was never set: the server refills an explicitly-null quality from
+          // the capture's quick check. Claiming a bare "restored to Pending"
+          // would hide a value arriving from somewhere the operator did not
+          // choose.
+          (memo.prior.quality === null ? ' — quality re-derived from quick check' : ''),
+      );
     });
-  }, [pendingExcludeId, decorated, applyReview, showToast]);
-  const cancelExclude = useCallback(() => setPendingExcludeId(null), []);
-  const pendingExcludeLabel = pendingExcludeId
-    ? episodeLabel(decorated.find((r) => r.captureId === pendingExcludeId)?.ep ?? null)
-    : null;
+  }, [excludeUndo, decorated, applyReview, showToast]);
+
+  // What the strip is allowed to offer. The memo above records what an exclude
+  // overwrote; this is whether that exclusion is STILL the capture's state.
+  //
+  // Derived rather than left to each route to remember, because the routes back
+  // out of an exclusion are many — the row's Return, the detail panel's, a
+  // batch return, Adopt, another terminal's save arriving on the poll — and
+  // every one of them that forgot left an offer whose only remaining effect was
+  // damage: excluding a PENDING capture, adopting it instead, then taking the
+  // stale offer wrote `pending` over the adoption and called it a success.
+  // A rule computed from the capture's own state cannot be forgotten by the
+  // next route somebody adds.
+  const excludeUndoOffer = useMemo(() => {
+    if (!excludeUndo) return null;
+    const row = decorated.find((r) => r.captureId === excludeUndo.captureId);
+    return row?.isExcluded ? excludeUndo : null;
+  }, [excludeUndo, decorated]);
 
   // ---- removal (§7) -------------------------------------------------------
   // Both intents run through the one shared flow, so the wording, the required
@@ -560,6 +925,9 @@ export function useReviewState(): ReviewState {
     onDeleted: (ids) => {
       for (const id of ids) clearPending(id);
       setSelectedCaptureId((cur) => (cur && ids.includes(cur) ? null : cur));
+      // An undo for a capture that no longer exists has nothing to restore
+      // onto. Offering it would be a button whose only outcome is a failure.
+      setExcludeUndo((cur) => (cur && ids.includes(cur.captureId) ? null : cur));
     },
     onToast: showToast,
   });
@@ -626,6 +994,10 @@ export function useReviewState(): ReviewState {
     // opens: opening a dialog supersedes nothing, and the operator may still
     // be reading the notice while deciding whether to go ahead.
     resetReturnBatch();
+    // Same reason the return notice goes: a single-capture undo offer sitting
+    // over a batch that just excluded a dozen others reads as the undo for what
+    // the operator did last, and it is not.
+    setExcludeUndo(null);
     void (async () => {
       const outcome = await runExcludeBatch({
         items: targets,
@@ -673,6 +1045,10 @@ export function useReviewState(): ReviewState {
   const returnBatchToReview = useCallback(() => {
     const targets = batchExcluded;
     if (!targets.length) return;
+    // Same rule as the single Return: if this sweep is about to un-exclude the
+    // capture the offer belongs to, the offer is spent.
+    if (excludeUndo && targets.some((t) => t.captureId === excludeUndo.captureId))
+      setExcludeUndo(null);
     void (async () => {
       const outcome = await runReturnBatch({
         items: targets,
@@ -696,25 +1072,46 @@ export function useReviewState(): ReviewState {
       const { succeeded, failures } = outcome;
       showToast(
         failures.length === 0
-          ? `Returned ${succeeded} episode${succeeded === 1 ? '' : 's'} to review`
+          ? `Returned ${succeeded} episode${succeeded === 1 ? '' : 's'} to review — Adopt to include in datasets`
           : `Returned ${succeeded}, ${failures.length} failed`,
       );
     })();
-  }, [batchExcluded, applyReview, reviewSave, showToast, runReturnBatch]);
+  }, [batchExcluded, applyReview, reviewSave, showToast, runReturnBatch, excludeUndo]);
 
   // ---- decisions / overrides ---------------------------------------------
   const decide = useCallback(
     (d: Decision) => {
       if (!selected) return;
+      // The detail panel's Exclude is the SAME operation as the table's, down
+      // to the undo it leaves behind. It used to be a bare status write: no
+      // quality change, nothing remembered, and no confirmation either — three
+      // ways for the two entry points to disagree about what "Exclude" means.
+      if (d === 'excluded') {
+        excludeCapture(selected);
+        return;
+      }
+      const wasExcluded = selected.isExcluded;
+      // Every decision that is not "exclude" ends this exclusion, whichever it
+      // is: Return takes it out, Adopt overrides it. The offer goes with it.
+      if (excludeUndo?.captureId === selected.captureId) setExcludeUndo(null);
       void applyReview(
         selected,
         { status: toServerReview(d) },
         { review_status: toServerReview(d) },
       ).then(({ capture }) => {
-        if (capture) showToast(`Episode ${episodeLabel(selected.ep)} → ${d}`);
+        if (!capture) return;
+        if (d === 'review') {
+          // Same outstanding step as the table's Return: `pending` is not a
+          // finished state, and Datasets take adopted captures only.
+          showToast(
+            `${subjectOf(selected)} ${wasExcluded ? 'returned to review' : 'reset to needs check'} — Adopt to include in datasets`,
+          );
+          return;
+        }
+        showToast(`${subjectOf(selected)} → ${d}`);
       });
     },
-    [selected, applyReview, showToast],
+    [selected, applyReview, showToast, excludeCapture, excludeUndo],
   );
 
   // Adopt this capture — the one thing Datasets requires before a capture can
@@ -724,18 +1121,23 @@ export function useReviewState(): ReviewState {
   const markOk = useCallback(() => {
     if (!selected) return;
     const exception = selected.reviewLane === 'needs_check';
-    void applyReview(selected, { status: 'adopted' }, { review_status: 'adopted' }).then(
-      ({ capture }) => {
-        if (capture) {
-          showToast(
-            exception
-              ? `Episode ${episodeLabel(selected.ep)} marked OK — included`
-              : `Episode ${episodeLabel(selected.ep)} adopted — datasets can use it`,
-          );
-        }
-      },
-    );
-  }, [selected, applyReview, showToast]);
+    // Adopting is the operator choosing the opposite of the exclusion they are
+    // being offered a way back from. Theirs is the newer decision.
+    if (excludeUndo?.captureId === selected.captureId) setExcludeUndo(null);
+    void applyReview(
+      selected,
+      { status: 'adopted' },
+      { review_status: 'adopted' },
+    ).then(({ capture }) => {
+      if (capture) {
+        showToast(
+          exception
+            ? `${subjectOf(selected)} marked OK — included`
+            : `${subjectOf(selected)} adopted — datasets can use it`,
+        );
+      }
+    });
+  }, [selected, applyReview, showToast, excludeUndo]);
 
   const cycleFinalQuality = useCallback(() => {
     if (!selected) return;
@@ -749,7 +1151,7 @@ export function useReviewState(): ReviewState {
       { quality: next },
       { quality: toServerQuality(next), quality_source: 'operator' },
     ).then(({ capture }) => {
-      if (capture) showToast(`${episodeLabel(selected.ep)} quality → ${next}`);
+      if (capture) showToast(`${subjectOf(selected)} quality → ${next}`);
     });
   }, [selected, applyReview, showToast]);
 
@@ -758,11 +1160,13 @@ export function useReviewState(): ReviewState {
     // Unset base → the first click sets Success; thereafter it toggles.
     const next: DisplayTaskResult =
       selected.effectiveTask === 'Success' ? 'Failure' : 'Success';
-    void applyReview(selected, { task: next }, { task_result: toServerTask(next) }).then(
-      ({ capture }) => {
-        if (capture) showToast(`${episodeLabel(selected.ep)} task result → ${next}`);
-      },
-    );
+    void applyReview(
+      selected,
+      { task: next },
+      { task_result: toServerTask(next) },
+    ).then(({ capture }) => {
+      if (capture) showToast(`${subjectOf(selected)} task result → ${next}`);
+    });
   }, [selected, applyReview, showToast]);
 
   // ---- deep links ---------------------------------------------------------
@@ -801,7 +1205,8 @@ export function useReviewState(): ReviewState {
     (captureId: string) => {
       const seedRow = baseEpisodes.find((e) => e.captureId === captureId);
       setTransfers((prev) => {
-        const cur = prev[captureId] ?? initialTransferSlot(seedRow?.transfer ?? 'awaiting');
+        const cur =
+          prev[captureId] ?? initialTransferSlot(seedRow?.transfer ?? 'awaiting');
         if (cur.phase !== 'awaiting') return prev;
         return { ...prev, [captureId]: transferReducer(cur, { type: 'START' }) };
       });
@@ -823,7 +1228,8 @@ export function useReviewState(): ReviewState {
   useEffect(() => {
     const doneIds = baseEpisodes
       .filter(
-        (e) => e.transfer === 'here' && transfers[e.captureId]?.phase === 'transferring',
+        (e) =>
+          e.transfer === 'here' && transfers[e.captureId]?.phase === 'transferring',
       )
       .map((e) => e.captureId);
     if (!doneIds.length) return;
@@ -855,6 +1261,45 @@ export function useReviewState(): ReviewState {
     return () => clearInterval(timer);
   }, [anyTransferring, queryClient]);
 
+  // The FAILURE channel (S3-1): the replica sweep above can only ever confirm
+  // arrival — a pull whose rsync died looked exactly like one still running,
+  // and the slot said "Transferring…" forever. While anything is in flight,
+  // read each pull's state off the importer and fail the slot when IT says
+  // failed, with its one-line reason. Arrival stays replica-confirmed.
+  const transferringIds = useMemo(
+    () =>
+      Object.entries(transfers)
+        .filter(([, slot]) => slot.phase === 'transferring')
+        .map(([id]) => id),
+    [transfers],
+  );
+  useEffect(() => {
+    if (transferringIds.length === 0) return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      for (const id of transferringIds) {
+        getPullStatus(id)
+          .then((pull) => {
+            if (cancelled || pull.state !== 'failed') return;
+            failTransfer(
+              [id],
+              pull.reason
+                ? `Transfer failed — ${pull.reason}`
+                : 'Transfer failed (see the importer log)',
+            );
+          })
+          .catch(() => {
+            // 404 (importer restarted) or a transient read error: the replica
+            // sweep remains the arrival signal, so nothing to change here.
+          });
+      }
+    }, TRANSFER_PROGRESS_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [transferringIds, failTransfer]);
+
   const nAwaiting = useMemo(
     () =>
       decorated.filter((r) => !r.isExcluded && r.transferSlot.phase === 'awaiting')
@@ -880,6 +1325,11 @@ export function useReviewState(): ReviewState {
     isError,
     errorMessage,
     catalogTruncated,
+    serverTotal: capturesQuery.data?.total ?? 0,
+    hasNextPage: capturesQuery.data?.next_cursor != null,
+    hasPreviousPage: cursorStack.length > 0,
+    nextPage,
+    previousPage,
 
     rows,
     nNeedsCheck,
@@ -893,6 +1343,17 @@ export function useReviewState(): ReviewState {
     operatorFilter,
     setOperatorFilter,
     operatorOptions,
+    qualityFilter,
+    setQualityFilter,
+    resultFilter,
+    setResultFilter,
+    conditionFilter,
+    setConditionFilter,
+    conditionOptions,
+    startedFrom,
+    setStartedFrom,
+    startedTo,
+    setStartedTo,
     clearFilters,
 
     batchFilter,
@@ -917,10 +1378,9 @@ export function useReviewState(): ReviewState {
     selected,
 
     requestExclude,
-    excludePending: pendingExcludeId !== null,
-    pendingExcludeLabel,
-    confirmExclude,
-    cancelExclude,
+    excludeUndo: excludeUndoOffer,
+    undoExclude,
+    dismissExcludeUndo,
 
     excludedRows,
     requestDiscard,

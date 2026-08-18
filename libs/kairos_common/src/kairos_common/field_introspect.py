@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Numeric-field introspection — the pure-logic core of topic_probe.
 
 topic_probe is the one kairos service *allowed* to decode message payloads (it

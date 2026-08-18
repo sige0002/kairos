@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """SSE aggregation hub for ``GET /api/v1/events``.
 
 Multiplexes the orchestrator's event sources into a single Server-Sent-Events
@@ -86,8 +88,20 @@ class EventHub:
     def __init__(self, monitor: MonitorClient) -> None:
         self._monitor = monitor
         self._ring: deque[Event] = deque(maxlen=RING_MAX_EVENTS)
-        self._next_id = 1
+        # Ids must stay monotonic ACROSS restarts, not just within one
+        # process: a browser reconnects with the Last-Event-ID of a PREVIOUS
+        # boot, and if this boot's counter can catch up to that number the
+        # replay logic would hand it another process's events as a normal
+        # tail instead of a resync. Seeding from wall-clock milliseconds
+        # keeps the id an int (the wire contract) while putting every boot
+        # far ahead of anything an earlier boot could have issued — the
+        # counter advances one per event against a thousand ticks per
+        # second, so it can never catch the next boot's seed.
+        self._next_id = int(time.time() * 1000)
         self._subscribers: set[asyncio.Queue[Event]] = set()
+        # Queues that overflowed and silently lost their oldest events; the
+        # subscribe loop owes each of these a resync before its next event.
+        self._gapped: set[asyncio.Queue[Event]] = set()
         self._lock = asyncio.Lock()
         self._tasks: list[asyncio.Task[None]] = []
         self._closing = False
@@ -161,37 +175,73 @@ class EventHub:
                 yield event
             while True:
                 event = await queue.get()
+                if queue in self._gapped:
+                    # This queue overflowed and events were dropped from it;
+                    # the client's cache has an unannounced hole, which only a
+                    # full refetch repairs (same contract as the ring cases).
+                    self._gapped.discard(queue)
+                    yield self._resync_event("subscriber overflow")
                 yield event
         finally:
             async with self._lock:
                 self._subscribers.discard(queue)
+            self._gapped.discard(queue)
 
     # ---- internals --------------------------------------------------------
 
     def _replay_since(self, last_event_id: int | None) -> list[Event]:
         """Compute the replay list for a (re)connecting subscriber.
 
-        Returns a ``resync`` sentinel event when the requested id predates the
-        buffer (the client must refetch); otherwise the buffered tail with a
-        larger id (possibly empty).
+        Returns a ``resync`` sentinel event when the requested id names a
+        position this hub cannot vouch for (the client must refetch);
+        otherwise the buffered tail with a larger id (possibly empty).
+
+        A client id is unvouchable three ways. Before 2026-08-12 only the
+        first was handled, so a browser that survived an orchestrator RESTART
+        got no resync and silently kept every stale cache — record status,
+        captures, configs — until something else happened to make it refetch:
+
+        - older than the ring's oldest entry (fell out of the buffer),
+        - AHEAD of the highest id this process has ever issued (impossible
+          within one process — the client cannot have seen ids we never
+          sent; a restart marker, e.g. when the clock stepped backwards),
+        - behind an EMPTY ring's issued count (events the client missed were
+          evicted by age before it reconnected).
+
+        Cross-boot ids from a normally-forward clock never collide with this
+        boot's counter at all: the counter is seeded from wall-clock
+        milliseconds (see ``__init__``), so a previous boot's id lands below
+        this boot's oldest entry and takes the first branch. Without that
+        seed, a busy new process whose counter overtook the old browser's id
+        would answer it with ANOTHER PROCESS's events as a normal tail.
+
+        The one vouchable empty-ring position — the client id EQUALS the
+        highest issued id (fully caught up; the quiet tail just aged out) —
+        replays nothing rather than forcing a refetch.
         """
         if last_event_id is None:
             return []
+        issued = self._next_id - 1  # highest id this process has ever issued
+        if last_event_id > issued:
+            return [self._resync_event("last_event_id out of range")]
         if not self._ring:
-            return []
+            if last_event_id == issued:
+                return []
+            return [self._resync_event("last_event_id out of range")]
         oldest = self._ring[0].id
         if last_event_id < oldest - 1:
-            # Requested position fell out of the ring -> tell the client to
-            # resync (refetch current state), then resume live from here.
-            return [
-                Event(
-                    id=self._next_id - 1 if self._next_id > 1 else 0,
-                    event="resync",
-                    data={"reason": "last_event_id out of range"},
-                    ts=time.monotonic(),
-                )
-            ]
+            return [self._resync_event("last_event_id out of range")]
         return [e for e in self._ring if e.id > last_event_id]
+
+    def _resync_event(self, reason: str) -> Event:
+        """A synthetic ``resync`` sentinel telling the client to refetch."""
+        issued = self._next_id - 1
+        return Event(
+            id=issued if issued > 0 else 0,
+            event="resync",
+            data={"reason": reason},
+            ts=time.monotonic(),
+        )
 
     def _evict_expired(self) -> None:
         """Drop ring entries older than the max age (maxlen handles count)."""
@@ -199,13 +249,19 @@ class EventHub:
         while self._ring and self._ring[0].ts < cutoff:
             self._ring.popleft()
 
-    @staticmethod
-    def _offer(queue: asyncio.Queue[Event], event: Event) -> None:
-        """Enqueue without blocking; drop the slowest event if a client lags."""
+    def _offer(self, queue: asyncio.Queue[Event], event: Event) -> None:
+        """Enqueue without blocking; a full queue drops its oldest event.
+
+        The drop is not silent to the client: the queue is marked gapped, and
+        the subscribe loop injects a ``resync`` before its next delivery.
+        Without that, a slow subscriber lost low-frequency job/record/alert
+        transitions with no id gap and no resync — its caches then held wrong
+        terminal states with nothing left to correct them.
+        """
         try:
             queue.put_nowait(event)
         except asyncio.QueueFull:
-            # Client is too slow: drop the oldest to make room (best-effort).
+            self._gapped.add(queue)
             with contextlib.suppress(asyncio.QueueEmpty):
                 queue.get_nowait()
             with contextlib.suppress(asyncio.QueueFull):

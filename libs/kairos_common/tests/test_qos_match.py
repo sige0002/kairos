@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """QoS auto-match: compatible-side resolution + config-override precedence."""
 
 from __future__ import annotations

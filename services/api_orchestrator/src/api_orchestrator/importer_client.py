@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Internal HTTP client for the importer sidecar (cross-host split).
 
 The importer (``deploy/sync/``, defined ONLY in ``compose/recording.yaml``)
@@ -33,6 +35,15 @@ class ImporterClient(BaseServiceClient):
             {"all": True} if capture_id is None else {"capture_id": capture_id}
         )
         return await self._request("POST", "/pull", json=body)
+
+    async def pull_status(self, capture_id: str) -> dict[str, Any]:
+        """This capture's last pull state (queued/running/ok/failed) — S3-1.
+
+        404s (as an :class:`ApiError`) when the importer knows no pull for it,
+        including after an importer restart: the tracking is in-memory, and the
+        durable answer is the replica state the reconciler adopts.
+        """
+        return await self._request("GET", f"/pull/{capture_id}")
 
     def __init__(self, base_url: str, client: httpx.AsyncClient) -> None:
         super().__init__("importer", base_url, client)

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Signals sub-view (v2 Monitor) — the v1 Probe tab's generic numeric-field live
 // plotter, ported into the v2 skin. Capability is REAL and reused wholesale: the
 // topic list / field introspection / multi-topic overlay SSE all come from
@@ -91,7 +93,7 @@ export function SignalsView() {
       <Card className="flex shrink-0 flex-col">
         <div className="flex flex-wrap items-end gap-3 px-[18px] py-3.5">
           <label className="flex flex-col gap-1">
-            <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
               Topic
             </span>
             <select
@@ -102,7 +104,7 @@ export function SignalsView() {
                 setAddTopic(e.target.value || null);
                 setAddField(null);
               }}
-              className="min-w-[15rem] rounded-control border border-gray-200 px-2 py-1 text-[12.5px] font-medium text-gray-700 focus:border-teal-500 focus:outline-none"
+              className="min-w-[15rem] rounded-control border border-gray-200 px-2 py-1 text-[12.5px] font-medium text-gray-700 focus:border-teal-600 focus:outline-none"
             >
               <option value="">
                 {topicsQuery.isPending ? 'Loading topics…' : 'Select a topic…'}
@@ -116,7 +118,7 @@ export function SignalsView() {
           </label>
 
           <label className="flex flex-col gap-1">
-            <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+            <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
               Field
             </span>
             <select
@@ -125,7 +127,7 @@ export function SignalsView() {
               value={addField ?? ''}
               disabled={!addTopic || fields.length === 0}
               onChange={(e) => setAddField(e.target.value || null)}
-              className="min-w-[13rem] rounded-control border border-gray-200 px-2 py-1 text-[12.5px] font-medium text-gray-700 focus:border-teal-500 focus:outline-none disabled:opacity-50"
+              className="min-w-[13rem] rounded-control border border-gray-200 px-2 py-1 text-[12.5px] font-medium text-gray-700 focus:border-teal-600 focus:outline-none disabled:opacity-50"
             >
               <option value="">
                 {!addTopic
@@ -149,14 +151,14 @@ export function SignalsView() {
             data-testid="signals-add"
             onClick={addSeries}
             disabled={!addTopic || !addField}
-            className="rounded-control bg-teal-600 px-3.5 py-1.5 text-[12.5px] font-semibold text-white hover:bg-teal-700 disabled:opacity-50"
+            className="rounded-control bg-teal-700 px-3.5 py-1.5 text-[12.5px] font-semibold text-white hover:bg-teal-800 disabled:opacity-50"
           >
             + Add series
           </button>
 
           <div className="ml-auto flex items-end gap-3">
             <div className="flex flex-col gap-1">
-              <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+              <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
                 Window
               </span>
               <div className="flex gap-[3px] rounded-control border border-gray-200 bg-gray-100 p-1">
@@ -171,7 +173,7 @@ export function SignalsView() {
                       'rounded-chip px-2.5 py-0.5 text-[11px] font-medium transition-colors',
                       w.id === windowId
                         ? 'bg-white text-teal-700 shadow-sm'
-                        : 'text-gray-500 hover:text-gray-700',
+                        : 'text-gray-600 hover:text-gray-700',
                     )}
                   >
                     {w.label}
@@ -180,14 +182,14 @@ export function SignalsView() {
               </div>
             </div>
             <label className="flex flex-col gap-1">
-              <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+              <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
                 Rate
               </span>
               <select
                 aria-label="signal rate"
                 value={hz}
                 onChange={(e) => setHz(Number(e.target.value))}
-                className="rounded-control border border-gray-200 px-2 py-1 text-[12.5px] font-medium text-gray-700 focus:border-teal-500 focus:outline-none"
+                className="rounded-control border border-gray-200 px-2 py-1 text-[12.5px] font-medium text-gray-700 focus:border-teal-600 focus:outline-none"
               >
                 {HZ_OPTIONS.map((h) => (
                   <option key={h} value={h}>
@@ -205,7 +207,7 @@ export function SignalsView() {
                 'rounded-control px-3.5 py-1.5 text-[12.5px] font-semibold transition-colors disabled:opacity-50',
                 live
                   ? 'border border-gray-200 bg-white text-gray-700 hover:bg-gray-50'
-                  : 'bg-teal-600 text-white hover:bg-teal-700',
+                  : 'bg-teal-700 text-white hover:bg-teal-800',
               )}
             >
               {live ? 'Pause' : 'Resume'}
@@ -216,13 +218,13 @@ export function SignalsView() {
         {series.length > 0 && (
           <div className="border-t border-gray-100 px-[18px] py-2.5">
             <div className="mb-1.5 flex items-center gap-2.5">
-              <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-400">
+              <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
                 Series ({series.length})
-              </span>
+              </h3>
               <button
                 type="button"
                 onClick={clearSeries}
-                className="text-[11px] font-medium text-gray-400 hover:text-red-600"
+                className="text-[11px] font-medium text-gray-500 hover:text-red-600"
               >
                 Clear all
               </button>
@@ -257,7 +259,7 @@ export function SignalsView() {
                     aria-label={`remove ${seriesLabel(s)}`}
                     title="Remove series"
                     onClick={() => removeSeries(s.id)}
-                    className="flex h-5 w-5 items-center justify-center rounded text-[14px] leading-none text-gray-400 hover:bg-red-50 hover:text-red-600"
+                    className="flex h-5 w-5 items-center justify-center rounded text-[14px] leading-none text-gray-500 hover:bg-red-50 hover:text-red-600"
                   >
                     ×
                   </button>
@@ -277,11 +279,11 @@ export function SignalsView() {
 
       <Card className="flex flex-1 flex-col lg:min-h-0">
         <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-3">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Signals
-          </span>
+          </h2>
           <div className="flex-1" />
-          <span className="inline-flex items-center gap-1.5 text-[11.5px] text-gray-400">
+          <span className="inline-flex items-center gap-1.5 text-[11.5px] text-gray-500">
             <span className={cn('h-[7px] w-[7px] rounded-full', STATUS_DOT[status])} />
             <span data-testid="signals-status" className="font-mono">
               {STATUS_LABEL[status]}
@@ -309,7 +311,7 @@ export function SignalsView() {
           {series.length === 0 ? (
             <p
               data-testid="signals-empty"
-              className="flex h-full items-center justify-center text-center text-[12px] leading-relaxed text-gray-400"
+              className="flex h-full items-center justify-center text-center text-[12px] leading-relaxed text-gray-500"
             >
               Add a topic + field series to start plotting. Add several — even across topics — to
               overlay them on one chart.

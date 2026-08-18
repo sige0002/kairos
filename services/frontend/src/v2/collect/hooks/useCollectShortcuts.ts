@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Keyboard shortcut layer (D-4), extracted from useBatchMachine.ts.
 // R/S/Space/Esc/? on the window, ignored while typing or when any REGISTERED
 // overlay is open (the caller computes that — modals own their own keys, e.g.

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The one chip every screen uses to say where a capture's bytes are.
 // Semantics (including why `null` replica is not "missing") live in
 // availability.ts; this only renders them.

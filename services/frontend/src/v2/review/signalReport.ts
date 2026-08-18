@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Pure transforms for the Review "Data integrity" section: signal_report
 // sidecar payloads -> the aggregated loss timeline + event/summary rows, and
 // the linear timeline<->video sync math. Kept DOM-free so the aggregation and

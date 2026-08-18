@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Pipeline registry proxy endpoints."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """topic_probe — generic numeric-field live plotter (OL-3.3).
 
 A SEPARATE ROS 2 service (isolated from topic_monitor / rosbag2_recorder) that

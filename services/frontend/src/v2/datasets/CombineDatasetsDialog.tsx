@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Combine datasets (§6): a NEW dataset listing every member of the chosen
 // sources, sources untouched. Because a dataset is rows plus ledger events,
 // combining is ordinary building done in bulk — create one dataset, then the
@@ -80,17 +82,22 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
             data-testid="combine-datasets-operator"
             value={state.combineOperator}
             onChange={(e) => state.setCombineOperator(e.target.value)}
+            // Named for the dataset being BUILT, matching the visible "New
+            // dataset name" above — and so it is not confusable with the create
+            // panel's own operator field, which can be open behind this dialog.
+            aria-label="New dataset operator (optional)"
             placeholder="Operator (optional)"
             disabled={state.combineBusy}
-            className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-400"
+            className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-500"
           />
           <input
             data-testid="combine-datasets-task"
             value={state.combineTask}
             onChange={(e) => state.setCombineTask(e.target.value)}
+            aria-label="New dataset task (optional)"
             placeholder="Task (optional)"
             disabled={state.combineBusy}
-            className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-400"
+            className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-500"
           />
         </div>
 
@@ -100,7 +107,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
           </span>
           <div className="flex max-h-[180px] flex-col gap-1 overflow-y-auto rounded-[10px] border border-gray-100 p-1.5">
             {state.combineChoices.length === 0 ? (
-              <span className="px-1.5 py-1 text-[12px] text-gray-400">
+              <span className="px-1.5 py-1 text-[12px] text-gray-500">
                 No active dataset to combine from.
               </span>
             ) : (
@@ -124,7 +131,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
                     <span className="min-w-0 flex-1 truncate text-[12.5px] text-gray-800">
                       {choice.name}
                     </span>
-                    <span className="text-[11px] text-gray-400">
+                    <span className="text-[11px] text-gray-500">
                       {choice.memberCount} member{choice.memberCount === 1 ? '' : 's'}
                     </span>
                     {order >= 0 && (
@@ -137,7 +144,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
               })
             )}
           </div>
-          <span className="text-[10.5px] text-gray-400">
+          <span className="text-[10.5px] text-gray-500">
             Members are numbered source by source, in the order you picked them.
           </span>
         </div>

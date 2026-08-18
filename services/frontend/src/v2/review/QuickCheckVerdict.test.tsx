@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { render, screen } from '@testing-library/react';
 import { expect, test } from 'vitest';
 import type { QuickCheck } from '../../api/types';

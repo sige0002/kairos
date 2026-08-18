@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Retention endpoint (``GET /api/v1/retention``).
 
 Surfaces the captures ``RETENTION_DAYS`` marks as reclaimable so the Review UI

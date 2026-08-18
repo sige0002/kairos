@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Small display formatters local to Review — the shared `formatDuration` in
 // features/inspect/inspect.tsx renders "1m 5s", but the design mock's table
 // uses a zero-padded HH:MM:SS clock ("00:00:58"), so this is its own thing

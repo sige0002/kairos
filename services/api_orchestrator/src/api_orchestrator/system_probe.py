@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Host system probes: CPU + GPU names, utilization, and data-dir disk usage.
 
 The measurement half of ``GET /api/v1/system`` (the router is a thin caller).

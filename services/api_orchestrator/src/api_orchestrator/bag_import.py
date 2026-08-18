@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Import an externally recorded rosbag into Review (2026-07-27).
 
 WHY: recordings made outside kairos — a plain ``ros2 bag record -s mcap`` on a

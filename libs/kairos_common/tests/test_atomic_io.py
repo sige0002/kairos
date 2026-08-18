@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The shared atomic write: nothing half-written, and no debris either way."""
 
 from __future__ import annotations

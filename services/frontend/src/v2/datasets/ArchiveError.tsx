@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The refusal an archive came back with, and what to do about it.
 //
 // Shared by BOTH archive dialogs — the per-capture one and the whole-dataset

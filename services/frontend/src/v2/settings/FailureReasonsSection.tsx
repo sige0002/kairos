@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > Failure reasons — the vocabulary Collect offers when an episode
 // is marked Failure ("What failed?" chips). Edits funnel through the SHARED
 // plans store (src/v2/plans.ts): Collect updates immediately, and the list is
@@ -19,9 +21,9 @@ export function FailureReasonsSection({ settings }: { settings: SettingsState })
       data-testid="settings-fail-reasons"
     >
       <div className="flex flex-col gap-1 border-b border-gray-100 px-4 py-[13px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Failure reasons
-        </span>
+        </h2>
         <span className="text-[12px] leading-relaxed text-gray-500">
           The options Collect offers when an episode is marked Failure. Shared
           with every terminal (saved with the plan catalog). Edits apply to
@@ -52,7 +54,7 @@ export function FailureReasonsSection({ settings }: { settings: SettingsState })
                   ? 'The last reason cannot be removed — marking a Failure requires one.'
                   : 'Remove reason'
               }
-              className="shrink-0 px-0.5 text-xs text-gray-300 enabled:hover:text-gray-500 disabled:cursor-not-allowed disabled:opacity-40"
+              className="shrink-0 px-0.5 text-xs text-gray-500 enabled:hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
             >
               ✕
             </button>

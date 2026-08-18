@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Root error boundary: React unmounts the whole tree if a render throws, so a
 // single malformed SSE/API payload that slips past a component's own guards
 // would otherwise white-out the entire UI. This catches it, keeps the shell
@@ -45,7 +47,7 @@ export class ErrorBoundary extends Component<Props, State> {
           <button
             type="button"
             onClick={() => window.location.reload()}
-            className="mt-5 inline-flex items-center justify-center rounded-control bg-teal-600 px-4 py-2 text-sm font-semibold text-white shadow-btn transition-colors hover:bg-teal-700"
+            className="mt-5 inline-flex items-center justify-center rounded-control bg-teal-700 px-4 py-2 text-sm font-semibold text-white shadow-btn transition-colors hover:bg-teal-800"
           >
             Reload
           </button>
@@ -101,9 +103,14 @@ export class PanelBoundary extends Component<
         className="flex h-full min-h-[240px] items-center justify-center p-6"
       >
         <div className="w-full max-w-md rounded-card border border-red-200 bg-white p-6 shadow-card">
-          <h2 className="text-[15px] font-semibold text-gray-900">
+          {/* h1, not h2: this fallback REPLACES the screen, and the screen's
+              own ScreenTitle h1 unmounts with it. An h2 here would leave the
+              document with no h1 at all — the exact gap #14 closed — so the
+              thing that is actually on screen titles it, matching the root
+              ErrorBoundary's h1 above. */}
+          <h1 className="text-[15px] font-semibold text-gray-900">
             This screen stopped rendering
-          </h2>
+          </h1>
           <p className="mt-2 text-sm text-gray-600">
             Something it was given could not be displayed.{' '}
             {/* A popped-out window has no tab bar and a constant `resetKey`, so

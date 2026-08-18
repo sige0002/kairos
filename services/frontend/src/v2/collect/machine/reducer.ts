@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The batch machine proper — pure state + transitions, no I/O, no React.
 // Exported (with its historical aliases) for direct unit testing.
 
@@ -100,7 +102,7 @@ function createInitialState(): MachineState {
     lastCaptureId: null,
     project: firstPlan?.name ?? null,
     task: firstTask?.name ?? null,
-    condition: firstTask?.conditions[0] ?? '—',
+    condition: firstTask?.conditions[0]?.name ?? '—',
     endReason: '',
   };
 }

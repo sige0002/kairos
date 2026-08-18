@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Module-level store for the Monitor Topics view's chart PANELS — the v1 Graph
 // tab's add/remove-panel model (each panel = one metric × its own overlaid topic
 // set), restored in the v2 Monitor. Parked in module scope (the same pattern as

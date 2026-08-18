@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Where a dataset may be archived to: the ``KAIROS_ARCHIVE_ROOTS`` allow-list.
 
 Archiving takes an operator-supplied destination path and then DELETES the

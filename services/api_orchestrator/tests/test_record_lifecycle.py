@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The recording lifecycle under v2: prepare, start, stop, status.
 
 The shape of ``/api/v1/record/*`` is unchanged from v1 (§10) — what is new is
@@ -219,6 +221,39 @@ class TestStop:
         # that finished are indistinguishable from the orchestrator's side.
         assert client.post("/api/v1/record/stop").json()["state"] == final_state
 
+    @pytest.mark.parametrize("final_state", ["completed", "failed"])
+    def test_a_flush_that_outlives_the_stop_response_settles_honestly(
+        self, client: TestClient, fake_recorder: FakeRecorder, final_state: str
+    ) -> None:
+        # Delayed success/failure: the recorder answers /record/stop with
+        # ``stopping`` and keeps flushing for two more status reads. The old
+        # code read status ONCE and sealed any still-active answer as
+        # ``completed``; the fix polls until the recorder settles and reports
+        # what it actually settled into.
+        service = client.app.state.record_service
+        service._final_state_poll_interval_s = 0.01
+        service._final_state_poll_budget_s = 2.0
+        fake_recorder.final_state = final_state
+        fake_recorder.settle_after_status_polls = 2
+        _start(client)
+        assert client.post("/api/v1/record/stop").json()["state"] == final_state
+
+    def test_a_recorder_still_writing_at_the_budget_is_never_completed(
+        self, client: TestClient, fake_recorder: FakeRecorder
+    ) -> None:
+        # S2-6: the recorder ANSWERS, and the answer is "I am not done". That
+        # answer used to be sealed as ``completed`` — a bag still being written
+        # became a good take. It must end ``interrupted`` with an error that
+        # names the unconfirmed stop, never ``completed``.
+        service = client.app.state.record_service
+        service._final_state_poll_interval_s = 0.01
+        service._final_state_poll_budget_s = 0.05
+        fake_recorder.settle_after_status_polls = 10**9
+        _start(client)
+        stopped = client.post("/api/v1/record/stop").json()
+        assert stopped["state"] == "interrupted"
+        assert stopped["error"]["code"] == "stop_not_confirmed"
+
     def test_a_recorder_error_string_becomes_a_structured_error(
         self, client: TestClient, fake_recorder: FakeRecorder
     ) -> None:
@@ -292,14 +327,16 @@ class TestPrepare:
         client.post("/api/v1/record/prepare", json={"topics": ["/joint_states"]})
         assert _store(client).list_captures(limit=10)[0] == []
 
-    def test_a_rejected_prepare_with_a_capture_id_is_filed_as_failed(
+    def test_a_rejected_prepare_files_no_row_even_with_a_capture_id(
         self, client: TestClient, fake_recorder: FakeRecorder
     ) -> None:
-        # The recorder wrote objects/<id>.failed.json before rejecting, so the
-        # store already contains this failure. Without a row the operator only
-        # meets it after the next rebuild — a §13-4 catalog divergence the
-        # acceptance suite caught live (a pre-arm keep-alive failed to arm and
-        # the capture appeared out of nowhere after rm kairos.db).
+        # S2-7: the recorder no longer mints objects/<id>.failed.json for a
+        # failed pre-arm probe, so filing a row here would be the §13-4
+        # divergence (a row the next rebuild silently drops). The failure
+        # reaches the operator through the propagated rejection — the console
+        # surfaces a failing pre-arm live — not through the capture list.
+        # (The pre-S2-7 contract was the exact opposite: sidecar + row per
+        # failed keep-alive, which piled up a failed capture every 30 s.)
         known = "01920000-0000-7000-8000-0000000000ab"
         fake_recorder.prepare_status = 507
         fake_recorder.prepare_error = {
@@ -312,11 +349,41 @@ class TestPrepare:
         )
         # The caller armed nothing and must know — the rejection propagates.
         assert response.status_code >= 500
-        capture = _store(client).get_capture(known)
-        assert capture is not None
-        assert capture.state == CaptureState.failed
-        assert capture.error is not None
-        assert capture.error.code == "record_arm_failed"
+        assert _store(client).get_capture(known) is None
+        assert _store(client).list_captures(limit=10)[0] == []
+
+    def test_start_budget_scales_with_the_live_configs_waits(
+        self, client: TestClient
+    ) -> None:
+        # S2-3: the flat 25 s budget left 0.5 s of margin against the default
+        # config waits, and a documented `start_delay_s: 10` (camera warm-up)
+        # made every cold start a 503 that filed a failed row onto a recording
+        # that was actually coming up. The budget must follow the config.
+        from kairos_common import RecordingConfig, RecordingTuning
+
+        service = client.app.state.record_service
+        original = service._config
+        try:
+            service._config = None
+            assert service._start_budget_s() == pytest.approx(25.0)
+            # The default waits (2 + 5 + 0) land exactly on the floor.
+            service._config = RecordingConfig(robot_name="t")
+            assert service._start_budget_s() == pytest.approx(25.0)
+            # Camera warm-up: 18 (floor) + 10 + 5 + 0.
+            service._config = RecordingConfig(
+                robot_name="t", recording=RecordingTuning(start_delay_s=10)
+            )
+            assert service._start_budget_s() == pytest.approx(33.0)
+            # The budget never shrinks below the floor constant.
+            service._config = RecordingConfig(
+                robot_name="t",
+                recording=RecordingTuning(
+                    start_delay_s=0, subscription_ready_timeout_s=0
+                ),
+            )
+            assert service._start_budget_s() == pytest.approx(25.0)
+        finally:
+            service._config = original
 
     def test_a_rejected_prepare_with_no_capture_id_creates_no_row(
         self, client: TestClient, fake_recorder: FakeRecorder

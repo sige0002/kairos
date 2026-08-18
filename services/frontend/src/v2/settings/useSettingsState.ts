@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Local state for the Settings screen: menu selection and the plans
 // (project/task/condition) editor. Robot selection is real and lives in
 // RobotsSection (GET /api/v1/config/options). The plans catalog is the SHARED
@@ -10,6 +12,7 @@ import { useCallback, useState } from 'react';
 import { clonePlans, type PlanProjectData } from './data';
 import {
   setFailReasons,
+  newPlanId,
   setOperators,
   setPlans,
   useFailReasons,
@@ -65,6 +68,10 @@ export function useSettingsState(): SettingsState {
   const operators = useOperators();
   const [planProjIdx, setPlanProjIdx] = useState(0);
   const [planTaskIdx, setPlanTaskIdx] = useState(0);
+  // Persist selection by identity rather than display name/index: a rename or
+  // remote reorder must not quietly retarget the Settings editor.
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const { toast, showToast } = useToast();
 
   const selectMenu = useCallback((i: number) => setMenuIdx(i), []);
@@ -77,7 +84,12 @@ export function useSettingsState(): SettingsState {
   // catalog `plans.length - 1` is -1, and plans[-1] is undefined). Every handler
   // below no-ops when there is no selected project, and PlansSection renders an
   // empty state.
-  const ppIdx = Math.max(0, Math.min(planProjIdx, plans.length - 1));
+  const selectedProjectIdx = selectedProjectId
+    ? plans.findIndex((project) => project.project_id === selectedProjectId)
+    : -1;
+  const ppIdx = selectedProjectIdx >= 0
+    ? selectedProjectIdx
+    : Math.max(0, Math.min(planProjIdx, plans.length - 1));
   const planProj = plans[ppIdx];
   // ONE clamped task cursor per render, used by the handlers below AND returned
   // to PlansSection. They used to disagree — the view derived `disabled` from
@@ -85,26 +97,41 @@ export function useSettingsState(): SettingsState {
   // partial shrink (the project survives, its task list shortens) "+ Add
   // condition" was ENABLED and silently did nothing. Sharing one value makes
   // that impossible: the control is correct, or it is disabled.
-  const ptIdx = Math.min(planTaskIdx, Math.max(0, (planProj?.tasks.length ?? 0) - 1));
+  const selectedTaskIdx = selectedTaskId
+    ? (planProj?.tasks.findIndex((task) => task.task_id === selectedTaskId) ?? -1)
+    : -1;
+  const ptIdx = selectedTaskIdx >= 0
+    ? selectedTaskIdx
+    : Math.min(planTaskIdx, Math.max(0, (planProj?.tasks.length ?? 0) - 1));
   // The clamp MOVED the cursor, i.e. the task the operator selected is no longer
   // there and a different one is being shown. Derived rather than stored, so
   // picking any task clears it — that click IS the re-confirmation.
-  const taskSelectionLost = planTaskIdx > ptIdx && (planProj?.tasks.length ?? 0) > 0;
+  const taskSelectionLost =
+    (selectedTaskId !== null && selectedTaskIdx === -1) ||
+    (selectedTaskId === null && planTaskIdx > ptIdx && (planProj?.tasks.length ?? 0) > 0);
 
   const selectProject = useCallback((i: number) => {
     setPlanProjIdx(i);
     setPlanTaskIdx(0);
-  }, []);
-  const selectTask = useCallback((i: number) => setPlanTaskIdx(i), []);
+    const project = plans[i];
+    setSelectedProjectId(project?.project_id ?? null);
+    setSelectedTaskId(project?.tasks[0]?.task_id ?? null);
+  }, [plans]);
+  const selectTask = useCallback((i: number) => {
+    setPlanTaskIdx(i);
+    setSelectedTaskId(planProj?.tasks[i]?.task_id ?? null);
+  }, [planProj]);
 
   const addProject = useCallback(() => {
     const v = window.prompt('New project name', '');
     if (!v) return;
     const next = clonePlans(plans);
-    next.push({ name: v, tasks: [] });
+    next.push({ project_id: newPlanId('project'), name: v, tasks: [] });
     setPlans(next);
     setPlanProjIdx(next.length - 1);
     setPlanTaskIdx(0);
+    setSelectedProjectId(next.at(-1)?.project_id ?? null);
+    setSelectedTaskId(null);
     showToast(`Project "${v}" added`);
   }, [plans, showToast]);
 
@@ -149,6 +176,8 @@ export function useSettingsState(): SettingsState {
       return Math.max(0, Math.min(shifted, next.length - 1));
     });
     setPlanTaskIdx(0);
+    setSelectedProjectId(next[Math.max(0, Math.min(ppIdx, next.length - 1))]?.project_id ?? null);
+    setSelectedTaskId(null);
     showToast(`Project “${target.name}” removed`);
   }, [plans, showToast]);
 
@@ -158,9 +187,10 @@ export function useSettingsState(): SettingsState {
     if (!v) return;
     const next = clonePlans(plans);
     const proj = next[ppIdx]!;
-    proj.tasks.push({ name: v, conditions: [] });
+    proj.tasks.push({ task_id: newPlanId('task'), name: v, conditions: [] });
     setPlans(next);
     setPlanTaskIdx(proj.tasks.length - 1);
+    setSelectedTaskId(proj.tasks.at(-1)?.task_id ?? null);
     showToast(`Task "${v}" added`);
   }, [plans, ppIdx, showToast]);
 
@@ -182,6 +212,7 @@ export function useSettingsState(): SettingsState {
     next[ppIdx]!.tasks.splice(i, 1);
     setPlans(next);
     setPlanTaskIdx(0);
+    setSelectedTaskId(next[ppIdx]?.tasks[0]?.task_id ?? null);
     showToast('Task removed from plan');
   }, [plans, ppIdx, showToast]);
 
@@ -193,19 +224,19 @@ export function useSettingsState(): SettingsState {
     const v = window.prompt('New condition (e.g. "Object: Left → Tray: Center")', '');
     if (!v) return;
     const next = clonePlans(plans);
-    next[ppIdx]!.tasks[ptIdx]!.conditions.push(v);
+    next[ppIdx]!.tasks[ptIdx]!.conditions.push({ condition_id: newPlanId('condition'), name: v });
     setPlans(next);
     showToast('Condition added');
   }, [plans, ppIdx, ptIdx, taskSelectionLost, showToast]);
 
   const renameCondition = useCallback((i: number) => {
     if (taskSelectionLost) return;
-    const label = plans[ppIdx]?.tasks[ptIdx]?.conditions[i];
-    if (label === undefined) return;
-    const v = window.prompt('Condition', label);
+    const condition = plans[ppIdx]?.tasks[ptIdx]?.conditions[i];
+    if (condition === undefined) return;
+    const v = window.prompt('Condition', condition.name);
     if (!v) return;
     const next = clonePlans(plans);
-    next[ppIdx]!.tasks[ptIdx]!.conditions[i] = v;
+    next[ppIdx]!.tasks[ptIdx]!.conditions[i]!.name = v;
     setPlans(next);
     showToast('Condition updated');
   }, [plans, ppIdx, ptIdx, taskSelectionLost, showToast]);

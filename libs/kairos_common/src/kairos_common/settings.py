@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Infrastructure settings (three-layer config #1: root ``.env``).
 
 These are the values docker compose resolves at startup and passes to each
@@ -87,6 +89,10 @@ class Settings(BaseSettings):
     recorder_port: Annotated[int, Field(ge=1, le=65535)] = 8010
     dora_runner_port: Annotated[int, Field(ge=1, le=65535)] = 8020
     importer_port: Annotated[int, Field(ge=1, le=65535)] = 8030
+    # lerobot_exporter (§6.2, opt-in overlay compose/lerobot.yaml): dataset →
+    # LeRobot v3 conversion. Like dora_runner it is CPU-heavy and co-located
+    # with the orchestrator, never on the robot.
+    lerobot_exporter_port: Annotated[int, Field(ge=1, le=65535)] = 8040
     # topic_probe (OL-3.3): generic numeric-field live plotter. A SEPARATE
     # ROS 2 service that decodes only the one selected topic (sampled/throttled)
     # so it never touches topic_monitor (raw) or the recorder.
@@ -116,6 +122,10 @@ class Settings(BaseSettings):
     # the robot on request. Co-located with the orchestrator on the recording
     # PC, so it stays localhost even in the split (like dora_runner).
     importer_host: str = "localhost"
+    # lerobot_exporter: co-located with the orchestrator (like dora_runner),
+    # so localhost holds in the split too. When the overlay is not enabled the
+    # service simply is not there — /api/v1/exports/config answers enabled:false.
+    lerobot_exporter_host: str = "localhost"
 
     # ---- Frontend-facing URLs / CORS --------------------------------------
     # Browser-facing base URL of the webrtc_streamer signaling endpoints

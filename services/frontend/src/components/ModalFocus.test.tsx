@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The shared Modal's focus contract, tested on the Modal ITSELF.
 //
 // These assertions previously lived only in a Collect test, where the

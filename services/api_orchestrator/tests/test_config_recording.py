@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Recording-config editor endpoints (``GET``/``PUT`` ``/api/v1/config/recording``).
 
 The Config tab edits the full RECORDING_CONFIG (task T-C1): ``PUT`` validates,

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > Operators — the attribution roster (project-lead ruling: NOT
 // authentication; no passwords, no permissions). Names added here become the
 // header OP picker's choices, and picking one is REQUIRED before recording —
@@ -19,9 +21,9 @@ export function OperatorsSection({ settings }: { settings: SettingsState }) {
       data-testid="settings-operators"
     >
       <div className="flex flex-col gap-1 border-b border-gray-100 px-4 py-[13px]">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Operators
-        </span>
+        </h2>
         <span className="text-[12px] leading-relaxed text-gray-500">
           Attribution, not access control: these names fill the OP picker (top
           right), and picking one is required before recording once the roster
@@ -31,7 +33,7 @@ export function OperatorsSection({ settings }: { settings: SettingsState }) {
       </div>
       <div className="flex max-w-xl flex-col gap-1.5 p-3">
         {operators.length === 0 && (
-          <p className="px-1 py-2 text-[12.5px] text-gray-400">
+          <p className="px-1 py-2 text-[12.5px] text-gray-500">
             No roster yet — recording works with a free-text name. Add the
             team&apos;s names to require a pick before every recording.
           </p>
@@ -54,7 +56,7 @@ export function OperatorsSection({ settings }: { settings: SettingsState }) {
               type="button"
               onClick={() => removeOperator(i)}
               title="Remove operator"
-              className="shrink-0 px-0.5 text-xs text-gray-300 hover:text-gray-500"
+              className="shrink-0 px-0.5 text-xs text-gray-500 hover:text-gray-500"
             >
               ✕
             </button>

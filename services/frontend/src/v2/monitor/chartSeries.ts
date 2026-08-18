@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Multi-topic overlay + metric helpers for the Monitor frequency chart — the
 // metric registry, selection set, palette, label disambiguation, and x-axis
 // alignment that give the v2 Monitor the same capability the v1 Graph tab had

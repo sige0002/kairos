@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The rclpy-backed :class:`~topic_probe.subscriber.ProbeSubscriber`.
 
 The real ROS seam: an rclpy node that subscribes to **multiple selected topics

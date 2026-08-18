@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The BatchMachine return-value contract (what useBatchMachine hands the
 // Collect components), split out of useBatchMachine.ts.
 
@@ -109,6 +111,11 @@ export interface BatchMachine {
    *  the next matching Start is a near-instant resume. Server-reported, never
    *  assumed from having sent a prepare. */
   preArmed: boolean;
+  /** Non-null when pre-arm keeps failing (2+ consecutive prepares): the last
+   *  failure's message. Start still works (full synchronous fallback) — this
+   *  is the operator's cue that a fixable blocker (topic mismatch, disk full)
+   *  is being hit, which used to be silent (S2-7). */
+  preArmDegraded: string | null;
 
   // Takeover (D-1): a recording is running server-side that this screen is not
   // driving (another tab/session, or a reload of our own). Null in the normal
@@ -201,7 +208,6 @@ export interface BatchMachine {
   projPickerOpen: boolean;
   taskPickerOpen: boolean;
   endModalOpen: boolean;
-  issueModalOpen: boolean;
   condModalOpen: boolean;
   resetModalOpen: boolean;
   targetModalOpen: boolean;
@@ -216,7 +222,6 @@ export interface BatchMachine {
    *  batch when one exists). */
   changeTarget: (target: number) => void;
   openEndModal: () => void;
-  openIssueModal: () => void;
   openResetModal: () => void;
   openShortcuts: () => void;
   closeModals: () => void;
@@ -226,8 +231,10 @@ export interface BatchMachine {
   // consent, and the ledger records that no reason was asked. The flow's
   // `busy`/`failures` still drive the button state and the job-voiced errors.
   episodeDiscard: CaptureDeletionState;
-  /** True on a split deployment: the robot keeps its own copy, so a discard only
-   *  removes what is on this machine — the success toast must say so (§12). */
+  /** True unless this is a CONFIRMED single-host deploy: on a split deploy the
+   *  robot keeps its own copy, so a discard only removes what is on this
+   *  machine and the success toast must say so (§12). Fails toward disclosing
+   *  while the probe is unanswered (S3-7 — `useRobotCopyMayRemain`). */
   splitDeploy: boolean;
   /** `run_YYYYMMDD_HHMMSS` of the take being labeled. DISPLAY ONLY (§1). */
   currentRunLabel: string | null;
@@ -243,6 +250,13 @@ export interface BatchMachine {
   // actions
   startRecording: () => void;
   cancelArming: () => void;
+  /** Whether the arming Cancel may be used yet (#8 — see
+   *  ARMING_CANCEL_GUARD_MS). False for the phase's first moments, so the tail
+   *  of a double-click on Start cannot back out of the take it just began.
+   *  Read by the control AND checked inside `cancelArming`, the same
+   *  belt-and-braces as `canStop`: a guard that only lives on the button is
+   *  walked around by the Escape shortcut. */
+  canCancelArming: boolean;
   stopRecording: () => void;
   /** Whether Stop may be used yet, and if not, why (M2 — see STOP_FLOOR_MS). */
   canStop: boolean;
@@ -253,6 +267,10 @@ export interface BatchMachine {
   /** Milliseconds since the last SUCCESSFUL poll, for "last known: …, Ns ago".
    *  Null when there has never been one. */
   recorderStaleMs: number | null;
+  /** Seconds the post-stop confirmation has been waiting on the recorder's
+   *  flush; null outside that wait. Drives the SAVING card's honest progress
+   *  line instead of an error. */
+  stopFlushSeconds: number | null;
   /** Re-attempt a stop that failed (stays in SAVING). */
   retryStop: () => void;
   pickSuccess: () => void;
@@ -280,7 +298,6 @@ export interface BatchMachine {
   resumeBatch: () => void;
   pickEndReason: (reason: string) => void;
   confirmEndBatch: () => void;
-  submitIssue: () => void;
   startNextBatch: () => void;
   /** Reset the batch (counts → 0/30, recordings kept in Review). */
   resetBatch: () => void;

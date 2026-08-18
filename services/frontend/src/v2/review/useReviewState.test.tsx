@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
@@ -13,7 +15,9 @@ function wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
-function capture(partial: Partial<CaptureListItem> & { capture_id: string }): CaptureListItem {
+function capture(
+  partial: Partial<CaptureListItem> & { capture_id: string },
+): CaptureListItem {
   return {
     state: 'completed',
     review_status: 'pending',
@@ -21,6 +25,21 @@ function capture(partial: Partial<CaptureListItem> & { capture_id: string }): Ca
     replica: { instance_id: 'inst', state: 'present_verified' },
     digest_state: 'complete',
     ...partial,
+  };
+}
+
+function collectionContext(condition: string) {
+  return {
+    batch_id: null,
+    batch_seq: null,
+    project_id: null,
+    task_id: null,
+    condition_id: null,
+    project: null,
+    task: null,
+    condition,
+    robot: null,
+    operator: null,
   };
 }
 
@@ -63,7 +82,12 @@ function mockServer(initial: CaptureListItem[], options: ServerOptions = {}) {
   const reviewCalls: { captureId: string; body: Record<string, unknown> }[] = [];
   const deleteCalls: { captureId: string; body: Record<string, unknown> }[] = [];
   const pullCalls: string[] = [];
+  const searchCalls: Record<string, unknown>[] = [];
   const heldReviews: (() => void)[] = [];
+  // The caller's own object, NOT a copy: tests below mutate the map they passed
+  // in to stop refusing partway through a run, and a copy would quietly ignore
+  // them. The setters returned at the bottom are the same trick, named.
+  const reviewErrors = options.reviewErrors ?? {};
   const answer = (r: Response) =>
     options.holdReviews
       ? new Promise<Response>((resolve) => heldReviews.push(() => resolve(r)))
@@ -80,7 +104,7 @@ function mockServer(initial: CaptureListItem[], options: ServerOptions = {}) {
     if (method === 'PATCH' && review) {
       const id = decodeURIComponent(review[1]!);
       reviewCalls.push({ captureId: id, body });
-      const err = options.reviewErrors?.[id];
+      const err = reviewErrors[id];
       if (err) {
         return answer(
           jsonResponse({ error: { code: err.code, message: err.message } }, err.status),
@@ -114,6 +138,70 @@ function mockServer(initial: CaptureListItem[], options: ServerOptions = {}) {
       }
       items = items.filter((c) => c.capture_id !== id);
       return Promise.resolve(jsonResponse({}, 200));
+    }
+
+    if (method === 'POST' && url.endsWith('/captures/search')) {
+      searchCalls.push(body);
+      const query = (body.query ?? {}) as {
+        predicates?: { field?: string; operator?: string; value?: string }[];
+        started_from?: string | null;
+        started_to?: string | null;
+      };
+      const matches = (
+        item: CaptureListItem,
+        predicate: { field?: string; operator?: string; value?: string },
+      ) => {
+        const value = predicate.value ?? '';
+        const fieldValue = (field: string) => {
+          if (field === 'condition') return item.collection_context?.condition ?? '';
+          if (field === 'batch_id') return item.batch_id ?? '';
+          return String(item[field as keyof CaptureListItem] ?? '');
+        };
+        if (predicate.field === 'any') {
+          return Object.values(item)
+            .join(' ')
+            .toLocaleLowerCase()
+            .includes(value.toLocaleLowerCase());
+        }
+        const actual = fieldValue(predicate.field ?? '');
+        return predicate.operator === 'contains'
+          ? actual.toLocaleLowerCase().includes(value.toLocaleLowerCase())
+          : actual === value;
+      };
+      const matched = items.filter((item) => {
+        const started = item.started_at ?? '';
+        return (
+          (query.predicates ?? []).every((predicate) => matches(item, predicate)) &&
+          (!query.started_from || started >= query.started_from) &&
+          (!query.started_to || started < query.started_to)
+        );
+      });
+      const facet = (field: 'operator' | 'condition' | 'quality' | 'task_result') => {
+        const values = new Map<string, number>();
+        for (const item of matched) {
+          const value =
+            field === 'condition' ? item.collection_context?.condition : item[field];
+          if (value) values.set(String(value), (values.get(String(value)) ?? 0) + 1);
+        }
+        return {
+          values: [...values].map(([value, count]) => ({ value, count })),
+          other_count: 0,
+          truncated: false,
+        };
+      };
+      return Promise.resolve(
+        jsonResponse({
+          items: matched,
+          next_cursor: options.capturesNeverEnd ? 'more' : null,
+          total: matched.length,
+          facets: {
+            operator: facet('operator'),
+            condition: facet('condition'),
+            quality: facet('quality'),
+            task_result: facet('task_result'),
+          },
+        }),
+      );
     }
 
     const detail = url.match(/\/captures\/([^/?]+)$/);
@@ -150,9 +238,30 @@ function mockServer(initial: CaptureListItem[], options: ServerOptions = {}) {
     reviewCalls,
     deleteCalls,
     pullCalls,
+    searchCalls,
     items: () => items,
+    /** Change what the server stores, with no client call involved — another
+     *  terminal's save, seen by this one only on the next sweep. */
+    setStored: (captureId: string, patch: Partial<CaptureListItem>) => {
+      const idx = items.findIndex((c) => c.capture_id === captureId);
+      if (idx < 0) throw new Error(`no capture ${captureId}`);
+      items[idx] = {
+        ...items[idx]!,
+        ...patch,
+        review_revision: (items[idx]!.review_revision ?? 0) + 1,
+      };
+    },
     /** Answer every held review save, oldest first. */
     releaseReviews: () => heldReviews.splice(0).forEach((r) => r()),
+    setReviewError: (
+      captureId: string,
+      err: { status: number; code: string; message: string },
+    ) => {
+      reviewErrors[captureId] = err;
+    },
+    clearReviewError: (captureId: string) => {
+      delete reviewErrors[captureId];
+    },
   };
 }
 
@@ -165,6 +274,7 @@ async function renderReview() {
 beforeEach(() => {
   setApiBase('/api/v1');
   setSplitMode(false);
+  history.replaceState({}, '', '/?tab=review');
 });
 
 afterEach(() => {
@@ -181,6 +291,22 @@ test('captures load into rows keyed by capture_id', async () => {
   expect(result.current.operatorOptions).toEqual(['ana', 'bo']);
 });
 
+test('keeps deep-linked facet values selectable when a limited facet omits them', async () => {
+  history.replaceState({}, '', '/?tab=review&operator=remote&condition=rare');
+  mockServer([
+    capture({
+      capture_id: 'c1',
+      operator: 'ana',
+      collection_context: collectionContext('left'),
+    }),
+  ]);
+
+  const { result } = await renderReview();
+
+  expect(result.current.operatorOptions).toContain('remote');
+  expect(result.current.conditionOptions).toContain('rare');
+});
+
 test('a quality edit sends base_revision and lands', async () => {
   const server = mockServer([capture({ capture_id: 'c1', review_revision: 2 })]);
   const { result } = await renderReview();
@@ -195,7 +321,9 @@ test('a quality edit sends base_revision and lands', async () => {
     quality_source: 'operator',
   });
   await waitFor(() =>
-    expect(result.current.rows.find((r) => r.captureId === 'c1')!.reviewRevision).toBe(3),
+    expect(result.current.rows.find((r) => r.captureId === 'c1')!.reviewRevision).toBe(
+      3,
+    ),
   );
 });
 
@@ -267,15 +395,15 @@ test('capture_deleting is a reload case: the delete won', async () => {
 });
 
 test('excluding saves review_status excluded and moves the row out of the default view', async () => {
-  const server = mockServer([capture({ capture_id: 'c1' })]);
+  const server = mockServer([capture({ capture_id: 'c1', run_id: 'run_a' })]);
   const { result } = await renderReview();
 
-  act(() => result.current.requestExclude('c1'));
-  // The confirmation opens for a capture with NO index_in_batch too — gating it
-  // on the episode number left exactly those captures impossible to exclude.
-  expect(result.current.excludePending).toBe(true);
-  expect(result.current.pendingExcludeLabel).toBe('—');
-  await act(async () => result.current.confirmExclude());
+  // CHANGED with #12: there is no confirmation step any more — excluding keeps
+  // the recording and is undoable, so both entry points act immediately. The
+  // case the old confirmation test was guarding still holds below: a capture
+  // with NO index_in_batch must be excludable, and it is now named by its run
+  // id rather than by an episode number it does not have.
+  await act(async () => result.current.requestExclude('c1'));
 
   await waitFor(() => expect(server.reviewCalls).toHaveLength(1));
   expect(server.reviewCalls[0]!.body).toMatchObject({
@@ -285,6 +413,11 @@ test('excluding saves review_status excluded and moves the row out of the defaul
   });
   await waitFor(() => expect(result.current.nExcluded).toBe(1));
   expect(result.current.rows).toHaveLength(0);
+  // Named without an episode number, and offered back.
+  expect(result.current.excludeUndo).toMatchObject({
+    captureId: 'c1',
+    subject: 'run_a',
+  });
   act(() => result.current.toggleExcluded());
   expect(result.current.rows).toHaveLength(1);
 });
@@ -382,13 +515,18 @@ test('a bulk removal reports each failure by id and keeps going', async () => {
 });
 
 test('the retention banner is advisory: it filters and never deletes', async () => {
-  const server = mockServer([capture({ capture_id: 'c1' }), capture({ capture_id: 'c2' })], {
-    retention: {
-      days: 30,
-      candidates: [{ capture_id: 'c1', state: 'completed', review_status: 'pending' }],
-      total_bytes: 2_048,
+  const server = mockServer(
+    [capture({ capture_id: 'c1' }), capture({ capture_id: 'c2' })],
+    {
+      retention: {
+        days: 30,
+        candidates: [
+          { capture_id: 'c1', state: 'completed', review_status: 'pending' },
+        ],
+        total_bytes: 2_048,
+      },
     },
-  });
+  );
   const { result } = await renderReview();
   await waitFor(() => expect(result.current.showRetentionBanner).toBe(true));
   expect(result.current.retentionCandidateCount).toBe(1);
@@ -454,9 +592,24 @@ test('search finds a row by capture_id as well as by run_id', async () => {
 
 function batchOf3(status: 'pending' | 'excluded') {
   return [
-    capture({ capture_id: 'c1', run_id: 'run_1', batch_id: 'b1', review_status: status }),
-    capture({ capture_id: 'c2', run_id: 'run_2', batch_id: 'b1', review_status: status }),
-    capture({ capture_id: 'c3', run_id: 'run_3', batch_id: 'b1', review_status: status }),
+    capture({
+      capture_id: 'c1',
+      run_id: 'run_1',
+      batch_id: 'b1',
+      review_status: status,
+    }),
+    capture({
+      capture_id: 'c2',
+      run_id: 'run_2',
+      batch_id: 'b1',
+      review_status: status,
+    }),
+    capture({
+      capture_id: 'c3',
+      run_id: 'run_3',
+      batch_id: 'b1',
+      review_status: status,
+    }),
   ];
 }
 
@@ -509,7 +662,9 @@ test('a batch exclude names the members it could not exclude', async () => {
 });
 
 test('a batch return to review names the members it could not return', async () => {
-  const server = mockServer(batchOf3('excluded'), { reviewErrors: { c2: SIDECAR_500 } });
+  const server = mockServer(batchOf3('excluded'), {
+    reviewErrors: { c2: SIDECAR_500 },
+  });
   const { result } = await renderReview();
   act(() => result.current.toggleBatchFilter('b1'));
   await waitFor(() => expect(result.current.batchExcluded).toHaveLength(3));
@@ -798,7 +953,9 @@ test('a bulk run reports a member it stepped over, and does not call it a failur
   await waitFor(() => expect(result.current.excludeBatchRunning).toBe(false));
 
   expect(server.reviewCalls.map((c) => c.captureId)).toEqual(['c1', 'c2', 'c3']);
-  const skipped = result.current.excludeBatchFailures.find((f) => f.captureId === 'c1')!;
+  const skipped = result.current.excludeBatchFailures.find(
+    (f) => f.captureId === 'c1',
+  )!;
   expect(skipped).toBeDefined();
   expect(skipped.error).toMatch(/still being written/);
   expect(skipped.error).not.toMatch(/save failed/);
@@ -935,6 +1092,44 @@ test('a banner names its capture even when the filters have hidden it', async ()
   expect(result.current.captureSubject('c1')).toBe('Episode #1');
 });
 
+test('sends UTC calendar-day bounds and server predicates for Review filters', async () => {
+  const server = mockServer([
+    capture({
+      capture_id: 'c1',
+      operator: 'ana',
+      collection_context: collectionContext('left'),
+      started_at: '2026-08-01T12:00:00.000Z',
+    }),
+  ]);
+  const { result } = await renderReview();
+
+  act(() => {
+    result.current.setSearch('pick');
+    result.current.setOperatorFilter('ana');
+    result.current.setConditionFilter('left');
+    result.current.setQualityFilter('good');
+    result.current.setResultFilter('failure');
+    result.current.setStartedFrom('2026-08-01');
+    result.current.setStartedTo('2026-08-01');
+  });
+
+  await waitFor(() =>
+    expect(server.searchCalls.at(-1)).toMatchObject({
+      query: {
+        predicates: [
+          { field: 'any', operator: 'contains', value: 'pick' },
+          { field: 'operator', operator: 'equals', value: 'ana' },
+          { field: 'quality', operator: 'equals', value: 'good' },
+          { field: 'task_result', operator: 'equals', value: 'failure' },
+          { field: 'condition', operator: 'equals', value: 'left' },
+        ],
+        started_from: '2026-08-01T00:00:00.000Z',
+        started_to: '2026-08-02T00:00:00.000Z',
+      },
+    }),
+  );
+});
+
 test('a displaced failure notice loses the reason, not the fact', async () => {
   // `conflict` and `failure` are one slot each, not lists, so a second failure
   // displaces the first. That became reachable when banners started outliving
@@ -979,13 +1174,9 @@ test('a displaced failure notice loses the reason, not the fact', async () => {
   expect(result.current.nNeedsCheck).toBe(2);
 });
 
-// ---- the catalog sweep's own limit ---------------------------------------
-// Review's rows, its lane counts and its bulk sets all come from one cursor
-// sweep that gives up after MAX_PAGES. When it does, every one of those is a
-// number about what was fetched, presented as a number about the catalog — so
-// the state has to carry the fact, not just the rows (E-27).
+// ---- server page boundaries ----------------------------------------------
 
-test('a sweep that stops short of the end of the catalog is reported', async () => {
+test('a server page with a next cursor reports its bounded scope', async () => {
   mockServer([capture({ capture_id: 'c1' })], { capturesNeverEnd: true });
   const { result } = await renderReview();
 
@@ -994,9 +1185,417 @@ test('a sweep that stops short of the end of the catalog is reported', async () 
   expect(result.current.rows.length).toBeGreaterThan(0);
 });
 
+test('follows and pops the server cursor stack', async () => {
+  const server = mockServer([capture({ capture_id: 'c1' })], {
+    capturesNeverEnd: true,
+  });
+  const { result } = await renderReview();
+
+  expect(result.current.hasPreviousPage).toBe(false);
+  act(() => result.current.nextPage());
+  await waitFor(() => expect(result.current.hasPreviousPage).toBe(true));
+  expect(server.searchCalls.at(-1)).toMatchObject({ cursor: 'more' });
+
+  act(() => result.current.previousPage());
+  await waitFor(() => expect(result.current.hasPreviousPage).toBe(false));
+  expect(window.location.search).not.toContain('cursor=');
+});
+
 test('a catalog that fits reports nothing — the flag is not decoration', async () => {
   mockServer([capture({ capture_id: 'c1' })]);
   const { result } = await renderReview();
 
   expect(result.current.catalogTruncated).toBe(false);
+});
+
+// ---- undoing an exclude (#12) ---------------------------------------------
+//
+// Excluding overwrites review_status AND quality, and Return only ever writes
+// `pending` — so taking back a mis-click on an adopted capture used to mean two
+// actions and still lost the quality it had been carrying. What the exclude
+// overwrote is remembered client-side for the session and put back in one save.
+
+test('undo restores the exact status and quality the exclude overwrote', async () => {
+  const server = mockServer([
+    capture({
+      capture_id: 'c1',
+      index_in_batch: 3,
+      review_status: 'adopted',
+      quality: 'good',
+      quality_source: 'operator',
+      review_revision: 1,
+    }),
+  ]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(server.reviewCalls).toHaveLength(1));
+  expect(result.current.excludeUndo).toMatchObject({
+    captureId: 'c1',
+    subject: 'Episode #3',
+    prior: { review_status: 'adopted', quality: 'good', quality_source: 'operator' },
+  });
+
+  await act(async () => result.current.undoExclude());
+
+  await waitFor(() => expect(server.reviewCalls).toHaveLength(2));
+  // One save, carrying all three fields the exclude touched. Return would have
+  // sent `pending` alone and left the capture reading "Not usable".
+  expect(server.reviewCalls[1]!.body).toMatchObject({
+    review_status: 'adopted',
+    quality: 'good',
+    quality_source: 'operator',
+  });
+  await waitFor(() => expect(result.current.nExcluded).toBe(0));
+  expect(result.current.excludeUndo).toBeNull();
+});
+
+test('a capture with no operator quality has the not_usable cleared, not kept', async () => {
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(server.reviewCalls).toHaveLength(1));
+  await act(async () => result.current.undoExclude());
+  await waitFor(() => expect(server.reviewCalls).toHaveLength(2));
+
+  // Nulls are sent EXPLICITLY, because the server distinguishes "omitted" from
+  // "null" by `model_fields_set` (capture_review.py `_merge_review`): omitting
+  // them means "leave these alone", and leaving them alone is how the capture
+  // would keep the not_usable the exclude wrote — an undo that restores the
+  // status and silently keeps the verdict.
+  //
+  // What the capture ends up with is then the SERVER's business, and it is not
+  // null: `_derive_quality` refills an explicitly-null quality from the
+  // capture's quick-check verdict (falling back to needs_review) and marks it
+  // `quick_check`. That is the right end state for a capture whose quality no
+  // operator had ever set — it goes back to being machine-judged — but it is
+  // the reason this test asserts the REQUEST and not a restored null.
+  const body = server.reviewCalls[1]!.body as Record<string, unknown>;
+  expect(body).toMatchObject({ review_status: 'pending' });
+  expect(body.quality).toBeNull();
+  expect(body.quality_source).toBeNull();
+
+  // And the toast says so, in that branch only. "restored to Pending" alone
+  // would let a quality the operator did not choose arrive unannounced.
+  await waitFor(() =>
+    expect(result.current.toast).toContain('quality re-derived from quick check'),
+  );
+});
+
+test('the detail-panel Exclude takes the same path, undo and all', async () => {
+  const server = mockServer([
+    capture({
+      capture_id: 'c1',
+      index_in_batch: 2,
+      review_status: 'adopted',
+      quality: 'needs_review',
+      quality_source: 'validator',
+      review_revision: 1,
+    }),
+  ]);
+  const { result } = await renderReview();
+
+  act(() => result.current.select('c1'));
+  await act(async () => result.current.decide('excluded'));
+
+  await waitFor(() => expect(server.reviewCalls).toHaveLength(1));
+  // It used to write review_status alone: no quality change, nothing
+  // remembered. Now it is the same operation the table performs.
+  expect(server.reviewCalls[0]!.body).toMatchObject({
+    review_status: 'excluded',
+    quality: 'not_usable',
+    quality_source: 'operator',
+  });
+  expect(result.current.excludeUndo).toMatchObject({ captureId: 'c1' });
+
+  await act(async () => result.current.undoExclude());
+  await waitFor(() => expect(server.reviewCalls).toHaveLength(2));
+  // A validator's verdict goes back as the VALIDATOR's. Restoring it as
+  // 'operator' would put a human's name on a machine's judgement.
+  expect(server.reviewCalls[1]!.body).toMatchObject({
+    review_status: 'adopted',
+    quality: 'needs_review',
+    quality_source: 'validator',
+  });
+});
+
+test('a refused exclude offers no undo — there is nothing to take back', async () => {
+  mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })], {
+    reviewErrors: {
+      c1: { status: 500, code: 'review_sidecar_write_failed', message: 'no write' },
+    },
+  });
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+
+  await waitFor(() => expect(result.current.reviewSave.failure).not.toBeNull());
+  expect(result.current.excludeUndo).toBeNull();
+  expect(result.current.nExcluded).toBe(0);
+});
+
+test('a refused undo keeps the offer, so it can be tried again', async () => {
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+
+  // The next save is refused: the restore does not land.
+  server.setReviewError('c1', {
+    status: 409,
+    code: 'review_conflict',
+    message: 'someone saved first',
+  });
+  await act(async () => result.current.undoExclude());
+  await waitFor(() => expect(result.current.reviewSave.conflict).not.toBeNull());
+  expect(result.current.excludeUndo).not.toBeNull();
+
+  // …and once the refusal clears, the same offer still restores it.
+  server.clearReviewError('c1');
+  await act(async () => result.current.undoExclude());
+  await waitFor(() => expect(result.current.excludeUndo).toBeNull());
+  expect(result.current.nExcluded).toBe(0);
+});
+
+test('a second exclude supersedes the first offer — one undo, for the last action', async () => {
+  const server = mockServer([
+    capture({ capture_id: 'c1', index_in_batch: 1 }),
+    capture({ capture_id: 'c2', index_in_batch: 2 }),
+  ]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo?.captureId).toBe('c1'));
+  await act(async () => result.current.requestExclude('c2'));
+  await waitFor(() => expect(result.current.excludeUndo?.captureId).toBe('c2'));
+
+  // Undoing now restores c2. c1 stays excluded — the offer never claimed
+  // otherwise, and Return is still there for it.
+  await act(async () => result.current.undoExclude());
+  await waitFor(() => expect(server.reviewCalls).toHaveLength(3));
+  expect(result.current.nExcluded).toBe(1);
+});
+
+test('returning to review says the step that is still outstanding', async () => {
+  mockServer([
+    capture({
+      capture_id: 'c1',
+      index_in_batch: 1,
+      review_status: 'excluded',
+      review_revision: 1,
+    }),
+  ]);
+  const { result } = await renderReview();
+  await waitFor(() => expect(result.current.nExcluded).toBe(1));
+
+  await act(async () => result.current.requestExclude('c1'));
+
+  // "Restored" read as finished; the capture was sitting at `pending`, which
+  // Datasets do not take.
+  await waitFor(() =>
+    expect(result.current.toast).toContain('Adopt to include in datasets'),
+  );
+  expect(result.current.toast).toContain('returned to review');
+});
+
+test('dismissing the offer leaves the exclusion in place', async () => {
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+  act(() => result.current.dismissExcludeUndo());
+
+  expect(result.current.excludeUndo).toBeNull();
+  expect(result.current.nExcluded).toBe(1);
+  expect(server.reviewCalls).toHaveLength(1);
+});
+
+test('deleting the capture takes its undo offer with it', async () => {
+  // The offer would otherwise be a button whose only possible outcome is a
+  // failure: there is no row left to restore the review onto.
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+
+  act(() => result.current.requestDelete(['c1']));
+  await act(async () => result.current.deletion.confirm(''));
+
+  await waitFor(() => expect(server.deleteCalls).toHaveLength(1));
+  await waitFor(() => expect(result.current.excludeUndo).toBeNull());
+});
+
+test('a batch exclude supersedes a single capture’s undo offer', async () => {
+  // Left standing, "Episode #1 excluded — Undo" sits over a batch that just
+  // excluded three others and reads as the undo for what was done last.
+  mockServer(batchOf3('pending'));
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+
+  act(() => result.current.toggleBatchFilter('b1'));
+  await waitFor(() => expect(result.current.batchExcludable).toHaveLength(2));
+  act(() => result.current.requestExcludeBatch());
+  await act(async () => result.current.confirmExcludeBatch());
+
+  await waitFor(() => expect(result.current.excludeUndo).toBeNull());
+});
+
+// ---- the offer must not outlive the exclusion it belongs to (PR #21 R1) ----
+//
+// The damage is specific and silent: exclude a PENDING capture, decide the
+// other way instead, and a stale offer writes `pending` over the new decision
+// while reporting success. Every route back out of an exclusion is covered
+// here, because the bug is not in any one of them — it is in the offer
+// outliving the state it describes.
+
+test('adopting the capture instead retires the offer — no silent demotion', async () => {
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+
+  act(() => result.current.select('c1'));
+  await act(async () => result.current.markOk());
+  await waitFor(() => expect(server.reviewCalls).toHaveLength(2));
+
+  // Gone. Taking it would have written `pending` over the adoption just made.
+  expect(result.current.excludeUndo).toBeNull();
+  await act(async () => result.current.undoExclude());
+  expect(server.reviewCalls).toHaveLength(2);
+  expect(
+    result.current.rows.find((r) => r.captureId === 'c1')!.effectiveReviewStatus,
+  ).toBe('adopted');
+});
+
+test('adopting DISCARDS the memo, so a later exclusion cannot resurrect it', async () => {
+  // Kept apart from the test above, where the undo call does the clearing
+  // itself (the write-time check) and would hide whether Adopt cleared
+  // anything. Nothing here touches the offer except Adopt.
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+  act(() => result.current.select('c1'));
+  await act(async () => result.current.markOk());
+  await waitFor(() => expect(result.current.excludeUndo).toBeNull());
+
+  // Excluded again, by another terminal. A memo merely HIDDEN comes back into
+  // view here, carrying a prior from two decisions ago.
+  await act(async () => {
+    server.setStored('c1', { review_status: 'excluded' });
+    await result.current.reviewSave.invalidateList();
+  });
+  await waitFor(() =>
+    expect(result.current.rows.find((r) => r.captureId === 'c1')).toBeUndefined(),
+  );
+  expect(result.current.excludeUndo).toBeNull();
+});
+
+test('the row Return retires the offer', async () => {
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+  // Second call on an excluded row IS the Return.
+  await act(async () => result.current.requestExclude('c1'));
+
+  await waitFor(() => expect(server.reviewCalls).toHaveLength(2));
+  expect(result.current.excludeUndo).toBeNull();
+  // The clear is not redundant with the guard: leave the memo alive and a LATER
+  // exclusion (here, from another terminal) makes the guard show it again —
+  // an offer whose remembered prior belongs to an exclusion two decisions ago.
+  await act(async () => {
+    server.setStored('c1', { review_status: 'excluded' });
+    await result.current.reviewSave.invalidateList();
+  });
+  await waitFor(() =>
+    expect(result.current.rows.find((r) => r.captureId === 'c1')).toBeUndefined(),
+  );
+  expect(result.current.excludeUndo).toBeNull();
+});
+
+test("the detail panel's Return retires the offer", async () => {
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+  act(() => result.current.select('c1'));
+  await act(async () => result.current.decide('review'));
+
+  await waitFor(() => expect(server.reviewCalls).toHaveLength(2));
+  expect(result.current.excludeUndo).toBeNull();
+  // The clear is not redundant with the guard: leave the memo alive and a LATER
+  // exclusion (here, from another terminal) makes the guard show it again —
+  // an offer whose remembered prior belongs to an exclusion two decisions ago.
+  await act(async () => {
+    server.setStored('c1', { review_status: 'excluded' });
+    await result.current.reviewSave.invalidateList();
+  });
+  await waitFor(() =>
+    expect(result.current.rows.find((r) => r.captureId === 'c1')).toBeUndefined(),
+  );
+  expect(result.current.excludeUndo).toBeNull();
+});
+
+test('a batch return that sweeps the capture up retires the offer', async () => {
+  const server = mockServer(batchOf3('pending'));
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+
+  act(() => result.current.toggleBatchFilter('b1'));
+  await waitFor(() => expect(result.current.batchExcluded).toHaveLength(1));
+  await act(async () => result.current.returnBatchToReview());
+
+  await waitFor(() => expect(result.current.excludeUndo).toBeNull());
+
+  // As above: the memo has to be GONE, not merely hidden, or a later exclusion
+  // brings back a prior belonging to an exclusion two decisions ago.
+  await act(async () => {
+    server.setStored('c1', { review_status: 'excluded' });
+    await result.current.reviewSave.invalidateList();
+  });
+  await waitFor(() =>
+    expect(result.current.rows.find((r) => r.captureId === 'c1')).toBeUndefined(),
+  );
+  expect(result.current.excludeUndo).toBeNull();
+});
+
+test('an exclusion undone from another terminal takes the offer with it', async () => {
+  // Nothing local ran at all: the capture came back `pending` on the next
+  // sweep. The offer is derived from the capture's own state precisely so a
+  // route this screen never took cannot leave it standing.
+  const server = mockServer([capture({ capture_id: 'c1', index_in_batch: 1 })]);
+  const { result } = await renderReview();
+
+  await act(async () => result.current.requestExclude('c1'));
+  await waitFor(() => expect(result.current.excludeUndo).not.toBeNull());
+
+  await act(async () => {
+    server.setStored('c1', { review_status: 'adopted' });
+    await result.current.reviewSave.invalidateList();
+  });
+
+  await waitFor(() => expect(result.current.excludeUndo).toBeNull());
+
+  // Nothing local cleared the memo here — only the guard hid it. So this is
+  // where the write itself has to refuse: firing the undo anyway must not send
+  // `pending` over the adoption that arrived while the offer was on screen.
+  const before = server.reviewCalls.length;
+  await act(async () => result.current.undoExclude());
+  expect(server.reviewCalls).toHaveLength(before);
+  expect(
+    result.current.rows.find((r) => r.captureId === 'c1')!.effectiveReviewStatus,
+  ).toBe('adopted');
 });

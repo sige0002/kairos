@@ -13,7 +13,17 @@ API (capture store v2 — keyed by capture_id, contract §10.6):
     POST /pull {"capture_id": "<uuid7>"} -> 202 {"queued": true} (one capture)
     POST /pull {"all": true}             -> 202 {"queued": true} (every capture)
     POST /pull {} / anything else        -> 400
+    GET  /pull/<capture_id>              -> 200 {per-pull state} | 404
+    GET  /pulls                          -> 200 {"pulls": {...}} (all known)
     GET  /healthz                        -> 200 {"ok": true}
+
+Per-pull state (S3-1: a pull whose rsync died used to be invisible — the 202
+lands before ssh is even touched, and the exit code went only to this
+container's log): every queued pull is tracked through
+``queued → running → ok | failed`` with its exit code and a one-line reason,
+and the last outcome per capture stays readable. The orchestrator proxies
+``GET /pull/<id>`` so the UI can stop saying "Transferring…" about a transfer
+that is dead.
 
 **The empty body is a 400, not a sweep.** It used to mean "pull everything",
 which made the v1→v2 rename dangerous in a way no test would catch: a caller
@@ -41,8 +51,10 @@ import logging
 import os
 import queue
 import re
+import signal
 import subprocess
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -122,42 +134,103 @@ def parse_pull_body(body: object) -> str | None:
 
 _queue: queue.Queue[str | None] = queue.Queue()
 _queued: set[str | None] = set()  # dedup guard for identical pending jobs
+_NOTHING_ACTIVE = object()  # sentinel: distinct from None (None = a sweep)
+_active: object = _NOTHING_ACTIVE  # the job the worker is executing right now
 _queued_lock = threading.Lock()
 _stop = threading.Event()
 
+# What each pull exit code means, for the record's one-line reason (the script
+# header defines them).
+_EXIT_REASON = {
+    0: "ok",
+    2: "configuration error (see the importer log)",
+    3: "the capture is not finalised on the robot yet",
+    4: "ssh to the robot failed (auth or network)",
+}
+_TIMEOUT_EXIT = 124  # our own marker for "the pull ran out of its time budget"
+
+# Per-pull state, keyed by capture_id (None = a full sweep). The LAST outcome
+# per key stays readable; a re-queue overwrites it. Never trimmed: entries are
+# tiny and bounded by the number of captures ever pulled.
+_pulls: dict[str | None, dict[str, object]] = {}
+_pulls_lock = threading.Lock()
+
+
+def _record_pull(capture_id: str | None, **fields: object) -> None:
+    with _pulls_lock:
+        entry = _pulls.setdefault(capture_id, {})
+        entry.update(fields, updated_at=time.time())
+
+
+def _pull_state(capture_id: str | None) -> dict[str, object] | None:
+    with _pulls_lock:
+        entry = _pulls.get(capture_id)
+        return dict(entry) if entry is not None else None
+
 
 def _enqueue(capture_id: str | None) -> bool:
-    """Queue a pull job unless an identical one is already pending."""
+    """Queue a pull job unless an identical one is pending OR running.
+
+    Covering the RUNNING one matters: the dedup used to be released the moment
+    the worker picked the job up, so a re-click during a long rsync queued a
+    second ``--append-verify`` transfer of the same files right behind the
+    first (S3-1) — the exact double-run the serial worker exists to prevent.
+    """
     with _queued_lock:
-        if capture_id in _queued:
+        if capture_id in _queued or capture_id == _active:
             return False
         _queued.add(capture_id)
+    _record_pull(capture_id, state="queued", exit_code=None, reason=None)
     _queue.put(capture_id)
     return True
 
 
 def _run_script(capture_id: str | None) -> int:
-    """Run import_runs.sh once (QUIET; CAPTURE_ID when given); return its exit."""
+    """Run import_runs.sh once (QUIET; CAPTURE_ID when given); return its exit.
+
+    The script runs in its own process GROUP, and the timeout kills the group:
+    killing only the bash wrapper left the rsync grandchild running, holding
+    the transfer's resume state while a second attempt started next to it.
+    """
     env = dict(os.environ, QUIET="1")
     if capture_id is not None:
         env["CAPTURE_ID"] = capture_id
     else:
         env.pop("CAPTURE_ID", None)
-    proc = subprocess.run(  # noqa: S603 - fixed script path, env-driven args
+    proc = subprocess.Popen(  # noqa: S603 - fixed script path, env-driven args
         ["bash", str(SCRIPT)],
         env=env,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
-        timeout=3600,
+        start_new_session=True,
     )
-    for line in (proc.stdout + proc.stderr).splitlines():
+    try:
+        output, _ = proc.communicate(timeout=3600)
+        code = proc.returncode
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            output, _ = proc.communicate(timeout=10)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            output, _ = proc.communicate()
+        code = _TIMEOUT_EXIT
+    for line in (output or "").splitlines():
         if line.strip():
             logger.info("%s", line)
-    return proc.returncode
+    return code
 
 
 def _worker() -> None:
     """Serialise pulls; retry a not-yet-finalised run (exit 3) briefly."""
+    global _active
     while not _stop.is_set():
         try:
             capture_id = _queue.get(timeout=1.0)
@@ -165,7 +238,9 @@ def _worker() -> None:
             continue
         with _queued_lock:
             _queued.discard(capture_id)
+            _active = capture_id
         label = capture_id or "<all finalised>"
+        _record_pull(capture_id, state="running")
         try:
             for attempt in range(FINALISE_RETRIES + 1):
                 code = _run_script(capture_id)
@@ -183,10 +258,26 @@ def _worker() -> None:
                         return
             if code == 0:
                 logger.info("pull ok: %s", label)
+                _record_pull(capture_id, state="ok", exit_code=0, reason="ok")
             else:
+                reason = (
+                    "the pull ran out of its time budget"
+                    if code == _TIMEOUT_EXIT
+                    else _EXIT_REASON.get(code, "pull failed (see the importer log)")
+                )
                 logger.warning("pull failed (exit %d): %s", code, label)
+                _record_pull(capture_id, state="failed", exit_code=code, reason=reason)
         except Exception:  # noqa: BLE001 - the worker must never die
             logger.exception("pull crashed: %s", label)
+            _record_pull(
+                capture_id,
+                state="failed",
+                exit_code=None,
+                reason="the importer crashed running this pull (see its log)",
+            )
+        finally:
+            with _queued_lock:
+                _active = _NOTHING_ACTIVE
 
 
 def _sweeper() -> None:
@@ -209,8 +300,27 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
         if self.path == "/healthz":
             self._reply(200, {"ok": True})
-        else:
-            self._reply(404, {"error": "not found"})
+            return
+        if self.path == "/pulls":
+            with _pulls_lock:
+                pulls = {
+                    (key if key is not None else "<all>"): dict(entry)
+                    for key, entry in _pulls.items()
+                }
+            self._reply(200, {"pulls": pulls})
+            return
+        if self.path.startswith("/pull/"):
+            capture_id = self.path[len("/pull/") :]
+            if not _UUID7_RE.match(capture_id):
+                self._reply(400, {"error": "capture_id must be a UUIDv7"})
+                return
+            entry = _pull_state(capture_id)
+            if entry is None:
+                self._reply(404, {"error": "no pull is known for this capture"})
+                return
+            self._reply(200, {"capture_id": capture_id, **entry})
+            return
+        self._reply(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler contract
         if self.path != "/pull":

@@ -1,4 +1,6 @@
-// Collect-scoped modals (End batch early / Report issue / Change condition)
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
+// Collect-scoped modals (End batch early / Change condition)
 // plus the toast. Rendered at the screen level per the design mock's MODALS
 // section. ("Set" is the operator-facing name for a batch.)
 //
@@ -71,19 +73,19 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
           <div className="font-mono text-lg font-semibold text-gray-900">
             {stats.nRecorded}
           </div>
-          <div className="text-[11px] text-gray-400">recorded</div>
+          <div className="text-[11px] text-gray-500">recorded</div>
         </div>
         <div className="rounded-control border border-gray-100 px-3 py-2.5">
           <div className="font-mono text-lg font-semibold text-gray-500">
             {stats.nRemaining}
           </div>
-          <div className="text-[11px] text-gray-400">not recorded</div>
+          <div className="text-[11px] text-gray-500">not recorded</div>
         </div>
         <div className="rounded-control border border-gray-100 px-3 py-2.5">
-          <div className="font-mono text-lg font-semibold text-amber-600">
+          <div className="font-mono text-lg font-semibold text-amber-700">
             {stats.nReview}
           </div>
-          <div className="text-[11px] text-gray-400">needs review</div>
+          <div className="text-[11px] text-gray-500">needs review</div>
         </div>
       </div>
       <p className="mt-3 text-[12.5px] leading-relaxed text-gray-500">
@@ -159,44 +161,6 @@ function ResetBatchModal({ machine }: { machine: BatchMachine }) {
   );
 }
 
-function IssueModal({ machine }: { machine: BatchMachine }) {
-  const [note, setNote] = useState('');
-  return (
-    <Modal
-      open={machine.issueModalOpen}
-      onClose={machine.closeModals}
-      title="Report an issue"
-      footer={
-        <>
-          <Button variant="ghost" onClick={machine.closeModals}>
-            Cancel
-          </Button>
-          <Button
-            onClick={() => {
-              machine.submitIssue();
-              setNote('');
-            }}
-          >
-            Submit
-          </Button>
-        </>
-      }
-    >
-      <p className="mb-2">
-        Attached to Batch {machine.batchSeq ?? '—'}, Episode {machine.stats.epNext}{' '}
-        context automatically.
-      </p>
-      <textarea
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        placeholder="Describe what happened…"
-        rows={3}
-        className="w-full resize-none rounded-control border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:border-teal-500 focus:outline-none"
-      />
-    </Modal>
-  );
-}
-
 function ConditionModal({ machine }: { machine: BatchMachine }) {
   const plans = usePlans();
   const task = findTask(plans, machine.project ?? '', machine.task ?? '');
@@ -230,17 +194,17 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
       <div className="flex flex-col gap-1.5">
         {task.conditions.map((c) => (
           <button
-            key={c}
+            key={c.condition_id}
             type="button"
-            onClick={() => machine.pickCondition(c)}
+            onClick={() => machine.pickCondition(c.name)}
             className={cn(
               'rounded-control border px-3.5 py-2.5 text-left text-sm',
-              c === machine.condition
+              c.name === machine.condition
                 ? 'border-teal-600 bg-teal-50 font-semibold text-teal-700'
                 : 'border-gray-200 bg-white font-medium text-gray-700',
             )}
           >
-            {c}
+            {c.name}
           </button>
         ))}
       </div>
@@ -257,7 +221,7 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
           }}
           placeholder="Custom condition…"
           data-testid="custom-condition-input"
-          className="min-w-0 flex-1 rounded-control border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:border-teal-500 focus:outline-none"
+          className="min-w-0 flex-1 rounded-control border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:border-teal-600 focus:outline-none"
         />
         <Button
           data-testid="custom-condition-add"
@@ -314,7 +278,7 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
         placeholder={String(machine.targetEpisodes)}
         data-testid="target-input"
         autoFocus
-        className="w-full rounded-control border border-gray-200 px-3 py-2.5 font-mono text-sm text-gray-700 focus:border-teal-500 focus:outline-none"
+        className="w-full rounded-control border border-gray-200 px-3 py-2.5 font-mono text-sm text-gray-700 focus:border-teal-600 focus:outline-none"
       />
       {completesNow && (
         <p className="mt-2 text-[12px] leading-relaxed text-amber-700">
@@ -425,7 +389,6 @@ export function CollectModals({ machine }: { machine: BatchMachine }) {
     <>
       <EndBatchModal machine={machine} />
       <ResetBatchModal machine={machine} />
-      <IssueModal machine={machine} />
       <TargetModal machine={machine} />
       <ConditionModal machine={machine} />
       <TakeoverStopModal machine={machine} />

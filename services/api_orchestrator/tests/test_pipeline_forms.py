@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """GET /api/v1/config `schemas.pipeline_forms` is dynamic (OL-4.2).
 
 The orchestrator builds the validation-job form schema from dora_runner's

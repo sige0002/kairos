@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Shared post-hoc inspection pieces for a capture's content: JSON sidecar
 // blocks, the loss_report table, and the on-demand video_check mp4 players.
 //
@@ -18,19 +20,132 @@ import type {
   CaptureTopic,
   JobResult,
   JobStatus,
+  LossEvent,
   LossTopic,
   VideoCheckSummary,
 } from '../../api/types';
 import { JobErrorNote } from './JobErrorNote';
-import { useJobSlot } from './jobQueue';
 
 // Terminal job states; while a job is non-terminal we keep polling.
 export const TERMINAL = new Set(['succeeded', 'failed', 'canceled']);
+
+/**
+ * Poll a job to terminal, then fetch its result and report OUTSIDE the
+ * status query's `queryFn` (timing sweep S3-4).
+ *
+ * The old shape did the result fetch + `setState` inside the `queryFn`, with
+ * `refetchInterval` returning false once the CACHE said terminal. Two tabs
+ * share that cache: when the other tab's fetch (or an SSE write) landed the
+ * terminal state first, this observer's `queryFn` never ran again — a
+ * succeeded job whose spinner said "Generating…" forever. An effect keyed on
+ * the OBSERVED state runs no matter who wrote it.
+ *
+ * `onSuccess` gets the fetched result; `onError` a display-ready message
+ * (terminal failures include dora_runner's nested error, and a result fetch
+ * that itself fails is surfaced rather than left spinning); `onSettled`
+ * always follows either — clear the job id there.
+ */
+export function useJobCompletion({
+  jobId,
+  label,
+  onSuccess,
+  onError,
+  onSettled,
+}: {
+  jobId: string | null;
+  /** Operator-facing name of the work, e.g. "Video check". */
+  label: string;
+  onSuccess: (result: JobResult) => void;
+  onError: (message: string) => void;
+  onSettled: () => void;
+}): void {
+  const jobQuery = useQuery({
+    queryKey: queryKeys.job(jobId ?? ''),
+    queryFn: ({ signal }) =>
+      apiGet<JobStatus>(`/jobs/${encodeURIComponent(jobId ?? '')}/status`, {
+        signal,
+      }),
+    enabled: !!jobId,
+    refetchInterval: (q) => {
+      const state = q.state.data?.state;
+      return state && TERMINAL.has(state) ? false : INSPECTION_JOB_POLL_MS;
+    },
+  });
+  const jobState = jobQuery.data?.state;
+  const onSuccessRef = useRef(onSuccess);
+  onSuccessRef.current = onSuccess;
+  const onErrorRef = useRef(onError);
+  onErrorRef.current = onError;
+  const onSettledRef = useRef(onSettled);
+  onSettledRef.current = onSettled;
+  useEffect(() => {
+    if (!jobId || !jobState || !TERMINAL.has(jobState)) return;
+    let cancelled = false;
+    void (async () => {
+      if (jobState === 'succeeded') {
+        try {
+          const result = await apiGet<JobResult>(
+            `/jobs/${encodeURIComponent(jobId)}/result`,
+          );
+          if (!cancelled) onSuccessRef.current(result);
+        } catch {
+          if (!cancelled) {
+            onErrorRef.current(
+              `${label} finished but its result could not be loaded — retry.`,
+            );
+          }
+        }
+      } else {
+        // failed/canceled: fetch the terminal result so the failure is shown.
+        // dora_runner nests the ApiError under summary.error(.error).
+        let message = `${label} ${jobState}.`;
+        try {
+          const result = await apiGet<JobResult>(
+            `/jobs/${encodeURIComponent(jobId)}/result`,
+          );
+          const err = (result.summary as Record<string, unknown>)?.error as
+            | {
+                code?: string;
+                message?: string;
+                error?: { code?: string; message?: string };
+              }
+            | undefined;
+          const code = err?.error?.code ?? err?.code;
+          const msg = err?.error?.message ?? err?.message;
+          if (msg) message = code ? `${msg} (${code})` : msg;
+        } catch {
+          // keep the generic message
+        }
+        if (!cancelled) onErrorRef.current(message);
+      }
+      if (!cancelled) onSettledRef.current();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [jobId, jobState, label]);
+}
 
 export function formatWhen(iso?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-GB', { hour12: false });
+}
+
+/** A pipeline report's own completion instant (`checked_at`), or null when it
+ *  carries none this UI can render.
+ *
+ *  Shared by both panels that date a stored report. An unparseable value is
+ *  dropped rather than passed to `formatWhen`, which echoes what it cannot
+ *  parse: "checked 2026-13-45T99:99:99Z" still reads as a date to anyone
+ *  skimming, and a report that cannot say when it ran is better left saying
+ *  nothing. `formatWhen` keeps the echo for the recording's own timestamps,
+ *  where the raw value is the only thing there is to show. */
+export function checkedAt(report: unknown): string | null {
+  if (typeof report !== 'object' || report === null) return null;
+  const at = (report as Record<string, unknown>).checked_at;
+  if (typeof at !== 'string' || !at) return null;
+  return Number.isNaN(new Date(at).getTime()) ? null : at;
 }
 
 export function formatDuration(ms?: number): string {
@@ -42,7 +157,10 @@ export function formatDuration(ms?: number): string {
 }
 
 /** Milliseconds between two ISO instants (undefined when indeterminate). */
-export function spanMs(started?: string | null, ended?: string | null): number | undefined {
+export function spanMs(
+  started?: string | null,
+  ended?: string | null,
+): number | undefined {
   if (!started || !ended) return undefined;
   const start = new Date(started).getTime();
   const end = new Date(ended).getTime();
@@ -54,7 +172,9 @@ export function JsonBlock({ label, value }: { label: string; value: unknown }) {
   if (value === undefined || value === null) return null;
   return (
     <details className="rounded-control border border-gray-200 p-2">
-      <summary className="cursor-pointer text-sm font-medium text-gray-700">{label}</summary>
+      <summary className="cursor-pointer text-sm font-medium text-gray-700">
+        {label}
+      </summary>
       <pre className="mt-2 max-h-80 overflow-auto rounded-control bg-gray-50 p-2 font-mono text-xs">
         {JSON.stringify(value, null, 2)}
       </pre>
@@ -68,9 +188,9 @@ export function fmtNum(value?: number | null, digits = 1): string {
 
 // Loss tone: amber when any is lost, green when clean, gray when uncomputable.
 function lossTone(loss?: number | null): { text: string; cls: string } {
-  if (loss === undefined || loss === null) return { text: '—', cls: 'text-gray-400' };
-  if (loss > 0) return { text: `${(loss * 100).toFixed(1)}%`, cls: 'text-amber-600' };
-  return { text: '0%', cls: 'text-green-600' };
+  if (loss === undefined || loss === null) return { text: '—', cls: 'text-gray-500' };
+  if (loss > 0) return { text: `${(loss * 100).toFixed(1)}%`, cls: 'text-amber-700' };
+  return { text: '0%', cls: 'text-green-700' };
 }
 
 export function LossTable({ topics }: { topics: LossTopic[] }) {
@@ -80,7 +200,7 @@ export function LossTable({ topics }: { topics: LossTopic[] }) {
     <div className="overflow-auto rounded-control border border-gray-200">
       <table className="w-full text-xs">
         <thead>
-          <tr className="border-b border-gray-100 text-[10px] uppercase tracking-[0.05em] text-gray-400">
+          <tr className="border-b border-gray-100 text-[10px] uppercase tracking-[0.05em] text-gray-500">
             <th className="px-2 py-1.5 text-left font-medium">Topic</th>
             <th className="px-2 py-1.5 text-right font-medium">Hz</th>
             <th className="px-2 py-1.5 text-right font-medium">Loss</th>
@@ -92,13 +212,18 @@ export function LossTable({ topics }: { topics: LossTopic[] }) {
             const tone = lossTone(t.loss_rate);
             return (
               <tr key={t.name} className="border-t border-gray-50">
-                <td className="truncate px-2 py-1.5 font-mono text-gray-700" title={t.name}>
+                <td
+                  className="truncate px-2 py-1.5 font-mono text-gray-700"
+                  title={t.name}
+                >
                   {t.name}
                 </td>
                 <td className="px-2 py-1.5 text-right font-mono text-gray-500">
                   {fmtNum(t.hz)}
                 </td>
-                <td className={`px-2 py-1.5 text-right font-mono font-semibold ${tone.cls}`}>
+                <td
+                  className={`px-2 py-1.5 text-right font-mono font-semibold ${tone.cls}`}
+                >
                   {tone.text}
                 </td>
                 <td className="px-2 py-1.5 text-right font-mono text-gray-500">
@@ -109,6 +234,81 @@ export function LossTable({ topics }: { topics: LossTopic[] }) {
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+function formatOffset(ms: number): string {
+  const totalMs = Math.max(0, Math.round(ms));
+  const hours = Math.floor(totalMs / 3_600_000);
+  const minutes = Math.floor((totalMs % 3_600_000) / 60_000);
+  const seconds = Math.floor((totalMs % 60_000) / 1000);
+  const millis = totalMs % 1000;
+  const base = `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`;
+  return hours > 0 ? `${String(hours).padStart(2, '0')}:${base}` : base;
+}
+
+/** Evidence-first loss events: a list, not a heatmap, so exact topics, times,
+ *  interval sizes, and the estimate behind each finding stay readable. */
+export function LossEventTable({ events }: { events: LossEvent[] }) {
+  if (events.length === 0) {
+    return (
+      <p className="rounded-control border border-green-200 bg-green-50 px-2.5 py-2 text-[11.5px] text-green-700">
+        No interval exceeded the configured gap threshold.
+      </p>
+    );
+  }
+  return (
+    <div data-testid="loss-events" className="flex flex-col gap-1.5">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <h4 className="text-[12px] font-semibold text-gray-700">
+          Gap events ({events.length})
+        </h4>
+        <span className="text-[10.5px] text-gray-500">capture-relative time</span>
+      </div>
+      <div className="max-h-64 overflow-auto rounded-control border border-gray-200">
+        <table className="w-full text-[11.5px]">
+          <thead className="sticky top-0 bg-gray-50 text-[10px] uppercase tracking-[0.04em] text-gray-500">
+            <tr>
+              <th className="px-2 py-1.5 text-left font-medium">Time band</th>
+              <th className="px-2 py-1.5 text-left font-medium">Topic</th>
+              <th className="px-2 py-1.5 text-right font-medium">Gap</th>
+              <th className="px-2 py-1.5 text-right font-medium">Estimated missed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {events.map((event, index) => (
+              <tr
+                key={`${event.topic}-${event.start_offset_ms}-${index}`}
+                className="border-t border-gray-100"
+              >
+                <td className="whitespace-nowrap px-2 py-1.5 font-mono text-gray-600">
+                  {formatOffset(event.start_offset_ms)}–
+                  {formatOffset(event.end_offset_ms)}
+                </td>
+                <td
+                  className="max-w-64 truncate px-2 py-1.5 font-mono text-gray-700"
+                  title={event.topic}
+                >
+                  {event.topic}
+                </td>
+                <td className="whitespace-nowrap px-2 py-1.5 text-right font-mono text-amber-700">
+                  {fmtNum(event.gap_ms, 0)} ms
+                  <span className="ml-1 text-gray-400">×{fmtNum(event.gap_ratio)}</span>
+                </td>
+                <td className="px-2 py-1.5 text-right font-mono font-semibold text-gray-700">
+                  ≈{event.estimated_missing}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[10.5px] leading-relaxed text-gray-500">
+        Estimated from each topic&apos;s median cadence. A row proves an unusually long
+        interval between two recorded messages; it does not identify where the loss
+        occurred.
+      </p>
     </div>
   );
 }
@@ -146,6 +346,13 @@ export function VideoPlayer({
   // Set when the operator asked for a full re-encode, so the queued submission
   // carries the knobs the click meant rather than the mount defaults.
   const reencodeRef = useRef(false);
+  // What the last submission actually asked for. A retry has to resend it: a
+  // failed "Re-encode full episode" that came back as a short head-only preview
+  // would answer a different question than the one the operator asked, and
+  // silently — the note promises to re-run the same work.
+  const lastExtraRef = useRef<{ force?: boolean; max_frames?: number } | undefined>(
+    undefined,
+  );
   // Sync plumbing: the <video> element + latest callbacks (refs keep the query
   // callbacks and event handlers out of effect deps).
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -154,11 +361,17 @@ export function VideoPlayer({
   const onSummaryRef = useRef(onSummary);
   onSummaryRef.current = onSummary;
 
-  // This player wants to run a job until it has an answer. The slot is what
-  // keeps five camera tiles from submitting at once and losing four of them to
-  // the per-capture lease (§7.1) — see jobQueue.ts.
-  const wantSlot = summary === null && jobError === null;
-  const slot = useJobSlot(captureId, wantSlot);
+  // This player wants to run a job until it has an answer.
+  //
+  // Every tile submits AS SOON AS IT MOUNTS — all of a capture's cameras at
+  // once. They used to take turns behind a client-side queue, because §7.1's
+  // lease was per capture and exclusive: five tiles meant one winner and four
+  // 409 capture_busy refusals, which the operator experienced as "the video
+  // doesn't show". §7.1 now grants a SHARED reader lease, so read-only jobs on
+  // one capture no longer exclude each other and there is no contention left
+  // to serialise. What actually runs at once is the server's own
+  // KAIROS_DORA_MAX_CONCURRENCY; the rest queue there, where the work is.
+  const wantJob = summary === null && jobError === null;
 
   // Default playback rate from the deployment config (VIDEO_PLAYBACK_RATE;
   // 4x per the 2026-08-07 decision — reviewers scrub, they don't watch
@@ -185,15 +398,20 @@ export function VideoPlayer({
         params: { topic, ...(extra ?? {}) },
       }),
     onSuccess: (job) => setJobId(job.job_id),
-    // A submission that never became a job holds nothing, so the next preview
-    // must not wait on it.
-    onError: () => slot.release(),
   });
+
+  // Try the SAME work again after a failure — the knobs the failed submission
+  // carried, not the mount defaults. Goes through the mutation directly rather
+  // than re-arming the submit effect: `started` is that effect's once-per-want
+  // guard, and resetting it would re-submit on every subsequent render too.
+  const retryVideo = () => {
+    setJobError(null);
+    mutation.mutate(lastExtraRef.current);
+  };
 
   // Re-encode the WHOLE episode (force bypasses the cache; 0 = no frame cap).
   // The old mp4 keeps playing elsewhere until the new encode atomically lands.
-  // It joins the same queue: a manual click during a burst of auto-submits is
-  // the same contention as any other.
+  // Clearing the summary is what re-arms the submit effect below.
   const reencodeFull = () => {
     setSummary(null);
     setJobError(null);
@@ -201,15 +419,17 @@ export function VideoPlayer({
     started.current = false;
   };
 
-  // Submit once this player holds the capture (StrictMode-safe). Waiting is not
-  // an error state — the tile says where it is in the queue instead.
+  // Submit as soon as this player wants an answer, and exactly once per want
+  // (StrictMode-safe via the ref). `wantJob` goes true again when a re-encode
+  // clears the summary, which is what lets that path re-submit.
   useEffect(() => {
-    if (!slot.granted || started.current) return;
+    if (!wantJob || started.current) return;
     started.current = true;
     const extra = reencodeRef.current ? { force: true, max_frames: 0 } : undefined;
     reencodeRef.current = false;
+    lastExtraRef.current = extra;
     mutation.mutate(extra);
-  }, [slot.granted, mutation]);
+  }, [wantJob, mutation]);
 
   // Apply a seek from the chart. `seekTo` is a fresh object per seek, so the
   // effect fires exactly on a real seek (not on every parent re-render).
@@ -218,56 +438,16 @@ export function VideoPlayer({
     if (v && seekTo) v.currentTime = seekTo.seconds;
   }, [seekTo]);
 
-  useQuery({
-    queryKey: queryKeys.job(jobId ?? ''),
-    queryFn: async ({ signal }) => {
-      const status = await apiGet<JobStatus>(
-        `/jobs/${encodeURIComponent(jobId ?? '')}/status`,
-        { signal },
-      );
-      if (jobId && TERMINAL.has(status.state)) {
-        if (status.state === 'succeeded') {
-          const result = await apiGet<JobResult>(
-            `/jobs/${encodeURIComponent(jobId)}/result`,
-            { signal },
-          );
-          const s = result.summary as VideoCheckSummary;
-          setSummary(s);
-          onSummaryRef.current?.(s);
-        } else {
-          // failed/canceled: fetch the terminal result so the failure is shown
-          // instead of spinning on "Generating…" forever. dora_runner nests the
-          // ApiError under summary.error(.error).
-          let message = `Video check ${status.state}.`;
-          try {
-            const result = await apiGet<JobResult>(
-              `/jobs/${encodeURIComponent(jobId)}/result`,
-              { signal },
-            );
-            const err = (result.summary as Record<string, unknown>)?.error as
-              | { code?: string; message?: string; error?: { code?: string; message?: string } }
-              | undefined;
-            const code = err?.error?.code ?? err?.code;
-            const msg = err?.error?.message ?? err?.message;
-            if (msg) message = code ? `${msg} (${code})` : msg;
-          } catch {
-            // keep the generic message
-          }
-          setJobError(message);
-        }
-        setJobId(null);
-        // Terminal either way: hand the capture to the next preview. A failed
-        // job must release exactly like a successful one, or one broken topic
-        // strands every tile queued behind it.
-        slot.release();
-      }
-      return status;
+  useJobCompletion({
+    jobId,
+    label: 'Video check',
+    onSuccess: (result) => {
+      const s = result.summary as VideoCheckSummary;
+      setSummary(s);
+      onSummaryRef.current?.(s);
     },
-    enabled: !!jobId,
-    refetchInterval: (q) => {
-      const state = q.state.data?.state;
-      return state && TERMINAL.has(state) ? false : INSPECTION_JOB_POLL_MS;
-    },
+    onError: setJobError,
+    onSettled: () => setJobId(null),
   });
 
   return (
@@ -275,19 +455,25 @@ export function VideoPlayer({
       <div className="truncate font-mono text-[11px] text-gray-600" title={topic}>
         {topic}
       </div>
+      {/* Both failures get the same treatment (#9): the reading rather than the
+          raw browser string, and the way to try again in the same place as the
+          news. No stale note here — neither branch renders beside a previous
+          result, because a failure replaces the player rather than sitting
+          above it. */}
       {mutation.isError ? (
-        <JobErrorNote error={mutation.error} testId="video-submit-error" />
+        <JobErrorNote
+          error={mutation.error}
+          testId="video-submit-error"
+          onRetry={retryVideo}
+          retryDisabled={mutation.isPending || !!jobId}
+        />
       ) : jobError ? (
-        <p role="alert" className="text-xs text-red-600">
-          {jobError}
-        </p>
-      ) : !slot.granted && wantSlot ? (
-        // Waiting for its turn is not a failure, and must not read as one:
-        // only one job may hold a capture at a time (§7.1), so the tiles take
-        // turns rather than four of them being refused.
-        <p className="text-xs text-gray-500" data-testid="video-queued">
-          Queued behind {slot.ahead} other preview{slot.ahead === 1 ? '' : 's'}…
-        </p>
+        <JobErrorNote
+          error={jobError}
+          testId="video-job-error"
+          onRetry={retryVideo}
+          retryDisabled={mutation.isPending || !!jobId}
+        />
       ) : summary && summary.file ? (
         <>
           <video
@@ -308,7 +494,7 @@ export function VideoPlayer({
             }
             className="w-full rounded-control border border-gray-200 bg-black"
           />
-          <p className="text-[10px] text-gray-400">
+          <p className="text-[10px] text-gray-500">
             {summary.frames} frames · {fmtNum(summary.fps, 0)}fps
             {summary.truncated
               ? ` · head only (${summary.total_messages ?? '?'} msgs in the episode)`
@@ -358,7 +544,7 @@ export function VideoCheckSection({
   if (cameras.length === 0)
     return (
       <section>
-        <h4 className="mb-1.5 text-sm font-medium text-gray-700">Video check</h4>
+        <h3 className="mb-1.5 text-sm font-medium text-gray-700">Video check</h3>
         <p className="text-xs text-gray-500">No camera topics.</p>
       </section>
     );
@@ -366,7 +552,7 @@ export function VideoCheckSection({
   return (
     <section>
       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <h4 className="text-sm font-medium text-gray-700">Video check</h4>
+        <h3 className="text-sm font-medium text-gray-700">Video check</h3>
         <div className="flex items-center gap-2">
           <select
             aria-label="camera topic"
@@ -407,7 +593,8 @@ export function VideoCheckSection({
       )}
       {players.length === 0 ? (
         <p className="text-xs text-gray-500">
-          Preview the leading frames of a camera topic as an mp4 — one camera, or all at once.
+          Preview the leading frames of a camera topic as an mp4 — one camera, or all at
+          once.
         </p>
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """result_writer node: persist summary.json under the run's report directory.
 
 Terminal node of the hello_kairos dataflow. The runner reads this summary.json

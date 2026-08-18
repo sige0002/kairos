@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Labelling bags at import time, and why the labels go in the MANIFEST.
 
 An import synthesizes the capture's birth ``object_manifest.json`` (§3.3), so an

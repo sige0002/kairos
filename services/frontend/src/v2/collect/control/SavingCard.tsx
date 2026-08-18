@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // SAVING and QUICK CHECK: the two waits between the take ending and its
 // result. One card, because the operator has nothing to do in either — only
 // the title and the line under it differ.
@@ -15,7 +17,7 @@ export function SavingCard({
 }: {
   machine: BatchMachine;
   phase: 'saving' | 'quickcheck';
-  titleRef: React.Ref<HTMLSpanElement>;
+  titleRef: React.Ref<HTMLHeadingElement>;
 }) {
   const saving = phase === 'saving';
   return (
@@ -28,7 +30,7 @@ export function SavingCard({
     >
       <div className="flex items-center gap-2">
         <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-100 border-t-teal-600" />
-        <span
+        <h2
           ref={titleRef}
           data-testid="phase-title"
           tabIndex={-1}
@@ -36,11 +38,16 @@ export function SavingCard({
           className="text-[17px] font-bold text-gray-700 outline-none"
         >
           {saving ? 'SAVING…' : 'QUICK CHECK…'}
-        </span>
+        </h2>
       </div>
       <span className="text-[12.5px] leading-relaxed text-gray-500">
         {saving
-          ? 'Finalizing the recording…'
+          ? machine.stopFlushSeconds != null
+            ? // The wait is the recorder draining its cache — normal, measured
+              // in seconds, and shown as progress rather than dressed as an
+              // error (the error only appears past the full escalation budget).
+              `Finalizing the recording — the recorder is flushing (${machine.stopFlushSeconds}s)…`
+            : 'Finalizing the recording…'
           : 'Reading recorded counts, gaps and integrity.'}
       </span>
       {/* Indeterminate progress — the real duration isn't known, so no fake %. */}

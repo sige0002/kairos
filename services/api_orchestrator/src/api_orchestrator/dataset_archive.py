@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The dataset archive run (§6.x): freeze, copy out one member at a time, seal.
 
 The terminal transition for a dataset. ``POST /datasets/{id}/archive`` runs the
@@ -9,13 +11,16 @@ copy → verify → ledger → row → trash sequence as a per-capture archive
 writes the final ``dataset_manifest.json``, appends the ``dataset_archived``
 seal carrying that manifest's hash, and flips the row to ``archived``.
 
-**A halted run stays ``archiving``.** Any member that cannot proceed — a lease
-appeared, the ledger refused an append, the destination grew unexpected files —
-stops the run where it stands and reports why. Nothing rolls back: bytes that
-were verified and recorded are not un-archived, and the next ``POST`` resumes
-from the ledger's own record of which members are done. The one rollback in
-this file is the start itself, and only when the ``started`` event could not be
-appended — at which point no byte has moved.
+**A halted run normally stays ``archiving``.** Any member that cannot proceed —
+a lease appeared, the ledger refused an append, the destination grew unexpected
+files — stops the run where it stands and reports why. Bytes that were verified
+and recorded are not un-archived, and the next ``POST`` resumes from the
+ledger's own record of which members are done. A narrower recovery exists for a
+halted attempt with zero completed members: the operator may append
+``dataset_archive_canceled`` and release the frozen destination. That abandons
+the attempt; it does not delete destination debris or describe copied bytes as
+rolled back. A start whose ``started`` append itself failed remains the only
+unrecorded database rollback, legal because no byte has moved.
 
 **No auto-resume on startup.** A crashed run comes back from the ledger replay
 as ``archiving`` with ``running: false``, and the UI offers Resume. This is a
@@ -41,6 +46,8 @@ import logging
 import os
 import re
 import shutil
+import sqlite3
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -48,7 +55,7 @@ from typing import Any
 
 from kairos_common import ApiError, ledger_v2
 from kairos_common.archive_paths import resolve_archive_destination
-from kairos_common.atomic_io import atomic_write_text
+from kairos_common.atomic_io import atomic_write_text, fsync_dir
 from kairos_common.capture_sidecars import CaptureState
 from kairos_common.rebuild import ReplicaState
 from kairos_common.time import utc_now_iso8601
@@ -63,6 +70,11 @@ from api_orchestrator.store import ArchiveDestinationTakenError, CaptureStore
 from api_orchestrator.views import sanitize_component
 
 logger = logging.getLogger("kairos")
+
+# How long shutdown waits for in-flight archive runs before halting them
+# cleanly (see `drain`). Short: a run that has not finished in this window is
+# hours from finishing, and the whole point is to beat Docker's SIGKILL.
+DRAIN_GRACE_S = 5.0
 
 MANIFEST_NAME = "dataset_manifest.json"
 MANIFEST_SCHEMA_VERSION = 1
@@ -81,6 +93,16 @@ class _RunState:
     current_capture_id: str | None = None
     current_bytes: int | None = None
     error: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class _ArchiveLedgerSnapshot:
+    """Latest attempt facts derived from one lifecycle-ledger read."""
+
+    started: dict[str, Any] | None
+    canceled: dict[str, Any] | None
+    sealed: dict[str, Any] | None
+    has_completed_member: bool
 
 
 class DatasetArchiver:
@@ -135,8 +157,9 @@ class DatasetArchiver:
         sources. Everything here happens before the 202: by the time the
         response leaves, the member set (and the mode) is frozen in the
         ledger and the runner owns the rest. A failure to append the
-        ``started`` event rolls the CAS back — the only rollback in the
-        archive, legal because no byte has moved yet.
+        ``started`` event rolls the CAS back. Before the CAS, the selected root
+        is also probed with a durable tiny write so an absent or read-only mount
+        is a refused request rather than a frozen run.
         """
         dataset = self._store.get_dataset(dataset_id)
         if dataset is None:
@@ -182,6 +205,7 @@ class DatasetArchiver:
         reject_overlapping_destination(
             dataset_dir, self._layout.data_dir, self._layout.data_dir
         )
+        self._require_archive_root_ready(dataset_dir, roots)
         self._preflight_members(dataset_id, members, mode=run_mode)
         if dataset_dir.exists() and any(dataset_dir.iterdir()):
             raise ApiError(
@@ -197,7 +221,10 @@ class DatasetArchiver:
 
         try:
             claimed = self._store.begin_dataset_archive(
-                dataset_id, destination=str(dataset_dir), mode=run_mode
+                dataset_id,
+                destination=str(dataset_dir),
+                mode=run_mode,
+                expected_capture_ids=[member.capture_id for member in members],
             )
         except ArchiveDestinationTakenError as exc:
             # The folder looked empty a moment ago, but a run that has not
@@ -256,6 +283,7 @@ class DatasetArchiver:
             )
         done, total = self._member_progress(dataset_id, dataset)
         run = self._runs.get(dataset_id)
+        cancelable, cancel_blocker = self._cancelability(dataset_id, dataset)
         return DatasetArchiveProgress(
             dataset_id=dataset_id,
             status=dataset["status"],
@@ -267,6 +295,8 @@ class DatasetArchiver:
             current_capture_id=run.current_capture_id if run else None,
             current_bytes=run.current_bytes if run else None,
             error=run.error if run else None,
+            cancelable=cancelable,
+            cancel_blocker=cancel_blocker,
             archive_started_at=dataset.get("archive_started_at"),
             archived_at=dataset.get("archived_at"),
         )
@@ -275,11 +305,167 @@ class DatasetArchiver:
         run = self._runs.get(dataset_id)
         return run is not None and run.running
 
-    async def drain(self) -> None:
-        """Await in-flight runs (shutdown, and test determinism)."""
+    async def cancel(self, dataset_id: str) -> DatasetArchiveProgress:
+        """Abandon one halted attempt before any member completed.
+
+        The ledger event comes first. If the process dies before the row reset,
+        replay still releases the destination claim; the opposite ordering
+        would let a database rebuild resurrect the canceled run.
+        """
+        dataset = self._store.get_dataset(dataset_id)
+        if dataset is None:
+            raise ApiError(
+                status_code=404,
+                code="dataset_not_found",
+                message=f"Dataset not found: {dataset_id}",
+                details={"dataset_id": dataset_id},
+            )
+        if dataset["status"] != "archiving":
+            raise ApiError(
+                status_code=409,
+                code="archive_not_cancelable",
+                message="Only a halted archive run can be canceled.",
+                details={"dataset_id": dataset_id, "status": dataset["status"]},
+            )
+        if self.is_running(dataset_id):
+            raise ApiError(
+                status_code=409,
+                code="archive_in_progress",
+                message="The archive is still running; wait for it to halt first.",
+                details={"dataset_id": dataset_id},
+            )
+
+        lock = self._locks.setdefault(dataset_id, asyncio.Lock())
+        async with lock:
+            # Re-read after acquiring the same lock the runner owns.
+            dataset = self._store.get_dataset(dataset_id)
+            if dataset is None or dataset["status"] != "archiving":
+                raise ApiError(
+                    status_code=409,
+                    code="archive_not_cancelable",
+                    message="The archive state changed before it could be canceled.",
+                    details={"dataset_id": dataset_id},
+                )
+            snapshot = self._ledger_snapshot(dataset_id)
+            cancelable, blocker = self._cancelability(
+                dataset_id, dataset, snapshot=snapshot
+            )
+            if not cancelable:
+                if blocker == "archive_canceled":
+                    raise ApiError(
+                        status_code=409,
+                        code="archive_attempt_canceled",
+                        message=(
+                            "This archive attempt is already canceled in the "
+                            "lifecycle ledger and cannot resume or be canceled "
+                            "again."
+                        ),
+                        details={"dataset_id": dataset_id},
+                    )
+                done, total = self._member_progress(dataset_id, dataset)
+                raise ApiError(
+                    status_code=409,
+                    code="archive_cancel_unsafe",
+                    message=(
+                        "This archive cannot be canceled safely; no completed "
+                        "copy or removal may be described as rolled back. Resume "
+                        "the run instead."
+                    ),
+                    details={
+                        "dataset_id": dataset_id,
+                        "blocker": blocker,
+                        "members_done": done,
+                        "member_total": total,
+                    },
+                )
+            started = snapshot.started
+            destination = dataset.get("archive_destination")
+            if started is None or not isinstance(destination, str) or not destination:
+                raise ApiError(
+                    status_code=409,
+                    code="archive_cancel_unsafe",
+                    message="The archive start cannot be identified durably.",
+                    details={"dataset_id": dataset_id},
+                )
+            append_or_503(
+                self._layout.data_dir,
+                "dataset_archive_canceled",
+                instance_id=self._instance_id,
+                payload={
+                    "dataset_id": dataset_id,
+                    "destination": destination,
+                    "started_event_id": started["event_id"],
+                    "reason": "operator_requested",
+                },
+                failure=lambda exc: (
+                    f"The lifecycle ledger could not record the cancellation "
+                    f"({exc}), so the archive remains frozen."
+                ),
+                details={"dataset_id": dataset_id},
+            )
+            try:
+                reset = self._store.cancel_dataset_archive(dataset_id)
+            except sqlite3.Error as exc:
+                raise ApiError(
+                    status_code=503,
+                    code="archive_cancel_catalog_pending",
+                    message=(
+                        "The cancellation is recorded durably, but the catalog "
+                        "could not be updated. This attempt cannot resume; repair "
+                        "the catalog or restart to rebuild it from the ledger."
+                    ),
+                    details={"dataset_id": dataset_id, "error": str(exc)},
+                ) from exc
+            if not reset:
+                raise ApiError(
+                    status_code=503,
+                    code="archive_cancel_catalog_pending",
+                    message=(
+                        "The cancellation is recorded durably, but the catalog "
+                        "could not be updated. This attempt cannot resume; repair "
+                        "the catalog or restart to rebuild it from the ledger."
+                    ),
+                    details={"dataset_id": dataset_id},
+                )
+            self._runs.pop(dataset_id, None)
+            self._views_changed()
+            return self.progress_for(dataset_id)
+
+    async def drain(self, *, grace_s: float = DRAIN_GRACE_S) -> None:
+        """Give in-flight runs a short grace, then HALT them cleanly.
+
+        The old unbounded gather meant ``compose down`` blocked behind an
+        archive that can run for hours, until Docker's stop timeout SIGKILLed
+        the process mid-copy — manufacturing exactly the dirty halt S1-4's
+        resume guards against (timing sweep S4). A bounded drain turns
+        shutdown into the CLEAN variant of the state resume was built for:
+        the run is cancelled at an await point, the reason is recorded, and
+        the next start's resume re-checks the destination before sealing
+        anything. Tests that call this for determinism still get the old
+        behaviour — their runs finish inside the grace.
+        """
         tasks = list(self._tasks)
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        if not tasks:
+            return
+        _, pending = await asyncio.wait(tasks, timeout=grace_s)
+        if not pending:
+            return
+        for run in self._runs.values():
+            # Before the cancel, so the wrapper's `finally` only has to flip
+            # `running` — the progress body then shows WHY it halted instead
+            # of a wordless stop.
+            if run.running and run.error is None:
+                run.error = {
+                    "code": "shutdown",
+                    "message": (
+                        "The orchestrator shut down while this run was "
+                        "copying; nothing was lost. Resume to continue from "
+                        "where it stopped."
+                    ),
+                }
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
     # ---- start/resume internals ---------------------------------------------
 
@@ -292,6 +478,29 @@ class DatasetArchiver:
         mode: str | None,
         roots: list[Path],
     ) -> None:
+        try:
+            snapshot = self._ledger_snapshot(dataset_id)
+        except ledger_v2.LedgerUnreadableError:
+            # Preserve the resume contract for a damaged ledger: request-time
+            # checks that do not need history still run, then the runner's
+            # strict read records a visible halt instead of leaking a bare 500.
+            snapshot = None
+        if snapshot is not None and snapshot.canceled is not None:
+            raise ApiError(
+                status_code=409,
+                code="archive_attempt_canceled",
+                message=(
+                    "This archive attempt was canceled in the lifecycle ledger "
+                    "and cannot be resumed. Refresh the dataset before starting "
+                    "a new attempt."
+                ),
+                details={
+                    "dataset_id": dataset_id,
+                    "started_event_id": snapshot.started.get("event_id")
+                    if snapshot.started
+                    else None,
+                },
+            )
         if self.is_running(dataset_id):
             raise ApiError(
                 status_code=409,
@@ -339,6 +548,18 @@ class DatasetArchiver:
                         "requested": requested,
                     },
                 )
+        if not isinstance(recorded, str) or not recorded:
+            raise ApiError(
+                status_code=409,
+                code="archive_destination_missing",
+                message="This archive run records no destination and cannot resume.",
+                details={"dataset_id": dataset_id},
+            )
+        # A destination is frozen for identity, not exempted forever from the
+        # current deployment boundary. A changed allow-list or an unplugged NAS
+        # must refuse before scheduling another doomed run.
+        resolve_archive_destination(recorded, roots)
+        self._require_archive_root_ready(Path(recorded), roots)
         self._launch(dataset_id)
 
     def _dataset_dir(
@@ -482,6 +703,122 @@ class DatasetArchiver:
                 details={"dataset_id": dataset_id, "blockers": blockers},
             )
 
+    @staticmethod
+    def _require_archive_root_ready(destination: Path, roots: list[Path]) -> None:
+        """Prove the selected root exists and accepts a durable tiny write.
+
+        The allow-list answers permission, not availability. This probe runs
+        before the dataset CAS/ledger freeze, so an absent mount or read-only
+        filesystem remains an ordinary refused start instead of a stranded run.
+        """
+        normalized = Path(os.path.normpath(str(destination)))
+        selected: Path | None = None
+        for root in roots:
+            candidate = Path(os.path.normpath(str(root)))
+            if normalized == candidate or normalized.is_relative_to(candidate):
+                selected = candidate
+                break
+        if selected is None or not selected.is_dir():
+            raise ApiError(
+                status_code=503,
+                code="archive_destination_unavailable",
+                message=(
+                    "The selected archive root is not available as a directory. "
+                    "Check the configured volume mount before starting the archive."
+                ),
+                details={
+                    "destination": str(destination),
+                    "root": str(selected) if selected is not None else None,
+                },
+            )
+
+        probe: Path | None = None
+        fd: int | None = None
+        try:
+            fd, raw_probe = tempfile.mkstemp(
+                prefix=".kairos-archive-probe-", dir=selected
+            )
+            probe = Path(raw_probe)
+            os.fsync(fd)
+            os.close(fd)
+            fd = None
+            probe.unlink()
+            probe = None
+            fsync_dir(selected)
+        except OSError as exc:
+            raise ApiError(
+                status_code=503,
+                code="archive_destination_unavailable",
+                message=(
+                    "The selected archive root is not writable. Check the "
+                    "volume mount and permissions before starting the archive."
+                ),
+                details={
+                    "destination": str(destination),
+                    "root": str(selected),
+                    "error": str(exc),
+                },
+            ) from exc
+        finally:
+            if fd is not None:
+                os.close(fd)
+            if probe is not None:
+                probe.unlink(missing_ok=True)
+
+    def _cancelability(
+        self,
+        dataset_id: str,
+        dataset: dict[str, Any],
+        *,
+        snapshot: _ArchiveLedgerSnapshot | None = None,
+    ) -> tuple[bool, str | None]:
+        """Whether this attempt can be abandoned without rolling bytes back."""
+        if dataset.get("status") != "archiving":
+            return False, "not_archiving"
+        if self.is_running(dataset_id):
+            return False, "archive_in_progress"
+        try:
+            snapshot = snapshot or self._ledger_snapshot(dataset_id)
+        except ledger_v2.LedgerUnreadableError:
+            return False, "ledger_unreadable"
+        if snapshot.started is None:
+            return False, "archive_start_missing"
+        if snapshot.canceled is not None:
+            return False, "archive_canceled"
+        if snapshot.sealed is not None:
+            return False, "archive_sealed"
+        done, _ = self._member_progress(dataset_id, dataset)
+        if done > 0 or snapshot.has_completed_member:
+            return False, "members_completed"
+
+        destination = dataset.get("archive_destination")
+        if not isinstance(destination, str) or not destination:
+            return False, "archive_destination_missing"
+        folder = Path(destination)
+        if not folder.exists():
+            return True, None
+        if not folder.is_dir():
+            return False, "destination_not_directory"
+        try:
+            children = list(folder.iterdir())
+        except OSError:
+            return False, "destination_unreadable"
+        unexpected = [child for child in children if child.name != MANIFEST_NAME]
+        if unexpected:
+            return False, "destination_contains_files"
+        manifest_path = folder / MANIFEST_NAME
+        if not manifest_path.exists():
+            return True, None
+        manifest = self._read_manifest(folder)
+        if manifest is None:
+            return False, "manifest_unreadable"
+        members = manifest.get("members")
+        if not isinstance(members, list):
+            return False, "manifest_unreadable"
+        if any(isinstance(entry, dict) and entry.get("files") for entry in members):
+            return False, "members_completed"
+        return True, None
+
     def _membership_pins_bytes(self, dataset_id: str) -> bool:
         """Whether a membership claims the capture's LOCAL bytes (§6.1).
 
@@ -612,7 +949,18 @@ class DatasetArchiver:
         mode = dataset.get("archive_mode") or "move"
         members = self._store.list_dataset_members(dataset_id)
 
-        sealed = self._seal_event(dataset_id)
+        snapshot = self._ledger_snapshot(dataset_id)
+        if snapshot.canceled is not None:
+            run.error = {
+                "code": "archive_attempt_canceled",
+                "message": (
+                    "This archive attempt was canceled in the lifecycle ledger "
+                    "and cannot resume. Rebuild the catalog if it still appears "
+                    "as archiving."
+                ),
+            }
+            return
+        sealed = snapshot.sealed
         if sealed is None:
             # Copy mode's durable record of which members are done is the
             # manifest itself (no capture row changes, no per-member events),
@@ -704,11 +1052,22 @@ class DatasetArchiver:
         if capture.archived_at is not None and capture.archive_destination == str(
             target
         ):
+            # S1-4: the record says done — the DESTINATION has to agree before
+            # this member counts toward a "complete" seal. A resume is the one
+            # moment anyone looks again; sealing over a target an external
+            # disk has since lost would stamp "10/10 verified" on bytes that
+            # no longer exist anywhere.
+            if not await asyncio.to_thread(self._target_intact, target):
+                run.error = self._missing_copy_error(member.capture_id, target)
+                return False
             await self._tidy_source(member.capture_id, source_present)
             return True
 
         event = ledger_v2.archive_events(self._layout.data_dir).get(member.capture_id)
         if event is not None and event.get("destination") == str(target):
+            if not await asyncio.to_thread(self._target_intact, target):
+                run.error = self._missing_copy_error(member.capture_id, target)
+                return False
             self._captures.finish_archived_member(
                 member.capture_id, destination=str(target)
             )
@@ -748,6 +1107,34 @@ class DatasetArchiver:
             return False
         await asyncio.to_thread(self._captures.reap, member.capture_id)
         return True
+
+    @staticmethod
+    def _target_intact(target: Path) -> bool:
+        """Whether an archived member's destination still holds anything.
+
+        A re-stat, not a re-verification: the recorded per-file hashes could
+        prove integrity, but the failure this catches is the copy being GONE
+        (an external destination wiped or swapped since run 1), and for that
+        "a non-empty directory exists" is the cheap honest check.
+        """
+        try:
+            return target.is_dir() and any(target.iterdir())
+        except OSError:
+            return False
+
+    @staticmethod
+    def _missing_copy_error(capture_id: str, target: Path) -> dict[str, Any]:
+        return {
+            "capture_id": capture_id,
+            "code": "archived_copy_missing",
+            "message": (
+                f"The record says this member was archived to {target}, but "
+                "nothing is there now. The destination lost the copy after "
+                "it was verified — not sealing over it. Restore the copy "
+                "(the ledger's per-file hashes can check it) or investigate "
+                "the destination, then resume."
+            ),
+        }
 
     async def _copy_member_out(
         self,
@@ -995,24 +1382,41 @@ class DatasetArchiver:
 
     # ---- ledger reads -------------------------------------------------------
 
-    def _dataset_events(self, dataset_id: str) -> list[dict[str, Any]]:
-        return [
-            event
-            for event in ledger_v2.dataset_events(self._layout.data_dir)
-            if event.get("dataset_id") == dataset_id
-        ]
+    def _ledger_snapshot(self, dataset_id: str) -> _ArchiveLedgerSnapshot:
+        """Read the ledger once and derive the latest attempt's safety facts."""
+        started: dict[str, Any] | None = None
+        canceled: dict[str, Any] | None = None
+        sealed: dict[str, Any] | None = None
+        has_completed_member = False
+        for event in ledger_v2.read_all(self._layout.data_dir):
+            kind = event.get("kind")
+            if kind == "capture_archived" and event.get("dataset_id") == dataset_id:
+                has_completed_member = True
+                continue
+            if event.get("dataset_id") != dataset_id:
+                continue
+            if kind == "dataset_archive_started":
+                started = event
+                canceled = None
+                sealed = None
+                has_completed_member = False
+            elif (
+                kind == "dataset_archive_canceled"
+                and started is not None
+                and event.get("started_event_id") == started.get("event_id")
+            ):
+                canceled = event
+            elif kind == "dataset_archived":
+                sealed = event
+        return _ArchiveLedgerSnapshot(
+            started=started,
+            canceled=canceled,
+            sealed=sealed,
+            has_completed_member=has_completed_member,
+        )
 
     def _started_event(self, dataset_id: str) -> dict[str, Any] | None:
-        for event in self._dataset_events(dataset_id):
-            if event.get("kind") == "dataset_archive_started":
-                return event
-        return None
-
-    def _seal_event(self, dataset_id: str) -> dict[str, Any] | None:
-        for event in self._dataset_events(dataset_id):
-            if event.get("kind") == "dataset_archived":
-                return event
-        return None
+        return self._ledger_snapshot(dataset_id).started
 
     # ---- guards -------------------------------------------------------------
 

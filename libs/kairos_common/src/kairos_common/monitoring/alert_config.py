@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Load topic_monitor alert rules from the ALERT_CONFIG_PATH YAML (MON-C1).
 
 The alert engine (:mod:`kairos_common.monitoring.alerts`) only does anything

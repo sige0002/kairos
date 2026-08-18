@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Transfer endpoints (``/api/v1/transfer``) — pulling captures off the robot.
 
 In the cross-host split the recorder writes MCAP on the ROBOT's disk and the
@@ -60,3 +62,17 @@ async def transfer_pull(
     """Queue a pull of one capture (or all finished ones) from the robot."""
     ack = await request.app.state.importer_client.pull(body.capture_id)
     return {"queued": True, "capture_id": body.capture_id, **ack}
+
+
+@router.get("/pull/{capture_id}")
+async def transfer_pull_status(request: Request, capture_id: str) -> dict[str, object]:
+    """One capture's pull state: ``queued → running → ok | failed`` (S3-1).
+
+    The 202 from ``POST /pull`` lands before the importer has touched ssh, so
+    it can never be the completion signal — and a pull whose rsync died used
+    to be invisible outside the importer's container log, leaving the UI
+    saying "Transferring…" forever. Arrival is still confirmed by the replica
+    state; THIS is the failure channel. 404 = no pull known (importer restart
+    loses the in-memory view; the replica state remains the durable answer).
+    """
+    return await request.app.state.importer_client.pull_status(capture_id)

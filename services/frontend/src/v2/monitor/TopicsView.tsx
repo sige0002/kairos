@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Topics sub-view (the mock's own scope, §11): chart PANELS + topics table on the
 // left, Events + System on the right. Restores the v1 Graph tab's add/remove-panel
 // model — each panel is one metric × its own overlaid topic set — in the v2 skin.
@@ -39,7 +41,8 @@ function formatElapsed(ms: number): string {
 }
 
 export function TopicsView({ config }: { config: RuntimeConfig }) {
-  const { rows, isDiscovering, malformedDropped } = useMonitorRows(config);
+  const { rows, isDiscovering, malformedDropped, metricsStale } =
+    useMonitorRows(config);
 
   // Rec-topic picker (shared uiStore, consumed by a Collect-side /record/start).
   // Mirrors v1 LiveTab: seed the selection from the active robot's configured
@@ -130,15 +133,27 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
 
         <div className="flex shrink-0 flex-wrap items-center gap-2.5">
           <span
-            className="font-mono text-[11.5px] text-gray-400"
+            className="font-mono text-[11.5px] text-gray-500"
             title="History accumulates from when Monitor opened."
           >
             {rows.length} topics · {panels.length} chart{panels.length === 1 ? '' : 's'} · {windowId}{' '}
             window{windowNotFull ? ` (${formatElapsed(elapsedMs)} so far)` : ''}
           </span>
           {paused && (
-            <span data-testid="freeze-note" className="font-mono text-[11px] text-amber-600">
+            <span data-testid="freeze-note" className="font-mono text-[11px] text-amber-700">
               Charts frozen · table still live.
+            </span>
+          )}
+          {/* S3-6: with the SSE stream (or the monitor bridge) down, the
+              metrics cache is a snapshot of the moment it died. The rows
+              already withhold measured values (useMonitorRows); this says why
+              the columns emptied instead of leaving a wordless gap. */}
+          {metricsStale && (
+            <span
+              data-testid="metrics-stale-note"
+              className="font-mono text-[11px] text-amber-700"
+            >
+              Live metrics unavailable — measured columns withheld.
             </span>
           )}
           {/* The SSE ingest drops readings it cannot identify rather than
@@ -151,7 +166,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
             <span
               data-testid="malformed-note"
               title="These readings arrived in a shape this screen could not read — no usable topic name — so they were left out rather than shown under an invented one."
-              className="font-mono text-[11px] text-amber-600"
+              className="font-mono text-[11px] text-amber-700"
             >
               {malformedDropped} reading{malformedDropped === 1 ? '' : 's'} ignored
               (unreadable)
@@ -170,7 +185,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
                   'rounded-chip px-2.5 py-0.5 text-[11px] font-medium transition-colors',
                   w.id === windowId
                     ? 'bg-white text-teal-700 shadow-sm'
-                    : 'text-gray-500 hover:text-gray-700',
+                    : 'text-gray-600 hover:text-gray-700',
                 )}
               >
                 {w.label}
@@ -197,7 +212,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
             data-testid="add-chart"
             onClick={() => addPanel(availableNames[0])}
             disabled={panels.length >= MAX_PANELS}
-            className="rounded-control bg-teal-600 px-3 py-1 text-[11px] font-semibold text-white shadow-card transition-colors hover:bg-teal-700 disabled:bg-gray-300"
+            className="rounded-control bg-teal-700 px-3 py-1 text-[11px] font-semibold text-white shadow-card transition-colors hover:bg-teal-800 disabled:bg-gray-300"
           >
             + Add chart
           </button>

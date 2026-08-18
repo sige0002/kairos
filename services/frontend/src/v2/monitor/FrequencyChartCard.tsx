@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // One chart PANEL for the Monitor Topics view: the panel's selected topics'
 // chosen metric over time, OVERLAID as distinct series on the shared uPlot
 // infrastructure (src/features/probe/UplotChart.tsx — NEVER rewritten; its
@@ -178,7 +180,7 @@ export function FrequencyChartCard({
           aria-label="chart metric"
           value={panel.metric}
           onChange={(e) => onMetricChange(e.target.value as MonitorMetricKey)}
-          className="rounded-control border border-gray-200 px-2 py-1 text-[12px] font-medium text-gray-700 focus:border-teal-500 focus:outline-none"
+          className="rounded-control border border-gray-200 px-2 py-1 text-[12px] font-medium text-gray-700 focus:border-teal-600 focus:outline-none"
         >
           {MONITOR_METRICS.map((m) => (
             <option key={m.key} value={m.key}>
@@ -208,7 +210,7 @@ export function FrequencyChartCard({
           className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-gray-100 px-[18px] py-2"
         >
           {topics.length === 0 ? (
-            <span className="text-[11.5px] text-gray-400">No series selected.</span>
+            <span className="text-[11.5px] text-gray-500">No series selected.</span>
           ) : (
             topics.map((t, i) => {
               const v = cols[i] ? lastValue(cols[i]!) : null;
@@ -259,7 +261,7 @@ export function FrequencyChartCard({
                   data-testid={`freq-chip-remove${sfx}-${t}`}
                   aria-label={`remove ${t} from chart`}
                   onClick={() => onToggleTopic(t)}
-                  className="ml-0.5 rounded-sm px-1 text-gray-400 hover:bg-gray-100 hover:text-gray-700"
+                  className="ml-0.5 rounded-sm px-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
                 >
                   ×
                 </button>
@@ -267,7 +269,7 @@ export function FrequencyChartCard({
             );
           })}
           {atCap ? (
-            <span className="text-[10.5px] text-amber-600">
+            <span className="text-[10.5px] text-amber-700">
               {MAX_SERIES}/{MAX_SERIES} series
             </span>
           ) : (
@@ -279,7 +281,7 @@ export function FrequencyChartCard({
                 if (e.target.value) onToggleTopic(e.target.value);
               }}
               disabled={addable.length === 0}
-              className="rounded-control border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 focus:border-teal-500 focus:outline-none disabled:text-gray-300"
+              className="rounded-control border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 focus:border-teal-600 focus:outline-none disabled:text-gray-300"
             >
               <option value="">{addable.length === 0 ? 'No more topics' : '+ Add topic'}</option>
               {addable.map((t) => (
@@ -315,7 +317,7 @@ export function FrequencyChartCard({
         ) : (
           <p
             data-testid={`freq-chart-empty${sfx}`}
-            className="flex h-full items-center justify-center text-center text-[12px] text-gray-400"
+            className="flex h-full items-center justify-center text-center text-[12px] text-gray-500"
           >
             {topics.length === 0
               ? isPrimary
@@ -348,8 +350,8 @@ export function FrequencyChartCard({
           </>
         )}
         <div className="flex-1" />
-        <span className="text-gray-400">
-          REC markers are real · observed shortfall, not confirmed loss
+        <span className="text-gray-500">
+          REC markers are real · observed shortfall — no confirmed loss
         </span>
       </div>
     </Card>

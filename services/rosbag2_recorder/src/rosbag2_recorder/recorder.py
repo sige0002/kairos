@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The recording session manager: one ``ros2 bag record`` subprocess at a time.
 
 This is the recorder's core. It owns a single recording session (1 container =
@@ -20,6 +22,7 @@ import subprocess
 import threading
 import time
 from collections.abc import Callable
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -36,6 +39,7 @@ from kairos_common import (
 from kairos_common.capture_sidecars import (
     ROSBAG2_METADATA_FILENAME,
     CaptureState,
+    CollectionContextSnapshotV1,
     DigestState,
     ObjectManifestV2,
     SidecarStatus,
@@ -84,6 +88,14 @@ logger = logging.getLogger("kairos.rosbag2_recorder")
 # How long to wait for the bag process to exit after SIGINT before escalating.
 STOP_TIMEOUT_S = 30.0
 
+# How long to wait after the final SIGKILL. Short on purpose: SIGKILL cannot be
+# caught, blocked or ignored, so this only has to cover the kernel tearing the
+# process down — not another grace period. The one case it can expire is a
+# process wedged in uninterruptible sleep (D state, e.g. a hung disk write),
+# which dies the instant that I/O returns; waiting a second STOP_TIMEOUT_S for
+# that would just hold the stop open with nothing left to escalate to.
+KILL_TIMEOUT_S = 5.0
+
 # After spawning ``ros2 bag record`` we wait up to this long for it to create
 # its --output directory (proof it passed its own "folder exists" check and
 # started). If the process exits before the dir appears, treat it as a start
@@ -93,6 +105,23 @@ START_DIR_POLL_S = 0.05
 
 # How often the MAX_RECORD_BYTES watcher checks the on-disk size while recording.
 SIZE_POLL_S = 2.0
+
+
+def _stop_flush_delay_s() -> float:
+    """Test-only injected flush delay (``KAIROS_STOP_FLUSH_DELAY_S``, 0 = off).
+
+    Holds the session in ``stopping`` before the stop signal, modelling the
+    multi-second cache drain of a LARGE bag. It exists for the acceptance
+    suite: its 61 MB fixture flushes in milliseconds, so the console's
+    stop-confirmation polling ran zero real iterations and its regressions
+    were invisible (the 2026-08-07 timing sweep's finding on 36ec49e). Never
+    set in production.
+    """
+    try:
+        return max(0.0, float(os.environ.get("KAIROS_STOP_FLUSH_DELAY_S", "")))
+    except ValueError:
+        return 0.0
+
 
 # Return codes that count as a clean shutdown of ``ros2 bag record`` on the stop
 # path. We stop it with SIGINT: a process that catches SIGINT and exits cleanly
@@ -278,6 +307,7 @@ class RecorderSession:
         self._stamp: dict[str, Any] | None = None
         self._task: str | None = None
         self._robot: str | None = None
+        self._collection_context: CollectionContextSnapshotV1 | None = None
 
         # MAX_RECORD_BYTES auto-stop watcher. 0 disables (default).
         self._max_record_bytes: int = settings.max_record_bytes
@@ -481,6 +511,7 @@ class RecorderSession:
         *,
         force_paused: bool,
         arm: Callable[[str, list[str], bool], Any] | None,
+        file_failure: bool = True,
     ) -> _Spawned:
         """Mint the capture, spawn ``ros2 bag record``, and confirm it came up.
 
@@ -490,6 +521,16 @@ class RecorderSession:
         spawn, wait for the output dir, then run the arming gate. Each failure
         raises 507 and leaves the store the way §3.4 requires — a
         ``.failed.json`` sibling and nothing else.
+
+        ``file_failure=False`` (the ``prepare()`` path) reports failures in the
+        error response only, without minting the ``.failed.json`` sibling: a
+        pre-arm is a background readiness probe the console repeats every 30 s,
+        not an operator's attempt to record, so a persistent arm blocker (topic
+        mismatch, disk full) must not deposit an unbounded pile of failed
+        captures in the store while nothing tells the operator (timing sweep
+        S2-7). The failure still reaches the operator — the console surfaces
+        the failing pre-arm live — and an actual ``start()`` against the same
+        blocker files normally.
 
         The callers differ only in how the subprocess is paused and armed.
         ``prepare()`` passes ``force_paused=True`` (arming without pausing first
@@ -543,8 +584,14 @@ class RecorderSession:
         try:
             process = self._spawn_process(cmd)
         except (OSError, ValueError) as exc:
-            marker_error = self._fail(
-                capture_id, run_id, started_at, request, staged_topics, str(exc)
+            marker_error = self._record_or_discard_failure(
+                file_failure,
+                capture_id,
+                run_id,
+                started_at,
+                request,
+                staged_topics,
+                str(exc),
             )
             raise ApiError(
                 status_code=507,
@@ -568,7 +615,8 @@ class RecorderSession:
             self._terminate_failed_start(process)
             returncode = process.returncode
             self._remove_capture_dir(capture_id)
-            marker_error = self._fail(
+            marker_error = self._record_or_discard_failure(
+                file_failure,
                 capture_id,
                 run_id,
                 started_at,
@@ -602,7 +650,8 @@ class RecorderSession:
                 self._remove_capture_dir(capture_id)
                 # Drop the partial arming snapshot; this session never started.
                 self._arming = None
-                marker_error = self._fail(
+                marker_error = self._record_or_discard_failure(
+                    file_failure,
                     capture_id,
                     run_id,
                     started_at,
@@ -682,9 +731,15 @@ class RecorderSession:
             # ALWAYS spawn --start-paused here, regardless of
             # recording.start_paused, and arm WITHOUT resuming: the matched
             # node + Resume/IsPaused clients come back alive so a later
-            # start() is just a resume call.
+            # start() is just a resume call. file_failure=False: a failed
+            # pre-arm probe answers its caller but is not filed as a failed
+            # capture (S2-7) — only an operator's start() files.
             spawned = self._spawn_and_await(
-                request, run_id, force_paused=True, arm=self._prepare_arm
+                request,
+                run_id,
+                force_paused=True,
+                arm=self._prepare_arm,
+                file_failure=False,
             )
             capture_id = spawned.capture_id
             node, resume_client, is_paused_client, owns_rclpy = spawned.arm_result
@@ -838,6 +893,11 @@ class RecorderSession:
             and prepared.split == request.split
             and prepared.qos_default == request.qos_default
             and prepared.qos_overrides == request.qos_overrides
+            # The live-config QoS patterns are spawn-affecting (they were
+            # materialised into the armed session's overrides file): a config
+            # switched between prepare and start must disarm, not resume with
+            # the previous config's QoS (S1-3).
+            and prepared.qos_override_patterns == request.qos_override_patterns
         )
 
     def _claim_armed_locked(
@@ -929,7 +989,7 @@ class RecorderSession:
                 armed.capture_id,
                 armed.run_id,
                 armed.started_at,
-                armed.request,
+                request,
                 armed.staged_topics,
                 f"arming: {exc}",
             )
@@ -964,6 +1024,7 @@ class RecorderSession:
         self._stamp = self._build_stamp(request.console_stamp)
         self._task = default_meta(request.task, UNKNOWN_TASK)
         self._robot = self._resolve_robot(request)
+        self._collection_context = deepcopy(request.collection_context)
         self._topics = armed.staged_topics
         self._log_file = armed.log_file
         self._pending_log_path = armed.pending_log_path
@@ -1100,6 +1161,7 @@ class RecorderSession:
             self._stamp = self._build_stamp(request.console_stamp)
             self._task = default_meta(request.task, UNKNOWN_TASK)
             self._robot = self._resolve_robot(request)
+            self._collection_context = deepcopy(request.collection_context)
             self._topics = spawned.staged_topics
             # The capture dir now exists (ros2 created it), so writing the
             # manifest into it no longer races the "folder exists" check.
@@ -1414,7 +1476,11 @@ class RecorderSession:
         from rosbag2_recorder.qos import resolve_topic_qos
 
         return resolve_topic_qos(
-            topic, self._config, request.qos_overrides, request.qos_default
+            topic,
+            self._config,
+            request.qos_overrides,
+            request.qos_default,
+            request.qos_override_patterns,
         )
 
     def _materialise_qos(
@@ -1438,6 +1504,7 @@ class RecorderSession:
             self._config,
             request.qos_overrides,
             request.qos_default,
+            request.qos_override_patterns,
         )
         return write_qos_overrides_file(
             overrides, _qos_overrides_path(self._objects_root(), capture_id)
@@ -1521,11 +1588,16 @@ class RecorderSession:
     def stop(self) -> RecordStatusResponse:
         """Stop the active session (idempotent).
 
-        Recording -> SIGINT the process group, wait, finalise, return the
+        Recording -> signal the process group (SIGINT, escalating as far as
+        SIGKILL — see :meth:`_signal_and_wait`), wait, finalise, return the
         terminal status. ``armed`` -> disarm (the paused subprocess is killed,
         the empty capture dir removed — there is nothing recorded to flush). Any
         other state — idle, or a stop already in progress (``stopping``) —
         returns the current status unchanged.
+
+        A session that is ``recording`` with no subprocess handle is broken
+        rather than idle, and is finalised from disk here instead of being
+        reported back unchanged; see the branch below for why that matters.
         """
         # Signal the size watcher to stop polling up front so it does not race
         # us into a second stop. (Safe if we ARE the watcher thread.)
@@ -1551,34 +1623,91 @@ class RecorderSession:
             # the same process. That second finalise would see ``returncode=None``
             # and turn a clean ``completed`` run into ``failed``. finalise runs
             # exactly once, for the caller that won this transition.
-            if self._state is not RunState.recording or self._process is None:
+            if self._state is not RunState.recording:
                 return self._status_locked()
 
-            self._state = RunState.stopping
-            # Capture-end stamp: the session ends at the operator's stop
-            # decision, HERE — not after the SIGINT flush below, which keeps
-            # running (and briefly writing already-queued messages) for however
-            # long rosbag2 takes to drain (seconds under load / SIGTERM
-            # escalation). Stamping after the wait made ended_at - started_at
-            # read longer than the session the UI timer showed; the bag's own
-            # metadata.yaml keeps the exact data span.
-            ended_at = utc_now_iso8601()
-            self._write_manifest()
-            process = self._process
+            if self._process is None:
+                # Invariant violation: ``recording`` means this session owns a
+                # live subprocess, and it does not. Returning the status
+                # unchanged — which is what this used to do — made the state
+                # PERMANENT: every later stop() took the same branch, so the
+                # session could never be ended through the API again. That is
+                # the wedge an operator sees as an endless "stop not confirmed"
+                # (the console re-reads status after each stop, finds
+                # ``recording`` again, and offers Retry forever).
+                #
+                # There is no process to signal, so finalise from what is on
+                # disk: with a bag the capture is ``interrupted``, without one
+                # ``failed`` (the same discriminator every other path uses).
+                # Reaching a terminal state is what frees the operator; the log
+                # line below is what lets us find out why it happened at all.
+                logger.error(
+                    "session is `recording` with no subprocess handle; "
+                    "finalising from what is on disk to release the session",
+                    extra={
+                        "run_id": self._run_id,
+                        "capture_id": self._capture_id,
+                        "component": "recorder",
+                    },
+                )
+                self._state = RunState.stopping
+                self._finalise(utc_now_iso8601())
+                status = self._status_locked()
+                process = None
+            else:
+                self._state = RunState.stopping
+                # Capture-end stamp: the session ends at the operator's stop
+                # decision, HERE — not after the SIGINT flush below, which keeps
+                # running (and briefly writing already-queued messages) for
+                # however long rosbag2 takes to drain (seconds under load /
+                # SIGTERM escalation). Stamping after the wait made
+                # ended_at - started_at read longer than the session the UI timer
+                # showed; the bag's own metadata.yaml keeps the exact data span.
+                ended_at = utc_now_iso8601()
+                self._write_manifest()
+                process = self._process
+                status = None
 
-        # Signal + wait outside the lock so /status stays responsive; the single
-        # active session means no other start can race in (start re-checks state).
-        self._signal_and_wait(process)
-
-        with self._lock:
-            self._finalise(ended_at)
-            status = self._status_locked()
+        if process is not None:
+            # Signal + wait outside the lock so /status stays responsive; the
+            # single active session means no other start can race in (start
+            # re-checks state).
+            delay = _stop_flush_delay_s()
+            if delay > 0:
+                time.sleep(delay)
+            self._signal_and_wait(process)
+            with self._lock:
+                self._finalise(ended_at)
+                status = self._status_locked()
         # Join the watcher outside the lock (it self-skips if we are it).
         self._stop_size_watcher()
         return status
 
     def _signal_and_wait(self, process: subprocess.Popen[bytes]) -> None:
-        """SIGINT the process group, then wait; escalate to SIGTERM on timeout."""
+        """Stop the bag process group: SIGINT, then SIGTERM, then SIGKILL.
+
+        Each stage waits before escalating (``STOP_TIMEOUT_S``, then
+        ``KILL_TIMEOUT_S`` for the last). SIGINT is the one rosbag2 handles
+        cleanly — it flushes the cache and writes ``metadata.yaml`` — so the
+        later stages only ever run for a recorder that is not responding.
+
+        The SIGKILL stage exists because the first two are *catchable*: a
+        ``ros2 bag record`` that ignores or is wedged past both used to be left
+        RUNNING while :meth:`_finalise` went on to declare the capture terminal.
+        That is the failure an operator sees as "the recorder says it stopped
+        but the bag keeps growing" — the process still owns the MCAP and keeps
+        appending to a capture the store has already handed to the digest job.
+        SIGKILL cannot be caught, blocked or ignored, so the process WILL die.
+
+        The final wait can still expire without the kill having failed: a
+        process in uninterruptible sleep (D state, typically blocked on disk
+        I/O) is unreapable until that I/O completes, and then dies immediately.
+        We log that and return rather than block the stop forever — there is no
+        stronger signal to escalate to.
+
+        Signals go to the process GROUP throughout: ``ros2 bag record`` spawns
+        children, and killing only the parent would orphan the writers.
+        """
         try:
             pgid = os.getpgid(process.pid)
             os.killpg(pgid, signal.SIGINT)
@@ -1586,13 +1715,30 @@ class RecorderSession:
             return  # Already gone.
         try:
             process.wait(timeout=STOP_TIMEOUT_S)
+            return
         except subprocess.TimeoutExpired:
             logger.warning("bag process did not exit on SIGINT; sending SIGTERM")
-            try:
-                os.killpg(os.getpgid(process.pid), signal.SIGTERM)
-                process.wait(timeout=STOP_TIMEOUT_S)
-            except (ProcessLookupError, subprocess.TimeoutExpired):
-                logger.error("bag process did not exit on SIGTERM")
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+            process.wait(timeout=STOP_TIMEOUT_S)
+            return
+        except ProcessLookupError:
+            return  # Exited between the timeout and the signal.
+        except subprocess.TimeoutExpired:
+            logger.error("bag process did not exit on SIGTERM; sending SIGKILL")
+        try:
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+            process.wait(timeout=KILL_TIMEOUT_S)
+        except ProcessLookupError:
+            return  # Exited between the timeout and the signal.
+        except subprocess.TimeoutExpired:
+            # Not "the kill was refused" — SIGKILL cannot be. The process is in
+            # uninterruptible sleep and will go the moment its I/O returns.
+            logger.error(
+                "bag process still present %.0fs after SIGKILL; it is in "
+                "uninterruptible sleep and will exit when that I/O completes",
+                KILL_TIMEOUT_S,
+            )
 
     def _finalise(self, ended_at: str | None = None) -> None:
         """Move from ``stopping`` to a terminal state, syncing from metadata.
@@ -1678,6 +1824,40 @@ class RecorderSession:
             },
         )
 
+    def _record_or_discard_failure(
+        self,
+        file_failure: bool,
+        capture_id: str,
+        run_id: str,
+        started_at: str,
+        request: RecordStartRequest,
+        topics: list[TopicEntry],
+        error: str,
+    ) -> str | None:
+        """Dispatch a spawn/arm failure to :meth:`_fail`, or clean up silently.
+
+        The silent branch (``file_failure=False``, the pre-arm probe) removes
+        the same sibling files :meth:`_fail` would but writes no
+        ``.failed.json``: the store must not accumulate a failed capture per
+        keep-alive attempt (S2-7). The failure is still logged here — the log
+        line is then the only durable trace, which is the point.
+        """
+        if file_failure:
+            return self._fail(capture_id, run_id, started_at, request, topics, error)
+        logger.warning(
+            "pre-arm failed; not filed as a capture (background probe)",
+            extra={
+                "capture_id": capture_id,
+                "run_id": run_id,
+                "error": error,
+                "component": "recorder",
+            },
+        )
+        self._cleanup_qos_file(capture_id)
+        self._cleanup_storage_config(capture_id)
+        self._cleanup_log_file(capture_id)
+        return None
+
     def _fail(
         self,
         capture_id: str,
@@ -1711,6 +1891,7 @@ class RecorderSession:
             operator=default_meta(request.operator, UNKNOWN_OPERATOR),
             task=default_meta(request.task, UNKNOWN_TASK),
             robot=self._resolve_robot(request),
+            collection_context=deepcopy(request.collection_context),
             topics=tuple(topic.model_dump(mode="json") for topic in topics),
             compression=str(request.compression),
             split=request.split.model_dump(mode="json") if request.split else None,
@@ -1954,6 +2135,7 @@ class RecorderSession:
             operator=self._operator,
             task=self._task,
             robot=self._robot,
+            collection_context=self._collection_context,
             ended_at=ended_at,
             topics=tuple(topic.model_dump(mode="json") for topic in self._topics),
             # Finalised counters (OL-①.5): None until the bag's metadata exists.

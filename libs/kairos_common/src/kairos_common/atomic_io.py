@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The one crash-safe write in the repo: temp file → fsync → replace → fsync dir.
 
 Contract §3.1. Every sidecar the capture store keeps (object_manifest.json,

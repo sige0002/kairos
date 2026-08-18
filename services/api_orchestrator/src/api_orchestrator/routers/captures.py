@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Capture endpoints (``/api/v1/captures``) — the v2 replacement for runs.
 
 Contract §10. One resource now covers what ``/runs`` and ``/episodes`` used to
@@ -16,26 +18,36 @@ Two response codes here are load-bearing rather than incidental:
 
 from __future__ import annotations
 
+import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
 from kairos_common import ApiError, archive_enabled, parse_archive_roots
 from kairos_common.archive_paths import resolve_archive_destination
 
+from api_orchestrator.capture_archive import CaptureArchiveRun, CaptureArchiveRuns
 from api_orchestrator.captures import CaptureService
 from api_orchestrator.deps import get_capture_service
 from api_orchestrator.models import (
     Capture,
+    CaptureArchiveAccepted,
+    CaptureArchiveProgress,
     CaptureArchiveRequest,
     CaptureArchiveResponse,
     CaptureDeleteRequest,
     CaptureDetail,
     CaptureListResponse,
+    CaptureSearchRequest,
+    CaptureSearchResponse,
+    CaptureSelectionCreateRequest,
+    CaptureSelectionResponse,
     ReviewSaveRequest,
     ValidationOverrideRequest,
 )
 
 router = APIRouter(prefix="/api/v1/captures", tags=["captures"])
+selection_router = APIRouter(prefix="/api/v1/capture-selections", tags=["captures"])
 
 DEFAULT_LIMIT = 50
 # 1000, not 200: Datasets walks the whole store to build its tree, and at 200 a
@@ -82,6 +94,43 @@ async def list_captures(
         include_deleted=include_deleted,
     )
     return CaptureListResponse(items=items, next_cursor=next_cursor)
+
+
+@router.post("/search", response_model=CaptureSearchResponse)
+def search_captures(
+    body: CaptureSearchRequest,
+    service: CaptureService = Depends(get_capture_service),
+) -> CaptureSearchResponse:
+    """Page and facet captures server-side from one SQLite read snapshot."""
+    parsed = _parse_search_cursor(body.cursor)
+    items, next_seq, total, facets = service.search(
+        body.limit, parsed, query=body.query.model_dump(mode="json"), facets=body.facets
+    )
+    return CaptureSearchResponse(
+        items=items,
+        next_cursor=str(next_seq) if next_seq is not None else None,
+        total=total,
+        facets=facets,
+    )
+
+
+@selection_router.post("", response_model=CaptureSelectionResponse, status_code=201)
+def create_capture_selection(
+    body: CaptureSelectionCreateRequest,
+    service: CaptureService = Depends(get_capture_service),
+) -> CaptureSelectionResponse:
+    """Materialize ordered capture IDs for a later server-side bulk operation."""
+    expires_at = (
+        (datetime.now(UTC) + timedelta(minutes=30)).isoformat().replace("+00:00", "Z")
+    )
+    selection_id, matched = service.create_selection(
+        body.query.model_dump(mode="json"), expires_at=expires_at
+    )
+    return CaptureSelectionResponse(
+        selection_id=selection_id,
+        matched_count=matched,
+        expires_at=expires_at,
+    )
 
 
 @router.get("/{capture_id}", response_model=CaptureDetail)
@@ -178,30 +227,91 @@ async def capture_archive_config(request: Request) -> dict[str, Any]:
     return {"enabled": archive_enabled(roots), "roots": [str(r) for r in roots]}
 
 
-@router.post("/{capture_id}/archive", response_model=CaptureArchiveResponse)
+@router.post(
+    "/{capture_id}/archive", response_model=CaptureArchiveAccepted, status_code=202
+)
 async def archive_capture(
     capture_id: str,
     body: CaptureArchiveRequest,
     request: Request,
-    background: BackgroundTasks,
     service: CaptureService = Depends(get_capture_service),
-) -> CaptureArchiveResponse:
-    """Copy a capture out, verify it, record it, then delete the source (§6).
+) -> CaptureArchiveAccepted:
+    """Start archiving a capture out (§6): copy, verify, record, then delete.
 
     The destination is validated against ``KAIROS_ARCHIVE_ROOTS`` before
     anything is copied: this endpoint deletes the source afterwards, which makes
     an unconstrained destination the most dangerous string in the system.
+
+    Answers 202 and runs server-side (S2-1): a multi-GB copy outlives any proxy
+    timeout, and completing it in-request produced the worst possible split —
+    the server finished the archive (and deleted the source) while the client
+    saw a 504 "failure". Poll ``GET /captures/{id}/archive`` for the outcome.
+    The obvious refusals (active capture, held lease, dataset member, bad or
+    overlapping destination) still answer synchronously.
     """
     destination = resolve_archive_destination(body.destination, _archive_roots(request))
-    result = await service.archive(
-        capture_id,
-        destination=destination,
-        operator=body.operator,
-        reason=body.reason,
+    capture = service.archive_preflight(capture_id, destination=destination)
+    runs: CaptureArchiveRuns = request.app.state.capture_archive_runs
+
+    async def execute(run: CaptureArchiveRun) -> CaptureArchiveResponse:
+        def on_progress(bytes_done: int) -> None:
+            run.bytes_done = bytes_done
+
+        result = await service.archive(
+            capture_id,
+            destination=destination,
+            operator=body.operator,
+            reason=body.reason,
+            progress=on_progress,
+        )
+        await asyncio.to_thread(service.reap, capture_id)
+        return result
+
+    run = runs.start(capture_id, str(destination / capture_id), capture.bytes, execute)
+    return CaptureArchiveAccepted(
+        capture_id=capture_id, destination=run.destination, state=run.state
     )
-    background.add_task(service.reap, capture_id)
-    return result
+
+
+@router.get("/{capture_id}/archive", response_model=CaptureArchiveProgress)
+async def capture_archive_progress(
+    capture_id: str, request: Request
+) -> CaptureArchiveProgress:
+    """Progress of this capture's archive run (running → complete | failed).
+
+    404 when no run is known — including after a restart, which loses the
+    in-memory progress view but neither the data nor the ledger record.
+    """
+    run = request.app.state.capture_archive_runs.get(capture_id)
+    if run is None:
+        raise ApiError(
+            status_code=404,
+            code="archive_not_found",
+            message=f"No archive run is known for {capture_id}.",
+            details={"capture_id": capture_id},
+        )
+    return run.progress()
 
 
 def _archive_roots(request: Request) -> list:
     return parse_archive_roots(getattr(request.app.state.settings, "archive_roots", ""))
+
+
+def _parse_search_cursor(cursor: str | None) -> int | None:
+    if cursor is None:
+        return None
+    try:
+        value = int(cursor)
+    except ValueError as exc:
+        raise ApiError(
+            status_code=400,
+            code="invalid_cursor",
+            message="cursor must be an opaque token from a prior page.",
+        ) from exc
+    if value < 1:
+        raise ApiError(
+            status_code=400,
+            code="invalid_cursor",
+            message="cursor must be an opaque token from a prior page.",
+        )
+    return value

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Monitor > System — the full-page host + deployment view (§11). Everything is
 // real: host facts + live utilization from GET /api/v1/system (CPU model/cores,
 // GPU or "not detected", disk path/free/total, CPU%/GPU% when measurable),
@@ -50,9 +52,9 @@ function Meter({ label, percent, testId }: { label: string; percent: number; tes
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <Card className="flex flex-col gap-3 px-4 py-3.5">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         {title}
-      </span>
+      </h2>
       {children}
     </Card>
   );
@@ -108,7 +110,7 @@ export function SystemView({ config }: { config: RuntimeConfig }) {
             {usedPct != null && <Meter label="Used" percent={usedPct} testId="sys-disk-used" />}
           </>
         ) : (
-          <p className="text-[12.5px] text-gray-400">
+          <p className="text-[12.5px] text-gray-500">
             Disk usage unavailable — the runtime data dir could not be measured.
           </p>
         )}

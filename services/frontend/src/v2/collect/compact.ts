@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Compact-density class fragments for the Collect screen at reduced viewport
 // heights. The console must fit ONE page with no scroll from 1366x768 up; the
 // left card stack overflows on short laptops otherwise. Below ~860px tall we

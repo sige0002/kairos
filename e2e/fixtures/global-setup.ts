@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Refuse to run against a stack that is not there.
 //
 // Playwright's default when the app is missing is a wall of navigation

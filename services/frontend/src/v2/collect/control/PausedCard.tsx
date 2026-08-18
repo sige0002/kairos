@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // PAUSED: the set is held. Nothing is at risk, and the card says so before it
 // offers the way back.
 
@@ -17,9 +19,9 @@ export function PausedCard({ machine }: { machine: BatchMachine }) {
     >
       <div className="flex items-center gap-2">
         <span className="h-[9px] w-[9px] rounded-sm bg-gray-400" />
-        <span data-testid="phase-title" className="text-[17px] font-bold text-gray-500">
+        <h2 data-testid="phase-title" className="text-[17px] font-bold text-gray-500">
           PAUSED
-        </span>
+        </h2>
       </div>
       <span className="text-[12.5px] text-gray-500">
         Set is paused. Recorded episodes are safe.
@@ -27,7 +29,7 @@ export function PausedCard({ machine }: { machine: BatchMachine }) {
       <button
         type="button"
         onClick={machine.resumeBatch}
-        className="h-[46px] rounded-control bg-teal-600 text-sm font-bold text-white hover:bg-teal-700"
+        className="h-[46px] rounded-control bg-teal-700 text-sm font-bold text-white hover:bg-teal-800"
       >
         Resume set
       </button>

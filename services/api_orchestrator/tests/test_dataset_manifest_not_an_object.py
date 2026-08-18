@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """A ``dataset_manifest.json`` that parses to something other than an object.
 
 ``_read_manifest`` used to hand back whatever ``json.loads`` produced, and both

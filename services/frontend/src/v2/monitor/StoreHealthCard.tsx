@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Monitor > Store — what the catalog knows about ITSELF (contract §8 / §9-3).
 //
 // This panel exists because the store's two worst conditions are invisible in an
@@ -15,14 +17,14 @@
 // unreported field reads as "—", and the absence of findings is only called
 // clean when something actually looked.
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { getStoreHealth, repairStore } from '../../api/captures';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { repairStore } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
-import type { CorruptEntry, StoreHealth } from '../../api/types';
+import type { CorruptEntry } from '../../api/types';
 import { Badge, Button, Card, CardHeader } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { readCaptureError } from '../captures/errors';
-import { STORE_HEALTH_POLL_MS } from '../pollingPolicy';
+import { useStoreHealth } from '../store/useStoreHealth';
 
 function formatInstant(iso?: string | null): string {
   if (!iso) return '—';
@@ -63,7 +65,7 @@ function Section({
 function SummaryRows({ summary }: { summary: Record<string, unknown> }) {
   const entries = Object.entries(summary);
   if (entries.length === 0) {
-    return <p className="text-[12.5px] text-gray-400">The summary is empty.</p>;
+    return <p className="text-[12.5px] text-gray-500">The summary is empty.</p>;
   }
   return (
     <div className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
@@ -71,7 +73,10 @@ function SummaryRows({ summary }: { summary: Record<string, unknown> }) {
         <div key={key} className="flex items-baseline gap-3 text-[12.5px]">
           <span className="font-mono text-gray-500">{key}</span>
           <div className="flex-1 border-b border-dotted border-gray-200" />
-          <span className="max-w-[60%] truncate text-right font-mono font-semibold text-gray-800" title={formatValue(value)}>
+          <span
+            className="max-w-[60%] truncate text-right font-mono font-semibold text-gray-800"
+            title={formatValue(value)}
+          >
             {formatValue(value)}
           </span>
         </div>
@@ -94,7 +99,7 @@ function CorruptList({ entries }: { entries: CorruptEntry[] }) {
           </span>
           <span className="text-[12px] text-red-700">{entry.reason}</span>
           {entry.capture_id && (
-            <span className="font-mono text-[11px] text-red-600">
+            <span className="font-mono text-[11px] text-red-700">
               capture {entry.capture_id}
             </span>
           )}
@@ -106,11 +111,7 @@ function CorruptList({ entries }: { entries: CorruptEntry[] }) {
 
 export function StoreHealthCard() {
   const queryClient = useQueryClient();
-  const healthQuery = useQuery<StoreHealth>({
-    queryKey: queryKeys.storeHealth,
-    queryFn: ({ signal }) => getStoreHealth(signal),
-    refetchInterval: STORE_HEALTH_POLL_MS,
-  });
+  const healthQuery = useStoreHealth();
 
   const repair = useMutation({
     mutationFn: repairStore,
@@ -124,7 +125,8 @@ export function StoreHealthCard() {
   });
 
   const health = healthQuery.data;
-  const state = health?.state === 'suspect' || health?.state === 'ok' ? health.state : null;
+  const state =
+    health?.state === 'suspect' || health?.state === 'ok' ? health.state : null;
   const suspect = state === 'suspect';
   const corrupt = health?.corrupt ?? [];
   const warnings = health?.warnings ?? [];
@@ -134,7 +136,8 @@ export function StoreHealthCard() {
   // fresh reconciler all-clear as "nothing has been read".
   const corruptSource = health?.corrupt_source ?? null;
   const corruptObservedAt = health?.corrupt_observed_at ?? null;
-  const scanned = corruptSource !== null || !!health?.rebuild_summary || !!health?.rebuilt_at;
+  const scanned =
+    corruptSource !== null || !!health?.rebuild_summary || !!health?.rebuilt_at;
   const scanLabel = corruptSource === 'reconcile' ? 'reconciler pass' : 'rebuild';
 
   // The 409 the contract singles out (§9-3): an approval given while the volume
@@ -154,9 +157,9 @@ export function StoreHealthCard() {
       <CardHeader
         title={
           <div className="flex items-center gap-2.5">
-            <span className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+            <h2 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
               Store health
-            </span>
+            </h2>
             {state === 'ok' && (
               <Badge tone="green" dot data-testid="store-health-state">
                 ok
@@ -173,7 +176,9 @@ export function StoreHealthCard() {
               </Badge>
             )}
             {health?.instance_id && (
-              <span className="font-mono text-[11.5px] text-gray-400">{health.instance_id}</span>
+              <span className="font-mono text-[11.5px] text-gray-500">
+                {health.instance_id}
+              </span>
             )}
           </div>
         }
@@ -194,12 +199,14 @@ export function StoreHealthCard() {
         <div className="flex flex-col gap-2 px-[18px] py-4">
           <ErrorMessage error={healthQuery.error} />
           <p className="text-[12.5px] text-gray-500">
-            The store&apos;s condition could not be read, so nothing below is known — this is not
-            an all-clear.
+            The store&apos;s condition could not be read, so nothing below is known —
+            this is not an all-clear.
           </p>
         </div>
       ) : !health ? (
-        <p className="px-[18px] py-6 text-[12.5px] text-gray-400">Reading store health…</p>
+        <p className="px-[18px] py-6 text-[12.5px] text-gray-500">
+          Reading store health…
+        </p>
       ) : (
         <>
           {/* ---- SUSPECT (§9-3) ---- */}
@@ -215,18 +222,19 @@ export function StoreHealthCard() {
                 {health.suspect_reason ?? 'No reason was reported.'}
               </p>
               <p className="text-[11.5px] text-red-700">
-                Latched {formatInstant(health.suspect_at)}. It does not re-fire: only a repair
-                clears it.
+                Latched {formatInstant(health.suspect_at)}. It does not re-fire: only a
+                repair clears it.
               </p>
               <p className="text-[12.5px] leading-relaxed text-red-700">
-                More local copies vanished in one reconciler pass than the store is willing to
-                believe, which is what an unmounted volume looks like from the inside. Until an
-                operator confirms the storage, the store has STOPPED applying automatic
-                missing-transitions, STOPPED the reaper, and STOPPED digests on this storage.
+                More local copies vanished in one reconciler pass than the store is
+                willing to believe, which is what an unmounted volume looks like from
+                the inside. Until an operator confirms the storage, the store has
+                STOPPED applying automatic missing-transitions, STOPPED the reaper, and
+                STOPPED digests on this storage.
               </p>
               <p className="text-[12.5px] leading-relaxed text-red-700">
-                It has NOT stopped recording: start and stop still work, review saves still write,
-                and browsing the catalog is unaffected.
+                It has NOT stopped recording: start and stop still work, review saves
+                still write, and browsing the catalog is unaffected.
               </p>
             </div>
           )}
@@ -235,9 +243,9 @@ export function StoreHealthCard() {
             {/* ---- Repair (§9-3) ---- */}
             <Section title="Repair" testId="store-health-repair-section">
               <p className="text-[12.5px] leading-relaxed text-gray-600">
-                Repair is the operator&apos;s acknowledgement that the storage really is as it
-                appears. It clears SUSPECT and re-runs the withheld reconciler pass, so the captures
-                whose files are gone are marked missing.
+                Repair is the operator&apos;s acknowledgement that the storage really is
+                as it appears. It clears SUSPECT and re-runs the withheld reconciler
+                pass, so the captures whose files are gone are marked missing.
               </p>
               <div className="flex flex-wrap items-center gap-3">
                 <Button
@@ -248,7 +256,10 @@ export function StoreHealthCard() {
                   {repair.isPending ? 'Repairing…' : 'Repair store'}
                 </Button>
                 {!suspect && (
-                  <span className="text-[12px] text-gray-500" data-testid="store-health-repair-idle">
+                  <span
+                    className="text-[12px] text-gray-500"
+                    data-testid="store-health-repair-idle"
+                  >
                     The store is not in SUSPECT — there is nothing to acknowledge.
                   </span>
                 )}
@@ -261,11 +272,14 @@ export function StoreHealthCard() {
                   className="rounded-control border border-red-200 bg-red-50 px-3 py-2 text-[12.5px] text-red-700"
                 >
                   <p className="font-semibold">{repairError.message}</p>
-                  {repairError.guidance && <p className="mt-1">{repairError.guidance}</p>}
+                  {repairError.guidance && (
+                    <p className="mt-1">{repairError.guidance}</p>
+                  )}
                   {volumeUnidentified && (
                     <p className="mt-1">
-                      Repair stays disabled until the storage is checked again — an approval that
-                      cannot name the volume it is approving is not an approval.
+                      Repair stays disabled until the storage is checked again — an
+                      approval that cannot name the volume it is approving is not an
+                      approval.
                     </p>
                   )}
                 </div>
@@ -281,17 +295,22 @@ export function StoreHealthCard() {
                       ? 'Repair applied — SUSPECT cleared and the pass re-ran.'
                       : 'The server did not report a repair.'}
                   </span>
-                  {repair.data.reconcile && <SummaryRows summary={repair.data.reconcile} />}
+                  {repair.data.reconcile && (
+                    <SummaryRows summary={repair.data.reconcile} />
+                  )}
                 </div>
               )}
             </Section>
 
             {/* ---- Corrupt sidecars (§8 rule 4) ---- */}
-            <Section title={`Corrupt sidecars (${corrupt.length})`} testId="store-health-corrupt">
+            <Section
+              title={`Corrupt sidecars (${corrupt.length})`}
+              testId="store-health-corrupt"
+            >
               <p className="text-[12.5px] leading-relaxed text-gray-600">
-                A sidecar that exists but cannot be read. These captures have no row in the capture
-                list — reporting them as absent would lose the only clue — so this is the only place
-                they appear.
+                A sidecar that exists but cannot be read. These captures have no row in
+                the capture list — reporting them as absent would lose the only clue —
+                so this is the only place they appear.
               </p>
               {corrupt.length > 0 ? (
                 <>
@@ -301,16 +320,23 @@ export function StoreHealthCard() {
                     data-testid="store-health-corrupt-observed"
                   >
                     Observed by the {scanLabel}
-                    {corruptObservedAt ? ` at ${formatInstant(corruptObservedAt)}` : ''}.
+                    {corruptObservedAt ? ` at ${formatInstant(corruptObservedAt)}` : ''}
+                    .
                   </p>
                 </>
               ) : !scanned ? (
-                <p className="text-[12.5px] text-amber-700" data-testid="store-health-corrupt-empty">
-                  No scan has completed in this process, so no sidecar has been read. That is not an
-                  all-clear.
+                <p
+                  className="text-[12.5px] text-amber-700"
+                  data-testid="store-health-corrupt-empty"
+                >
+                  No scan has completed in this process, so no sidecar has been read.
+                  That is not an all-clear.
                 </p>
               ) : (
-                <p className="text-[12.5px] text-gray-500" data-testid="store-health-corrupt-empty">
+                <p
+                  className="text-[12.5px] text-gray-500"
+                  data-testid="store-health-corrupt-empty"
+                >
                   The last {scanLabel} read every sidecar it found
                   {corruptObservedAt ? `, at ${formatInstant(corruptObservedAt)}` : ''}.
                 </p>
@@ -323,12 +349,14 @@ export function StoreHealthCard() {
                 <>
                   <Badge tone="amber">deletion switched off</Badge>
                   <p className="text-[12.5px] leading-relaxed text-gray-700">
-                    <code>objects/</code>, <code>.trash/</code> and <code>.incoming/</code> are not on
-                    one filesystem, so moving a capture to the trash would be a cross-device copy
-                    instead of a rename. That is why the delete APIs are withheld rather than
-                    silently degraded: an EXDEV copy is not the atomic move the design depends on,
-                    and a half-copied delete is exactly the outcome the trash step exists to prevent.
-                    Put the three directories on one filesystem and restart the orchestrator.
+                    <code>objects/</code>, <code>.trash/</code> and{' '}
+                    <code>.incoming/</code> are not on one filesystem, so moving a
+                    capture to the trash would be a cross-device copy instead of a
+                    rename. That is why the delete APIs are withheld rather than
+                    silently degraded: an EXDEV copy is not the atomic move the design
+                    depends on, and a half-copied delete is exactly the outcome the
+                    trash step exists to prevent. Put the three directories on one
+                    filesystem and restart the orchestrator.
                   </p>
                   {health.delete_unavailable_reason && (
                     <p className="font-mono text-[11.5px] text-gray-500">
@@ -338,11 +366,13 @@ export function StoreHealthCard() {
                 </>
               ) : health.delete_available === true ? (
                 <p className="text-[12.5px] text-gray-600">
-                  Available — the three directories share one filesystem, so a delete is an atomic
-                  rename into <code>.trash/</code>.
+                  Available — the three directories share one filesystem, so a delete is
+                  an atomic rename into <code>.trash/</code>.
                 </p>
               ) : (
-                <p className="text-[12.5px] text-gray-400">Delete availability was not reported.</p>
+                <p className="text-[12.5px] text-gray-500">
+                  Delete availability was not reported.
+                </p>
               )}
             </Section>
 
@@ -358,9 +388,9 @@ export function StoreHealthCard() {
               {health.rebuild_summary ? (
                 <SummaryRows summary={health.rebuild_summary} />
               ) : (
-                <p className="text-[12.5px] text-gray-400">
-                  No rebuild has run in this process — the catalog was read from the database as it
-                  stood.
+                <p className="text-[12.5px] text-gray-500">
+                  No rebuild has run in this process — the catalog was read from the
+                  database as it stood.
                 </p>
               )}
               {warnings.length > 0 ? (
@@ -373,7 +403,10 @@ export function StoreHealthCard() {
                   ))}
                 </ul>
               ) : (
-                <p className="text-[12px] text-gray-400" data-testid="store-health-warnings-empty">
+                <p
+                  className="text-[12px] text-gray-500"
+                  data-testid="store-health-warnings-empty"
+                >
                   No warnings were reported.
                 </p>
               )}
@@ -391,7 +424,7 @@ export function StoreHealthCard() {
               {health.last_reconcile ? (
                 <SummaryRows summary={health.last_reconcile} />
               ) : (
-                <p className="text-[12.5px] text-gray-400">
+                <p className="text-[12.5px] text-gray-500">
                   No pass has completed in this process yet.
                 </p>
               )}

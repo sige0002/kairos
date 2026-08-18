@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Persisted collapse state for the Review FiltersRail. Collapsing the rail hands
 // its width to the evidence panes on a narrow viewport (1280 is tight with the
 // full 216px filter column) — an operator preference, so it survives a reload.

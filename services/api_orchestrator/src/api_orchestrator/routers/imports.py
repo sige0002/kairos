@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Import endpoints (``/api/v1/imports``) — bring an external rosbag in.
 
 A recording made outside kairos — a plain ``ros2 bag record -s mcap``, an

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Bottom-pane SUMMARY view: an overview of the current scope, shown whenever no
 // member is selected. Scope = the selected dataset, else every member of every
 // dataset in the list. Everything is computed from real capture fields (see
@@ -30,6 +32,38 @@ import {
 } from './data';
 import type { DatasetAggregate } from './data';
 import type { ScopeSummary as Scope } from './useDatasetsState';
+import type { CaptureSearchQuery } from '../../api/types';
+
+function selectionQuerySummary(
+  query: CaptureSearchQuery | null | undefined,
+): string | null {
+  if (!query) return null;
+  const parts: string[] = [];
+  if (query.states?.length) parts.push(`states: ${query.states.join(', ')}`);
+  if (query.review_statuses?.length) {
+    parts.push(`review: ${query.review_statuses.join(', ')}`);
+  }
+  if (query.present_on_instance !== undefined && query.present_on_instance !== null) {
+    parts.push(
+      query.present_on_instance ? 'present on this instance' : 'not present here',
+    );
+  }
+  if (query.started_from || query.started_to) {
+    parts.push(`recorded: ${query.started_from ?? '…'} to ${query.started_to ?? '…'}`);
+  }
+  if (query.exclude_dataset_id) {
+    parts.push(`excluding dataset ${query.exclude_dataset_id}`);
+  }
+  if (query.predicates?.length) {
+    const predicates = query.predicates
+      .map(
+        (predicate) => `${predicate.field} ${predicate.operator} “${predicate.value}”`,
+      )
+      .join(` ${(query.join ?? 'and').toUpperCase()} `);
+    parts.push(`predicates: ${predicates}`);
+  }
+  return parts.length > 0 ? parts.join('; ') : 'all recordings';
+}
 
 /** Success/failure donut over labeled members. Direct-labelled legend + centered
  *  success rate; a 2px surface gap separates the two slices. */
@@ -62,9 +96,23 @@ function OutcomeDonut({
       <div className="relative" style={{ width: size, height: size }}>
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img">
           {fPct === 0 ? (
-            <circle cx={c} cy={c} r={r} fill="none" stroke={teal[600]} strokeWidth={stroke} />
+            <circle
+              cx={c}
+              cy={c}
+              r={r}
+              fill="none"
+              stroke={teal[600]}
+              strokeWidth={stroke}
+            />
           ) : sPct === 0 ? (
-            <circle cx={c} cy={c} r={r} fill="none" stroke={red[600]} strokeWidth={stroke} />
+            <circle
+              cx={c}
+              cy={c}
+              r={r}
+              fill="none"
+              stroke={red[600]}
+              strokeWidth={stroke}
+            />
           ) : (
             <>
               <circle
@@ -99,17 +147,25 @@ function OutcomeDonut({
           >
             {pct}%
           </span>
-          <span className="text-[10.5px] uppercase tracking-[0.05em] text-gray-400">success</span>
+          <span className="text-[10.5px] uppercase tracking-[0.05em] text-gray-500">
+            success
+          </span>
         </div>
       </div>
       <figcaption className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11.5px] text-gray-600">
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-teal-600" aria-hidden />✓{' '}
-          {success} success
+          <span
+            className="inline-block h-2.5 w-2.5 rounded-sm bg-teal-600"
+            aria-hidden
+          />
+          ✓ {success} success
         </span>
         <span className="flex items-center gap-1.5">
-          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-red-600" aria-hidden />✗{' '}
-          {failure} failure
+          <span
+            className="inline-block h-2.5 w-2.5 rounded-sm bg-red-600"
+            aria-hidden
+          />
+          ✗ {failure} failure
         </span>
       </figcaption>
     </figure>
@@ -136,14 +192,16 @@ function AvailabilitySection({
 
   return (
     <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
         Where the recordings are
-      </span>
+      </h3>
 
       {slices.length === 0 ? (
-        <span data-testid="dataset-availability-empty" className="text-[12px] text-gray-400">
-          No member capture is loaded, so nothing can be said about where the bytes
-          are.
+        <span
+          data-testid="dataset-availability-empty"
+          className="text-[12px] text-gray-500"
+        >
+          No member capture is loaded, so nothing can be said about where the bytes are.
         </span>
       ) : (
         <div
@@ -156,7 +214,12 @@ function AvailabilitySection({
               data-testid={`dataset-availability-${slice.kind}`}
               className="flex items-center gap-1.5 text-[12px] text-gray-600"
             >
-              <Badge tone={slice.tone} dot title={slice.detail} className="whitespace-nowrap">
+              <Badge
+                tone={slice.tone}
+                dot
+                title={slice.detail}
+                className="whitespace-nowrap"
+              >
                 {slice.label}
               </Badge>
               {slice.count}
@@ -166,7 +229,10 @@ function AvailabilitySection({
       )}
 
       {awaiting > 0 && (
-        <span data-testid="dataset-availability-awaiting" className="text-[11.5px] text-gray-500">
+        <span
+          data-testid="dataset-availability-awaiting"
+          className="text-[11.5px] text-gray-500"
+        >
           {awaiting} of these have no local copy yet. On a split deployment the bytes
           are pulled after the review — expected, not a failure.
         </span>
@@ -176,8 +242,8 @@ function AvailabilitySection({
           data-testid="dataset-availability-warn"
           className="text-[11.5px] font-semibold text-amber-700"
         >
-          {warn} need a look: the files vanished outside kairos, or a manifest cannot
-          be read.
+          {warn} need a look: the files vanished outside kairos, or a manifest cannot be
+          read.
         </span>
       )}
       {unresolved > 0 && (
@@ -186,14 +252,23 @@ function AvailabilitySection({
           className="text-[11.5px] font-semibold text-amber-700"
         >
           {memberCount(unresolved)} {unresolved === 1 ? 'has' : 'have'} no capture row
-          in the loaded catalog — nothing above describes {unresolved === 1 ? 'it' : 'them'}.
+          in the loaded catalog — nothing above describes{' '}
+          {unresolved === 1 ? 'it' : 'them'}.
         </span>
       )}
     </div>
   );
 }
 
-function StatTile({ value, label, title }: { value: string; label: string; title?: string }) {
+function StatTile({
+  value,
+  label,
+  title,
+}: {
+  value: string;
+  label: string;
+  title?: string;
+}) {
   return (
     <div
       title={title}
@@ -206,12 +281,20 @@ function StatTile({ value, label, title }: { value: string; label: string; title
       <span className="break-words font-mono text-[16px] font-semibold text-gray-900">
         {value}
       </span>
-      <span className="text-[11px] text-gray-400">{label}</span>
+      <span className="text-[11px] text-gray-500">{label}</span>
     </div>
   );
 }
 
-function QualityDot({ tone, label, count }: { tone: string; label: string; count: number }) {
+function QualityDot({
+  tone,
+  label,
+  count,
+}: {
+  tone: string;
+  label: string;
+  count: number;
+}) {
   return (
     <span className="flex items-center gap-1.5 whitespace-nowrap">
       <span className={`inline-block h-2.5 w-2.5 rounded-sm ${tone}`} aria-hidden />
@@ -224,17 +307,24 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
   const agg = scope.aggregate;
   const outcome = outcomeBreakdown(agg);
   const bytes = bytesSegment(agg);
+  const selectionRecipes = scope.selectionRecipes ?? [];
 
   return (
-    <div data-testid="dataset-scope-summary" className="flex min-w-0 flex-col gap-4 px-[18px] py-4">
+    <div
+      data-testid="dataset-scope-summary"
+      className="flex min-w-0 flex-col gap-4 px-[18px] py-4"
+    >
       <div className="flex flex-wrap items-baseline gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Summary
-        </span>
-        <span data-testid="dataset-summary-scope" className="text-[15px] font-bold text-gray-900">
+        </h3>
+        <span
+          data-testid="dataset-summary-scope"
+          className="text-[15px] font-bold text-gray-900"
+        >
           {scope.label}
         </span>
-        <span className="text-[11.5px] text-gray-400">
+        <span className="text-[11.5px] text-gray-500">
           {scope.kind === 'catalog'
             ? 'every member, across the datasets in view'
             : 'for this dataset'}
@@ -242,7 +332,7 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
       </div>
 
       {agg.memberCount === 0 ? (
-        <p data-testid="dataset-summary-empty" className="text-[13px] text-gray-400">
+        <p data-testid="dataset-summary-empty" className="text-[13px] text-gray-500">
           No members in this scope yet.
         </p>
       ) : (
@@ -260,8 +350,8 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
                 data-testid="dataset-donut-empty"
                 className="max-w-[190px] text-[12.5px] leading-relaxed text-gray-500"
               >
-                No task-result labels in this scope yet — there&apos;s no success/failure
-                rate to chart.
+                No task-result labels in this scope yet — there&apos;s no
+                success/failure rate to chart.
               </p>
             )}
 
@@ -273,7 +363,10 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
                 value={formatCount(agg.memberCount)}
                 label={memberNoun(agg.memberCount)}
               />
-              <StatTile value={formatCount(agg.availability.usable)} label="readable here" />
+              <StatTile
+                value={formatCount(agg.availability.usable)}
+                label="readable here"
+              />
               <StatTile
                 value={bytes ? bytes.text : '—'}
                 label="total size"
@@ -299,9 +392,83 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
           <AvailabilitySection agg={agg} unresolved={scope.unresolved} />
 
           <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
-            <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+              Recorded conditions
+            </h3>
+            <div
+              data-testid="dataset-summary-conditions"
+              className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-gray-600"
+            >
+              {scope.conditions.labels.map(({ value, count }) => (
+                <span key={value}>
+                  {value}: {count}
+                </span>
+              ))}
+              {scope.conditions.notRecorded > 0 && (
+                <span>Not recorded: {scope.conditions.notRecorded}</span>
+              )}
+              {scope.conditions.unavailable > 0 && (
+                <span>Unavailable: {scope.conditions.unavailable}</span>
+              )}
+            </div>
+          </div>
+
+          {scope.kind === 'dataset' && (
+            <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
+              <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+                Selection history
+              </h3>
+              {selectionRecipes.length === 0 ? (
+                <span
+                  data-testid="dataset-selection-recipes-empty"
+                  className="text-[12px] text-gray-500"
+                >
+                  No saved selection recipe.
+                </span>
+              ) : (
+                <ul
+                  data-testid="dataset-selection-recipes"
+                  className="space-y-1 text-[12px] text-gray-600"
+                >
+                  {selectionRecipes.map((recipe) => (
+                    <li key={recipe.recipe_id}>
+                      {formatWhen(recipe.recorded_at)} — {recipe.join.toUpperCase()}{' '}
+                      {recipe.conditions.length === 0
+                        ? 'all recordings'
+                        : recipe.conditions
+                            .map(
+                              (condition) =>
+                                `${condition.field} ${condition.operator} “${condition.value}”`,
+                            )
+                            .join(` ${recipe.join.toUpperCase()} `)}
+                      {'; '} {recipe.succeeded} added, {recipe.failed} failed from{' '}
+                      {recipe.matched} matched
+                      {recipe.bulk_run_id &&
+                        `; server run ${recipe.bulk_run_id}${
+                          recipe.attempt != null ? `, attempt ${recipe.attempt}` : ''
+                        }${recipe.cumulative ? ' (cumulative receipt)' : ''}`}
+                      {recipe.catalog_truncated &&
+                        ' — catalog was truncated; older recordings were not evaluated.'}
+                      {selectionQuerySummary(recipe.selection_query) && (
+                        <span
+                          data-testid={`dataset-selection-query-${recipe.recipe_id}`}
+                          className="mt-0.5 block break-words text-[11px] leading-relaxed text-gray-500"
+                        >
+                          Server selection:{' '}
+                          {selectionQuerySummary(recipe.selection_query)}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
+          <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
               Quality
-            </span>
+            </h3>
             {agg.qualityLabeledCount > 0 ? (
               <div
                 data-testid="dataset-summary-quality"
@@ -313,21 +480,33 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
                   label="Needs review"
                   count={agg.qualityNeedsReview}
                 />
-                <QualityDot tone="bg-red-600" label="Not usable" count={agg.qualityNotUsable} />
+                <QualityDot
+                  tone="bg-red-600"
+                  label="Not usable"
+                  count={agg.qualityNotUsable}
+                />
               </div>
             ) : (
-              <span className="text-[12px] text-gray-400">No quality labels in this scope.</span>
+              <span className="text-[12px] text-gray-500">
+                No quality labels in this scope.
+              </span>
             )}
             {outcome.unlabeled > 0 && (
-              <span data-testid="dataset-summary-unlabeled" className="text-[11.5px] text-gray-400">
+              <span
+                data-testid="dataset-summary-unlabeled"
+                className="text-[11.5px] text-gray-500"
+              >
                 {outcome.unlabeled} without labels — excluded from the success rate (not
                 counted as successes).
               </span>
             )}
             {agg.bytes.unknown > 0 && (
-              <span data-testid="dataset-summary-sizeless" className="text-[11.5px] text-gray-400">
-                {agg.bytes.unknown} report no size — {formatBytes(agg.bytes.total)} covers
-                the other {agg.bytes.known}.
+              <span
+                data-testid="dataset-summary-sizeless"
+                className="text-[11.5px] text-gray-500"
+              >
+                {agg.bytes.unknown} report no size — {formatBytes(agg.bytes.total)}{' '}
+                covers the other {agg.bytes.known}.
               </span>
             )}
           </div>

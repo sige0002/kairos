@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // The discard reason stays REQUIRED on the wire — the ledger line is the only
 // surviving explanation once the files are gone. What these cover is the typing
 // burden: during a collection session an operator discards obviously-bad takes

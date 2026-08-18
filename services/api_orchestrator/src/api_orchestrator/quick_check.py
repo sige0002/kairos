@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Stop-time quick-check settlement (Layer 0 + Layer 1 + verdict).
 
 At recording stop the orchestrator settles a lightweight two-layer "quick check"

@@ -132,7 +132,27 @@ export KAIROS_GIT_SHA
 # below. (The old COMPOSE_FILE-in-.env wiring is retired: an explicit -f
 # always overrode it, which made it a silent-breakage trap.)
 ARCHIVE_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*ARCHIVE_DIR=' .env 2>/dev/null && echo -f compose/archive.yaml),)
-COMPOSE      := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL)
+# LeRobot exporter opt-in (capture_store §6.2): same auto-wiring as the archive
+# override — the overlay is appended whenever .env sets LEROBOT_EXPORTER.
+# Where exports land on the host. EMPTY = the default ${DATA_DIR}/exports
+# (inside the data mount, no extra mount). When set, exports are relocated onto
+# another disk and compose/lerobot-exports.yaml is appended to mount it — hence
+# the second override below. Resolved here so `up` can also pre-create the dir
+# USER-owned: a bind mount Docker creates itself comes out root-owned, which the
+# uid-1000 exporter then cannot write.
+EXPORTS_DIR_LOCAL := $(if $(wildcard .env),$(shell grep -E '^[[:space:]]*EXPORTS_DIR=' .env 2>/dev/null | tail -1 | cut -d= -f2-),)
+LEROBOT_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*LEROBOT_EXPORTER=' .env 2>/dev/null && echo -f compose/lerobot.yaml),)
+LEROBOT_OVERRIDE_LOCAL += $(if $(and $(LEROBOT_OVERRIDE_LOCAL),$(EXPORTS_DIR_LOCAL)),-f compose/lerobot-exports.yaml,)
+COMPOSE      := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(LEROBOT_OVERRIDE_LOCAL)
+# The lerobot-exporter image installs a SITE-PROVIDED converter from
+# deploy/lerobot/converter (gitignored, optional — see deploy/lerobot/README.md).
+# For BUILD ONLY, drop the lerobot overlay when that tree is absent, so a build
+# skips the exporter (with a note) instead of failing every other image on a
+# "COPY failed". `up`/`restart` keep the full COMPOSE: a previously built
+# exporter image still runs regardless.
+_CONVERTER_PRESENT := $(wildcard deploy/lerobot/converter/pyproject.toml)
+BUILD_LEROBOT_OVERLAY := $(if $(_CONVERTER_PRESENT),$(LEROBOT_OVERRIDE_LOCAL),)
+BUILD_COMPOSE := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(BUILD_LEROBOT_OVERLAY)
 # Let the replay harness read the root .env too (so BAG / ROS_DISTRO / RMW set
 # there drive `make rosbag`), when a .env exists.
 TEST_COMPOSE := docker compose $(if $(wildcard .env),--env-file .env,) -f deploy/test/compose.yaml
@@ -161,14 +181,14 @@ ifneq ($(strip $(MSGS_OVERLAY_DIR)),)
 export MSGS_OVERLAY_DIR
 endif
 
-SERVICES := recorder monitor streamer probe orchestrator dora_runner frontend
+SERVICES := recorder monitor streamer probe orchestrator dora_runner frontend lerobot-exporter
 # Services named on the command line (e.g. `make build monitor`). Empty = all.
 # Override explicitly with SVC=monitor if you prefer.
 SVC ?= $(filter $(SERVICES),$(MAKECMDGOALS))
 
 PY_DIRS := libs/kairos_common services/rosbag2_recorder services/topic_monitor \
            services/topic_probe services/webrtc_streamer services/api_orchestrator \
-           services/dora_runner
+           services/dora_runner services/lerobot_exporter
 
 .DEFAULT_GOAL := help
 
@@ -206,6 +226,11 @@ endef
 .PHONY: up up-nobuild down build build-pull rebuild restart logs ps stop urls msgs-build
 up: ## start the stack detached, using existing images (RECORDING_CONFIG-aware)
 	$(call require_images,$(COMPOSE),build)
+	@# Pre-create the RELOCATED exports dir user-owned (a bind mount Docker makes
+	@# itself comes out root-owned). Only when EXPORTS_DIR is set: without it
+	@# exports live inside the data mount, which already exists — creating a
+	@# stray ./data/exports here would just be the stale default F7 removed.
+	@if [ -n "$(EXPORTS_DIR_LOCAL)" ]; then mkdir -p "$(EXPORTS_DIR_LOCAL)"; fi
 	$(COMPOSE) up -d $(SVC)
 	@$(MAKE) --no-print-directory urls
 
@@ -247,11 +272,34 @@ down: ## stop + remove the stack
 stop: ## stop the stack (keep containers)
 	$(COMPOSE) stop $(SVC)
 
+# The lerobot-exporter image needs a SITE-PROVIDED converter at
+# deploy/lerobot/converter (gitignored, not a submodule — see
+# deploy/lerobot/README.md). When it is absent the exporter is SKIPPED (with a
+# note), never a build failure — the feature is optional and every other image
+# must still build. BUILD_COMPOSE already drops the overlay in that case (so a
+# build-all does not reference the exporter); this also strips a named
+# `lerobot-exporter` from the service list, and if that was the ONLY thing
+# asked for, it exits cleanly rather than falling through to "build all".
+define _lerobot_build
+	@svc='$(SVC)'; \
+	 if [ -n "$(LEROBOT_OVERRIDE_LOCAL)" ] && [ -z "$(_CONVERTER_PRESENT)" ]; then \
+	   echo ">>> lerobot-exporter skipped: deploy/lerobot/converter is empty (optional feature)."; \
+	   echo ">>>   provide it:  git clone https://github.com/sige0002/rosbag2lerobot deploy/lerobot/converter"; \
+	   echo ">>>   (or your own fork). See deploy/lerobot/README.md."; \
+	   svc="$$(printf '%s\n' $$svc | grep -vx lerobot-exporter | tr '\n' ' ')"; \
+	   if [ -n "$$(printf '%s' '$(SVC)' | xargs)" ] && [ -z "$$(printf '%s' \"$$svc\" | xargs)" ]; then \
+	     exit 0; \
+	   fi; \
+	 fi; \
+	 $(BUILD_COMPOSE) $(1) $$svc
+
+endef
+
 build: ## build images: `make build` (all) or `make build monitor`
-	$(COMPOSE) build $(SVC)
+	$(call _lerobot_build,build)
 
 rebuild: ## rebuild + recreate service(s) — the "apply my code changes" command
-	$(COMPOSE) up -d --build --force-recreate $(SVC)
+	$(call _lerobot_build,up -d --build --force-recreate)
 
 build-pull: ## rebuild pulling FRESH base images (ros/python/node upstream). NEEDS NETWORK
 	$(COMPOSE) build --pull $(SVC)
@@ -478,10 +526,11 @@ test-fe: ## frontend build + test + lint
 #   make test-e2e E2E_ARGS='--headed'      # watch it
 #   make test-e2e E2E_ARGS=tests/03-discard.spec.ts
 #   make test-e2e-up / test-e2e-down       # keep the stack between runs
+#   E2E_REPLAY_DATA_DIR=/path/to/data make test-e2e  # linked worktree fixture
 #
 # Images are NOT built here (same rule as `up`): a stale image is a lie an
 # acceptance gate must not tell, so run `make build` after changing services/.
-.PHONY: test-e2e test-e2e-deps test-e2e-up test-e2e-down
+.PHONY: test-e2e test-e2e-deps test-e2e-harness test-e2e-up test-e2e-down
 test-e2e: test-e2e-deps ## UI acceptance suite (§13): real browser + real stack + replayed bag
 	@bash e2e/scripts/stack.sh up
 	@rc=0; (cd e2e && npx playwright test $(E2E_ARGS)) || rc=$$?; \
@@ -493,9 +542,12 @@ test-e2e: test-e2e-deps ## UI acceptance suite (§13): real browser + real stack
 
 # First run needs the network (npm + the chromium download). On an offline site
 # the browser rides in an image instead — see e2e/README.md.
-test-e2e-deps:
+test-e2e-deps: test-e2e-harness
 	@cd e2e && [ -d node_modules ] || npm install
 	@cd e2e && npx playwright install chromium
+
+test-e2e-harness: ## fast checks for E2E fixture fail-fast behavior
+	@bash e2e/scripts/stack.test.sh
 
 test-e2e-up: test-e2e-deps ## start the e2e stack and leave it up (iterate with `cd e2e && npx playwright test`)
 	@bash e2e/scripts/stack.sh up

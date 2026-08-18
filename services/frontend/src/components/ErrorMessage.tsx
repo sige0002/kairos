@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { ApiError } from '../api/client';
 
 /**
@@ -59,8 +61,8 @@ export function ErrorMessage({ error }: { error: unknown }) {
       className="rounded bg-red-50 px-3 py-2 text-sm text-red-700"
     >
       <p>{errorText(error)}</p>
-      {detail && <p className="mt-1 font-mono text-xs text-red-600">{detail}</p>}
-      {code && <p className="mt-0.5 font-mono text-xs text-red-600 opacity-70">({code})</p>}
+      {detail && <p className="mt-1 font-mono text-xs text-red-700">{detail}</p>}
+      {code && <p className="mt-0.5 font-mono text-xs text-red-900 opacity-75">({code})</p>}
     </div>
   );
 }

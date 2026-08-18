@@ -15,7 +15,11 @@ config/
 │  ├─ monitoring/alerts.yaml      # topic_monitor のアラート定義（任意・ALERT_CONFIG_PATH）
 │  ├─ validation/<option>.yaml    # fast_validation テンプレ
 │  ├─ validators/loss_report.yaml # validator パラメータ
-│  └─ flows/<flow>.yml            # full_validation の検証フロー（bagflow flow.yml）
+│  ├─ flows/<flow>.yml            # full_validation の検証フロー（bagflow flow.yml）
+│  └─ lerobot/<profile>.yaml      # LeRobot export のプロファイルライブラリ（§6.2。
+│                                 #   1 ファイル = 1 変換レシピ。Convert ダイアログは選ぶだけ。
+│                                 #   形式は rosbag2lerobot の robot config そのもの — task は
+│                                 #   ダミーを書く（実行時に必ず上書きされる）
 ├─ airoa_hsr/               # 同梱サンプル機体（HSR, data/airoa-moma-mcap/）
 ├─ template/                # 新機体の出発点（airoa_hsr を参考にコピー）
 └─ local/<robot>/           # 自分の機体（gitignored）

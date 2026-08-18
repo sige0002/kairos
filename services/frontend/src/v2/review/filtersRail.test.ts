@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test } from 'vitest';
 import {

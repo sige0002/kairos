@@ -109,6 +109,50 @@ class TestRejected:
             parse_pull_body(body)
 
 
+class _FakeProc:
+    """Stand-in for the Popen the sidecar drives (own process group, piped)."""
+
+    returncode = 0
+    pid = 4242
+
+    def communicate(self, timeout=None):  # noqa: ANN001, ANN202
+        return ("", None)
+
+
+class TestPullTracking:
+    """S3-1: pulls are tracked queued→running→ok|failed, and dedup covers the
+    RUNNING pull — a re-click during a long rsync must not queue a second
+    ``--append-verify`` transfer of the same files behind the first."""
+
+    def teardown_method(self) -> None:
+        importer._active = importer._NOTHING_ACTIVE
+        with importer._queued_lock:
+            importer._queued.clear()
+        while not importer._queue.empty():
+            importer._queue.get_nowait()
+        with importer._pulls_lock:
+            importer._pulls.clear()
+
+    def test_a_running_pull_cannot_be_double_queued(self) -> None:
+        importer._active = CAPTURE
+        assert importer._enqueue(CAPTURE) is False
+        importer._active = importer._NOTHING_ACTIVE
+        assert importer._enqueue(CAPTURE) is True
+        # The queued dedup is unchanged.
+        assert importer._enqueue(CAPTURE) is False
+
+    def test_the_last_outcome_stays_readable(self) -> None:
+        importer._record_pull(CAPTURE, state="failed", exit_code=4, reason="ssh")
+        entry = importer._pull_state(CAPTURE)
+        assert entry is not None
+        assert entry["state"] == "failed"
+        assert entry["exit_code"] == 4
+        assert entry["reason"] == "ssh"
+        assert "updated_at" in entry
+        other = "01920000-0000-7000-8000-00000000dead"
+        assert importer._pull_state(other) is None
+
+
 class TestJobKey:
     def test_the_script_is_driven_by_CAPTURE_ID(self, monkeypatch) -> None:
         """The env var the sidecar exports must be the one the script reads.
@@ -118,16 +162,11 @@ class TestJobKey:
         """
         captured: dict[str, str] = {}
 
-        class _Result:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        def fake_run(cmd, env, **kwargs):  # noqa: ANN001, ANN202
+        def fake_popen(cmd, env, **kwargs):  # noqa: ANN001, ANN202
             captured.update(env)
-            return _Result()
+            return _FakeProc()
 
-        monkeypatch.setattr(importer.subprocess, "run", fake_run)
+        monkeypatch.setattr(importer.subprocess, "Popen", fake_popen)
         importer._run_script(CAPTURE)
         assert captured["CAPTURE_ID"] == CAPTURE
         assert "RUN_ID" not in captured
@@ -135,17 +174,12 @@ class TestJobKey:
     def test_a_sweep_unsets_the_capture_key(self, monkeypatch) -> None:
         captured: dict[str, str] = {}
 
-        class _Result:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        def fake_run(cmd, env, **kwargs):  # noqa: ANN001, ANN202
+        def fake_popen(cmd, env, **kwargs):  # noqa: ANN001, ANN202
             captured.update(env)
-            return _Result()
+            return _FakeProc()
 
         monkeypatch.setenv("CAPTURE_ID", "leftover-from-a-previous-job")
-        monkeypatch.setattr(importer.subprocess, "run", fake_run)
+        monkeypatch.setattr(importer.subprocess, "Popen", fake_popen)
         importer._run_script(None)
         # A stale CAPTURE_ID would silently narrow a sweep to one capture.
         assert "CAPTURE_ID" not in captured

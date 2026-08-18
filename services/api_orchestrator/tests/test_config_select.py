@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """Config tab catalog: robot -> aspect -> option listing/selection + apply.
 
 Robot-first config tree: ``config/<robot>/<aspect>/*.yaml`` (committed) and
@@ -205,6 +207,32 @@ def test_select_local_robot(tmp_path: Path, fake_recorder) -> None:
         assert cfg["stream"] == {"columns": 2, "panes": []}
 
 
+def test_stream_editor_can_create_the_file_for_a_streamless_robot(
+    tmp_path: Path, fake_recorder
+) -> None:
+    """Selecting a robot with a config dir but no stream/ keeps a WRITE target.
+
+    Before 2026-08-12, only the startup path had one — after a select the
+    path went null and PUT answered 404, so whether the editor worked
+    depended on how the robot became active, not on the robot.
+    """
+    with _client(tmp_path, fake_recorder, _FakeDora()) as c:
+        c.post("/api/v1/config/select", json={"category": "robot", "id": "charlie"})
+        body = c.get("/api/v1/config/stream").json()
+        assert body["config"] is None
+        assert body["path"] is not None
+        assert body["path"].endswith("charlie/stream/default.yaml")
+
+        resp = c.put(
+            "/api/v1/config/stream",
+            json={"config": {"columns": 1, "panes": [{"topic": "/c/cam"}]}},
+        )
+        assert resp.status_code == 200
+        created = Path(body["path"])
+        assert created.exists()
+        assert c.get("/api/v1/config").json()["stream"]["columns"] == 1
+
+
 def test_select_bad_input(tmp_path: Path, fake_recorder) -> None:
     with _client(tmp_path, fake_recorder, _FakeDora()) as c:
         assert (
@@ -330,6 +358,76 @@ def test_robot_config_unknown_robot_is_404(tmp_path: Path, fake_recorder) -> Non
         assert c.get("/api/v1/config/robots/nope").status_code == 404
         # A path-traversal-ish name is not a known robot either.
         assert c.get("/api/v1/config/robots/local").status_code == 404
+
+
+def test_failed_select_rolls_back_the_selection(tmp_path: Path, fake_recorder) -> None:
+    """S1-3: a select whose files fail to load must be all-or-nothing.
+
+    Picking a robot with a broken recording YAML used to leave the catalog on
+    the NEW robot while the live recording config stayed the OLD robot's — the
+    switch "failed" on screen but every next capture was re-labelled anyway.
+    """
+    dora = _FakeDora()
+    with _client(tmp_path, fake_recorder, dora) as c:
+        # A robot whose recording config cannot parse (schema violation).
+        root = tmp_path / "config"
+        _write(
+            root / "delta/recording/default.yaml",
+            "robot_name: delta\ndefault_topics: not_a_list\n",
+        )
+        resp = c.post(
+            "/api/v1/config/select", json={"category": "robot", "id": "delta"}
+        )
+        assert resp.status_code == 422
+        assert resp.json()["error"]["code"] == "invalid_config"
+        # The selection rolled back with the failure: catalog AND live config
+        # still alpha's.
+        options = c.get("/api/v1/config/options").json()
+        assert options["active_robot"] == "alpha"
+        assert c.get("/api/v1/config").json()["defaults"]["default_topics"] == [
+            "/a",
+            "/b",
+        ]
+
+
+def test_start_payload_carries_the_live_qos_patterns(
+    tmp_path: Path, fake_recorder
+) -> None:
+    """S1-3: the live config's QoS patterns ride on every recorder start.
+
+    The recorder's own ``topic_qos_overrides`` were loaded at ITS startup; a
+    robot switch hot-swaps only the orchestrator's copy. Sending the live
+    patterns with the start is what makes the switch real for recording."""
+    dora = _FakeDora()
+    with _client(tmp_path, fake_recorder, dora) as c:
+        root = tmp_path / "config"
+        _write(
+            root / "alpha/recording/qos.yaml",
+            "robot_name: alpha\ndefault_topics: [/a, /b]\n"
+            "topic_qos_overrides:\n"
+            "  - {pattern: '/a*', reliability: reliable, "
+            "durability: volatile, depth: 5}\n",
+        )
+        c.post("/api/v1/config/select", json={"category": "recording", "id": "qos"})
+        assert c.post("/api/v1/record/start", json={"topics": ["/a"]}).status_code in (
+            200,
+            201,
+        )
+        assert fake_recorder.last_start_payload["qos_override_patterns"] == [
+            {
+                "pattern": "/a*",
+                "reliability": "reliable",
+                "durability": "volatile",
+                "depth": 5,
+            }
+        ]
+        c.post("/api/v1/record/stop")
+        # Switching back to the override-free option must ASSERT emptiness (an
+        # empty list, not an absent field): "no overrides" has to supersede a
+        # stale file on the recorder's side too.
+        c.post("/api/v1/config/select", json={"category": "recording", "id": "default"})
+        c.post("/api/v1/record/start", json={"topics": ["/a"]})
+        assert fake_recorder.last_start_payload["qos_override_patterns"] == []
 
 
 def test_explicit_template_is_not_overridden(tmp_path: Path, fake_recorder) -> None:

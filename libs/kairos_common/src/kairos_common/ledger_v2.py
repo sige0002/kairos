@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """lifecycle.jsonl v2: the append-only record of what was destroyed or declared.
 
 Contract §5. One JSON object per line at ``<data_dir>/lifecycle.jsonl``, newest
@@ -46,6 +48,7 @@ from pathlib import Path
 from typing import Any
 
 from kairos_common.atomic_io import fsync_dir
+from kairos_common.export_names import EXPORTS_DIRNAME, is_valid_export_segment
 from kairos_common.ids import new_event_id
 from kairos_common.time import utc_now_iso8601
 
@@ -98,6 +101,7 @@ DATASET_KINDS: frozenset[str] = frozenset(
     {
         "dataset_created",
         "dataset_updated",
+        "dataset_selection_recorded",
         "dataset_member_added",
         "dataset_member_removed",
         "dataset_deleted",
@@ -106,7 +110,18 @@ DATASET_KINDS: frozenset[str] = frozenset(
         # ``dataset_archived`` seals the run. Neither is a tombstone — like
         # ``capture_archived``, the data still exists, just not here.
         "dataset_archive_started",
+        # A halted start may be abandoned only before any member completed.
+        # This terminal-for-the-attempt fact lets replay release the frozen
+        # destination without pretending a partially moved archive rolled back.
+        "dataset_archive_canceled",
         "dataset_archived",
+        # A LeRobot export completed (§6.2). NON-terminal and not a tombstone:
+        # the dataset is untouched and the artifact is a derivative. Recorded
+        # so "what left this installation as training data, built from which
+        # captures, with which config" survives the exports/ folder itself
+        # being deleted or carried away. Replay ignores it (no row to rebuild —
+        # the output tree's own conversion_log.json is its source of truth).
+        "dataset_exported",
     }
 )
 
@@ -211,10 +226,16 @@ def build_event(
         _validate_archive_payload(payload)
     elif kind == "dataset_updated":
         _validate_dataset_updated_payload(payload)
+    elif kind == "dataset_selection_recorded":
+        _validate_dataset_selection_recorded_payload(payload)
     elif kind == "dataset_archive_started":
         _validate_dataset_archive_started_payload(payload)
+    elif kind == "dataset_archive_canceled":
+        _validate_dataset_archive_canceled_payload(payload)
     elif kind == "dataset_archived":
         _validate_dataset_archived_payload(payload)
+    elif kind == "dataset_exported":
+        _validate_dataset_exported_payload(payload)
     elif kind in BATCH_KINDS:
         _validate_batch_payload(kind, payload)
 
@@ -306,6 +327,43 @@ def _validate_archive_files(files: Any) -> None:
             )
 
 
+def _validate_dataset_exported_payload(payload: dict[str, Any]) -> None:
+    """Check a ``dataset_exported`` payload (§6.2): a completed LeRobot export.
+
+    ``output`` is data-root RELATIVE (``exports/<name>``) — an absolute path
+    would bake one mount point's view into a record that outlives every mount.
+    ``captures`` is the input snapshot: without it the line could not answer
+    "built from which recordings" once the dataset's membership changes.
+    """
+    for key in ("dataset_id", "export_id", "output"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"dataset_exported requires a non-empty {key}: {value!r}")
+    output = payload["output"]
+    # The invariant is exactly ``exports/<segment>`` — a data-root-relative path
+    # that stays inside the exports tree. Rejecting only a leading ``/`` let
+    # ``../outside`` and other traversal through: the record's own claim that it
+    # points at kairos-managed bytes would then be false.
+    parts = output.split("/")
+    if (
+        len(parts) != 2
+        or parts[0] != EXPORTS_DIRNAME
+        or not is_valid_export_segment(parts[1])
+    ):
+        raise ValueError(
+            f"dataset_exported output must be 'exports/<name>' with a safe name: "
+            f"{output!r}"
+        )
+    captures = payload.get("captures")
+    if not isinstance(captures, list) or not captures:
+        raise ValueError("dataset_exported requires a non-empty captures snapshot")
+    for entry in captures:
+        if not isinstance(entry, dict) or not entry.get("capture_id"):
+            raise ValueError(
+                f"dataset_exported captures[] entries need a capture_id: {entry!r}"
+            )
+
+
 def _validate_dataset_updated_payload(payload: dict[str, Any]) -> None:
     """Check a ``dataset_updated`` payload (§6): a label change.
 
@@ -321,6 +379,29 @@ def _validate_dataset_updated_payload(payload: dict[str, Any]) -> None:
         value = payload.get(key)
         if value is not None and not isinstance(value, str):
             raise ValueError(f"dataset_updated {key} must be str or absent: {value!r}")
+
+
+def _validate_dataset_selection_recorded_payload(payload: dict[str, Any]) -> None:
+    """Validate self-contained filtered Bulk Add provenance."""
+    _validate_dataset_updated_payload(payload)
+    recipe = payload.get("recipe")
+    if not isinstance(recipe, dict):
+        raise ValueError("dataset_selection_recorded requires a recipe object")
+    for key in ("recipe_id", "recorded_at"):
+        if not isinstance(recipe.get(key), str) or not recipe[key]:
+            raise ValueError(f"dataset_selection_recorded recipe requires {key}")
+    if recipe.get("kind") != "filtered_bulk" or recipe.get("join") not in {"and", "or"}:
+        raise ValueError("dataset_selection_recorded recipe kind/join is invalid")
+    conditions = recipe.get("conditions")
+    if not isinstance(conditions, list):
+        raise ValueError("dataset_selection_recorded recipe conditions must be a list")
+    for key in ("matched", "attempted", "succeeded", "failed"):
+        if not isinstance(recipe.get(key), int) or recipe[key] < 0:
+            raise ValueError(
+                f"dataset_selection_recorded recipe {key} must be non-negative"
+            )
+    if recipe["attempted"] != recipe["succeeded"] + recipe["failed"]:
+        raise ValueError("dataset_selection_recorded recipe counts do not match")
 
 
 def _validate_dataset_archive_started_payload(payload: dict[str, Any]) -> None:
@@ -370,6 +451,21 @@ def _validate_dataset_archive_started_payload(payload: dict[str, Any]) -> None:
                 f"dataset_archive_started members[].display_index must be a "
                 f"positive int: {entry!r}"
             )
+
+
+def _validate_dataset_archive_canceled_payload(payload: dict[str, Any]) -> None:
+    """Check a zero-progress archive attempt's durable cancellation."""
+    for key in ("dataset_id", "destination", "started_event_id"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(
+                f"dataset_archive_canceled requires a non-empty {key}: {value!r}"
+            )
+    reason = payload.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        raise ValueError(
+            f"dataset_archive_canceled reason must be str or absent: {reason!r}"
+        )
 
 
 def _validate_dataset_archived_payload(payload: dict[str, Any]) -> None:

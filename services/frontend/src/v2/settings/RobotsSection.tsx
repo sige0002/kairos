@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Settings > Robots — real robot selection + per-robot config (superseded the
 // retired v1 Config tab; the recording-config editor it embeds still lives in
 // src/features/config/ConfigTab.tsx). The middle column lists the real robots
@@ -18,6 +20,7 @@ import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getConfigOptions, getRobotConfig, selectConfig } from '../../api/config';
 import { stopRecord } from '../../api/record';
+import { confirmRecorderStopped } from '../captures/stopConfirm';
 import { queryKeys } from '../../api/queryKeys';
 import type { AspectOption, ConfigAspect, ConfigOptions } from '../../api/types';
 import { useRecordStatus } from '../captures/useRecordStatus';
@@ -26,6 +29,8 @@ import { Badge, Button, Card, Modal, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
 import { optionLabel, RecordingConfigEditor } from './RecordingConfigEditor';
+import { STREAM_CONFIG_PREFIX, StreamConfigEditor } from './StreamConfigEditor';
+import { SetupCheckPanel } from './SetupCheckPanel';
 
 const TOPIC_CHIP_CLASS =
   'inline-flex items-center gap-1.5 rounded-chip bg-teal-100 px-2.5 py-1 font-mono text-[11.5px] font-semibold text-teal-700';
@@ -54,6 +59,10 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
   const [addingRobot, setAddingRobot] = useState(false);
   // Robot activation is confirmed first when a recording is running.
   const [confirmActivate, setConfirmActivate] = useState(false);
+  // Shown after a robot switch in THIS session: the ROS services keep their
+  // startup configs until restarted, and pretending the switch was total is
+  // exactly how a mixed-config recording gets made without anyone knowing.
+  const [switchedRobot, setSwitchedRobot] = useState(false);
 
   const optionsQuery = useQuery({
     queryKey: queryKeys.configOptions,
@@ -71,19 +80,29 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
   const liveUnknown = recordStatus.live === null;
 
   const selectMutation = useMutation({
-    mutationFn: (vars: { category: string; id: string }) =>
-      selectConfig(vars),
-    onSuccess: (data) => {
+    mutationFn: (vars: { category: string; id: string }) => selectConfig(vars),
+    onSuccess: (data, vars) => {
       // Adopt the fresh options and refresh the runtime config + the editable
       // recording config that a robot / aspect switch re-points.
       queryClient.setQueryData(queryKeys.configOptions, data);
       queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
       queryClient.invalidateQueries({ queryKey: RECORDING_CONFIG_KEY });
+      // A robot or stream-option switch re-points the stream file too.
+      queryClient.invalidateQueries({ queryKey: STREAM_CONFIG_PREFIX });
+      if (vars.category === 'robot') setSwitchedRobot(true);
     },
   });
 
   const stopMutation = useMutation({
-    mutationFn: () => stopRecord(),
+    mutationFn: async () => {
+      const capture = await stopRecord();
+      // A 200 from /record/stop is not proof the recorder stopped (it answers
+      // with the last capture when nothing is active). Confirm through the
+      // same polling loop Collect's SAVING gate uses — switching configs while
+      // the recorder is still flushing would hot-swap the recording's config
+      // out from under it mid-write.
+      await confirmRecorderStopped(capture?.capture_id ?? null);
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
     },
@@ -126,15 +145,17 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
     <>
       <Card className="flex flex-col overflow-auto" data-testid="robots-list">
         <div className="border-b border-gray-100 px-4 py-[13px]">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
             Robots
-          </span>
+          </h2>
         </div>
         <div className="flex flex-col gap-1.5 p-3">
           {optionsQuery.isError ? (
             <ErrorMessage error={optionsQuery.error} />
           ) : !data ? (
-            <span className="px-1 py-2 text-[12.5px] text-gray-400">Loading robots…</span>
+            <span className="px-1 py-2 text-[12.5px] text-gray-500">
+              Loading robots…
+            </span>
           ) : (
             data.robots.map((r, i) => {
               const on = !addingRobot && r.id === selectedRobotId;
@@ -149,10 +170,14 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
                   onClick={() => selectRow(r.id)}
                   className={cn(
                     'flex items-center gap-2 rounded-[11px] border px-[13px] py-[11px] text-left',
-                    on ? 'border-teal-200 bg-teal-50' : 'border-gray-100 hover:bg-gray-50',
+                    on
+                      ? 'border-teal-200 bg-teal-50'
+                      : 'border-gray-100 hover:bg-gray-50',
                   )}
                 >
-                  <span className="font-mono text-[13px] font-semibold text-gray-900">{r.id}</span>
+                  <span className="font-mono text-[13px] font-semibold text-gray-900">
+                    {r.id}
+                  </span>
                   <div className="flex-1" />
                   {active && (
                     <Badge tone="green" dot>
@@ -181,15 +206,15 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
       <Card className="flex min-w-0 flex-col overflow-auto" data-testid="robot-form">
         <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-[13px]">
           {addingRobot ? (
-            <span className="text-[15px] font-bold text-gray-900">Add robot</span>
+            <h2 className="text-[15px] font-bold text-gray-900">Add robot</h2>
           ) : (
             <>
-              <span
+              <h2
                 data-testid="robot-form-name"
                 className="font-mono text-[15px] font-bold text-gray-900"
               >
                 {selectedRobotId ?? '—'}
-              </span>
+              </h2>
               {isActive ? (
                 <Badge tone="green" dot>
                   active
@@ -207,7 +232,7 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
                   'h-9 rounded-control px-[18px] text-[13px] font-bold transition-colors',
                   isActive
                     ? 'cursor-default bg-gray-100 text-gray-400'
-                    : 'bg-teal-600 text-white shadow-btn hover:bg-teal-700 disabled:opacity-50',
+                    : 'bg-teal-700 text-white shadow-btn hover:bg-teal-800 disabled:opacity-50',
                 )}
               >
                 {isActive ? 'Active' : switching ? 'Activating…' : 'Use this robot'}
@@ -228,7 +253,19 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
           <div className="p-[18px] text-sm text-gray-500">Select a robot.</div>
         ) : isActive ? (
           <div className="flex flex-col gap-4 p-[18px]">
+            {switchedRobot && (
+              <div
+                data-testid="robot-switch-note"
+                className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800"
+              >
+                Robot switched. Recording topics and QoS follow the new selection from
+                the next start. The ROS services (monitor, streamer, probe) keep the
+                previous robot&apos;s startup config until they are restarted —{' '}
+                <span className="font-mono">make restart monitor streamer probe</span>.
+              </div>
+            )}
             <ActiveRobotDetail config={config} />
+            <SetupCheckPanel />
             <AspectPickers
               data={data!}
               selecting={switching}
@@ -242,7 +279,20 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
                 <RecordingConfigEditor config={config} />
               ) : (
                 <p className="text-sm text-gray-500">
-                  Recording config is unavailable — the runtime config could not be loaded.
+                  Recording config is unavailable — the runtime config could not be
+                  loaded.
+                </p>
+              )}
+            </div>
+            <div>
+              <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+                Stream config
+              </h3>
+              {config ? (
+                <StreamConfigEditor config={config} />
+              ) : (
+                <p className="text-sm text-gray-500">
+                  Stream config is unavailable — the runtime config could not be loaded.
                 </p>
               )}
             </div>
@@ -258,11 +308,19 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
         title="Switch robots?"
         footer={
           <>
-            <Button variant="ghost" onClick={() => setConfirmActivate(false)} disabled={switching}>
+            <Button
+              variant="ghost"
+              onClick={() => setConfirmActivate(false)}
+              disabled={switching}
+            >
               Cancel
             </Button>
             <Button variant="danger" onClick={stopAndSwitch} disabled={switching}>
-              {switching ? 'Switching…' : 'Stop & switch'}
+              {stopMutation.isPending
+                ? 'Stopping…'
+                : switching
+                  ? 'Switching…'
+                  : 'Stop & switch'}
             </Button>
           </>
         }
@@ -286,9 +344,10 @@ function AddRobotExplainer() {
     <div className="flex flex-col gap-3 p-[18px]" data-testid="robot-add-explainer">
       <p className="text-sm leading-relaxed text-gray-600">
         Adding a robot means creating a{' '}
-        <span className="font-mono text-gray-800">config/&lt;robot&gt;/</span> folder on the server
-        (recording / stream / validation / validators YAML). There&apos;s no in-console create yet.
-        Meanwhile, select any robot below to inspect its config as a template.
+        <span className="font-mono text-gray-800">config/&lt;robot&gt;/</span> folder on
+        the server (recording / stream / validation / validators YAML). There&apos;s no
+        in-console create yet. Meanwhile, select any robot below to inspect its config
+        as a template.
       </p>
     </div>
   );
@@ -308,7 +367,11 @@ function ActiveRobotDetail({ config }: { config: RuntimeConfig | undefined }) {
           <span className="text-gray-500">GET /api/v1/config · read-only</span>
         </Field>
       </div>
-      <TopicChips topics={topics} summaryTestId="robot-topics-summary" chipsTestId="robot-topic-chips" />
+      <TopicChips
+        topics={topics}
+        summaryTestId="robot-topics-summary"
+        chipsTestId="robot-topic-chips"
+      />
     </div>
   );
 }
@@ -317,8 +380,7 @@ function ActiveRobotDetail({ config }: { config: RuntimeConfig | undefined }) {
 function ReadOnlyRobotDetail({ robot }: { robot: string }) {
   const query = useQuery({
     queryKey: queryKeys.configRobot(robot),
-    queryFn: ({ signal }) =>
-      getRobotConfig(robot, { signal }),
+    queryFn: ({ signal }) => getRobotConfig(robot, { signal }),
   });
 
   return (
@@ -327,8 +389,8 @@ function ReadOnlyRobotDetail({ robot }: { robot: string }) {
         data-testid="robot-readonly-banner"
         className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800"
       >
-        Read-only — <span className="font-mono">{robot}</span> is not the active robot. Activate it
-        to edit.
+        Read-only — <span className="font-mono">{robot}</span> is not the active robot.
+        Activate it to edit.
       </div>
 
       {query.isError ? (
@@ -344,7 +406,9 @@ function ReadOnlyRobotDetail({ robot }: { robot: string }) {
                 : '—'}
             </Field>
             <Field label="Config source">
-              <span className="text-gray-500">GET /api/v1/config/robots · read-only</span>
+              <span className="text-gray-500">
+                GET /api/v1/config/robots · read-only
+              </span>
             </Field>
           </div>
           <TopicChips
@@ -362,12 +426,37 @@ function ReadOnlyRobotDetail({ robot }: { robot: string }) {
               readOnly
               disabled
               spellCheck={false}
-              value={JSON.stringify(query.data.aspects.recording?.content ?? {}, null, 2)}
+              value={JSON.stringify(
+                query.data.aspects.recording?.content ?? {},
+                null,
+                2,
+              )}
               className="h-80 w-full rounded-control border border-gray-200 bg-gray-50 p-2 font-mono text-xs text-gray-600"
             />
-            <p className="mt-1.5 text-xs text-gray-400">
+            <p className="mt-1.5 text-xs text-gray-500">
               Shown as a template. Activate {robot} to edit its recording config.
             </p>
+          </div>
+          <div>
+            <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+              Stream config
+            </h3>
+            {query.data.aspects.stream ? (
+              <textarea
+                aria-label="stream config json (read-only)"
+                data-testid="robot-readonly-stream-config"
+                readOnly
+                disabled
+                spellCheck={false}
+                value={JSON.stringify(query.data.aspects.stream.content ?? {}, null, 2)}
+                className="h-40 w-full rounded-control border border-gray-200 bg-gray-50 p-2 font-mono text-xs text-gray-600"
+              />
+            ) : (
+              <p className="text-sm text-gray-500">
+                {robot} has no stream config (the Collect camera grid falls back to one
+                empty pane).
+              </p>
+            )}
           </div>
         </>
       )}
@@ -389,7 +478,10 @@ function TopicChips({
     <div className="flex flex-col gap-[7px]">
       <div className="flex items-center gap-2">
         <span className="text-xs font-semibold text-gray-700">Recorded topics</span>
-        <span data-testid={summaryTestId} className="font-mono text-[11.5px] text-gray-400">
+        <span
+          data-testid={summaryTestId}
+          className="font-mono text-[11.5px] text-gray-500"
+        >
           {topics.length
             ? `${topics.length} recorded topic${topics.length === 1 ? '' : 's'}`
             : 'none configured'}
@@ -430,17 +522,21 @@ function AspectPickers({
           return (
             <label key={aspect} className="flex flex-col gap-1.5 text-sm">
               <span className="flex flex-wrap items-center gap-2">
-                <span className="font-medium text-gray-700">{ASPECT_LABEL[aspect]}</span>
+                <span className="font-medium text-gray-700">
+                  {ASPECT_LABEL[aspect]}
+                </span>
                 <Badge tone={IMMEDIATE[aspect] ? 'green' : 'gray'} dot>
                   {IMMEDIATE[aspect] ? 'applies immediately' : 'applies on restart'}
                 </Badge>
               </span>
               {options.length === 0 ? (
-                <span className="text-[12.5px] text-gray-400">No options for this robot.</span>
+                <span className="text-[12.5px] text-gray-500">
+                  No options for this robot.
+                </span>
               ) : (
                 <select
                   aria-label={`${aspect} option`}
-                  className="rounded-control border border-gray-200 px-2 py-1.5 font-mono text-[12.5px] focus:border-teal-500 focus:outline-none disabled:opacity-50"
+                  className="rounded-control border border-gray-200 px-2 py-1.5 font-mono text-[12.5px] focus:border-teal-600 focus:outline-none disabled:opacity-50"
                   value={state.active}
                   disabled={selecting}
                   onChange={(e) => onSelect(aspect, e.target.value)}

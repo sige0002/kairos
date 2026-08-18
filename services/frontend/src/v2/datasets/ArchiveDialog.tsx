@@ -1,12 +1,15 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Archive one capture to an allow-listed path (§6). This is the only control on
 // the screen that moves data OFF this machine, so the dialog's job is to make
 // the consequence unmissable before it starts:
 //
 //   copy -> verify (sha256) -> then remove from this machine
 //
-// It is NOT a job. The request returns the finished result — bytes copied and
-// whether they verified — so there is no progress to poll and nothing that keeps
-// running after the dialog closes.
+// The run executes SERVER-SIDE (202 + progress poll, S2-1): a multi-GB copy
+// outlives any proxy timeout, so waiting on the request reported "failed" for
+// archives the server completed — and then deleted the source of. The dialog
+// shows the copy's live progress and stays open until the run ends.
 //
 // The destination is not free text: the deployment configures the roots
 // (KAIROS_ARCHIVE_ROOTS) and the operator picks a subpath under one. That is a
@@ -63,8 +66,22 @@ export function ArchiveDialog({ state }: { state: DatasetsState }) {
           <span className="font-semibold text-gray-800">
             Only after it verifies is the copy here removed.
           </span>{' '}
-          The catalog keeps the capture and records where it went.
+          The catalog keeps the capture and records where it went. The copy runs
+          on the server — a large recording takes a while, and progress is shown
+          here.
         </p>
+
+        {state.archiving && state.archiveProgress && (
+          <p
+            data-testid="archive-progress"
+            className="font-mono text-[12px] text-gray-600"
+          >
+            Copying… {(state.archiveProgress.done / 1_000_000).toFixed(0)} MB
+            {state.archiveProgress.total != null
+              ? ` of ${(state.archiveProgress.total / 1_000_000).toFixed(0)} MB`
+              : ''}
+          </p>
+        )}
 
         <label className="flex flex-col gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
@@ -104,7 +121,7 @@ export function ArchiveDialog({ state }: { state: DatasetsState }) {
             spellCheck={false}
             className="rounded-control border border-gray-200 bg-white px-2 py-1.5 font-mono text-[12px] text-gray-700"
           />
-          <span className="text-[11px] text-gray-400">
+          <span className="text-[11px] text-gray-500">
             Defaults to the operator / task the recording itself records, so an
             archive stays navigable by the same names the catalog uses.
           </span>
@@ -131,7 +148,7 @@ export function ArchiveDialog({ state }: { state: DatasetsState }) {
 
         <label className="flex flex-col gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-            Reason <span className="font-normal normal-case text-gray-400">(optional)</span>
+            Reason <span className="font-normal normal-case text-gray-500">(optional)</span>
           </span>
           <input
             data-testid="archive-reason"

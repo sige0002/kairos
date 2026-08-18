@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """``fast_validation`` — the required-topic gate, running on bagflow/dora.
 
 This is the pipeline every recording goes through: *does this bag contain the
@@ -20,6 +22,7 @@ any other pipeline.
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -186,6 +189,7 @@ async def run_fast_validation(
     template: ValidationTemplate,
     flow: str = DEFAULT_FLOW,
     timeout_s: float | None = None,
+    cancel_event: threading.Event | None = None,
 ) -> dict[str, Any]:
     """Run the required-topic gate over one capture; return the job result."""
     return await run_bagflow_pipeline(
@@ -199,4 +203,5 @@ async def run_fast_validation(
         template=template,
         flow_dirs=flow_search_dirs(),
         timeout_s=timeout_s,
+        cancel_event=cancel_event,
     )

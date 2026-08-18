@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 Sadasue Yuki
 """The data directory's shape, and the filesystem invariants that depend on it.
 
 Contract §2. Everything the capture store does to disk goes through here, so
@@ -55,6 +57,7 @@ logger = logging.getLogger("kairos")
 VIEWS_DIRNAME = "views"
 REPORT_DIRNAME = "report"
 CATALOG_DIRNAME = "catalog"
+EXPORTS_DIRNAME = "exports"
 DB_FILENAME = "kairos.db"
 
 # Identifies the physical volume the data directory lives on. Compared before
@@ -82,6 +85,7 @@ RESERVED_NAMES: frozenset[str] = frozenset(
         INCOMING_DIRNAME,
         REPORT_DIRNAME,
         CATALOG_DIRNAME,
+        EXPORTS_DIRNAME,
         "lifecycle.jsonl",
         "instance.json",
         DB_FILENAME,
@@ -387,13 +391,19 @@ def digest_input_files(capture_dir: Path) -> list[Path]:
     digest change every time an operator edited a review, which would turn the
     digest from "these bytes are intact" into "nobody has touched anything",
     and make every replica comparison fail after a routine edit.
+    ``quick_check.json`` is excluded for the timing variant of the same
+    reason: settlement writes it AFTER the stop, on its own clock, so a digest
+    that sealed before settlement landed would disagree with every later
+    verification of the same directory — the S3-3 comparison would then read
+    a derived sidecar's arrival as corruption of the recording.
     """
     from kairos_common.capture_sidecars import (
         OBJECT_MANIFEST_FILENAME,
+        QUICK_CHECK_FILENAME,
         RECORD_FILENAME,
     )
 
-    excluded = {OBJECT_MANIFEST_FILENAME, RECORD_FILENAME}
+    excluded = {OBJECT_MANIFEST_FILENAME, RECORD_FILENAME, QUICK_CHECK_FILENAME}
     files: list[Path] = []
     for child in sorted(capture_dir.rglob("*")):
         if child.is_symlink() or not child.is_file():

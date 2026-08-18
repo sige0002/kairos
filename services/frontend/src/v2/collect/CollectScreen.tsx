@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 Sadasue Yuki
 // Collect screen: the operator's recording console. Batch/episode/phase state
 // is a frontend-local machine (useBatchMachine) — the backend has no
 // Session/Batch/Episode model yet (Phase 2). Start/Stop are real orchestrator
@@ -26,6 +28,7 @@ import { COL_GAP } from './compact';
 import { useBatchMachine, type BatchMachine } from './useBatchMachine';
 import { Card, cn } from '../../components/ui';
 import { formatBytes, formatHms, formatTimeOfDay } from '../review/format';
+import { ScreenTitle } from '../shared/ScreenTitle';
 
 // Recovery banner (D-3) for a take stopped but never saved (e.g. a reload
 // between Stop and Save). Sits above the control card until the operator labels,
@@ -75,7 +78,7 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
         <button
           type="button"
           onClick={machine.labelUnsavedTake}
-          className="h-9 [@media(max-height:860px)]:h-8 rounded-control bg-teal-600 px-3.5 text-[12.5px] font-bold text-white hover:bg-teal-700"
+          className="h-9 [@media(max-height:860px)]:h-8 rounded-control bg-teal-700 px-3.5 text-[12.5px] font-bold text-white hover:bg-teal-800"
         >
           Label it
         </button>
@@ -134,7 +137,12 @@ export function CollectScreen() {
   }, []);
 
   if (!config) {
-    return <div className="p-4 text-sm text-gray-400">Loading…</div>;
+    return (
+      <>
+        <ScreenTitle>Collect</ScreenTitle>
+        <div className="p-4 text-sm text-gray-500">Loading…</div>
+      </>
+    );
   }
 
   return (
@@ -166,6 +174,7 @@ export function CollectScreen() {
         COL_GAP,
       )}
     >
+      <ScreenTitle>Collect</ScreenTitle>
       <ContextBar machine={machine} />
       <div
         className={cn(
@@ -204,7 +213,11 @@ export function CollectScreen() {
               monitorBridge={monitorBridge}
               cameraHealth={cameraHealth}
             />
-            <WarningsCard machine={machine} defaultTopics={defaultTopics} />
+            <WarningsCard
+              machine={machine}
+              defaultTopics={defaultTopics}
+              config={config}
+            />
             <AdviceCard machine={machine} />
             <BatchStatsCard machine={machine} />
             <CoverageCard machine={machine} />
