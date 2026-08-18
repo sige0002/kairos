@@ -145,6 +145,9 @@ def test_collection_context_survives_a_manifest_write_read_cycle(
     context = CollectionContextSnapshotV1(
         batch_id="batch_20260802_101500",
         batch_seq=4,
+        project_id="project-kitchen",
+        task_id="task-pick",
+        condition_id="condition-low-light",
         project="kitchen",
         task="pick",
         condition="low_light",
@@ -160,6 +163,9 @@ def test_collection_context_survives_a_manifest_write_read_cycle(
     assert payload["collection_context"] == {
         "batch_id": "batch_20260802_101500",
         "batch_seq": 4,
+        "project_id": "project-kitchen",
+        "task_id": "task-pick",
+        "condition_id": "condition-low-light",
         "project": "kitchen",
         "task": "pick",
         "condition": "low_light",

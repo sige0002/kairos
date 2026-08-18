@@ -33,6 +33,8 @@ import type {
   DatasetUpdateRequest,
   DatasetListResponse,
   DatasetMember,
+  DatasetSelectionRecipe,
+  DatasetSelectionRecipeCreateRequest,
   Page,
   ReviewSaveRequest,
   StoreHealth,
@@ -218,6 +220,16 @@ export function addDatasetMember(
   return apiPost<DatasetMember>(
     `/datasets/${encodeURIComponent(datasetId)}/members`,
     { capture_id: captureId },
+  );
+}
+
+export function recordDatasetSelectionRecipe(
+  datasetId: string,
+  body: DatasetSelectionRecipeCreateRequest,
+): Promise<DatasetSelectionRecipe> {
+  return apiPost<DatasetSelectionRecipe>(
+    `/datasets/${encodeURIComponent(datasetId)}/selection-recipes`,
+    body,
   );
 }
 

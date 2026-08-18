@@ -403,6 +403,9 @@ test('relabels an empty active batch when its remote collection context differs'
   ).toEqual({
     robot: 'robot-a',
     operator: 'operator-a',
+    project_id: null,
+    task_id: null,
+    condition_id: null,
     project: 'Project',
     task: 'Task',
     condition: 'Condition',

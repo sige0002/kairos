@@ -13,6 +13,7 @@ import { apiGet, apiPatch, apiPost } from './client';
 import type {
   Batch,
   BatchCoverageResponse,
+  BatchCoverageScope,
   BatchCreateRequest,
   BatchDetail,
   BatchListResponse,
@@ -60,12 +61,18 @@ export function listBatches(
  * be adding up unrelated work.
  */
 export function getBatchCoverage(
-  task: string,
+  requestedScope: BatchCoverageScope | string,
   signal?: AbortSignal,
 ): Promise<BatchCoverageResponse> {
+  const scope: BatchCoverageScope =
+    typeof requestedScope === 'string' ? { task: requestedScope } : requestedScope;
+  const query: Record<string, string> = {};
+  for (const [name, value] of Object.entries(scope)) {
+    if (typeof value === 'string' && value) query[name] = value;
+  }
   return apiGet<BatchCoverageResponse>('/batches/coverage', {
     signal,
-    query: { task },
+    query,
   });
 }
 

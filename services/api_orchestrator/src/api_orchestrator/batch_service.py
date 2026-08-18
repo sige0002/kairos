@@ -46,6 +46,9 @@ logger = logging.getLogger("kairos")
 # only the last one, and a lost line cannot leave a half-applied edit.
 EDITABLE_FIELDS = (
     "robot",
+    "project_id",
+    "task_id",
+    "condition_id",
     "project",
     "task",
     "condition",
@@ -85,6 +88,9 @@ class BatchService:
         payload: dict[str, Any] = {
             "batch_id": created.batch_id,
             "batch_seq": created.batch_seq,
+            "project_id": created.project_id,
+            "task_id": created.task_id,
+            "condition_id": created.condition_id,
             "project": created.project,
             "task": created.task,
             "target_episodes": created.target_episodes,
@@ -121,6 +127,9 @@ class BatchService:
                 {
                     "batch_id": batch_id,
                     "robot": updated.robot,
+                    "project_id": updated.project_id,
+                    "task_id": updated.task_id,
+                    "condition_id": updated.condition_id,
                     "project": updated.project,
                     "task": updated.task,
                     "condition": updated.condition,
@@ -294,6 +303,9 @@ def _batch_from_event(batch_id: str, event: dict[str, Any]) -> Batch:
     return Batch(
         batch_id=batch_id,
         robot=_opt_str(event.get("robot")),
+        project_id=_opt_str(event.get("project_id")),
+        task_id=_opt_str(event.get("task_id")),
+        condition_id=_opt_str(event.get("condition_id")),
         project=_opt_str(event.get("project")),
         task=_opt_str(event.get("task")),
         condition=_opt_str(event.get("condition")),

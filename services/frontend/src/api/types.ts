@@ -106,6 +106,9 @@ export interface ApiErrorBody {
 export interface CollectionContextSnapshot {
   batch_id: string | null;
   batch_seq: number | null;
+  project_id: string | null;
+  task_id: string | null;
+  condition_id: string | null;
   project: string | null;
   task: string | null;
   condition: string | null;
@@ -563,6 +566,37 @@ export interface Dataset {
   archive_mode?: string | null;
   archive_started_at?: string | null;
   archived_at?: string | null;
+  selection_recipes?: DatasetSelectionRecipe[];
+}
+
+export interface DatasetSelectionCondition {
+  field: 'any' | 'operator' | 'task' | 'condition' | 'run_id' | 'capture_id' | 'task_result';
+  operator: 'contains' | 'equals';
+  value: string;
+}
+
+export interface DatasetSelectionRecipe {
+  recipe_id: string;
+  recorded_at: string;
+  kind: 'filtered_bulk';
+  join: 'and' | 'or';
+  conditions: DatasetSelectionCondition[];
+  matched: number;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  catalog_truncated: boolean;
+}
+
+export interface DatasetSelectionRecipeCreateRequest {
+  kind: 'filtered_bulk';
+  join: 'and' | 'or';
+  conditions: DatasetSelectionCondition[];
+  matched: number;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  catalog_truncated: boolean;
 }
 
 /** One capture's membership in a dataset. `display_index` is the number shown
@@ -1364,6 +1398,9 @@ export type BatchStatus = 'active' | 'completed' | 'ended_early';
 export interface Batch {
   batch_id: string;
   robot?: string | null;
+  project_id?: string | null;
+  task_id?: string | null;
+  condition_id?: string | null;
   /** Nullable since 2026-08-06: a deployment with an empty plan catalog has no
    *  project to name, and Collect used to send the `'—'` placeholder it
    *  DISPLAYS — writing a fabricated label into the shared catalog for good.
@@ -1426,6 +1463,7 @@ export interface BatchListResponse {
 /** One condition's recorded total for a task (`GET /api/v1/batches/coverage`). */
 export interface CoverageRow {
   condition: string;
+  condition_id?: string | null;
   /** Sum of the batches' monotone `episodes_recorded` for this condition. */
   recorded: number;
   /** True when ANY batch in the sum carries `episodes_recorded_is_floor`. A sum
@@ -1442,12 +1480,27 @@ export interface CoverageRow {
  *  rows: the plan catalog is a client-side vocabulary, and a server inventing
  *  rows for it would be reporting a plan rather than a measurement. */
 export interface BatchCoverageResponse {
-  task: string;
+  task?: string | null;
+  scope: BatchCoverageScope;
   rows: CoverageRow[];
+}
+
+export interface BatchCoverageScope {
+  project_id?: string | null;
+  project?: string | null;
+  task_id?: string | null;
+  task?: string | null;
+  robot?: string | null;
+  operator?: string | null;
+  created_from?: string | null;
+  created_to?: string | null;
 }
 
 export interface BatchCreateRequest {
   robot?: string | null;
+  project_id?: string | null;
+  task_id?: string | null;
+  condition_id?: string | null;
   /** Omit (or send `null`) when there is no plan to name — never the display
    *  placeholder. See `Batch.project`. */
   project?: string | null;
@@ -1462,6 +1515,9 @@ export interface BatchPatchRequest {
   ended_reason?: string | null;
   /** Empty-batch identity update after an operator or robot switch. */
   robot?: string | null;
+  project_id?: string | null;
+  task_id?: string | null;
+  condition_id?: string | null;
   operator?: string | null;
   /** Empty-batch re-label only: Collect PATCHes project/task when the operator
    *  switches them before the batch's first recording (a batch with recordings

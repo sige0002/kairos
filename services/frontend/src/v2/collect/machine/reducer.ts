@@ -102,7 +102,7 @@ function createInitialState(): MachineState {
     lastCaptureId: null,
     project: firstPlan?.name ?? null,
     task: firstTask?.name ?? null,
-    condition: firstTask?.conditions[0] ?? '—',
+    condition: firstTask?.conditions[0]?.name ?? '—',
     endReason: '',
   };
 }

@@ -21,8 +21,11 @@ def _batch(client: TestClient) -> dict[str, object]:
         "/api/v1/batches",
         json={
             "project": "project-a",
+            "project_id": "project-a-id",
             "task": "pick",
+            "task_id": "pick-id",
             "condition": "dry",
+            "condition_id": "dry-id",
             "operator": "operator-a",
         },
     )
@@ -36,6 +39,9 @@ def _context(batch: dict[str, object]) -> dict[str, object]:
         for name in (
             "batch_id",
             "batch_seq",
+            "project_id",
+            "task_id",
+            "condition_id",
             "project",
             "task",
             "condition",
@@ -89,6 +95,28 @@ def test_start_rejects_context_that_disagrees_with_recording_labels(
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "collection_context_operator_mismatch"
+    assert fake_recorder.last_start_payload is None
+
+
+def test_start_rejects_a_stale_canonical_context_id(
+    client: TestClient, fake_recorder: FakeRecorder
+) -> None:
+    batch = _batch(client)
+    context = _context(batch)
+    context["condition_id"] = "condition-stale-id"
+
+    response = client.post(
+        "/api/v1/record/start",
+        json={
+            "topics": ["/joint_states"],
+            "operator": "operator-a",
+            "task": "pick",
+            "collection_context": context,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "batch_condition_id_mismatch"
     assert fake_recorder.last_start_payload is None
 
 

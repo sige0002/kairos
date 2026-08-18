@@ -163,6 +163,16 @@ export function BuildRail({ state }: { state: DatasetsState }) {
           Recordings
         </h3>
         <CandidateFilterBuilder state={state} />
+        {state.unresolvedLegacyConditionCount > 0 && (
+          <p
+            data-testid="dataset-legacy-condition-excluded"
+            className="text-[11px] leading-relaxed text-amber-700"
+          >
+            {state.unresolvedLegacyConditionCount} legacy recording
+            {state.unresolvedLegacyConditionCount === 1 ? '' : 's'} could not be evaluated
+            and will not be included.
+          </p>
+        )}
         <button
           type="button"
           data-testid="dataset-bulk-add-open"
@@ -172,12 +182,7 @@ export function BuildRail({ state }: { state: DatasetsState }) {
             state.isDatasetFrozen(target.dataset.dataset_id) ||
             state.bulkAddAvailableCount === 0 ||
             state.addingCaptureId !== null ||
-            state.bulkAddBusy ||
-            (state.candidateConditions.some(
-              (condition) =>
-                condition.field === 'condition' || condition.field === 'any',
-            ) &&
-              state.conditionFilterStatus !== 'ready')
+            state.bulkAddBusy
           }
           className="w-full cursor-pointer rounded-control bg-teal-700 px-3 py-2 text-[12px] font-bold text-white shadow-btn transition-colors hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
         >
@@ -196,13 +201,13 @@ export function BuildRail({ state }: { state: DatasetsState }) {
               (condition) =>
                 condition.field === 'condition' || condition.field === 'any',
             ) && state.conditionFilterStatus === 'loading'
-              ? 'Loading batch conditions…'
+              ? 'Loading legacy recording conditions… Snapshot matches remain available.'
               : state.candidateConditions.some(
                     (condition) =>
                       condition.field === 'condition' ||
                       condition.field === 'any',
                   ) && state.conditionFilterStatus === 'error'
-                ? 'Batch conditions could not be loaded. Reload this screen to retry.'
+                ? 'Some legacy recording conditions could not be loaded. Snapshot matches remain available.'
                 : state.candidateConditions.length > 0
                   ? 'No recording matches those filters.'
                   : target

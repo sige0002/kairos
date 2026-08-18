@@ -170,6 +170,9 @@ class CollectionContextSnapshotV1:
 
     batch_id: str | None = None
     batch_seq: int | None = None
+    project_id: str | None = None
+    task_id: str | None = None
+    condition_id: str | None = None
     project: str | None = None
     task: str | None = None
     condition: str | None = None
@@ -183,6 +186,9 @@ class CollectionContextSnapshotV1:
             {
                 "batch_id": self.batch_id,
                 "batch_seq": self.batch_seq,
+                "project_id": self.project_id,
+                "task_id": self.task_id,
+                "condition_id": self.condition_id,
                 "project": self.project,
                 "task": self.task,
                 "condition": self.condition,
@@ -525,6 +531,9 @@ _COLLECTION_CONTEXT_KNOWN_KEYS = frozenset(
     {
         "batch_id",
         "batch_seq",
+        "project_id",
+        "task_id",
+        "condition_id",
         "project",
         "task",
         "condition",
@@ -598,6 +607,9 @@ def collection_context_snapshot_from_json(
     return CollectionContextSnapshotV1(
         batch_id=_optional_str(data, "batch_id"),
         batch_seq=_optional_int(data, "batch_seq"),
+        project_id=_optional_str(data, "project_id"),
+        task_id=_optional_str(data, "task_id"),
+        condition_id=_optional_str(data, "condition_id"),
         project=_optional_str(data, "project"),
         task=_optional_str(data, "task"),
         condition=_optional_str(data, "condition"),

@@ -197,6 +197,9 @@ def batch_from_row(row: sqlite3.Row) -> Batch:
     return Batch(
         batch_id=row["batch_id"],
         robot=row["robot"],
+        project_id=row["project_id"],
+        task_id=row["task_id"],
+        condition_id=row["condition_id"],
         project=row["project"],
         task=row["task"],
         condition=row["condition"],

@@ -217,6 +217,28 @@ export const api = {
       archive_destination: string | null;
     }[];
   }> => call('GET', '/datasets'),
+
+  recordDatasetSelectionRecipe: (
+    datasetId: string,
+    body: {
+      join: 'and' | 'or';
+      conditions: { field: string; operator: string; value: string }[];
+      matched: number;
+      attempted: number;
+      succeeded: number;
+      failed: number;
+      catalog_truncated?: boolean;
+    },
+  ): Promise<{ recipe_id: string }> =>
+    call('POST', `/datasets/${encodeURIComponent(datasetId)}/selection-recipes`, body),
+
+  getDataset: (datasetId: string): Promise<{
+    selection_recipes: {
+      recipe_id: string;
+      join: 'and' | 'or';
+      conditions: { field: string; operator: string; value: string }[];
+    }[];
+  }> => call('GET', `/datasets/${encodeURIComponent(datasetId)}`),
 };
 
 /**

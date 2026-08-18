@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
+import { useUiStore } from '../../store/uiStore';
 import type { SystemInfo } from '../../api/types';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import type { CameraHealth } from './Cameras';
@@ -83,7 +84,10 @@ function recorderRow(): HTMLElement {
   return screen.getByText('Recorder').parentElement as HTMLElement;
 }
 
-beforeEach(() => setApiBase('/api/v1'));
+beforeEach(() => {
+  setApiBase('/api/v1');
+  useUiStore.setState({ recordOperator: 'operator-a', operatorHydrated: true });
+});
 afterEach(() => vi.restoreAllMocks());
 
 test('shows real free space with an OK chip when above the low-storage threshold', async () => {
@@ -207,6 +211,11 @@ function coverageMachine(): BatchMachine {
 function mockCoverageFetch() {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
+    if (url.includes('/config/options')) {
+      return Promise.resolve(
+        jsonResponse({ active_robot: 'robot-a', robots: [], aspects: {} }),
+      );
+    }
     // The per-condition SUM is the server's now (E-27: the card used to pull
     // every batch). These rows are what the endpoint returns for the batches
     // below: 3 + 2 for "Bin: full", 4 for "Bin: sparse", and the other task's
@@ -266,7 +275,7 @@ function mockCoverageFetch() {
 }
 
 test('CoverageCard sums episodes_recorded per condition for the current task', async () => {
-  mockCoverageFetch();
+  const fetchSpy = mockCoverageFetch();
   renderWithClient(<CoverageCard machine={coverageMachine()} />);
 
   // Wait for the async batches query to land (the row itself renders
@@ -279,6 +288,51 @@ test('CoverageCard sums episodes_recorded per condition for the current task', a
   expect(sparse.textContent).toContain('4');
   // The other task's batches never leak into this card.
   expect(screen.queryByText('9')).toBeNull();
+  const scopeUrl = fetchSpy.mock.calls
+    .map(([input]) => String(input))
+    .find((url) => url.includes('/batches/coverage'));
+  expect(scopeUrl).toContain('project_id=project-bin-picking');
+  expect(scopeUrl).toContain('task_id=task-bin-to-tray');
+  expect(scopeUrl).toContain('robot=robot-a');
+  expect(scopeUrl).toContain('operator=operator-a');
+});
+
+test('CoverageCard waits visibly until the operator scope is hydrated', () => {
+  const fetchSpy = mockCoverageFetch();
+  useUiStore.setState({ operatorHydrated: false, recordOperator: '' });
+
+  renderWithClient(<CoverageCard machine={coverageMachine()} />);
+
+  expect(screen.getByTestId('coverage-card')).toHaveTextContent(
+    'Coverage waits for the active robot and operator scope.',
+  );
+  expect(
+    fetchSpy.mock.calls.some(([input]) => String(input).includes('/batches/coverage')),
+  ).toBe(false);
+});
+
+test('CoverageCard changes its query scope when the hydrated operator changes', async () => {
+  const fetchSpy = mockCoverageFetch();
+  renderWithClient(<CoverageCard machine={coverageMachine()} />);
+  await waitFor(() =>
+    expect(
+      fetchSpy.mock.calls.some(
+        ([input]) =>
+          String(input).includes('/batches/coverage') && String(input).includes('operator=operator-a'),
+      ),
+    ).toBe(true),
+  );
+
+  act(() => useUiStore.setState({ recordOperator: 'operator-b', operatorHydrated: true }));
+
+  await waitFor(() =>
+    expect(
+      fetchSpy.mock.calls.some(
+        ([input]) =>
+          String(input).includes('/batches/coverage') && String(input).includes('operator=operator-b'),
+      ),
+    ).toBe(true),
+  );
 });
 
 // A1: the Cameras row was scoped to "main stream", so a silent SUB camera had

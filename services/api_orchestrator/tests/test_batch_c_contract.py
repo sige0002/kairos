@@ -97,6 +97,9 @@ class TestBatchProvenanceLabels:
             "/api/v1/batches",
             json={
                 "robot": "robot-a",
+                "project_id": "project-a-id",
+                "task_id": "task-a-id",
+                "condition_id": "condition-a-id",
                 "project": "project-a",
                 "task": "task-a",
                 "condition": "condition-a",
@@ -106,6 +109,47 @@ class TestBatchProvenanceLabels:
         )
         assert response.status_code == 201, response.text
         return response.json()
+
+    @pytest.mark.parametrize("field", ["project_id", "task_id", "condition_id"])
+    @pytest.mark.parametrize("invalid", ["   ", "not/an-id", "x" * 129])
+    def test_create_rejects_noncanonical_plan_ids(
+        self, client: TestClient, field: str, invalid: str
+    ) -> None:
+        response = client.post("/api/v1/batches", json={field: invalid})
+
+        assert response.status_code == 422, response.text
+
+    @pytest.mark.parametrize("field", ["project_id", "task_id", "condition_id"])
+    @pytest.mark.parametrize("invalid", ["   ", "not/an-id", "x" * 129])
+    def test_patch_rejects_noncanonical_plan_ids(
+        self, client: TestClient, field: str, invalid: str
+    ) -> None:
+        batch_id = self._create_labelled_batch(client)["batch_id"]
+        response = client.patch(f"/api/v1/batches/{batch_id}", json={field: invalid})
+
+        assert response.status_code == 422, response.text
+
+    def test_batch_request_ids_are_trimmed_like_plan_ids(
+        self, client: TestClient
+    ) -> None:
+        created = client.post(
+            "/api/v1/batches",
+            json={
+                "project_id": " project-a-id ",
+                "task_id": " task-a-id ",
+                "condition_id": " condition-a-id ",
+            },
+        )
+
+        assert created.status_code == 201, created.text
+        assert {
+            field: created.json()[field]
+            for field in ("project_id", "task_id", "condition_id")
+        } == {
+            "project_id": "project-a-id",
+            "task_id": "task-a-id",
+            "condition_id": "condition-a-id",
+        }
 
     def test_explicit_null_clears_empty_batch_labels_and_omitted_keeps_them(
         self, client: TestClient
@@ -125,10 +169,22 @@ class TestBatchProvenanceLabels:
                 "task": None,
                 "condition": None,
                 "operator": None,
+                "project_id": None,
+                "task_id": None,
+                "condition_id": None,
             },
         )
         assert cleared.status_code == 200, cleared.text
-        for field in ("robot", "project", "task", "condition", "operator"):
+        for field in (
+            "robot",
+            "project_id",
+            "task_id",
+            "condition_id",
+            "project",
+            "task",
+            "condition",
+            "operator",
+        ):
             assert cleared.json()[field] is None
 
     def test_explicit_null_clear_survives_batch_ledger_rebuild(
@@ -158,6 +214,9 @@ class TestBatchProvenanceLabels:
 
         for field, value in (
             ("robot", "robot-b"),
+            ("project_id", "project-b-id"),
+            ("task_id", "task-b-id"),
+            ("condition_id", "condition-b-id"),
             ("project", "project-b"),
             ("task", "task-b"),
             ("condition", "condition-b"),
@@ -169,7 +228,8 @@ class TestBatchProvenanceLabels:
             assert response.json()["error"]["code"] == "batch_labels_frozen"
 
         same_value = client.patch(
-            f"/api/v1/batches/{batch_id}", json={"project": "project-a"}
+            f"/api/v1/batches/{batch_id}",
+            json={"project": "project-a", "project_id": "project-a-id"},
         )
         assert same_value.status_code == 200, same_value.text
 

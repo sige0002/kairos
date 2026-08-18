@@ -31,13 +31,13 @@ export function CandidateFilterBuilder({ state }: { state: DatasetsState }) {
   const [field, setField] = useState<CandidateFilterField>('any');
   const [operator, setOperator] = useState<CandidateFilterOperator>('contains');
   const [value, setValue] = useState('');
-  // "Any field" includes the batch-owned Condition value, so it must obey
-  // the same readiness gate as an explicit Condition predicate. Otherwise a
-  // transient batch-list failure would silently make the broad search narrow.
+  // A snapshot condition is usable even while the Batch list is unavailable.
+  // The status below concerns only legacy captures, which are excluded from a
+  // condition predicate until their current Batch label can be read.
   const needsConditionMetadata = field === 'any' || field === 'condition';
   const conditionUnavailable =
     needsConditionMetadata && state.conditionFilterStatus !== 'ready';
-  const canAdd = value.trim() !== '' && !conditionUnavailable;
+  const canAdd = value.trim() !== '';
 
   const changeField = (next: CandidateFilterField) => {
     setField(next);
@@ -129,8 +129,8 @@ export function CandidateFilterBuilder({ state }: { state: DatasetsState }) {
         >
           {conditionUnavailable
             ? state.conditionFilterStatus === 'loading'
-              ? 'Loading batch conditions…'
-              : 'Batch conditions could not be loaded. Retry by reloading this screen.'
+              ? 'Loading legacy recording conditions… Snapshot conditions are ready.'
+              : 'Some legacy recording conditions could not be loaded. Snapshot conditions remain usable.'
             : 'Press Enter or Add filter. Commas are treated as text.'}
         </span>
       </form>

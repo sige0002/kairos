@@ -37,8 +37,9 @@ import { leaseBlockReason, liveLease } from '../captures/lease';
 import { JobErrorNote, isTombstoneError } from '../captures/JobErrorNote';
 import { QuickCheckVerdict } from './QuickCheckVerdict';
 import { SignalSection } from './SignalSection';
-import { LabelRows, type LabelEditing } from './LabelRows';
+import { displayCondition, LabelRows, type LabelEditing } from './LabelRows';
 import { formatBytes } from './format';
+import type { CaptureConditionView } from '../captures/recordingCondition';
 
 function Row({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -271,11 +272,13 @@ function CaptureNote({ error }: { error: NonNullable<CaptureDetail['error']> }) 
 export function CaptureInspection({
   captureId,
   condition,
+  conditionStatus,
   labels,
 }: {
   captureId: string;
-  /** Batch-owned context displayed under Task in Review. */
+  /** Collection-time context displayed under Task in Review. */
   condition?: string | null;
+  conditionStatus?: CaptureConditionView['status'];
   /** Supplied by Review's detail panel to make the operator/task/robot rows
    *  editable. Absent elsewhere, which leaves them read-only. */
   labels?: LabelEditing;
@@ -441,6 +444,7 @@ export function CaptureInspection({
               robot: capture.robot ?? null,
             }}
             condition={condition ?? null}
+            conditionStatus={conditionStatus}
             editing={labels}
           />
         ) : (
@@ -448,7 +452,7 @@ export function CaptureInspection({
             <Row label="Operator">{capture.operator || '—'}</Row>
             <Row label="Task">{capture.task || '—'}</Row>
             {condition !== undefined && (
-              <Row label="Condition">{condition || '—'}</Row>
+              <Row label="Condition">{displayCondition(condition, conditionStatus)}</Row>
             )}
             <Row label="Robot">{capture.robot || '—'}</Row>
           </>

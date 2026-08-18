@@ -214,6 +214,9 @@ class FakeRecorder:
             context_fields = {
                 "batch_id",
                 "batch_seq",
+                "project_id",
+                "task_id",
+                "condition_id",
                 "project",
                 "task",
                 "condition",

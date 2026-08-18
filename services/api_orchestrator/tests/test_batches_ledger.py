@@ -50,6 +50,9 @@ class TestBatchesSurviveARebuild:
             project="grasping",
             task="pick",
             condition="daylight",
+            project_id="project-grasping",
+            task_id="task-pick",
+            condition_id="condition-daylight",
             operator="alice",
             target_episodes=42,
         )
@@ -63,6 +66,9 @@ class TestBatchesSurviveARebuild:
             for field in (
                 "batch_id",
                 "robot",
+                "project_id",
+                "task_id",
+                "condition_id",
                 "project",
                 "task",
                 "condition",
@@ -87,7 +93,13 @@ class TestBatchesSurviveARebuild:
         batch = _create(client, project="draft", task="pick", condition="dim")
         patched = client.patch(
             f"/api/v1/batches/{batch['batch_id']}",
-            json={"project": "final", "condition": "bright", "target_episodes": 7},
+            json={
+                "project": "final",
+                "project_id": "project-final",
+                "condition": "bright",
+                "condition_id": "condition-bright",
+                "target_episodes": 7,
+            },
         )
         assert patched.status_code == 200, patched.text
         client.__exit__(None, None, None)
@@ -96,7 +108,9 @@ class TestBatchesSurviveARebuild:
         with _restart(settings, fake_recorder) as restarted:
             back = restarted.get(f"/api/v1/batches/{batch['batch_id']}").json()
         assert back["project"] == "final"
+        assert back["project_id"] == "project-final"
         assert back["condition"] == "bright"
+        assert back["condition_id"] == "condition-bright"
         assert back["target_episodes"] == 7
 
     def test_a_finished_batch_does_not_come_back_open(

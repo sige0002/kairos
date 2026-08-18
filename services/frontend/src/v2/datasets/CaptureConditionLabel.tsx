@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-// Batch-owned condition shown beside a capture in Datasets.
+// Collection-time condition shown beside a capture in Datasets.
 
 import type { CaptureListItem } from '../../api/types';
 import type { DatasetsState } from './useDatasetsState';
@@ -25,9 +25,9 @@ export function CaptureConditionLabel({
           : 'not recorded';
   const title =
     condition.status === 'unavailable'
-      ? 'The batch condition could not be loaded. Reload this screen to retry.'
+      ? 'This legacy recording’s condition could not be loaded from its Batch. Reload this screen to retry.'
       : condition.status === 'not-recorded'
-        ? 'This recording has no batch condition.'
+        ? 'No condition was recorded when this recording started.'
         : condition.status === 'ready'
           ? condition.value
           : undefined;

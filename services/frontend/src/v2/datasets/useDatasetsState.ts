@@ -40,6 +40,7 @@ import {
   getDataset,
   getDatasetArchive,
   listAllCaptures,
+  recordDatasetSelectionRecipe,
   listDatasets,
   removeDatasetMember,
   updateDataset,
@@ -47,11 +48,13 @@ import {
 import { listBatches } from '../../api/batches';
 import { ApiError } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
-import {
-  CAPTURE_ARCHIVE_POLL_MS,
-  DATASET_ARCHIVE_POLL_MS,
-} from '../pollingPolicy';
+import { CAPTURE_ARCHIVE_POLL_MS, DATASET_ARCHIVE_POLL_MS } from '../pollingPolicy';
 import { useRobotCopyMayRemain } from '../captures/useSplitDeploy';
+import {
+  hasCollectionContext,
+  resolveCaptureCondition,
+  type CaptureConditionView,
+} from '../captures/recordingCondition';
 import { useBulkRun } from '../shared/useBulkRun';
 import { useOnPopState } from '../shared/useOnPopState';
 import type {
@@ -68,7 +71,10 @@ import {
   isDestructiveFailure,
   readCaptureError,
 } from '../captures/errors';
-import { useCaptureDeletion, type CaptureDeletionState } from '../captures/useCaptureDeletion';
+import {
+  useCaptureDeletion,
+  type CaptureDeletionState,
+} from '../captures/useCaptureDeletion';
 import { useLeRobotExport, type LeRobotExportState } from './useLeRobotExport';
 import {
   ANY_OPERATOR,
@@ -77,6 +83,7 @@ import {
   aggregate,
   buildDatasetRows,
   candidateMatchesConditions,
+  conditionDistribution,
   datasetMatchesSearch,
   distinctOperators,
   filterMembers,
@@ -85,6 +92,7 @@ import {
   joinMembers,
   membersByDataset,
   type DatasetAggregate,
+  type ConditionDistribution,
   type CandidateFilterCondition,
   type CandidateFilterField,
   type CandidateFilterJoin,
@@ -145,7 +153,9 @@ export interface ScopeSummary {
   label: string;
   operator: string | null;
   task: string | null;
+  selectionRecipes: Dataset['selection_recipes'];
   aggregate: DatasetAggregate;
+  conditions: ConditionDistribution;
   /** Members the aggregate could say nothing about (§ see DatasetRow). */
   unresolved: number;
 }
@@ -155,9 +165,7 @@ export interface BulkAddFailure {
   message: string;
 }
 
-export type CaptureConditionView =
-  | { status: 'ready'; value: string }
-  | { status: 'loading' | 'unavailable' | 'not-recorded'; value: null };
+export type { CaptureConditionView } from '../captures/recordingCondition';
 
 export interface DatasetsState {
   /** The dataset rows the left column renders (search-filtered, sorted). */
@@ -322,8 +330,11 @@ export interface DatasetsState {
   removeCandidateCondition: (id: number) => void;
   clearCandidateConditions: () => void;
   conditionFilterStatus: "loading" | "ready" | "error";
-  /** Batch-owned condition for a capture. Loading, unavailable, and genuinely
-   *  absent stay distinct so the UI never presents a failed read as no label. */
+  /** Legacy candidates excluded from an active condition/any filter because
+   * their current Batch label is unavailable. */
+  unresolvedLegacyConditionCount: number;
+  /** Collection-time condition for a capture. Legacy Batch lookup failures and
+   *  genuinely absent labels stay distinct. */
   conditionForCapture: (capture: CaptureListItem) => CaptureConditionView;
   addMember: (capture: CaptureListItem) => void;
   addingCaptureId: string | null;
@@ -479,7 +490,9 @@ export function useDatasetsState(): DatasetsState {
   // screen on a tab switch) all restore from.
   const [seed] = useState(() => readDatasetsUrl(window.location.search));
 
-  const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(seed.datasetId);
+  const [selectedDatasetId, setSelectedDatasetId] = useState<string | null>(
+    seed.datasetId,
+  );
   const [selectedMembershipId, setSelectedMembershipId] = useState<string | null>(
     seed.membershipId,
   );
@@ -540,6 +553,9 @@ export function useDatasetsState(): DatasetsState {
     datasetName: string;
     captures: CaptureListItem[];
     catalogTruncated: boolean;
+    join: CandidateFilterJoin;
+    conditions: Array<Omit<CandidateFilterCondition, 'id'>>;
+    matched: number;
   } | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<CaptureListItem | null>(null);
   const [archiveProgress, setArchiveProgress] = useState<{
@@ -607,32 +623,36 @@ export function useDatasetsState(): DatasetsState {
   const catalogTruncated = capturesQuery.data?.next_cursor != null;
   const capturesById = useMemo(() => indexCaptures(captures), [captures]);
 
-  // Condition belongs to the batch, not the capture. Load the batch summaries
-  // once and join by batch_id so the filter uses the same durable label Collect
-  // and Review show instead of inventing a capture-level copy.
+  // Only legacy captures need a current Batch lookup. A collection_context is
+  // immutable evidence from Start, so a later Batch edit cannot rewrite the
+  // condition shown or filtered here.
   const batchesQuery = useQuery({
     queryKey: queryKeys.batches,
     queryFn: ({ signal }) => listBatches({}, signal),
   });
   const conditionByBatchId = useMemo(() => {
     const byId = new Map<string, string | null>();
-    for (const batch of (batchesQuery.data as BatchListResponse | undefined)
-      ?.items ?? []) {
+    for (const batch of (batchesQuery.data as BatchListResponse | undefined)?.items ??
+      []) {
       byId.set(batch.batch_id, batch.condition ?? null);
     }
     return byId;
   }, [batchesQuery.data]);
   const conditionForCapture = useCallback(
     (capture: CaptureListItem): CaptureConditionView => {
-      if (!capture.batch_id) return { status: 'not-recorded', value: null };
-      if (batchesQuery.isPending) return { status: 'loading', value: null };
-      if (batchesQuery.isError || !conditionByBatchId.has(capture.batch_id)) {
-        return { status: 'unavailable', value: null };
+      if (!capture.batch_id) {
+        return resolveCaptureCondition(capture, { status: 'ready', value: null });
       }
-      const value = conditionByBatchId.get(capture.batch_id)?.trim();
-      return value
-        ? { status: 'ready', value }
-        : { status: 'not-recorded', value: null };
+      if (batchesQuery.isPending) {
+        return resolveCaptureCondition(capture, { status: 'loading' });
+      }
+      if (batchesQuery.isError || !conditionByBatchId.has(capture.batch_id)) {
+        return resolveCaptureCondition(capture, { status: 'unavailable' });
+      }
+      return resolveCaptureCondition(capture, {
+        status: 'ready',
+        value: conditionByBatchId.get(capture.batch_id),
+      });
     },
     [batchesQuery.isError, batchesQuery.isPending, conditionByBatchId],
   );
@@ -716,6 +736,10 @@ export function useDatasetsState(): DatasetsState {
   );
 
   const scopeAggregate = useMemo(() => aggregate(scopeMembers), [scopeMembers]);
+  const scopeConditions = useMemo(
+    () => conditionDistribution(scopeMembers, conditionForCapture),
+    [scopeMembers, conditionForCapture],
+  );
   const scope: ScopeSummary = useMemo(() => {
     if (selectedRow) {
       return {
@@ -723,7 +747,9 @@ export function useDatasetsState(): DatasetsState {
         label: selectedRow.dataset.name,
         operator: selectedRow.dataset.operator ?? null,
         task: selectedRow.dataset.task ?? null,
+        selectionRecipes: selectedRow.dataset.selection_recipes ?? [],
         aggregate: scopeAggregate,
+        conditions: scopeConditions,
         unresolved: selectedRow.unresolved,
       };
     }
@@ -732,10 +758,12 @@ export function useDatasetsState(): DatasetsState {
       label: 'All datasets',
       operator: null,
       task: null,
+      selectionRecipes: [],
       aggregate: scopeAggregate,
+      conditions: scopeConditions,
       unresolved: rows.reduce((sum, row) => sum + row.unresolved, 0),
     };
-  }, [selectedRow, scopeAggregate, rows]);
+  }, [selectedRow, scopeAggregate, scopeConditions, rows]);
 
   const pageCount = Math.max(1, Math.ceil(matchedMembers.length / MEMBER_PAGE_SIZE));
   // Anything that changes WHICH members are on screen returns to page one —
@@ -743,7 +771,13 @@ export function useDatasetsState(): DatasetsState {
   // the operator did not ask to go there.
   useEffect(() => {
     setPage(1);
-  }, [selectedDatasetId, debouncedMemberSearch, debouncedSearch, taskResultFilter, operatorFilter]);
+  }, [
+    selectedDatasetId,
+    debouncedMemberSearch,
+    debouncedSearch,
+    taskResultFilter,
+    operatorFilter,
+  ]);
   // Clamp rather than trust: a page can fall out of range when rows disappear
   // under an already-open view (a removal, a refetch), and reading past the end
   // must never render a blank table.
@@ -783,7 +817,9 @@ export function useDatasetsState(): DatasetsState {
     setSelectedMembershipId(null);
   }, []);
   const selectMember = useCallback((row: MemberRow) => {
-    setSelectedMembershipId((cur) => (cur === row.membershipId ? null : row.membershipId));
+    setSelectedMembershipId((cur) =>
+      cur === row.membershipId ? null : row.membershipId,
+    );
   }, []);
   const selectSummary = useCallback(() => setSelectedMembershipId(null), []);
 
@@ -892,7 +928,8 @@ export function useDatasetsState(): DatasetsState {
   });
 
   const removeMutation = useMutation({
-    mutationFn: (row: MemberRow) => removeDatasetMember(row.datasetId, row.membershipId),
+    mutationFn: (row: MemberRow) =>
+      removeDatasetMember(row.datasetId, row.membershipId),
     onSuccess: async (_res, row) => {
       await invalidateDatasets(row.datasetId);
       if (selectedMembershipId === row.membershipId) setSelectedMembershipId(null);
@@ -955,7 +992,8 @@ export function useDatasetsState(): DatasetsState {
     () => archiveConfigQuery.data?.roots ?? [],
     [archiveConfigQuery.data],
   );
-  const archiveEnabled = (archiveConfigQuery.data?.enabled ?? false) && archiveRoots.length > 0;
+  const archiveEnabled =
+    (archiveConfigQuery.data?.enabled ?? false) && archiveRoots.length > 0;
 
   // The backend refuses to archive a capture that still belongs to a dataset,
   // for the same reason it refuses to delete one: the dataset would be left
@@ -1001,9 +1039,7 @@ export function useDatasetsState(): DatasetsState {
       });
       let failedReads = 0;
       for (;;) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, getCaptureArchivePollMs()),
-        );
+        await new Promise((resolve) => setTimeout(resolve, getCaptureArchivePollMs()));
         let progress: CaptureArchiveProgress;
         try {
           progress = await getCaptureArchiveProgress(capture.capture_id);
@@ -1239,7 +1275,8 @@ export function useDatasetsState(): DatasetsState {
   const datasetArchiveQuery = useQuery({
     queryKey: queryKeys.datasetArchive(selectedDatasetId ?? ''),
     queryFn: ({ signal }) => getDatasetArchive(selectedDatasetId ?? '', signal),
-    enabled: selectedDatasetId !== null && selectedDatasetRecord?.status === 'archiving',
+    enabled:
+      selectedDatasetId !== null && selectedDatasetRecord?.status === 'archiving',
     refetchInterval: DATASET_ARCHIVE_POLL_MS,
   });
   const datasetArchiveProgress = datasetArchiveQuery.data ?? null;
@@ -1356,24 +1393,49 @@ export function useDatasetsState(): DatasetsState {
   );
   const matchedCandidates = useMemo(
     () =>
-      captures.filter(
-        (capture) =>
-          ADDABLE_STATES.has(capture.state) &&
-          !memberCaptureIds.has(capture.capture_id) &&
-          candidateMatchesConditions(
+      captures.filter((capture) => {
+        if (
+          !ADDABLE_STATES.has(capture.state) ||
+          memberCaptureIds.has(capture.capture_id)
+        ) {
+          return false;
+        }
+        const condition = conditionForCapture(capture);
+        return candidateMatchesConditions(
             capture,
             candidateConditions,
             candidateJoin,
-            capture.batch_id ? conditionByBatchId.get(capture.batch_id) : null,
-          ),
-      ),
+          condition.status === 'ready' ? condition.value : null,
+        );
+      }),
     [
       captures,
       memberCaptureIds,
       candidateConditions,
       candidateJoin,
-      conditionByBatchId,
+      conditionForCapture,
     ],
+  );
+  const hasConditionFilter = candidateConditions.some(
+    (condition) => condition.field === 'condition' || condition.field === 'any',
+  );
+  const unresolvedLegacyConditionCount = useMemo(
+    () =>
+      hasConditionFilter
+        ? captures.filter((capture) => {
+            if (
+              !ADDABLE_STATES.has(capture.state) ||
+              memberCaptureIds.has(capture.capture_id) ||
+              hasCollectionContext(capture) ||
+              !capture.batch_id
+            ) {
+              return false;
+            }
+            const condition = conditionForCapture(capture);
+            return condition.status === 'loading' || condition.status === 'unavailable';
+          }).length
+        : 0,
+    [captures, memberCaptureIds, hasConditionFilter, conditionForCapture],
   );
   // Blocked candidates (not adopted, bytes elsewhere) clutter the building
   // flow, so the rail leads with what can actually join — but the blocked
@@ -1382,7 +1444,9 @@ export function useDatasetsState(): DatasetsState {
     () => matchedCandidates.filter((c) => addBlockedReason(c) === null),
     [matchedCandidates],
   );
-  const visibleCandidates = showBlockedCandidates ? matchedCandidates : addableCandidates;
+  const visibleCandidates = showBlockedCandidates
+    ? matchedCandidates
+    : addableCandidates;
 
   const addCandidateCondition = (
     field: CandidateFilterField,
@@ -1426,6 +1490,13 @@ export function useDatasetsState(): DatasetsState {
       datasetName: selectedDatasetRecord.name,
       captures: [...addableCandidates],
       catalogTruncated,
+      join: candidateJoin,
+      conditions: candidateConditions.map(({ field, operator, value }) => ({
+        field,
+        operator,
+        value,
+      })),
+      matched: addableCandidates.length,
     });
     setBulkAddOpen(true);
   };
@@ -1448,6 +1519,28 @@ export function useDatasetsState(): DatasetsState {
       },
       afterAll: async ({ succeeded, failures }) => {
         await invalidateDatasets(snapshot.datasetId);
+        try {
+          await recordDatasetSelectionRecipe(snapshot.datasetId, {
+            kind: 'filtered_bulk',
+            join: snapshot.join,
+            conditions: snapshot.conditions.map(({ field, operator, value }) => ({
+              field,
+              operator,
+              value,
+            })),
+            matched: snapshot.matched,
+            attempted: items.length,
+            succeeded,
+            failed: failures.length,
+            catalog_truncated: snapshot.catalogTruncated,
+          });
+          await invalidateDatasets(snapshot.datasetId);
+        } catch (error) {
+          showToast(
+            `Members were added but recipe was not saved: ${captureErrorText(error)}`,
+          );
+          return;
+        }
         if (failures.length === 0) {
           setBulkAddOpen(false);
           setBulkAddSnapshot(null);
@@ -1465,9 +1558,7 @@ export function useDatasetsState(): DatasetsState {
   const retryBulkAddFailures = () => {
     const snapshot = bulkAddSnapshot;
     if (!snapshot) return;
-    const failedIds = new Set(
-      bulkAdd.failures.map((failure) => failure.captureId),
-    );
+    const failedIds = new Set(bulkAdd.failures.map((failure) => failure.captureId));
     void runBulkAdd(
       snapshot.captures.filter((capture) => failedIds.has(capture.capture_id)),
     );
@@ -1599,7 +1690,9 @@ export function useDatasetsState(): DatasetsState {
       if (selectedDatasetId) deleteDatasetMutation.mutate(selectedDatasetId);
     },
     deletingDataset: deleteDatasetMutation.isPending,
-    datasetDeleteError: deleteDatasetMutation.isError ? deleteDatasetMutation.error : null,
+    datasetDeleteError: deleteDatasetMutation.isError
+      ? deleteDatasetMutation.error
+      : null,
 
     memberSearch,
     setMemberSearch,
@@ -1623,7 +1716,9 @@ export function useDatasetsState(): DatasetsState {
     detailError: selected !== null && captureDetailQuery.isError,
 
     removeMember: (row) => removeMutation.mutate(row),
-    removingMembershipId: removeMutation.isPending ? removeMutation.variables.membershipId : null,
+    removingMembershipId: removeMutation.isPending
+      ? removeMutation.variables.membershipId
+      : null,
 
     candidates: visibleCandidates.slice(0, CANDIDATE_LIMIT),
     candidateMatchCount: visibleCandidates.length,
@@ -1636,11 +1731,16 @@ export function useDatasetsState(): DatasetsState {
         current.filter((condition) => condition.id !== id),
       ),
     clearCandidateConditions: () => setCandidateConditions([]),
-    conditionFilterStatus: batchesQuery.isPending
+    conditionFilterStatus: captures.some(
+      (capture) => !hasCollectionContext(capture) && Boolean(capture.batch_id),
+    )
+      ? batchesQuery.isPending
       ? "loading"
       : batchesQuery.isError
         ? "error"
+          : 'ready'
         : "ready",
+    unresolvedLegacyConditionCount,
     conditionForCapture,
     addMember: (capture) => addMutation.mutate(capture),
     addingCaptureId: addMutation.isPending ? addMutation.variables.capture_id : null,

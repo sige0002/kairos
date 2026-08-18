@@ -102,6 +102,15 @@ test('§13-4 Rebuild: deleting kairos.db and restarting restores the captures an
 
   const datasetId = (await api.listDatasets()).items.find((d) => d.name === DATASET_NAME)!
     .dataset_id;
+  const recipe = await api.recordDatasetSelectionRecipe(datasetId, {
+    join: 'or',
+    conditions: [{ field: 'condition', operator: 'equals', value: 'rebuild' }],
+    matched: 1,
+    attempted: 1,
+    succeeded: 1,
+    failed: 0,
+  });
+  expect(recipe.recipe_id).not.toBe('');
 
   // ---- snapshot what the operator can see ---------------------------------
   // The list is fetched after mount, so waiting for a row we KNOW is there is
@@ -185,6 +194,11 @@ test('§13-4 Rebuild: deleting kairos.db and restarting restores the captures an
   await expect(datasetRow).toContainText(DATASET_NAME);
   await datasetRow.click();
   await expect(page.getByTestId('build-target')).toContainText('1 member', { timeout: 30_000 });
+  await expect(page.getByTestId('dataset-selection-recipes')).toContainText('OR');
+  await expect(page.getByTestId('dataset-selection-recipes')).toContainText(
+    'condition equals “rebuild”',
+  );
+  expect((await api.getDataset(datasetId)).selection_recipes).toHaveLength(1);
 
   // SECONDARY: the store's own account of what it did.
   const health = await api.storeHealth();

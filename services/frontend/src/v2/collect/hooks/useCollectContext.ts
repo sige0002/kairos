@@ -115,7 +115,7 @@ export function useCollectContext({
       const next = {
         project: plan.name,
         task: t0?.name ?? '—',
-        condition: t0?.conditions[0] ?? '—',
+        condition: t0?.conditions[0]?.name ?? '—',
       };
       await applyContextChange({
         changeLabel: 'Project',
@@ -141,7 +141,7 @@ export function useCollectContext({
       const next = {
         project: project,
         task: t?.name ?? '—',
-        condition: t?.conditions[0] ?? '—',
+        condition: t?.conditions[0]?.name ?? '—',
       };
       await applyContextChange({
         changeLabel: 'Task',

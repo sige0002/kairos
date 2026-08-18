@@ -542,6 +542,9 @@ class RecordService:
             )
         expected = {
             "batch_seq": context.batch_seq,
+            "project_id": context.project_id,
+            "task_id": context.task_id,
+            "condition_id": context.condition_id,
             "project": context.project,
             "task": context.task,
             "condition": context.condition,
@@ -550,12 +553,23 @@ class RecordService:
         }
         actual = {
             "batch_seq": batch.batch_seq,
+            "project_id": batch.project_id,
+            "task_id": batch.task_id,
+            "condition_id": batch.condition_id,
             "project": batch.project,
             "task": batch.task,
             "condition": batch.condition,
             "robot": batch.robot,
             "operator": batch.operator,
         }
+        # ID-less contexts are pre-canonical/Custom snapshots. Their labels
+        # still have to match exactly, but an old recorder cannot prove an ID
+        # that did not exist when it started; rejecting it would strand a
+        # legitimate later review association during a rolling deploy.
+        for name in ("project_id", "task_id", "condition_id"):
+            if expected[name] is None:
+                expected.pop(name)
+                actual.pop(name)
         if expected != actual:
             mismatch = next(name for name in expected if expected[name] != actual[name])
             raise ApiError(

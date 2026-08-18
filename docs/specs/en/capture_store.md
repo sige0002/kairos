@@ -458,7 +458,7 @@ Only these five — `recording` / `stopping` / `completed` / `interrupted` / `fa
 
 ### 8.2 rebuild (full reconstruction from the sidecars)
 
-**Inputs**: `objects/*/object_manifest.json`, `objects/*.failed.json`, `record.json`, `quick_check.json` (§4.2), `lifecycle.jsonl`. `jobs` is treated as volatile and is out of scope for rebuild. `validation_templates` and `plan_catalog` are duplicated into sidecars under `catalog/*.json` when saved, and restored by rebuild. An archived capture's `collection_context` is restored from the `capture_archived` ledger payload. A dataset's archive state (§6.1: `archiving` / `archived`, destination included) is restored by replaying the ledger.
+**Inputs**: `objects/*/object_manifest.json`, `objects/*.failed.json`, `record.json`, `quick_check.json` (§4.2), `lifecycle.jsonl`. `jobs` is treated as volatile and is out of scope for rebuild. `validation_templates` and `plan_catalog` are duplicated into sidecars under `catalog/*.json` when saved, and restored by rebuild. The plan catalog sidecar contains its CAS `revision` and canonical project/task/condition IDs. A legacy name/string catalog receives deterministic IDs during restore and is written back as a canonical sidecar. An archived capture's `collection_context` is restored from the `capture_archived` ledger payload. A dataset's archive state (§6.1: `archiving` / `archived`, destination included) is restored by replaying the ledger.
 
 **Conditions for rebuilding at startup**: the DB is absent / the schema version differs / an explicit request via `KAIROS_REBUILD`. It is not something that runs on every startup.
 

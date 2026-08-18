@@ -351,6 +351,9 @@ class CaptureReviewMixin:
             )
         expected = {
             "batch_seq": context.batch_seq,
+            "project_id": context.project_id,
+            "task_id": context.task_id,
+            "condition_id": context.condition_id,
             "project": context.project,
             "task": context.task,
             "condition": context.condition,
@@ -359,12 +362,22 @@ class CaptureReviewMixin:
         }
         actual = {
             "batch_seq": batch.batch_seq,
+            "project_id": batch.project_id,
+            "task_id": batch.task_id,
+            "condition_id": batch.condition_id,
             "project": batch.project,
             "task": batch.task,
             "condition": batch.condition,
             "robot": batch.robot,
             "operator": batch.operator,
         }
+        # A context created before canonical plan IDs existed has null IDs.
+        # Retain its immutable labels while allowing the later matching Batch
+        # to carry IDs, rather than permanently stranding an offline start.
+        for name in ("project_id", "task_id", "condition_id"):
+            if expected[name] is None:
+                expected.pop(name)
+                actual.pop(name)
         if context.batch_id is None:
             # A start can finish without a Batch. The labels remain immutable,
             # but the later Batch is the authority that assigns its sequence.

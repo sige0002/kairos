@@ -1836,6 +1836,9 @@ test('starting a recording creates a server batch with the plan context', async 
   expect(start.body?.collection_context).toEqual({
     batch_id: 'batch_x',
     batch_seq: null,
+    project_id: 'project-tabletop-manipulation',
+    task_id: 'task-pick-and-place',
+    condition_id: 'condition-object-left-tray-center',
     project: 'Tabletop Manipulation',
     task: 'Pick and Place',
     condition: 'Object: Left → Tray: Center',

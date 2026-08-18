@@ -22,6 +22,7 @@ import type {
   CollectionContextSnapshot,
 } from '../../../api/types';
 import { useUiStore } from '../../../store/uiStore';
+import { resolvePlanIds, usePlans } from '../../plans';
 import { type Phase } from '../machine/types';
 import {
   TOMBSTONE_STATES,
@@ -46,6 +47,7 @@ export function useBatchLifecycle(): {
     queryKey: queryKeys.configOptions,
     queryFn: ({ signal }) => getConfigOptions({ signal }),
   });
+  const plans = usePlans();
   const operator = useUiStore((s) => s.recordOperator).trim();
   const operatorHydrated = useUiStore((s) => s.operatorHydrated);
   const setBatchRestoreIssue = useUiStore((s) => s.setBatchRestoreIssue);
@@ -61,14 +63,18 @@ export function useBatchLifecycle(): {
       const text = value?.trim();
       return text && text !== '—' ? text : null;
     };
+    const project = textOrNull(state.project);
+    const task = textOrNull(state.task);
+    const condition = textOrNull(state.condition);
     return {
-      project: textOrNull(state.project),
-      task: textOrNull(state.task),
-      condition: textOrNull(state.condition),
+      ...resolvePlanIds(plans, project, task, condition),
+      project,
+      task,
+      condition,
       robot: activeRobotRef.current,
       operator: textOrNull(useUiStore.getState().recordOperator),
     };
-  }, []);
+  }, [plans]);
 
   // ---- batch lifecycle (server API) ----------------------------------------
   // A server batch is created lazily on the first recording of a batch (and
@@ -86,6 +92,9 @@ export function useBatchLifecycle(): {
         // An unresolved active robot is not evidence that this batch belongs to
         // another robot. Leave the robot untouched until config answers.
         (desired.robot === null || desired.robot === normalise(existing.robot)) &&
+        desired.project_id === (existing.project_id ?? null) &&
+        desired.task_id === (existing.task_id ?? null) &&
+        desired.condition_id === (existing.condition_id ?? null) &&
         desired.operator === normalise(existing.operator) &&
         desired.project === normalise(existing.project) &&
         desired.task === normalise(existing.task) &&
@@ -152,6 +161,9 @@ export function useBatchLifecycle(): {
             continue;
           }
           const patch: BatchPatchRequest = {
+            project_id: desired.project_id,
+            task_id: desired.task_id,
+            condition_id: desired.condition_id,
             project: desired.project,
             task: desired.task,
             condition: desired.condition,
@@ -182,8 +194,11 @@ export function useBatchLifecycle(): {
           // server-side and stored as null). Sending the header's placeholder wrote
           // a label nobody chose into the shared catalog for good.
           project: desired.project ?? undefined,
+          project_id: desired.project_id,
           task: desired.task ?? undefined,
+          task_id: desired.task_id,
           condition: desired.condition ?? undefined,
+          condition_id: desired.condition_id,
           robot: desired.robot ?? undefined,
           operator: desired.operator ?? undefined,
           target_episodes: local.targetEpisodes,

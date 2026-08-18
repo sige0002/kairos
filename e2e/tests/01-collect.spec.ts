@@ -129,6 +129,14 @@ test('§13-1 Collect: a recording made in the UI appears in the UI and its diges
   expect(manifest.collection_context?.batch_seq).toBeGreaterThan(0);
   expect(manifest.collection_context?.operator).toBe(E2E_OPERATOR);
   expect(manifest.collection_context?.robot).toBeTruthy();
+  // This flow records with Collect's seeded default Plan. The human-readable
+  // labels above remain useful to operators; these stable identities make the
+  // provenance survive a later catalog rename.
+  expect(manifest.collection_context).toMatchObject({
+    project_id: 'project-tabletop-manipulation',
+    task_id: 'task-pick-and-place',
+    condition_id: 'condition-object-left-tray-center',
+  });
 
   // The Collect screen's Save is the capture's FIRST review write (§4.1), so
   // record.json exists at revision 1 with no second write behind it.

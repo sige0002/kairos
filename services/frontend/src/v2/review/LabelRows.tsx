@@ -20,6 +20,7 @@
 
 import { Fragment, useState } from 'react';
 import { cn } from '../../components/ui';
+import type { CaptureConditionView } from '../captures/recordingCondition';
 
 export interface CaptureLabels {
   operator: string | null;
@@ -50,14 +51,26 @@ function trimOrNull(value: string): string | null {
   return trimmed === '' ? null : trimmed;
 }
 
+export function displayCondition(
+  condition: string | null,
+  status: CaptureConditionView['status'] | undefined,
+): string {
+  if (status === 'loading') return 'Loading…';
+  if (status === 'unavailable') return 'Unavailable';
+  if (status === 'not-recorded') return 'Not recorded';
+  return condition ?? 'Not recorded';
+}
+
 export function LabelRows({
   values,
   condition,
+  conditionStatus,
   editing,
 }: {
   values: CaptureLabels;
-  /** Read-only because Condition belongs to the batch, not this capture. */
+  /** Read-only collection-time fact: editing labels must not rewrite history. */
   condition: string | null;
+  conditionStatus?: CaptureConditionView['status'];
   editing: LabelEditing;
 }) {
   const [open, setOpen] = useState(false);
@@ -67,6 +80,7 @@ export function LabelRows({
     robot: '',
   });
   const [error, setError] = useState<string | null>(null);
+  const displayedCondition = displayCondition(condition, conditionStatus);
 
   const startEditing = () => {
     setDraft({
@@ -127,7 +141,7 @@ export function LabelRows({
               </RowFrame>
               {field.key === 'task' && (
                 <RowFrame label="Condition">
-                  <span data-testid="review-condition">{condition || '—'}</span>
+                  <span data-testid="review-condition">{displayedCondition}</span>
                 </RowFrame>
               )}
             </Fragment>
@@ -157,7 +171,7 @@ export function LabelRows({
           </RowFrame>
           {field.key === 'task' && (
             <RowFrame label="Condition">
-              <span data-testid="review-condition">{condition || '—'}</span>
+              <span data-testid="review-condition">{displayedCondition}</span>
             </RowFrame>
           )}
         </Fragment>
@@ -194,8 +208,8 @@ export function LabelRows({
           </button>
         </div>
         <span className="text-[11px] leading-snug text-gray-500">
-          Clearing a field returns it to whatever the recording&apos;s own
-          manifest said.
+          Clearing a field returns it to whatever the recording&apos;s own manifest
+          said.
         </span>
       </dd>
     </>

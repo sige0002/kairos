@@ -626,7 +626,20 @@ test('Robot cell lists real robots and switches via POST /config/select', async 
 test('a project added to the shared store appears in the Collect project picker', async () => {
   mockFetch();
   // Simulate a Settings edit: add a project to the shared catalog.
-  setPlans([...clonePlans(getPlans()), { name: 'Warehouse Sort', tasks: [{ name: 'Sort', conditions: ['Bin: A'] }] }]);
+  setPlans([
+    ...clonePlans(getPlans()),
+    {
+      project_id: 'project-warehouse-sort',
+      name: 'Warehouse Sort',
+      tasks: [
+        {
+          task_id: 'task-sort',
+          name: 'Sort',
+          conditions: [{ condition_id: 'condition-bin-a', name: 'Bin: A' }],
+        },
+      ],
+    },
+  ]);
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
 
@@ -663,7 +676,19 @@ test('Collect degrades gracefully when its selected project is absent from the s
   mockFetch();
   // The machine seeded its project from the default catalog; now replace the
   // catalog so that selection no longer exists (as if it were removed/renamed).
-  setPlans([{ name: 'Only Project', tasks: [{ name: 'Only Task', conditions: ['Only Cond'] }] }]);
+  setPlans([
+    {
+      project_id: 'project-only',
+      name: 'Only Project',
+      tasks: [
+        {
+          task_id: 'task-only',
+          name: 'Only Task',
+          conditions: [{ condition_id: 'condition-only', name: 'Only Cond' }],
+        },
+      ],
+    },
+  ]);
   renderWithClient(<CollectScreen />);
 
   // Still renders (no crash); the orphaned selection stays shown as-is, and the

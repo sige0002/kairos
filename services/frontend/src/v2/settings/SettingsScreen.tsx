@@ -32,7 +32,7 @@ import { SystemSection } from './SystemSection';
 import { OtherSection } from './OtherSection';
 import { Toast } from '../shared/Toast';
 import { useSettingsState } from './useSettingsState';
-import { usePlansUnsynced } from '../plans';
+import { adoptServerCatalog, usePlansConflict, usePlansUnsynced } from '../plans';
 import { ScreenTitle } from '../shared/ScreenTitle';
 
 // Honest rationale for the two sections with nothing to configure yet.
@@ -79,7 +79,33 @@ export function SettingsScreen() {
         <OtherSection label={label} rationale={PLACEHOLDER_RATIONALE[label] ?? ''} />
       )}
       <UnsyncedCatalogNote />
+      <CatalogConflictNote />
       <Toast message={settings.toast} testId="settings-toast" />
+    </div>
+  );
+}
+
+/** A conflict has a different recovery from an unavailable server: retrying
+ * stale data would erase a colleague's edit, so only an explicit server adopt
+ * is offered here. The local draft remains until that button succeeds. */
+function CatalogConflictNote() {
+  const conflicted = usePlansConflict();
+  if (!conflicted) return null;
+  return (
+    <div
+      data-testid="plans-conflict"
+      role="alert"
+      className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-control border border-rose-300 bg-rose-50 px-3.5 py-2 text-[12px] text-rose-800 shadow-card"
+    >
+      The shared catalog changed elsewhere. Your local draft was kept and was not retried.
+      <button
+        type="button"
+        data-testid="plans-use-server"
+        onClick={adoptServerCatalog}
+        className="rounded border border-rose-300 bg-white px-2 py-1 font-semibold hover:bg-rose-100"
+      >
+        Use server catalog
+      </button>
     </div>
   );
 }

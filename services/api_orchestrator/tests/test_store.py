@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -30,6 +31,7 @@ from api_orchestrator.store import (
     BatchExistsError,
     CaptureStore,
     DatasetMemberExistsError,
+    PlanCatalogConflictError,
 )
 from kairos_common.ids import new_capture_id, new_dataset_id
 from kairos_common.rebuild import CaptureRow, ReplicaRow, ReplicaState
@@ -555,6 +557,30 @@ class TestDatasetArchive:
 
 
 class TestCatalogSidecars:
+    def test_concurrent_catalog_cas_allows_exactly_one_winner(
+        self, store: CaptureStore
+    ) -> None:
+        def replace(name: str) -> str:
+            try:
+                store.replace_plan_catalog(
+                    [{"project_id": name, "name": name, "tasks": []}],
+                    base_revision=0,
+                    updated_at="2026-08-01T00:00:00.000Z",
+                    failure_reasons=None,
+                    operators=None,
+                    keep_failure_reasons=False,
+                    keep_operators=False,
+                )
+            except PlanCatalogConflictError:
+                return "conflict"
+            return "saved"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            outcomes = list(executor.map(replace, ("p1", "p2")))
+        assert sorted(outcomes) == ["conflict", "saved"]
+        catalog = store.get_plan_catalog()
+        assert catalog is not None and catalog[4] == 1
+
     def test_a_saved_template_is_mirrored_to_the_catalog_dir(
         self, store: CaptureStore, tmp_path: Path
     ) -> None:
@@ -568,20 +594,33 @@ class TestCatalogSidecars:
     def test_the_plan_catalog_is_mirrored_too(
         self, store: CaptureStore, tmp_path: Path
     ) -> None:
-        store.set_plan_catalog(
-            [{"name": "proj"}], "2026-08-01T00:00:00.000Z", ["Robot fault"]
+        store.replace_plan_catalog(
+            [{"project_id": "p", "name": "proj", "tasks": []}],
+            base_revision=0,
+            updated_at="2026-08-01T00:00:00.000Z",
+            failure_reasons=["Robot fault"],
+            operators=None,
+            keep_failure_reasons=False,
+            keep_operators=False,
         )
         sidecar = tmp_path / "catalog" / "plan_catalog.json"
         assert sidecar.is_file()
         mirrored = json.loads(sidecar.read_text())
         assert mirrored["projects"][0]["name"] == "proj"
         assert mirrored["failure_reasons"] == ["Robot fault"]
+        assert mirrored["revision"] == 1
 
     def test_catalog_sidecars_restore_into_a_fresh_db(self, tmp_path: Path) -> None:
         first = CaptureStore(tmp_path / "kairos.db", data_dir=tmp_path)
         first.create_template(ValidationTemplate(name="t", version=3))
-        first.set_plan_catalog(
-            [{"name": "proj"}], "2026-08-01T00:00:00.000Z", ["Robot fault"]
+        first.replace_plan_catalog(
+            [{"project_id": "p", "name": "proj", "tasks": []}],
+            base_revision=0,
+            updated_at="2026-08-01T00:00:00.000Z",
+            failure_reasons=["Robot fault"],
+            operators=None,
+            keep_failure_reasons=False,
+            keep_operators=False,
         )
         first.close()
         (tmp_path / "kairos.db").unlink()
@@ -591,9 +630,44 @@ class TestCatalogSidecars:
         templates, _ = second.list_templates(limit=10)
         assert [(t.name, t.version) for t in templates] == [("t", 3)]
         catalog = second.get_plan_catalog()
-        assert catalog is not None and catalog[0] == [{"name": "proj"}]
+        assert catalog is not None and catalog[0] == [
+            {"project_id": "p", "name": "proj", "tasks": []}
+        ]
         assert catalog[1] == ["Robot fault"]
+        assert catalog[4] == 1
         second.close()
+
+    def test_legacy_plan_sidecar_is_canonicalized_with_stable_ids(
+        self, tmp_path: Path
+    ) -> None:
+        sidecar = tmp_path / "catalog" / "plan_catalog.json"
+        sidecar.parent.mkdir()
+        sidecar.write_text(
+            json.dumps(
+                {
+                    "projects": [
+                        {
+                            "name": "P",
+                            "tasks": [{"name": "T", "conditions": ["C"]}],
+                        }
+                    ],
+                    "updated_at": "2026-08-01T00:00:00.000Z",
+                }
+            )
+        )
+        store = CaptureStore(tmp_path / "kairos.db", data_dir=tmp_path)
+        store.restore_catalog_from_sidecars()
+        catalog = store.get_plan_catalog()
+        assert catalog is not None
+        project = catalog[0][0]
+        assert project["project_id"].startswith("legacy-")
+        assert project["tasks"][0]["task_id"].startswith("legacy-")
+        assert project["tasks"][0]["conditions"][0]["condition_id"].startswith(
+            "legacy-"
+        )
+        assert catalog[4] == 1
+        assert json.loads(sidecar.read_text())["projects"] == catalog[0]
+        store.close()
 
 
 class TestBatches:

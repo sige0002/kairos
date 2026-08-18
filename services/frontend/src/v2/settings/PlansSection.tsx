@@ -50,7 +50,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
             const nConditions = p.tasks.reduce((n, t) => n + t.conditions.length, 0);
             return (
               <div
-                key={p.name}
+                key={p.project_id}
                 data-testid={`plan-project-${i}`}
                 className={cn(
                   'flex items-center gap-2 rounded-[11px] border px-[13px] py-[11px]',
@@ -113,7 +113,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                 </h3>
                 {project.tasks.map((t, i) => (
                   <div
-                    key={t.name}
+                    key={t.task_id}
                     data-testid={`plan-task-${i}`}
                     className={cn(
                       'flex items-center gap-2 rounded-control border px-3 py-[9px]',
@@ -173,14 +173,14 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                     pick a task to edit it, so nothing is changed on a task you did not choose.
                   </p>
                 )}
-                {(task?.conditions ?? []).map((label, i) => (
+                {(task?.conditions ?? []).map((condition, i) => (
                   <div
-                    key={`${label}-${i}`}
+                    key={condition.condition_id}
                     data-testid={`plan-condition-${i}`}
                     className="flex items-center gap-2.5 rounded-control border border-gray-100 px-[13px] py-[9px]"
                   >
                     <span className="h-[7px] w-[7px] shrink-0 rounded-sm bg-teal-600" />
-                    <span className="text-[13px] text-gray-700">{label}</span>
+                    <span className="text-[13px] text-gray-700">{condition.name}</span>
                     <div className="flex-1" />
                     <button
                       type="button"

@@ -247,6 +247,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             key={sel.captureId}
             captureId={sel.captureId}
             condition={sel.condition}
+            conditionStatus={sel.conditionStatus}
             labels={labels}
           />
         ) : (

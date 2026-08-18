@@ -194,17 +194,17 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
       <div className="flex flex-col gap-1.5">
         {task.conditions.map((c) => (
           <button
-            key={c}
+            key={c.condition_id}
             type="button"
-            onClick={() => machine.pickCondition(c)}
+            onClick={() => machine.pickCondition(c.name)}
             className={cn(
               'rounded-control border px-3.5 py-2.5 text-left text-sm',
-              c === machine.condition
+              c.name === machine.condition
                 ? 'border-teal-600 bg-teal-50 font-semibold text-teal-700'
                 : 'border-gray-200 bg-white font-medium text-gray-700',
             )}
           >
-            {c}
+            {c.name}
           </button>
         ))}
       </div>

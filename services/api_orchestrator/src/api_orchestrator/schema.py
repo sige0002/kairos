@@ -19,7 +19,7 @@ from __future__ import annotations
 # found in the field, not by tests, because tests only ever see fresh schemas.
 # The rebuild is the designed absorption path; refusing to bump is how it is
 # bypassed by accident.
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA = """
 -- One recording, merged with the operator's review of it. Replaces v1's
@@ -174,7 +174,8 @@ CREATE TABLE IF NOT EXISTS datasets (
     archive_destination TEXT,
     archive_mode        TEXT,
     archive_started_at  TEXT,
-    archived_at         TEXT
+    archived_at         TEXT,
+    selection_recipes   TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS dataset_members (
@@ -216,6 +217,9 @@ CREATE TABLE IF NOT EXISTS batches (
     seq               INTEGER PRIMARY KEY AUTOINCREMENT,
     batch_id          TEXT NOT NULL UNIQUE,
     robot             TEXT,
+    project_id        TEXT,
+    task_id           TEXT,
+    condition_id      TEXT,
     project           TEXT,
     task              TEXT,
     condition         TEXT,
@@ -240,7 +244,10 @@ CREATE INDEX IF NOT EXISTS idx_batches_seq ON batches (seq DESC);
 CREATE TABLE IF NOT EXISTS plan_catalog (
     id         INTEGER PRIMARY KEY CHECK (id = 1),
     payload    TEXT NOT NULL,
-    updated_at TEXT NOT NULL
+    updated_at TEXT NOT NULL,
+    -- Monotone whole-catalog CAS token. 0 is reserved for the never-set
+    -- catalog and is therefore represented by the absence of this row.
+    revision   INTEGER NOT NULL
 );
 """
 
@@ -315,6 +322,9 @@ REVIEW_COLUMNS: frozenset[str] = frozenset(
 BATCH_UPDATE_FIELDS: frozenset[str] = frozenset(
     {
         "robot",
+        "project_id",
+        "task_id",
+        "condition_id",
         "project",
         "task",
         "condition",

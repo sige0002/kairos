@@ -40,6 +40,8 @@ from api_orchestrator.models import (
     DatasetListResponse,
     DatasetMember,
     DatasetMemberCreateRequest,
+    DatasetSelectionRecipe,
+    DatasetSelectionRecipeCreateRequest,
     DatasetUpdateRequest,
 )
 
@@ -70,6 +72,20 @@ async def get_dataset(
 ) -> DatasetDetail:
     """One dataset and its members, ordered by display_index."""
     return service.get(dataset_id)
+
+
+@router.post(
+    "/{dataset_id}/selection-recipes",
+    response_model=DatasetSelectionRecipe,
+    status_code=status.HTTP_201_CREATED,
+)
+async def record_selection_recipe(
+    dataset_id: str,
+    body: DatasetSelectionRecipeCreateRequest,
+    service: DatasetService = Depends(get_dataset_service),
+) -> DatasetSelectionRecipe:
+    """Append immutable provenance for one completed filtered Bulk Add run."""
+    return service.record_selection(dataset_id, body)
 
 
 @router.patch("/{dataset_id}", response_model=Dataset)

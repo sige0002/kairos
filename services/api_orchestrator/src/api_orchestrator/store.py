@@ -41,6 +41,8 @@ import json
 import logging
 import os
 import sqlite3
+import unicodedata
+import uuid
 from collections.abc import Iterable, Sequence
 from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
@@ -90,6 +92,7 @@ logger = logging.getLogger("kairos")
 CATALOG_DIRNAME = "catalog"
 TEMPLATES_SIDECAR = "validation_templates.json"
 PLAN_CATALOG_SIDECAR = "plan_catalog.json"
+_PLAN_ID_NAMESPACE = uuid.UUID("7bb397a4-c9f4-5b87-8e90-fba28373bd77")
 
 # Replica states that mean "the bytes are on this machine right now". The §9-3
 # threshold guard counts these as its denominator, and the digest job only ever
@@ -104,6 +107,88 @@ PRESENT_REPLICA_STATES: frozenset[str] = frozenset(
 TOMBSTONE_STATES: frozenset[str] = frozenset(
     {CaptureState.discarded.value, CaptureState.deleted.value}
 )
+
+
+def _legacy_plan_id(kind: str, path: str) -> str:
+    """Stable deterministic ID used exactly when a pre-ID catalog is rebuilt."""
+    return f"legacy-{uuid.uuid5(_PLAN_ID_NAMESPACE, f'{kind}:{path}')}"
+
+
+def _legacy_plan_name(value: Any) -> str:
+    """Normalize readable legacy names without making a rebuild fail on whitespace."""
+    return unicodedata.normalize(
+        "NFC", value if isinstance(value, str) else str(value)
+    ).strip()
+
+
+def _canonical_plan_projects(projects: list[Any]) -> list[dict[str, Any]]:
+    """Convert the former name/string tree into the canonical ID-bearing tree.
+
+    This is intentionally only a persistence compatibility adapter. New API
+    writes are validated by the router and cannot submit the legacy shape.
+    """
+    canonical: list[dict[str, Any]] = []
+    for project_index, project_raw in enumerate(projects):
+        project = project_raw if isinstance(project_raw, dict) else {}
+        project_name = _legacy_plan_name(project.get("name", ""))
+        project_path = f"{project_index}:{project_name}"
+        tasks_raw = project.get("tasks", [])
+        tasks: list[dict[str, Any]] = []
+        if isinstance(tasks_raw, list):
+            for task_index, task_raw in enumerate(tasks_raw):
+                task = task_raw if isinstance(task_raw, dict) else {}
+                task_name = _legacy_plan_name(task.get("name", ""))
+                task_path = f"{project_path}/{task_index}:{task_name}"
+                conditions_raw = task.get("conditions", [])
+                conditions: list[dict[str, str]] = []
+                if isinstance(conditions_raw, list):
+                    for condition_index, condition_raw in enumerate(conditions_raw):
+                        condition = (
+                            condition_raw if isinstance(condition_raw, dict) else {}
+                        )
+                        condition_name = _legacy_plan_name(
+                            condition.get("name", condition_raw)
+                        )
+                        condition_path = (
+                            f"{task_path}/{condition_index}:{condition_name}"
+                        )
+                        condition_id = condition.get("condition_id")
+                        conditions.append(
+                            {
+                                "condition_id": (
+                                    str(condition_id).strip()
+                                    if isinstance(condition_id, str)
+                                    and condition_id.strip()
+                                    else _legacy_plan_id("condition", condition_path)
+                                ),
+                                "name": condition_name,
+                            }
+                        )
+                task_id = task.get("task_id")
+                tasks.append(
+                    {
+                        "task_id": (
+                            str(task_id).strip()
+                            if isinstance(task_id, str) and task_id.strip()
+                            else _legacy_plan_id("task", task_path)
+                        ),
+                        "name": task_name,
+                        "conditions": conditions,
+                    }
+                )
+        project_id = project.get("project_id")
+        canonical.append(
+            {
+                "project_id": (
+                    str(project_id).strip()
+                    if isinstance(project_id, str) and project_id.strip()
+                    else _legacy_plan_id("project", project_path)
+                ),
+                "name": project_name,
+                "tasks": tasks,
+            }
+        )
+    return canonical
 
 
 class CaptureExistsError(Exception):
@@ -132,6 +217,14 @@ class BatchLabelsFrozenError(Exception):
             f"Batch labels are frozen after recording begins: {batch_id} "
             f"({', '.join(self.fields)})"
         )
+
+
+class PlanCatalogConflictError(Exception):
+    """The caller attempted to replace an outdated plan catalog revision."""
+
+    def __init__(self, current_revision: int) -> None:
+        self.current_revision = current_revision
+        super().__init__(f"Plan catalog is at revision {current_revision}")
 
 
 class ArchiveDestinationTakenError(Exception):
@@ -918,6 +1011,58 @@ class CaptureStore:
             )
         return cur.rowcount > 0
 
+    def append_dataset_selection_recipe(
+        self, dataset_id: str, recipe: dict[str, Any]
+    ) -> bool:
+        """Append one immutable Bulk Add provenance record to a dataset."""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT selection_recipes FROM datasets WHERE dataset_id = ?",
+                (dataset_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                recipes = json.loads(row["selection_recipes"] or "[]")
+            except (TypeError, ValueError):
+                recipes = []
+            if not isinstance(recipes, list):
+                recipes = []
+            recipes.append(recipe)
+            conn.execute(
+                "UPDATE datasets SET selection_recipes = ? WHERE dataset_id = ?",
+                (json.dumps(recipes), dataset_id),
+            )
+        return True
+
+    def remove_dataset_selection_recipe(self, dataset_id: str, recipe_id: str) -> bool:
+        """Remove only one just-appended recipe after its ledger append failed."""
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT selection_recipes FROM datasets WHERE dataset_id = ?",
+                (dataset_id,),
+            ).fetchone()
+            if row is None:
+                return False
+            try:
+                recipes = json.loads(row["selection_recipes"] or "[]")
+            except (TypeError, ValueError):
+                return False
+            if not isinstance(recipes, list):
+                return False
+            remaining = [
+                recipe
+                for recipe in recipes
+                if not isinstance(recipe, dict) or recipe.get("recipe_id") != recipe_id
+            ]
+            cur = conn.execute(
+                "UPDATE datasets SET selection_recipes = ? WHERE dataset_id = ?",
+                (json.dumps(remaining), dataset_id),
+            )
+        return cur.rowcount > 0
+
     def get_dataset(self, dataset_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:
             row = conn.execute(
@@ -1319,14 +1464,18 @@ class CaptureStore:
                 conn.execute(
                     """
                     INSERT INTO batches
-                        (batch_id, robot, project, task, condition, operator,
+                        (batch_id, robot, project_id, task_id, condition_id,
+                         project, task, condition, operator,
                          target_episodes, status, ended_reason, created_at,
                          ended_at, batch_seq)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         batch.batch_id,
                         batch.robot,
+                        batch.project_id,
+                        batch.task_id,
+                        batch.condition_id,
                         batch.project,
                         batch.task,
                         batch.condition,
@@ -1376,14 +1525,18 @@ class CaptureStore:
             cur = conn.execute(
                 """
                 INSERT OR IGNORE INTO batches
-                    (batch_id, robot, project, task, condition, operator,
+                    (batch_id, robot, project_id, task_id, condition_id,
+                     project, task, condition, operator,
                      target_episodes, status, ended_reason, created_at,
                      ended_at, batch_seq)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     batch.batch_id,
                     batch.robot,
+                    batch.project_id,
+                    batch.task_id,
+                    batch.condition_id,
                     batch.project,
                     batch.task,
                     batch.condition,
@@ -1473,6 +1626,9 @@ class CaptureStore:
                     "project",
                     "task",
                     "condition",
+                    "project_id",
+                    "task_id",
+                    "condition_id",
                     "robot",
                     "operator",
                 )
@@ -1656,7 +1812,9 @@ class CaptureStore:
             ).fetchall()
         return [self._batch_from_row(r) for r in rows]
 
-    def coverage_by_condition(self, task: str) -> list[tuple[str, int, bool]]:
+    def coverage_by_condition(
+        self, scope: dict[str, str | None]
+    ) -> list[tuple[str, str | None, int, bool]]:
         """``(condition, recorded, is_floor)`` per condition of *task*, in SQL.
 
         Aggregated by the database rather than by summing a batch list: Collect
@@ -1677,18 +1835,41 @@ class CaptureStore:
         vocabulary in gets a stable list.
         """
         with self._conn() as conn:
+            clauses = ["condition IS NOT NULL", "condition NOT IN ('', '—')"]
+            params: list[str] = []
+            for name in (
+                "project_id",
+                "project",
+                "task_id",
+                "task",
+                "robot",
+                "operator",
+            ):
+                value = scope.get(name)
+                if value is not None:
+                    clauses.append(f"{name} = ?")
+                    params.append(value)
+            if scope.get("created_from") is not None:
+                clauses.append("created_at >= ?")
+                params.append(scope["created_from"])
+            if scope.get("created_to") is not None:
+                clauses.append("created_at < ?")
+                params.append(scope["created_to"])
             rows = conn.execute(
-                "SELECT condition, "
+                "SELECT condition_id, condition, "
                 "SUM(episodes_recorded) AS recorded, "
                 "MAX(episodes_recorded_is_floor) AS is_floor "
-                "FROM batches "
-                "WHERE task = ? AND condition IS NOT NULL "
-                "AND condition NOT IN ('', '—') "
-                "GROUP BY condition ORDER BY condition",
-                (task,),
+                "FROM batches WHERE " + " AND ".join(clauses) + " "
+                "GROUP BY condition_id, condition ORDER BY condition, condition_id",
+                params,
             ).fetchall()
         return [
-            (row["condition"], int(row["recorded"] or 0), bool(row["is_floor"]))
+            (
+                row["condition"],
+                row["condition_id"],
+                int(row["recorded"] or 0),
+                bool(row["is_floor"]),
+            )
             for row in rows
         ]
 
@@ -1819,8 +2000,8 @@ class CaptureStore:
 
     def get_plan_catalog(
         self,
-    ) -> tuple[list[Any], list[str] | None, list[str] | None, str] | None:
-        """``(projects, failure_reasons, operators, updated_at)`` or ``None``.
+    ) -> tuple[list[Any], list[str] | None, list[str] | None, str, int] | None:
+        """``(projects, failure_reasons, operators, updated_at, revision)``.
 
         ``None`` is distinct from an explicitly emptied catalog (``([], ts)``):
         the client seeds the server from its local copy only in the never-set
@@ -1832,8 +2013,14 @@ class CaptureStore:
         """
         with self._conn() as conn:
             row = conn.execute(
-                "SELECT payload, updated_at FROM plan_catalog WHERE id = 1"
+                "SELECT payload, updated_at, revision FROM plan_catalog WHERE id = 1"
             ).fetchone()
+        return self._plan_catalog_from_row(row)
+
+    @staticmethod
+    def _plan_catalog_from_row(
+        row: sqlite3.Row | None,
+    ) -> tuple[list[Any], list[str] | None, list[str] | None, str, int] | None:
         if row is None:
             return None
         try:
@@ -1841,10 +2028,11 @@ class CaptureStore:
         except ValueError:
             return None
         if isinstance(payload, list):  # pre-failure_reasons payload shape
-            return payload, None, None, row["updated_at"]
-        if not isinstance(payload, dict):
-            return None
-        if not isinstance(payload.get("projects"), list):
+            projects = _canonical_plan_projects(payload)
+            return projects, None, None, row["updated_at"], int(row["revision"])
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("projects"), list
+        ):
             return None
 
         def _str_list(key: str) -> list[str] | None:
@@ -1854,48 +2042,98 @@ class CaptureStore:
             return None
 
         return (
-            payload["projects"],
+            _canonical_plan_projects(payload["projects"]),
             _str_list("failure_reasons"),
             _str_list("operators"),
             row["updated_at"],
+            int(row["revision"]),
         )
 
-    def set_plan_catalog(
+    def replace_plan_catalog(
         self,
         projects: list[Any],
+        *,
+        base_revision: int,
         updated_at: str,
-        failure_reasons: list[str] | None = None,
-        operators: list[str] | None = None,
-    ) -> None:
-        """Replace the shared plan catalog and mirror it to disk.
+        failure_reasons: list[str] | None,
+        operators: list[str] | None,
+        keep_failure_reasons: bool,
+        keep_operators: bool,
+    ) -> tuple[list[Any], list[str] | None, list[str] | None, str, int]:
+        """CAS-replace the catalog and then best-effort mirror it to disk.
 
-        A ``None`` vocabulary (failure_reasons / operators) means "leave the
-        stored one as it is" (a client that predates the field must not wipe
-        it), so the effective values are re-read before writing.
+        The read, revision check and INSERT/UPDATE share one SQLite write
+        transaction.  The filesystem mirror cannot be atomic with SQLite, as
+        before; a failed mirror is logged and the next successful write heals
+        it, while the DB response remains truthful about the committed revision.
         """
-        if failure_reasons is None or operators is None:
-            stored = self.get_plan_catalog()
-            if stored is not None:
-                if failure_reasons is None:
-                    failure_reasons = stored[1]
-                if operators is None:
-                    operators = stored[2]
-        payload = json.dumps(
-            {
-                "projects": projects,
-                "failure_reasons": failure_reasons,
-                "operators": operators,
-            },
-            ensure_ascii=False,
-        )
+        conflict: PlanCatalogConflictError | None = None
+        result: (
+            tuple[list[Any], list[str] | None, list[str] | None, str, int] | None
+        ) = None
         with self._conn() as conn:
-            conn.execute(
-                "INSERT INTO plan_catalog (id, payload, updated_at) VALUES (1, ?, ?) "
-                "ON CONFLICT(id) DO UPDATE SET "
-                "payload = excluded.payload, updated_at = excluded.updated_at",
-                (payload, updated_at),
-            )
-        self._mirror_plan_catalog(projects, failure_reasons, operators, updated_at)
+            # The in-process connection lock serializes ordinary requests; the
+            # SQLite writer lock also closes the window if another process is
+            # pointed at the same store file.
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute(
+                "SELECT payload, updated_at, revision FROM plan_catalog WHERE id = 1"
+            ).fetchone()
+            current = self._plan_catalog_from_row(row)
+            current_revision = 0 if current is None else current[4]
+            if current_revision != base_revision:
+                conflict = PlanCatalogConflictError(current_revision)
+            else:
+                effective_reasons = (
+                    current[1]
+                    if keep_failure_reasons and current is not None
+                    else failure_reasons
+                )
+                effective_operators = (
+                    current[2] if keep_operators and current is not None else operators
+                )
+                revision = current_revision + 1
+                payload = json.dumps(
+                    {
+                        "projects": projects,
+                        "failure_reasons": effective_reasons,
+                        "operators": effective_operators,
+                    },
+                    ensure_ascii=False,
+                )
+                if row is None:
+                    conn.execute(
+                        "INSERT INTO plan_catalog (id, payload, updated_at, revision) "
+                        "VALUES (1, ?, ?, ?)",
+                        (payload, updated_at, revision),
+                    )
+                else:
+                    updated = conn.execute(
+                        "UPDATE plan_catalog SET payload = ?, updated_at = ?, "
+                        "revision = ? "
+                        "WHERE id = 1 AND revision = ?",
+                        (payload, updated_at, revision, base_revision),
+                    ).rowcount
+                    if updated != 1:
+                        latest = conn.execute(
+                            "SELECT revision FROM plan_catalog WHERE id = 1"
+                        ).fetchone()
+                        conflict = PlanCatalogConflictError(
+                            0 if latest is None else int(latest["revision"])
+                        )
+                if conflict is None:
+                    result = (
+                        projects,
+                        effective_reasons,
+                        effective_operators,
+                        updated_at,
+                        revision,
+                    )
+        if conflict is not None:
+            raise conflict
+        assert result is not None
+        self._mirror_plan_catalog(*result)
+        return result
 
     def _catalog_dir(self) -> Path | None:
         return None if self._data_dir is None else self._data_dir / CATALOG_DIRNAME
@@ -1930,6 +2168,7 @@ class CaptureStore:
         failure_reasons: list[str] | None,
         operators: list[str] | None,
         updated_at: str,
+        revision: int,
     ) -> None:
         catalog = self._catalog_dir()
         if catalog is None:
@@ -1943,6 +2182,7 @@ class CaptureStore:
                     "failure_reasons": failure_reasons,
                     "operators": operators,
                     "updated_at": updated_at,
+                    "revision": revision,
                 },
             )
         except OSError as exc:
@@ -1991,23 +2231,44 @@ class CaptureStore:
 
             reasons = _side_list("failure_reasons")
             side_operators = _side_list("operators")
+            # A pre-CAS sidecar has no revision. It is nevertheless an already
+            # saved catalog, so it starts at 1; only a missing row means 0.
+            side_revision = plan.get("revision")
+            revision = (
+                side_revision
+                if isinstance(side_revision, int) and side_revision > 0
+                else 1
+            )
+            projects = _canonical_plan_projects(plan["projects"])
             with self._conn() as conn:
                 conn.execute(
-                    "INSERT INTO plan_catalog (id, payload, updated_at) "
-                    "VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET "
-                    "payload = excluded.payload, updated_at = excluded.updated_at",
+                    "INSERT INTO plan_catalog (id, payload, updated_at, revision) "
+                    "VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET "
+                    "payload = excluded.payload, updated_at = excluded.updated_at, "
+                    "revision = excluded.revision",
                     (
                         json.dumps(
                             {
-                                "projects": plan["projects"],
+                                "projects": projects,
                                 "failure_reasons": reasons,
                                 "operators": side_operators,
                             },
                             ensure_ascii=False,
                         ),
                         plan.get("updated_at") or utc_now_iso8601(),
+                        revision,
                     ),
                 )
+            # Persist the normalization immediately: later rebuilds must not
+            # generate a different shape, and a subsequent rename needs these
+            # IDs rather than another legacy inference.
+            self._mirror_plan_catalog(
+                projects,
+                reasons,
+                side_operators,
+                plan.get("updated_at") or utc_now_iso8601(),
+                revision,
+            )
             restored["plan_catalog"] = 1
         return restored
 

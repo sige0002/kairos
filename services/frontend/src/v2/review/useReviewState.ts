@@ -330,9 +330,13 @@ export function useReviewState(): ReviewState {
     // dataset.
     () =>
       capturesQuery.data
-        ? mapCapturesToEpisodes(capturesQuery.data.items, batchSeq)
+        ? mapCapturesToEpisodes(
+            capturesQuery.data.items,
+            batchSeq,
+            batchesQuery.isPending ? 'loading' : 'unavailable',
+          )
         : [],
-    [capturesQuery.data, batchSeq],
+    [capturesQuery.data, batchSeq, batchesQuery.isPending],
   );
 
   // ---- toast --------------------------------------------------------------

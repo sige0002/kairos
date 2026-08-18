@@ -48,6 +48,7 @@ __all__ = [
     "UNFINALIZED_STATES",
     "Batch",
     "BatchCoverageResponse",
+    "BatchCoverageScope",
     "BatchCreateRequest",
     "BatchDetail",
     "BatchListResponse",
@@ -279,6 +280,9 @@ class CollectionContextSnapshot(BaseModel):
 
     batch_id: str | None = None
     batch_seq: int | None = None
+    project_id: str | None = None
+    task_id: str | None = None
+    condition_id: str | None = None
     project: str | None = None
     task: str | None = None
     condition: str | None = None
@@ -590,6 +594,48 @@ class CaptureArchiveProgress(BaseModel):
 # ---- datasets (§6: rows + ledger events; no directory tree) ----------------
 
 
+class DatasetSelectionCondition(BaseModel):
+    field: Literal[
+        "any", "operator", "task", "condition", "run_id", "capture_id", "task_result"
+    ]
+    operator: Literal["contains", "equals"]
+    value: str = Field(min_length=1, max_length=500)
+
+    @field_validator("value")
+    @classmethod
+    def _nonblank_value(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be blank")
+        return value
+
+
+class DatasetSelectionRecipeCreateRequest(BaseModel):
+    """One completed filtered Bulk Add run, recorded after member writes."""
+
+    kind: Literal["filtered_bulk"] = "filtered_bulk"
+    join: Literal["and", "or"]
+    conditions: list[DatasetSelectionCondition] = Field(default_factory=list)
+    matched: int = Field(ge=0)
+    attempted: int = Field(ge=0)
+    succeeded: int = Field(ge=0)
+    failed: int = Field(ge=0)
+    catalog_truncated: bool = False
+
+    @model_validator(mode="after")
+    def _counts_match_run(self) -> DatasetSelectionRecipeCreateRequest:
+        if self.attempted != self.succeeded + self.failed:
+            raise ValueError("attempted must equal succeeded plus failed")
+        if self.succeeded > self.matched or self.attempted > self.matched:
+            raise ValueError("run counts cannot exceed matched")
+        return self
+
+
+class DatasetSelectionRecipe(DatasetSelectionRecipeCreateRequest):
+    recipe_id: str
+    recorded_at: str
+
+
 class Dataset(BaseModel):
     """A logical dataset: a named set of captures, with no physical tree.
 
@@ -614,6 +660,7 @@ class Dataset(BaseModel):
     archive_mode: str | None = None
     archive_started_at: str | None = None
     archived_at: str | None = None
+    selection_recipes: list[DatasetSelectionRecipe] = Field(default_factory=list)
 
 
 class DatasetMember(BaseModel):
@@ -956,6 +1003,9 @@ class Batch(BaseModel):
 
     batch_id: str
     robot: str | None = None
+    project_id: str | None = None
+    task_id: str | None = None
+    condition_id: str | None = None
     # Optional because an empty plan catalog has no project to name. A console
     # that had to send SOMETHING filled the gap with the dash it displays for
     # "unset", writing a fabricated label into the catalog for good; null is
@@ -989,11 +1039,35 @@ class BatchCreateRequest(BaseModel):
     """Body for ``POST /api/v1/batches``."""
 
     robot: str | None = None
+    project_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    )
+    task_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    )
+    condition_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    )
     project: str | None = None
     task: str | None = None
     condition: str | None = None
     operator: str | None = None
     target_episodes: int = Field(default=30, ge=1)
+
+    @field_validator("project_id", "task_id", "condition_id", mode="before")
+    @classmethod
+    def _normalize_plan_ids(cls, value: object) -> object:
+        """Match the Plan catalog's canonical ID syntax at the HTTP boundary."""
+        return value.strip() if isinstance(value, str) else value
 
 
 class BatchPatchRequest(BaseModel):
@@ -1002,11 +1076,35 @@ class BatchPatchRequest(BaseModel):
     status: BatchStatus | None = None
     ended_reason: str | None = None
     robot: str | None = None
+    project_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    )
+    task_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    )
+    condition_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$",
+    )
     project: str | None = None
     task: str | None = None
     condition: str | None = None
     operator: str | None = None
     target_episodes: int | None = Field(default=None, ge=1, le=500)
+
+    @field_validator("project_id", "task_id", "condition_id", mode="before")
+    @classmethod
+    def _normalize_plan_ids(cls, value: object) -> object:
+        """Match the Plan catalog's canonical ID syntax at the HTTP boundary."""
+        return value.strip() if isinstance(value, str) else value
 
 
 class BatchSummary(Batch):
@@ -1049,6 +1147,7 @@ class CoverageRow(BaseModel):
     """One condition's recorded total for a task (``GET /batches/coverage``)."""
 
     condition: str
+    condition_id: str | None = None
     # Sum of the batches' monotone ``episodes_recorded`` for this condition.
     recorded: int = 0
     # True when ANY batch in the sum carries ``episodes_recorded_is_floor``.
@@ -1056,6 +1155,19 @@ class CoverageRow(BaseModel):
     # way to say which part is uncertain — so the flag propagates through the
     # addition rather than being reported per batch.
     is_floor: bool = False
+
+
+class BatchCoverageScope(BaseModel):
+    """The exact AND-scoped population used for a coverage aggregate."""
+
+    project_id: str | None = None
+    project: str | None = None
+    task_id: str | None = None
+    task: str | None = None
+    robot: str | None = None
+    operator: str | None = None
+    created_from: str | None = None
+    created_to: str | None = None
 
 
 class BatchCoverageResponse(BaseModel):
@@ -1067,7 +1179,8 @@ class BatchCoverageResponse(BaseModel):
     invented rows for it would be reporting a plan, not a measurement.
     """
 
-    task: str
+    task: str | None = None
+    scope: BatchCoverageScope
     rows: list[CoverageRow] = Field(default_factory=list)
 
 

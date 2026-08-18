@@ -50,6 +50,8 @@ interface Backend {
    *  client's own MAX_PAGES cap is reached and the sweep comes back
    *  truncated — the real path, not a faked flag. */
   capturesNeverEnd: boolean;
+  /** Make the legacy Batch fallback unavailable without affecting snapshots. */
+  batchesError: boolean;
   /** When true, a per-capture archive is refused because the destination
    *  already holds files (409 destination_not_empty, captures.py). */
   archiveDestinationNotEmpty: boolean;
@@ -86,6 +88,7 @@ interface Backend {
     mode: string | null;
   }[];
   datasetArchiveCancelCalls: string[];
+  selectionRecipeCalls: { datasetId: string; body: Record<string, unknown> }[];
   calls: string[];
 }
 
@@ -184,6 +187,7 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     archiveRoots: seed.archiveRoots ?? [],
     archiveVerifies: seed.archiveVerifies ?? true,
     capturesNeverEnd: seed.capturesNeverEnd ?? false,
+    batchesError: seed.batchesError ?? false,
     archiveDestinationNotEmpty: seed.archiveDestinationNotEmpty ?? false,
     holdCreate: seed.holdCreate ?? false,
     releaseCreate: () => {
@@ -198,6 +202,7 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     jobsUnreachable: seed.jobsUnreachable ?? false,
     datasetArchiveCalls: [],
     datasetArchiveCancelCalls: [],
+    selectionRecipeCalls: [],
     calls: [],
   };
   let nextId = 1;
@@ -212,7 +217,9 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     const method = (init?.method ?? 'GET').toUpperCase();
     const path = url.replace(/^.*\/api\/v1/, '').split('?')[0]!;
     backend.calls.push(`${method} ${path}`);
-    const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
+    const body = init?.body
+      ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+      : {};
 
     if (method === 'POST' && path === '/jobs' && backend.jobsUnreachable) {
       throw new TypeError('Failed to fetch');
@@ -277,8 +284,7 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
         status: 'active',
         destination: null,
         mode: null,
-        member_total: backend.members.filter((m) => m.dataset_id === datasetId)
-          .length,
+        member_total: backend.members.filter((m) => m.dataset_id === datasetId).length,
         members_done: 0,
         running: false,
         error: null,
@@ -394,9 +400,27 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
           running: false,
           error: null,
           cancelable: false,
-          cancel_blocker: dataset.status === 'archiving' ? 'members_completed' : 'not_archiving',
+          cancel_blocker:
+            dataset.status === 'archiving' ? 'members_completed' : 'not_archiving',
         },
       );
+    }
+
+    const selectionRecipeMatch = path.match(/^\/datasets\/([^/]+)\/selection-recipes$/);
+    if (selectionRecipeMatch && method === 'POST') {
+      const datasetId = decodeURIComponent(selectionRecipeMatch[1]!);
+      const dataset = backend.datasets.find((item) => item.dataset_id === datasetId);
+      if (!dataset) {
+        return jsonResponse({ error: { code: 'dataset_not_found', message: 'gone' } }, 404);
+      }
+      backend.selectionRecipeCalls.push({ datasetId, body });
+      const recipe = {
+        ...body,
+        recipe_id: `recipe-${backend.selectionRecipeCalls.length}`,
+        recorded_at: '2026-07-22T09:00:00Z',
+      };
+      dataset.selection_recipes = [...(dataset.selection_recipes ?? []), recipe] as Dataset['selection_recipes'];
+      return jsonResponse(recipe, 201);
     }
 
     const datasetMatch = path.match(/^\/datasets\/([^/]+)$/);
@@ -469,6 +493,12 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     }
 
     if (path === "/batches") {
+      if (backend.batchesError) {
+        return jsonResponse(
+          { error: { code: 'batch_catalog_unavailable', message: 'unavailable' } },
+          503,
+        );
+      }
       return jsonResponse({
         items: backend.batches,
         total: backend.batches.length,
@@ -510,7 +540,10 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
                 `${destination}/${captureId} already contains files — ` +
                 'refusing to archive into it. Choose another path, or clear ' +
                 'it if it is the debris of a failed archive.',
-              details: { capture_id: captureId, destination: `${destination}/${captureId}` },
+              details: {
+                capture_id: captureId,
+                destination: `${destination}/${captureId}`,
+              },
             },
           },
           409,
@@ -556,15 +589,16 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
       // The run completed: this is the moment the server has removed the
       // source, so the list loses the capture NOW, not at the POST. A failed
       // verification never gets here — the source stays.
-      if (backend.archiveVerifies && !backend.archived.some((a) => a.captureId === captureId)) {
+      if (
+        backend.archiveVerifies &&
+        !backend.archived.some((a) => a.captureId === captureId)
+      ) {
         backend.archived.push({
           captureId,
           destination: run.source,
           reason: run.reason,
         });
-        backend.captures = backend.captures.filter(
-          (c) => c.capture_id !== captureId,
-        );
+        backend.captures = backend.captures.filter((c) => c.capture_id !== captureId);
       }
       return jsonResponse({
         capture_id: captureId,
@@ -636,7 +670,9 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
 
 /** The member row for a capture, found by the data attribute the row carries. */
 function memberRowFor(captureId: string): HTMLElement {
-  const row = document.querySelector(`[data-capture-id="${captureId}"][data-membership-id]`);
+  const row = document.querySelector(
+    `[data-capture-id="${captureId}"][data-membership-id]`,
+  );
   if (!row) throw new Error(`no member row for ${captureId}`);
   return row as HTMLElement;
 }
@@ -660,8 +696,18 @@ test('lists datasets with an honest aggregate over their members', async () => {
     datasets: [DS_KITCHEN],
     captures: [CAP_A, CAP_B],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
-      { membership_id: 'm-2', dataset_id: 'ds-kitchen', capture_id: 'cap-b', display_index: 2 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
+      {
+        membership_id: 'm-2',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-b',
+        display_index: 2,
+      },
     ],
     highWater: { 'ds-kitchen': 3 },
   });
@@ -679,7 +725,12 @@ test('a dataset with no labels says so instead of showing a 0/0 split', async ()
     datasets: [DS_KITCHEN],
     captures: [capture({ capture_id: 'cap-plain', ...replica('present_verified') })],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-plain', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-plain',
+        display_index: 1,
+      },
     ],
   });
   renderWithClient(<DatasetsScreen />);
@@ -702,7 +753,9 @@ test('creating a dataset posts it, selects it, and states that nothing moved', a
   fireEvent.change(screen.getByTestId('new-dataset-name'), {
     target: { value: 'shelf restock' },
   });
-  fireEvent.change(screen.getByTestId('new-dataset-operator'), { target: { value: 'op_a' } });
+  fireEvent.change(screen.getByTestId('new-dataset-operator'), {
+    target: { value: 'op_a' },
+  });
   fireEvent.click(screen.getByTestId('new-dataset-submit'));
 
   await waitFor(() => expect(backend.datasets).toHaveLength(1));
@@ -714,9 +767,13 @@ test('creating a dataset posts it, selects it, and states that nothing moved', a
   // The new dataset becomes the scope, and the toast says the recordings were
   // not touched — the model this replaced would have MOVED them.
   await waitFor(() =>
-    expect(screen.getByTestId('dataset-scope-title')).toHaveTextContent('shelf restock'),
+    expect(screen.getByTestId('dataset-scope-title')).toHaveTextContent(
+      'shelf restock',
+    ),
   );
-  expect(screen.getByTestId('toast')).toHaveTextContent('nothing was written under objects/');
+  expect(screen.getByTestId('toast')).toHaveTextContent(
+    'nothing was written under objects/',
+  );
 });
 
 test('a nameless dataset cannot be submitted', async () => {
@@ -811,26 +868,22 @@ test("candidate filter chips combine Operator and Condition with AND or OR", asy
   );
   fireEvent.click(screen.getByTestId("dataset-candidate-filter-add"));
 
-  expect(
-    screen.getByTestId("dataset-candidate-filter-chips"),
-  ).toHaveTextContent("Operator equals “op_a”");
-  expect(
-    screen.getByTestId("dataset-candidate-filter-chips"),
-  ).toHaveTextContent("Condition contains “left bin”");
+  expect(screen.getByTestId('dataset-candidate-filter-chips')).toHaveTextContent(
+    'Operator equals “op_a”',
+  );
+  expect(screen.getByTestId('dataset-candidate-filter-chips')).toHaveTextContent(
+    'Condition contains “left bin”',
+  );
   expect(backend.calls).toContain("GET /batches");
 
   await waitFor(() => {
     expect(screen.getByTestId("dataset-candidate-cap-a")).toBeInTheDocument();
-    expect(
-      screen.queryByTestId("dataset-candidate-cap-c"),
-    ).not.toBeInTheDocument();
-    expect(
-      screen.queryByTestId("dataset-candidate-cap-d"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dataset-candidate-cap-c')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('dataset-candidate-cap-d')).not.toBeInTheDocument();
   });
-  expect(
-    screen.getByTestId("dataset-candidate-filter-chips"),
-  ).toHaveTextContent("Condition contains “left bin”");
+  expect(screen.getByTestId('dataset-candidate-filter-chips')).toHaveTextContent(
+    'Condition contains “left bin”',
+  );
 
   fireEvent.click(screen.getByRole("button", { name: "OR" }));
   await waitFor(() => {
@@ -840,9 +893,29 @@ test("candidate filter chips combine Operator and Condition with AND or OR", asy
   });
 });
 
-test('batch condition is visible on candidate, member row, and member detail', async () => {
-  const candidate = { ...CAP_A, batch_id: 'batch-left' };
-  const member = { ...CAP_B, batch_id: 'batch-right' };
+test('recorded condition is visible on candidate, member row, member detail, and summary', async () => {
+  const context = (batchId: string, condition: string) => ({
+    batch_id: batchId,
+    batch_seq: 1,
+    project_id: null,
+    task_id: null,
+    condition_id: null,
+    project: 'Manipulation',
+    task: 'Pick and Place',
+    condition,
+    robot: null,
+    operator: null,
+  });
+  const candidate = {
+    ...CAP_A,
+    batch_id: 'batch-left',
+    collection_context: context('batch-left', 'Recorded left'),
+  };
+  const member = {
+    ...CAP_B,
+    batch_id: 'batch-right',
+    collection_context: context('batch-right', 'Recorded right'),
+  };
   const batch = (batchId: string, condition: string): BatchSummary => ({
     batch_id: batchId,
     project: 'Manipulation',
@@ -865,8 +938,8 @@ test('batch condition is visible on candidate, member row, and member detail', a
       },
     ],
     batches: [
-      batch('batch-left', 'Object: left bin'),
-      batch('batch-right', 'Object: right bin'),
+      batch('batch-left', 'Current left'),
+      batch('batch-right', 'Current right'),
     ],
   });
   renderWithClient(<DatasetsScreen />);
@@ -874,17 +947,66 @@ test('batch condition is visible on candidate, member row, and member detail', a
   fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
   expect(
     await screen.findByTestId('dataset-candidate-condition-cap-a'),
-  ).toHaveTextContent('Condition: Object: left bin');
+  ).toHaveTextContent('Condition: Recorded left');
 
   const memberRow = memberRowFor('cap-b');
   expect(
     within(memberRow).getByTestId('dataset-member-condition-m-condition'),
-  ).toHaveTextContent('Condition: Object: right bin');
+  ).toHaveTextContent('Condition: Recorded right');
+  expect(screen.getByTestId('dataset-summary-conditions')).toHaveTextContent(
+    'Recorded right: 1',
+  );
 
   fireEvent.click(memberRow);
   expect(await screen.findByTestId('dataset-detail-condition')).toHaveTextContent(
-    'Condition: Object: right bin',
+    'Condition: Recorded right',
   );
+});
+
+test('snapshot candidates remain filterable and bulk-addable when legacy Batch lookup fails', async () => {
+  const snapshot = {
+    ...CAP_A,
+    batch_id: 'batch-left',
+    collection_context: {
+      batch_id: 'batch-left',
+      batch_seq: 1,
+      project_id: null,
+      task_id: null,
+      condition_id: null,
+      project: null,
+      task: null,
+      condition: 'Recorded left',
+      robot: null,
+      operator: null,
+    },
+  };
+  const legacy = { ...CAP_A, capture_id: 'cap-legacy', batch_id: 'legacy-batch' };
+  mockApi({
+    datasets: [DS_KITCHEN],
+    captures: [snapshot, legacy],
+    batchesError: true,
+  });
+  renderWithClient(<DatasetsScreen />);
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+
+  expect(
+    await screen.findByTestId('dataset-candidate-condition-cap-a'),
+  ).toHaveTextContent('Condition: Recorded left');
+  fireEvent.change(screen.getByTestId('dataset-candidate-filter-field'), {
+    target: { value: 'condition' },
+  });
+  fireEvent.change(screen.getByTestId('dataset-candidate-search'), {
+    target: { value: 'recorded left' },
+  });
+  fireEvent.click(screen.getByTestId('dataset-candidate-filter-add'));
+
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-candidate-cap-a')).toBeInTheDocument(),
+  );
+  expect(screen.getByTestId('dataset-legacy-condition-excluded')).toHaveTextContent(
+    '1 legacy recording could not be evaluated and will not be included.',
+  );
+  expect(screen.getByTestId('dataset-bulk-add-open')).toBeEnabled();
 });
 
 test('a capture whose batch metadata is unavailable says so', async () => {
@@ -914,9 +1036,7 @@ test("bulk add snapshots and adds every match beyond the 50-row render cap", asy
 
   const open = await screen.findByTestId("dataset-bulk-add-open");
   expect(open).toHaveTextContent("Add all 52 available");
-  expect(screen.getAllByTestId(/^dataset-candidate-cap-bulk-/)).toHaveLength(
-    50,
-  );
+  expect(screen.getAllByTestId(/^dataset-candidate-cap-bulk-/)).toHaveLength(50);
   fireEvent.click(open);
 
   const dialog = await screen.findByTestId("dataset-bulk-add-dialog");
@@ -924,17 +1044,23 @@ test("bulk add snapshots and adds every match beyond the 50-row render cap", asy
   fireEvent.click(screen.getByTestId("dataset-bulk-add-confirm"));
 
   await waitFor(() => expect(backend.members).toHaveLength(52));
+  expect(backend.selectionRecipeCalls).toHaveLength(1);
+  expect(backend.selectionRecipeCalls[0]?.body).toMatchObject({
+    kind: 'filtered_bulk',
+    join: 'and',
+    matched: 52,
+    attempted: 52,
+    succeeded: 52,
+    failed: 0,
+    catalog_truncated: false,
+  });
   await waitFor(() =>
-    expect(
-      screen.queryByTestId("dataset-bulk-add-dialog"),
-    ).not.toBeInTheDocument(),
+    expect(screen.queryByTestId('dataset-bulk-add-dialog')).not.toBeInTheDocument(),
   );
   expect(screen.getByTestId("toast")).toHaveTextContent(
     "Added 52 recordings to “kitchen picks”",
   );
-  expect(
-    backend.calls.filter((call) => call.endsWith("/members")),
-  ).toHaveLength(52);
+  expect(backend.calls.filter((call) => call.endsWith('/members'))).toHaveLength(52);
 });
 
 test("a partial bulk add names failures and retries only those captures", async () => {
@@ -963,13 +1089,9 @@ test("a partial bulk add names failures and retries only those captures", async 
 
   fireEvent.click(screen.getByTestId("dataset-bulk-add-retry"));
   await waitFor(() => expect(backend.members).toHaveLength(3));
-  expect(
-    backend.calls.filter((call) => call.endsWith("/members")),
-  ).toHaveLength(4);
+  expect(backend.calls.filter((call) => call.endsWith('/members'))).toHaveLength(4);
   await waitFor(() =>
-    expect(
-      screen.queryByTestId("dataset-bulk-add-dialog"),
-    ).not.toBeInTheDocument(),
+    expect(screen.queryByTestId('dataset-bulk-add-dialog')).not.toBeInTheDocument(),
   );
 });
 
@@ -1037,8 +1159,18 @@ test('removing a member leaves the capture alone and never reissues its number',
     datasets: [DS_KITCHEN],
     captures: [CAP_A, CAP_B],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
-      { membership_id: 'm-2', dataset_id: 'ds-kitchen', capture_id: 'cap-b', display_index: 2 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
+      {
+        membership_id: 'm-2',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-b',
+        display_index: 2,
+      },
     ],
     highWater: { 'ds-kitchen': 3 },
   });
@@ -1051,7 +1183,9 @@ test('removing a member leaves the capture alone and never reissues its number',
   fireEvent.click(memberRowFor('cap-a'));
   fireEvent.click(await screen.findByTestId('remove-member-btn'));
 
-  await waitFor(() => expect(backend.members.map((m) => m.membership_id)).toEqual(['m-2']));
+  await waitFor(() =>
+    expect(backend.members.map((m) => m.membership_id)).toEqual(['m-2']),
+  );
   // The capture itself is untouched — a removal is not a deletion.
   expect(backend.captures.map((c) => c.capture_id)).toEqual(['cap-a', 'cap-b']);
   await waitFor(() =>
@@ -1076,7 +1210,12 @@ test('a surviving member keeps its number even when it is the only one left', as
     captures: [CAP_B],
     // #1 was removed some time ago; #2 is what remains.
     members: [
-      { membership_id: 'm-2', dataset_id: 'ds-kitchen', capture_id: 'cap-b', display_index: 2 },
+      {
+        membership_id: 'm-2',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-b',
+        display_index: 2,
+      },
     ],
     highWater: { 'ds-kitchen': 3 },
   });
@@ -1095,7 +1234,12 @@ test('a member whose bytes are not on this host still renders, as a normal state
     datasets: [DS_KITCHEN],
     captures: [CAP_AWAY],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-away', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-away',
+        display_index: 1,
+      },
     ],
   });
   renderWithClient(<DatasetsScreen />);
@@ -1115,7 +1259,12 @@ test('a member the catalog has no capture for is shown, not silently dropped', a
     datasets: [DS_KITCHEN],
     captures: [],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-gone', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-gone',
+        display_index: 1,
+      },
     ],
   });
   renderWithClient(<DatasetsScreen />);
@@ -1133,7 +1282,12 @@ test('discarding a member is refused, and the dialog says to remove it first', a
     datasets: [DS_KITCHEN],
     captures: [CAP_A],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
     ],
   });
   renderWithClient(<DatasetsScreen />);
@@ -1166,7 +1320,12 @@ test('taking the removal path clears the block the discard ran into', async () =
     datasets: [DS_KITCHEN],
     captures: [CAP_A],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
     ],
   });
   renderWithClient(<DatasetsScreen />);
@@ -1179,7 +1338,9 @@ test('taking the removal path clears the block the discard ran into', async () =
 
   // It is no longer a member, so the dataset no longer holds a delete back —
   // and the capture is offered as something to add, not as something gone.
-  expect(document.querySelector('[data-capture-id="cap-a"][data-membership-id]')).toBeNull();
+  expect(
+    document.querySelector('[data-capture-id="cap-a"][data-membership-id]'),
+  ).toBeNull();
   expect(screen.queryByTestId('discard-member-btn')).not.toBeInTheDocument();
   expect(await screen.findByTestId('dataset-candidate-cap-a')).toBeInTheDocument();
 });
@@ -1212,7 +1373,12 @@ test('deleting a dataset removes the rows and says no recording is touched', asy
     datasets: [DS_KITCHEN],
     captures: [CAP_A],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
     ],
   });
   renderWithClient(<DatasetsScreen />);
@@ -1240,7 +1406,10 @@ test('deleting a dataset removes the rows and says no recording is touched', asy
 // family as "12 / 12 at expected" and "5 cameras OK": a confident answer that
 // is wrong. No backend change is needed to say so — the signal is already in
 // the response the screen throws away.
-test('a catalog too large to sweep says so instead of ending quietly', { timeout: 20000 }, async () => {
+test(
+  'a catalog too large to sweep says so instead of ending quietly',
+  { timeout: 20000 },
+  async () => {
   mockApi({
     datasets: [DS_KITCHEN],
     captures: [CAP_A, CAP_B],
@@ -1248,13 +1417,16 @@ test('a catalog too large to sweep says so instead of ending quietly', { timeout
   });
   renderWithClient(<DatasetsScreen />);
 
-  const note = await screen.findByTestId('catalog-truncated', undefined, { timeout: 10000 });
+    const note = await screen.findByTestId('catalog-truncated', undefined, {
+      timeout: 10000,
+    });
   expect(note).toHaveTextContent(/not the whole catalog|more recordings than/i);
   // A client-side predicate cannot retrieve captures beyond the completed
   // sweep, so the boundary names its material effect instead of offering a
   // search action that cannot reach the missing rows.
   expect(note).toHaveTextContent(/not included in bulk add/i);
-});
+  },
+);
 
 test('a catalog that fits reports nothing — the note is not decoration', async () => {
   mockApi({ datasets: [DS_KITCHEN], captures: [CAP_A, CAP_B] });
@@ -1271,7 +1443,9 @@ test('with no archive roots configured the control is never offered', async () =
   renderWithClient(<DatasetsScreen />);
 
   await screen.findByTestId('dataset-candidate-cap-a');
-  await waitFor(() => expect(screen.getByTestId('dataset-add-cap-a')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('dataset-add-cap-a')).toBeInTheDocument(),
+  );
   expect(screen.queryByTestId('dataset-archive-cap-a')).not.toBeInTheDocument();
 });
 
@@ -1282,7 +1456,12 @@ test('the selection is addressable by dataset_id and membership_id', async () =>
     datasets: [DS_KITCHEN],
     captures: [CAP_A],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
     ],
   });
   renderWithClient(<DatasetsScreen />);
@@ -1304,13 +1483,20 @@ test('a deep link restores the dataset and member it names', async () => {
     datasets: [DS_KITCHEN],
     captures: [CAP_A],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
     ],
   });
   renderWithClient(<DatasetsScreen />);
 
   await waitFor(() =>
-    expect(screen.getByTestId('dataset-scope-title')).toHaveTextContent('kitchen picks'),
+    expect(screen.getByTestId('dataset-scope-title')).toHaveTextContent(
+      'kitchen picks',
+    ),
   );
   expect(await screen.findByTestId('dataset-member-number')).toHaveTextContent('#1');
   // The shell's own key survives the round-trip untouched.
@@ -1450,8 +1636,18 @@ test('archiving a dataset: confirm echoes the final path, the run seals, the row
     datasets: [DS_KITCHEN],
     captures: [CAP_A, CAP_B],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
-      { membership_id: 'm-2', dataset_id: 'ds-kitchen', capture_id: 'cap-b', display_index: 2 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
+      {
+        membership_id: 'm-2',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-b',
+        display_index: 2,
+      },
     ],
     archiveRoots: ['/mnt/archive'],
     sealOnPoll: true,
@@ -1486,7 +1682,9 @@ test('archiving a dataset: confirm echoes the final path, the run seals, the row
   });
   fireEvent.click(screen.getByTestId('dataset-view-archived'));
   await waitFor(() => {
-    expect(screen.getByTestId('dataset-status-ds-kitchen')).toHaveTextContent('archived');
+    expect(screen.getByTestId('dataset-status-ds-kitchen')).toHaveTextContent(
+      'archived',
+    );
   });
   fireEvent.click(screen.getByTestId(datasetTestId('ds-kitchen')));
   expect(await screen.findByTestId('dataset-archived-banner')).toHaveTextContent(
@@ -1499,7 +1697,12 @@ test('an archived dataset is read-only: no build, no removal, delete refused wit
     datasets: [DS_SEALED],
     captures: [],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-sealed', capture_id: 'cap-gone', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-sealed',
+        capture_id: 'cap-gone',
+        display_index: 1,
+      },
     ],
     archiveRoots: ['/mnt/archive'],
   });
@@ -1512,7 +1715,9 @@ test('an archived dataset is read-only: no build, no removal, delete refused wit
 
   // The state is part of the row's identity and the header's.
   expect(screen.getByTestId('dataset-status-ds-sealed')).toHaveTextContent('archived');
-  expect(await screen.findByTestId('dataset-scope-status')).toHaveTextContent('archived');
+  expect(await screen.findByTestId('dataset-scope-status')).toHaveTextContent(
+    'archived',
+  );
   const banner = await screen.findByTestId('dataset-archived-banner');
   expect(banner).toHaveTextContent('/mnt/archive/exports/op_a/pick_place/sealed picks');
 
@@ -1543,7 +1748,12 @@ test('a destination another dataset holds is refused with the reason AND the way
     datasets: [DS_KITCHEN, DS_SHELF],
     captures: [CAP_A],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
     ],
     archiveRoots: ['/mnt/archive'],
     archiveClaimedBy: 'ds-shelf',
@@ -1593,7 +1803,12 @@ test('a claimed destination whose holder is not in the loaded catalog shows the 
     datasets: [DS_KITCHEN],
     captures: [CAP_A],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
     ],
     archiveRoots: ['/mnt/archive'],
     archiveClaimedBy: 'ds-not-in-this-list',
@@ -1637,7 +1852,12 @@ test('a halted run carries the next step, not just the sentence it stopped on', 
     ],
     captures: [CAP_A],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
     ],
     archiveRoots: ['/mnt/archive'],
     archiveRun: {
@@ -1660,7 +1880,9 @@ test('a halted run carries the next step, not just the sentence it stopped on', 
   fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
   fireEvent.click(await screen.findByTestId('archive-dataset-btn'));
 
-  const halt = await screen.findByTestId('dataset-archive-halt', undefined, { timeout: 5000 });
+  const halt = await screen.findByTestId('dataset-archive-halt', undefined, {
+    timeout: 5000,
+  });
   expect(halt).toHaveTextContent('invalid JSON on line 812');
   // The part the server's sentence does not carry: what has to happen.
   const guidance = within(halt).getByTestId('dataset-archive-halt-guidance');
@@ -1675,7 +1897,12 @@ test('a halt whose code the catalog does not know shows the sentence and no inve
     ],
     captures: [CAP_A],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
     ],
     archiveRoots: ['/mnt/archive'],
     archiveRun: {
@@ -1685,7 +1912,10 @@ test('a halt whose code the catalog does not know shows the sentence and no inve
       member_total: 2,
       members_done: 1,
       running: false,
-      error: { code: 'some_future_runner_code', message: 'The run stopped: disk went away.' },
+      error: {
+        code: 'some_future_runner_code',
+        message: 'The run stopped: disk went away.',
+      },
     },
   });
   renderWithClient(<DatasetsScreen />);
@@ -1693,9 +1923,13 @@ test('a halt whose code the catalog does not know shows the sentence and no inve
   fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
   fireEvent.click(await screen.findByTestId('archive-dataset-btn'));
 
-  const halt = await screen.findByTestId('dataset-archive-halt', undefined, { timeout: 5000 });
+  const halt = await screen.findByTestId('dataset-archive-halt', undefined, {
+    timeout: 5000,
+  });
   expect(halt).toHaveTextContent('disk went away');
-  expect(within(halt).queryByTestId('dataset-archive-halt-guidance')).not.toBeInTheDocument();
+  expect(
+    within(halt).queryByTestId('dataset-archive-halt-guidance'),
+  ).not.toBeInTheDocument();
 });
 
 test('a halted run reports why, stays archiving, and Resume continues it without a destination', async () => {
@@ -1710,8 +1944,18 @@ test('a halted run reports why, stays archiving, and Resume continues it without
     ],
     captures: [CAP_A, CAP_B],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
-      { membership_id: 'm-2', dataset_id: 'ds-kitchen', capture_id: 'cap-b', display_index: 2 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
+      {
+        membership_id: 'm-2',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-b',
+        display_index: 2,
+      },
     ],
     archiveRoots: ['/mnt/archive'],
     archiveRun: {
@@ -1721,13 +1965,19 @@ test('a halted run reports why, stays archiving, and Resume continues it without
       member_total: 2,
       members_done: 1,
       running: false,
-      error: { capture_id: 'cap-b', code: 'capture_busy', message: 'A job holds this capture.' },
+      error: {
+        capture_id: 'cap-b',
+        code: 'capture_busy',
+        message: 'A job holds this capture.',
+      },
     },
   });
   renderWithClient(<DatasetsScreen />);
 
   fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
-  expect(screen.getByTestId('dataset-status-ds-kitchen')).toHaveTextContent('archiving');
+  expect(screen.getByTestId('dataset-status-ds-kitchen')).toHaveTextContent(
+    'archiving',
+  );
 
   // The header offers the run, not a second archive.
   const button = await screen.findByTestId('archive-dataset-btn');
@@ -1739,7 +1989,9 @@ test('a halted run reports why, stays archiving, and Resume continues it without
     timeout: 5000,
   });
   expect(halt).toHaveTextContent('A job holds this capture.');
-  expect(screen.getByTestId('dataset-archive-progress-count')).toHaveTextContent('1 / 2');
+  expect(screen.getByTestId('dataset-archive-progress-count')).toHaveTextContent(
+    '1 / 2',
+  );
   expect(screen.queryByTestId('dataset-archive-cancel-run')).not.toBeInTheDocument();
 
   fireEvent.click(screen.getByTestId('dataset-archive-resume'));
@@ -1798,9 +2050,7 @@ test('a zero-progress halted run can be canceled and returns the dataset to Acti
   fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
   fireEvent.click(await screen.findByTestId('archive-dataset-btn'));
 
-  const consequence = await screen.findByTestId(
-    'dataset-archive-cancel-available',
-  );
+  const consequence = await screen.findByTestId('dataset-archive-cancel-available');
   expect(consequence).toHaveTextContent(/returns the dataset to Active/i);
   expect(consequence).toHaveTextContent(/does not delete/i);
   fireEvent.click(screen.getByTestId('dataset-archive-cancel-run'));
@@ -1868,7 +2118,12 @@ test('editing the labels renames the dataset without touching its members', asyn
     datasets: [DS_KITCHEN],
     captures: [CAP_A],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
     ],
   });
   renderWithClient(<DatasetsScreen />);
@@ -1888,7 +2143,9 @@ test('editing the labels renames the dataset without touching its members', asyn
   const toast = await screen.findByTestId('toast');
   expect(toast).toHaveTextContent(/same dataset, same members, same numbers/);
   const row = await screen.findByTestId(datasetTestId('ds-kitchen'));
-  await waitFor(() => expect(within(row).getByText('kitchen picks v2')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(within(row).getByText('kitchen picks v2')).toBeInTheDocument(),
+  );
   // Same identity, same membership — only the labels moved.
   expect(within(row).getByText('1 member')).toBeInTheDocument();
 });
@@ -1916,11 +2173,31 @@ test('combining datasets builds a third; the sources and shared members are hand
     datasets: [DS_KITCHEN, DS_B],
     captures: [CAP_A, CAP_B, CAP_AWAY],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
-      { membership_id: 'm-2', dataset_id: 'ds-kitchen', capture_id: 'cap-b', display_index: 2 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
+      {
+        membership_id: 'm-2',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-b',
+        display_index: 2,
+      },
       // cap-b is in BOTH sources: it must join the new set exactly once.
-      { membership_id: 'm-3', dataset_id: 'ds-b', capture_id: 'cap-b', display_index: 1 },
-      { membership_id: 'm-4', dataset_id: 'ds-b', capture_id: 'cap-away', display_index: 2 },
+      {
+        membership_id: 'm-3',
+        dataset_id: 'ds-b',
+        capture_id: 'cap-b',
+        display_index: 1,
+      },
+      {
+        membership_id: 'm-4',
+        dataset_id: 'ds-b',
+        capture_id: 'cap-away',
+        display_index: 2,
+      },
     ],
     highWater: { 'ds-kitchen': 3, 'ds-b': 3 },
   });
@@ -1944,11 +2221,11 @@ test('combining datasets builds a third; the sources and shared members are hand
   // The new dataset lists the union (shared member once), and the sources
   // kept every membership they had.
   const combined = backend.datasets.find((d) => d.name === 'all picks')!;
-  const newMembers = backend.members.filter((m) => m.dataset_id === combined.dataset_id);
+  const newMembers = backend.members.filter(
+    (m) => m.dataset_id === combined.dataset_id,
+  );
   expect(newMembers.map((m) => m.capture_id)).toEqual(['cap-a', 'cap-b', 'cap-away']);
-  expect(
-    backend.members.filter((m) => m.dataset_id === 'ds-kitchen'),
-  ).toHaveLength(2);
+  expect(backend.members.filter((m) => m.dataset_id === 'ds-kitchen')).toHaveLength(2);
   expect(backend.members.filter((m) => m.dataset_id === 'ds-b')).toHaveLength(2);
 });
 
@@ -1963,10 +2240,25 @@ test('a combined set defaults to Copy out, and the seal takes nothing with it', 
     datasets: [DS_KITCHEN, DS_SOURCE],
     captures: [CAP_A, CAP_B],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
-      { membership_id: 'm-2', dataset_id: 'ds-kitchen', capture_id: 'cap-b', display_index: 2 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
+      {
+        membership_id: 'm-2',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-b',
+        display_index: 2,
+      },
       // cap-a is shared with an ACTIVE dataset — a Move would refuse it.
-      { membership_id: 'm-3', dataset_id: 'ds-source', capture_id: 'cap-a', display_index: 1 },
+      {
+        membership_id: 'm-3',
+        dataset_id: 'ds-source',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
     ],
     archiveRoots: ['/mnt/archive'],
     sealOnPoll: true,
@@ -1998,7 +2290,9 @@ test('a combined set defaults to Copy out, and the seal takes nothing with it', 
   fireEvent.click(screen.getByTestId('dataset-view-archived'));
   fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
   await waitFor(() => {
-    expect(screen.getByTestId('dataset-archived-banner')).toHaveTextContent(/Copied to/);
+    expect(screen.getByTestId('dataset-archived-banner')).toHaveTextContent(
+      /Copied to/,
+    );
   });
   expect(screen.getByTestId('dataset-archived-banner')).toHaveTextContent(
     /stays on this machine/,
@@ -2029,7 +2323,12 @@ test('the archive prefill scrubs the same characters the server does', async () 
     ],
     captures: [CAP_A],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
     ],
     archiveRoots: ['/mnt/archive'],
   });
@@ -2069,9 +2368,9 @@ test('the list toolbar names its search field and its operator filter', async ()
   expect(screen.getByRole('searchbox', { name: 'Search datasets' })).toBe(
     screen.getByTestId('dataset-search'),
   );
-  expect(
-    screen.getByRole('combobox', { name: 'Filter datasets by operator' }),
-  ).toBe(screen.getByTestId('dataset-operator-filter'));
+  expect(screen.getByRole('combobox', { name: 'Filter datasets by operator' })).toBe(
+    screen.getByTestId('dataset-operator-filter'),
+  );
 });
 
 test('the member search and the candidate search are named too', async () => {
@@ -2079,7 +2378,12 @@ test('the member search and the candidate search are named too', async () => {
     datasets: [DS_KITCHEN],
     captures: [CAP_A],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
     ],
   });
   renderWithClient(<DatasetsScreen />);
@@ -2103,9 +2407,9 @@ test('the combine dialog names the fields of the dataset it builds', async () =>
   fireEvent.click(screen.getByTestId('combine-datasets-btn'));
 
   const dialog = await screen.findByRole('dialog');
-  expect(
-    within(dialog).getByLabelText('New dataset operator (optional)'),
-  ).toBe(screen.getByTestId('combine-datasets-operator'));
+  expect(within(dialog).getByLabelText('New dataset operator (optional)')).toBe(
+    screen.getByTestId('combine-datasets-operator'),
+  );
   expect(within(dialog).getByLabelText('New dataset task (optional)')).toBe(
     screen.getByTestId('combine-datasets-task'),
   );
@@ -2250,8 +2554,18 @@ test('a failed loss run does not follow the operator to the next member', async 
     datasets: [DS_KITCHEN],
     captures: [CAP_A, CAP_B],
     members: [
-      { membership_id: 'm-1', dataset_id: 'ds-kitchen', capture_id: 'cap-a', display_index: 1 },
-      { membership_id: 'm-2', dataset_id: 'ds-kitchen', capture_id: 'cap-b', display_index: 2 },
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
+      {
+        membership_id: 'm-2',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-b',
+        display_index: 2,
+      },
     ],
     jobsUnreachable: true,
   });
@@ -2268,7 +2582,9 @@ test('a failed loss run does not follow the operator to the next member', async 
   await waitFor(() =>
     expect(screen.getByTestId('dataset-member-number')).toHaveTextContent('#2'),
   );
-  fireEvent.click(await screen.findByTestId('run-loss-report-btn', undefined, { timeout: 3000 }));
+  fireEvent.click(
+    await screen.findByTestId('run-loss-report-btn', undefined, { timeout: 3000 }),
+  );
   const err = await screen.findByTestId('dataset-loss-error');
   expect(err).toHaveAttribute('data-error-code', 'network_unreachable');
 

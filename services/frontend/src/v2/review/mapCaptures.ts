@@ -26,6 +26,10 @@
 // number, and the row renders "—" like every other unknown.
 
 import type { CaptureListItem } from '../../api/types';
+import {
+  resolveCaptureCondition,
+  type LegacyConditionLookup,
+} from '../captures/recordingCondition';
 import { displayQuality, displayTaskResult, formatBatchLabel } from '../episodeChips';
 import { serverTransferPhase } from './transfer';
 import type { DisplayQuality, DisplayTaskResult, EpisodeRow } from './types';
@@ -35,7 +39,10 @@ const REVIEWABLE = new Set(['completed', 'failed', 'interrupted']);
 
 /** Milliseconds between two ISO instants (undefined when indeterminate).
  *  Exported for the Datasets rows, which cite the same duration. */
-export function spanMs(started?: string | null, ended?: string | null): number | undefined {
+export function spanMs(
+  started?: string | null,
+  ended?: string | null,
+): number | undefined {
   if (!started || !ended) return undefined;
   const s = Date.parse(started);
   const e = Date.parse(ended);
@@ -55,6 +62,7 @@ export type BatchSeqLookup = (batchId: string | null | undefined) => {
 export function mapCapturesToEpisodes(
   captures: CaptureListItem[],
   batchSeq: BatchSeqLookup = () => null,
+  legacyBatchStatus: 'loading' | 'unavailable' = 'unavailable',
 ): EpisodeRow[] {
   const reviewable = captures.filter((c) => REVIEWABLE.has(c.state));
   // Oldest first: the table reads in recording order, which is the order an
@@ -85,6 +93,12 @@ export function mapCapturesToEpisodes(
     }
 
     const batch = batchSeq(capture.batch_id);
+    const legacyCondition: LegacyConditionLookup = !capture.batch_id
+      ? { status: 'ready', value: null }
+      : batch
+        ? { status: 'ready', value: batch.condition }
+        : { status: legacyBatchStatus };
+    const condition = resolveCaptureCondition(capture, legacyCondition);
     return {
       ep: capture.index_in_batch ?? null,
       captureId: capture.capture_id,
@@ -93,7 +107,8 @@ export function mapCapturesToEpisodes(
       state: capture.state,
       batch: formatBatchLabel(batch?.seq, batch?.createdAt ?? capture.started_at, '—'),
       batchId: capture.batch_id ?? null,
-      condition: batch?.condition ?? null,
+      condition: condition.status === 'ready' ? condition.value : null,
+      conditionStatus: condition.status,
       operator: capture.operator ?? null,
       quality,
       task,

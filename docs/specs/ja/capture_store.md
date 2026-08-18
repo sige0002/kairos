@@ -424,7 +424,7 @@ recording ──▶ stopping ──▶ completed
 
 ### 8.2 rebuild（サイドカーからの全再構築）
 
-**入力**: `objects/*/object_manifest.json`、`objects/*.failed.json`、`record.json`、`quick_check.json`（§4.2）、`lifecycle.jsonl`。`jobs` は揮発として rebuild 対象外。`validation_templates` と `plan_catalog` は保存時に `catalog/*.json` へサイドカー二重化し、rebuild で復元する。archive 済み capture の `collection_context` は `capture_archived` ledger payload から復元する。dataset の archive 状態（§6.1: `archiving` / `archived`、destination 含む）は ledger の replay が復元する。
+**入力**: `objects/*/object_manifest.json`、`objects/*.failed.json`、`record.json`、`quick_check.json`（§4.2）、`lifecycle.jsonl`。`jobs` は揮発として rebuild 対象外。`validation_templates` と `plan_catalog` は保存時に `catalog/*.json` へサイドカー二重化し、rebuild で復元する。plan catalog sidecar は CAS `revision` と canonical project/task/condition IDs を含む。旧 name/string catalog は復元時に決定的 ID を与え、canonical sidecar として書き戻す。archive 済み capture の `collection_context` は `capture_archived` ledger payload から復元する。dataset の archive 状態（§6.1: `archiving` / `archived`、destination 含む）は ledger の replay が復元する。
 
 **起動時に rebuild する条件**: DB が無い / スキーマ版が違う / `KAIROS_REBUILD` による明示要求。毎回の起動で走るものではない。
 

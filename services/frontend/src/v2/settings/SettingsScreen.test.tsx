@@ -957,14 +957,14 @@ test('Plans: a PARTIAL shrink never leaves an enabled control that does nothing'
   const addCondition = screen.getByText('+ Add condition');
   expect(addCondition).toBeDisabled();
   fireEvent.click(addCondition);
-  expect(getPlans()[1]!.tasks[0]!.conditions).toEqual(['x']); // nothing added
+  expect(getPlans()[1]!.tasks[0]!.conditions.map((condition) => condition.name)).toEqual(['x']); // nothing added
 
   // Re-confirming by picking a task restores the control, and it WORKS.
   fireEvent.click(within(screen.getByTestId('plan-task-0')).getByText('B1'));
   expect(screen.queryByTestId('plan-task-selection-lost')).not.toBeInTheDocument();
   expect(screen.getByText('+ Add condition')).toBeEnabled();
   fireEvent.click(screen.getByText('+ Add condition'));
-  expect(getPlans()[1]!.tasks[0]!.conditions).toEqual(['x', 'added condition']);
+  expect(getPlans()[1]!.tasks[0]!.conditions.map((condition) => condition.name)).toEqual(['x', 'added condition']);
   expectNoRenderCrash(errorSpy);
 });
 

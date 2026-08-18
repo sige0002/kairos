@@ -18,6 +18,7 @@
 
 import type { CaptureListItem, Dataset, DatasetMember } from '../../api/types';
 import type { Tone } from '../../components/ui';
+import type { CaptureConditionView } from '../captures/recordingCondition';
 import {
   availabilityOf,
   isCapturePresent,
@@ -41,15 +42,15 @@ export type TaskResultFilter = 'all' | 'success' | 'failure';
 
 /** Fields the candidate rail can turn into explicit, removable predicates. */
 export type CandidateFilterField =
-  | "any"
-  | "operator"
-  | "task"
-  | "condition"
-  | "run_id"
-  | "capture_id"
-  | "task_result";
-export type CandidateFilterOperator = "contains" | "equals";
-export type CandidateFilterJoin = "and" | "or";
+  | 'any'
+  | 'operator'
+  | 'task'
+  | 'condition'
+  | 'run_id'
+  | 'capture_id'
+  | 'task_result';
+export type CandidateFilterOperator = 'contains' | 'equals';
+export type CandidateFilterJoin = 'and' | 'or';
 
 export interface CandidateFilterCondition {
   id: number;
@@ -59,7 +60,7 @@ export interface CandidateFilterCondition {
 }
 
 const CANDIDATE_FILTER_VALUES: Record<
-  Exclude<CandidateFilterField, "any">,
+  Exclude<CandidateFilterField, 'any'>,
   (capture: CaptureListItem) => string | null | undefined
 > = {
   operator: (capture) => capture.operator,
@@ -75,19 +76,17 @@ function candidateFilterValues(
   field: CandidateFilterField,
   condition: string | null | undefined,
 ): string[] {
-  if (field === "any") {
+  if (field === 'any') {
     return [
       ...Object.values(CANDIDATE_FILTER_VALUES)
         .map((read) => read(capture))
-        .filter(
-          (value): value is string => typeof value === "string" && value !== "",
-        ),
+        .filter((value): value is string => typeof value === 'string' && value !== ''),
       ...(condition ? [condition] : []),
     ];
   }
-  if (field === "condition") return condition ? [condition] : [];
+  if (field === 'condition') return condition ? [condition] : [];
   const value = CANDIDATE_FILTER_VALUES[field](capture);
-  return typeof value === "string" && value !== "" ? [value] : [];
+  return typeof value === 'string' && value !== '' ? [value] : [];
 }
 
 /** Match the explicit candidate-filter predicates. Values are compared
@@ -96,22 +95,22 @@ export function candidateMatchesConditions(
   capture: CaptureListItem,
   conditions: CandidateFilterCondition[],
   join: CandidateFilterJoin,
-  batchCondition?: string | null,
+  recordedCondition?: string | null,
 ): boolean {
   if (conditions.length === 0) return true;
   const matchesCondition = (condition: CandidateFilterCondition) => {
     const needle = condition.value.trim().toLowerCase();
-    if (needle === "") return true;
-    return candidateFilterValues(capture, condition.field, batchCondition).some(
+    if (needle === '') return true;
+    return candidateFilterValues(capture, condition.field, recordedCondition).some(
       (raw) => {
         const value = raw.toLowerCase();
-        return condition.operator === "equals"
+        return condition.operator === 'equals'
           ? value === needle
           : value.includes(needle);
       },
     );
   };
-  return join === "and"
+  return join === 'and'
     ? conditions.every(matchesCondition)
     : conditions.some(matchesCondition);
 }
@@ -169,8 +168,6 @@ export function memberNoun(n: number): string {
 export function memberCount(n: number): string {
   return `${formatCount(n)} ${memberNoun(n)}`;
 }
-
-
 
 /** Compact "MM/DD" for the list rows ("last 07/21"). */
 export function formatShortDate(iso?: string | null): string {
@@ -265,7 +262,9 @@ export function joinMembers(
  * already makes. Fetching each dataset's detail to count its members would be
  * one request per row.
  */
-export function membersByDataset(captures: CaptureListItem[]): Map<string, MemberRow[]> {
+export function membersByDataset(
+  captures: CaptureListItem[],
+): Map<string, MemberRow[]> {
   const byDataset = new Map<string, MemberRow[]>();
   for (const capture of captures) {
     for (const m of capture.memberships ?? []) {
@@ -285,7 +284,9 @@ export function membersByDataset(captures: CaptureListItem[]): Map<string, Membe
 }
 
 /** Captures indexed for the join above. */
-export function indexCaptures(captures: CaptureListItem[]): Map<string, CaptureListItem> {
+export function indexCaptures(
+  captures: CaptureListItem[],
+): Map<string, CaptureListItem> {
   return new Map(captures.map((c) => [c.capture_id, c]));
 }
 
@@ -351,6 +352,47 @@ export interface DatasetAggregate {
   availability: AvailabilityBreakdown;
   /** Newest `started_at` across the member captures (ISO), or null. */
   lastRecordedAt: string | null;
+}
+
+export interface ConditionDistribution {
+  /** Non-empty recorded labels, sorted by count then label. */
+  labels: { value: string; count: number }[];
+  /** Captures with an explicit empty snapshot, or legacy captures with no label. */
+  notRecorded: number;
+  /** Legacy or unresolved members whose condition cannot currently be read. */
+  unavailable: number;
+}
+
+/** Count every member exactly once. A missing capture is unavailable rather
+ * than absent from the denominator: the dataset still contains that member. */
+export function conditionDistribution(
+  rows: MemberRow[],
+  resolve: (capture: CaptureListItem) => CaptureConditionView,
+): ConditionDistribution {
+  const counts = new Map<string, number>();
+  let notRecorded = 0;
+  let unavailable = 0;
+  for (const row of rows) {
+    if (!row.capture) {
+      unavailable++;
+      continue;
+    }
+    const condition = resolve(row.capture);
+    if (condition.status === 'ready') {
+      counts.set(condition.value, (counts.get(condition.value) ?? 0) + 1);
+    } else if (condition.status === 'not-recorded') {
+      notRecorded++;
+    } else {
+      unavailable++;
+    }
+  }
+  return {
+    labels: [...counts.entries()]
+      .map(([value, count]) => ({ value, count }))
+      .sort((a, b) => b.count - a.count || a.value.localeCompare(b.value)),
+    notRecorded,
+    unavailable,
+  };
 }
 
 /** True when `a` is strictly later than `b` (both ISO8601); NaN-safe. */
@@ -550,7 +592,10 @@ export function buildDatasetRows(
 }
 
 /** Locate a row by dataset_id (null when the search/filters hid it). */
-export function findDataset(rows: DatasetRow[], datasetId: string | null): DatasetRow | null {
+export function findDataset(
+  rows: DatasetRow[],
+  datasetId: string | null,
+): DatasetRow | null {
   if (!datasetId) return null;
   return rows.find((r) => r.dataset.dataset_id === datasetId) ?? null;
 }

@@ -24,10 +24,12 @@ the row is gone and there is nothing left to write the event from.
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
+from uuid import uuid4
 
 from kairos_common import ApiError, ledger_v2
 from kairos_common.ids import new_dataset_id
@@ -44,6 +46,8 @@ from api_orchestrator.models import (
     Dataset,
     DatasetDetail,
     DatasetMember,
+    DatasetSelectionRecipe,
+    DatasetSelectionRecipeCreateRequest,
     DatasetUpdateRequest,
 )
 from api_orchestrator.store import CaptureStore, DatasetMemberExistsError
@@ -269,6 +273,40 @@ class DatasetService:
         assert row is not None
         members = self._store.list_dataset_members(dataset_id)
         return _dataset(row, member_count=len(members))
+
+    def record_selection(
+        self, dataset_id: str, request: DatasetSelectionRecipeCreateRequest
+    ) -> DatasetSelectionRecipe:
+        """Persist one completed filtered Bulk Add run without changing members."""
+        dataset = self._store.get_dataset(dataset_id)
+        if dataset is None:
+            raise _not_found(dataset_id)
+        self._require_active(dataset)
+        recipe = DatasetSelectionRecipe(
+            **request.model_dump(),
+            recipe_id=str(uuid4()),
+            recorded_at=utc_now_iso8601(),
+        )
+        if not self._store.append_dataset_selection_recipe(
+            dataset_id, recipe.model_dump(mode="json")
+        ):
+            raise _not_found(dataset_id)
+        try:
+            self._append(
+                "dataset_selection_recorded",
+                {
+                    "dataset_id": dataset_id,
+                    "dataset_name": dataset["name"],
+                    "name": dataset["name"],
+                    "operator": dataset["operator"],
+                    "task": dataset["task"],
+                    "recipe": recipe.model_dump(mode="json"),
+                },
+            )
+        except ApiError:
+            self._store.remove_dataset_selection_recipe(dataset_id, recipe.recipe_id)
+            raise
+        return recipe
 
     def delete(self, dataset_id: str) -> None:
         """Delete a dataset and its memberships. No capture is touched."""
@@ -509,6 +547,18 @@ class DatasetService:
                             operator=_opt_str(event.get("operator")),
                             task=_opt_str(event.get("task")),
                         )
+            elif kind == "dataset_selection_recorded":
+                self._ensure_dataset_row(dataset_id, event)
+                recipe = event.get("recipe")
+                if isinstance(recipe, dict):
+                    row = self._store.get_dataset(dataset_id)
+                    assert row is not None
+                    recipes = _selection_recipes(row)
+                    recipe_id = recipe.get("recipe_id")
+                    if isinstance(recipe_id, str) and not any(
+                        existing.get("recipe_id") == recipe_id for existing in recipes
+                    ):
+                        self._store.append_dataset_selection_recipe(dataset_id, recipe)
             elif kind == "dataset_member_added":
                 counts["members"] += self._replay_member_added(
                     dataset_id, event, floors
@@ -837,7 +887,18 @@ def _dataset(row: dict[str, Any], *, member_count: int | None = None) -> Dataset
         archive_mode=row.get("archive_mode"),
         archive_started_at=row.get("archive_started_at"),
         archived_at=row.get("archived_at"),
+        selection_recipes=_selection_recipes(row),
     )
+
+
+def _selection_recipes(row: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = row.get("selection_recipes") or "[]"
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return []
+    return raw if isinstance(raw, list) else []
 
 
 def _opt_str(value: Any) -> str | None:

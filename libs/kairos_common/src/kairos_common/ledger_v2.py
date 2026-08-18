@@ -101,6 +101,7 @@ DATASET_KINDS: frozenset[str] = frozenset(
     {
         "dataset_created",
         "dataset_updated",
+        "dataset_selection_recorded",
         "dataset_member_added",
         "dataset_member_removed",
         "dataset_deleted",
@@ -225,6 +226,8 @@ def build_event(
         _validate_archive_payload(payload)
     elif kind == "dataset_updated":
         _validate_dataset_updated_payload(payload)
+    elif kind == "dataset_selection_recorded":
+        _validate_dataset_selection_recorded_payload(payload)
     elif kind == "dataset_archive_started":
         _validate_dataset_archive_started_payload(payload)
     elif kind == "dataset_archive_canceled":
@@ -376,6 +379,29 @@ def _validate_dataset_updated_payload(payload: dict[str, Any]) -> None:
         value = payload.get(key)
         if value is not None and not isinstance(value, str):
             raise ValueError(f"dataset_updated {key} must be str or absent: {value!r}")
+
+
+def _validate_dataset_selection_recorded_payload(payload: dict[str, Any]) -> None:
+    """Validate self-contained filtered Bulk Add provenance."""
+    _validate_dataset_updated_payload(payload)
+    recipe = payload.get("recipe")
+    if not isinstance(recipe, dict):
+        raise ValueError("dataset_selection_recorded requires a recipe object")
+    for key in ("recipe_id", "recorded_at"):
+        if not isinstance(recipe.get(key), str) or not recipe[key]:
+            raise ValueError(f"dataset_selection_recorded recipe requires {key}")
+    if recipe.get("kind") != "filtered_bulk" or recipe.get("join") not in {"and", "or"}:
+        raise ValueError("dataset_selection_recorded recipe kind/join is invalid")
+    conditions = recipe.get("conditions")
+    if not isinstance(conditions, list):
+        raise ValueError("dataset_selection_recorded recipe conditions must be a list")
+    for key in ("matched", "attempted", "succeeded", "failed"):
+        if not isinstance(recipe.get(key), int) or recipe[key] < 0:
+            raise ValueError(
+                f"dataset_selection_recorded recipe {key} must be non-negative"
+            )
+    if recipe["attempted"] != recipe["succeeded"] + recipe["failed"]:
+        raise ValueError("dataset_selection_recorded recipe counts do not match")
 
 
 def _validate_dataset_archive_started_payload(payload: dict[str, Any]) -> None:

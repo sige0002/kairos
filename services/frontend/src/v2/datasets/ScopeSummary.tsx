@@ -226,6 +226,7 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
   const agg = scope.aggregate;
   const outcome = outcomeBreakdown(agg);
   const bytes = bytesSegment(agg);
+  const selectionRecipes = scope.selectionRecipes ?? [];
 
   return (
     <div data-testid="dataset-scope-summary" className="flex min-w-0 flex-col gap-4 px-[18px] py-4">
@@ -299,6 +300,61 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
           </div>
 
           <AvailabilitySection agg={agg} unresolved={scope.unresolved} />
+
+          <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+              Recorded conditions
+            </h3>
+            <div
+              data-testid="dataset-summary-conditions"
+              className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-gray-600"
+            >
+              {scope.conditions.labels.map(({ value, count }) => (
+                <span key={value}>
+                  {value}: {count}
+                </span>
+              ))}
+              {scope.conditions.notRecorded > 0 && (
+                <span>Not recorded: {scope.conditions.notRecorded}</span>
+              )}
+              {scope.conditions.unavailable > 0 && (
+                <span>Unavailable: {scope.conditions.unavailable}</span>
+              )}
+            </div>
+          </div>
+
+          {scope.kind === 'dataset' && (
+            <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
+              <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+                Selection history
+              </h3>
+              {selectionRecipes.length === 0 ? (
+                <span data-testid="dataset-selection-recipes-empty" className="text-[12px] text-gray-500">
+                  No saved selection recipe.
+                </span>
+              ) : (
+                <ul data-testid="dataset-selection-recipes" className="space-y-1 text-[12px] text-gray-600">
+                  {selectionRecipes.map((recipe) => (
+                    <li key={recipe.recipe_id}>
+                      {formatWhen(recipe.recorded_at)} — {recipe.join.toUpperCase()}{' '}
+                      {recipe.conditions.length === 0
+                        ? 'all recordings'
+                        : recipe.conditions
+                            .map(
+                              (condition) =>
+                                `${condition.field} ${condition.operator} “${condition.value}”`,
+                            )
+                            .join(` ${recipe.join.toUpperCase()} `)}
+                      {'; '} {recipe.succeeded} added, {recipe.failed} failed from {recipe.matched}{' '}
+                      matched
+                      {recipe.catalog_truncated &&
+                        ' — catalog was truncated; older recordings were not evaluated.'}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
 
           <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
             <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
