@@ -185,6 +185,33 @@ npx playwright show-report
 bash e2e/scripts/stack.sh down
 ```
 
+Before it changes the stack, `up` validates that the selected bag directory
+contains `metadata.yaml` and at least one readable MCAP file. After starting the
+player it waits for three separate facts: the player container is still alive,
+a configured topic has a ROS publisher, and the monitor has received at least
+one sample from a configured topic. A missing fixture, a player that exits, or
+a DDS graph that discovers no live data therefore stops the gate before the
+browser suite. The failure includes the player state and logs plus the current
+topic and metrics responses.
+
+`data/*` is gitignored, so a linked worktree does not inherit the sample bags
+from the checkout that created it. Point the acceptance harness at that
+checkout's data directory explicitly:
+
+```bash
+E2E_REPLAY_DATA_DIR=/absolute/path/to/kairos/data make test-e2e
+```
+
+The directory is mounted read-only as the replay container's `/data`; the E2E
+capture-store output remains the isolated `e2e/.run/data`. Run the fast fixture
+checks alone with `make test-e2e-harness` or validate the currently selected
+fixture without starting Docker with:
+
+```bash
+E2E_REPLAY_DATA_DIR=/absolute/path/to/kairos/data \
+  bash e2e/scripts/stack.sh replay-check
+```
+
 **One acceptance run at a time.** `up` claims a lease on the stack for the whole
 run, so a second run is refused with *another acceptance run holds the stack —
 pid N, started …* rather than tearing down the first one's containers and wiping

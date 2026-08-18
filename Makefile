@@ -526,10 +526,11 @@ test-fe: ## frontend build + test + lint
 #   make test-e2e E2E_ARGS='--headed'      # watch it
 #   make test-e2e E2E_ARGS=tests/03-discard.spec.ts
 #   make test-e2e-up / test-e2e-down       # keep the stack between runs
+#   E2E_REPLAY_DATA_DIR=/path/to/data make test-e2e  # linked worktree fixture
 #
 # Images are NOT built here (same rule as `up`): a stale image is a lie an
 # acceptance gate must not tell, so run `make build` after changing services/.
-.PHONY: test-e2e test-e2e-deps test-e2e-up test-e2e-down
+.PHONY: test-e2e test-e2e-deps test-e2e-harness test-e2e-up test-e2e-down
 test-e2e: test-e2e-deps ## UI acceptance suite (§13): real browser + real stack + replayed bag
 	@bash e2e/scripts/stack.sh up
 	@rc=0; (cd e2e && npx playwright test $(E2E_ARGS)) || rc=$$?; \
@@ -541,9 +542,12 @@ test-e2e: test-e2e-deps ## UI acceptance suite (§13): real browser + real stack
 
 # First run needs the network (npm + the chromium download). On an offline site
 # the browser rides in an image instead — see e2e/README.md.
-test-e2e-deps:
+test-e2e-deps: test-e2e-harness
 	@cd e2e && [ -d node_modules ] || npm install
 	@cd e2e && npx playwright install chromium
+
+test-e2e-harness: ## fast checks for E2E fixture fail-fast behavior
+	@bash e2e/scripts/stack.test.sh
 
 test-e2e-up: test-e2e-deps ## start the e2e stack and leave it up (iterate with `cd e2e && npx playwright test`)
 	@bash e2e/scripts/stack.sh up
