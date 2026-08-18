@@ -62,6 +62,10 @@ class JobCreateRequest(BaseModel):
     capture_id: str
     pipeline: str
     params: dict[str, Any] = Field(default_factory=dict)
+    # Optional for legacy callers. A durable validation run supplies one so an
+    # orchestrator retry after a lost HTTP response cannot create a second
+    # worker for the same capture/attempt.
+    idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class JobStatus(BaseModel):
@@ -81,6 +85,11 @@ class JobStatus(BaseModel):
     state: JobState
     progress: float = Field(ge=0.0, le=1.0)
     logs_tail: list[str] = Field(default_factory=list)
+    # A timeout can settle the operator-facing outcome before a non-cooperative
+    # thread has actually stopped. Lease owners release only on an explicit
+    # false. ``null`` means an older runner did not report the fact, so the
+    # orchestrator retains a bounded safety lease rather than racing delete.
+    execution_active: bool | None = None
     cancel_requested: bool = False
 
 

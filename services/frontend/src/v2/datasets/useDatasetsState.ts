@@ -26,26 +26,34 @@
 // pointed at a row that is no longer on screen.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import {
   addDatasetMember,
   archiveCapture,
   archiveDataset,
   cancelDatasetArchiveAttempt,
+  createCaptureSelection,
   createDataset,
+  createDatasetMembershipBulkRun,
   deleteDataset,
   getArchiveConfig,
   getCapture,
   getCaptureArchiveProgress,
   getDataset,
   getDatasetArchive,
-  listAllCaptures,
-  recordDatasetSelectionRecipe,
+  getDatasetMembershipBulkRun,
+  searchCaptures,
+  retryDatasetMembershipBulkRun,
   listDatasets,
   removeDatasetMember,
   updateDataset,
 } from '../../api/captures';
-import { listBatches } from '../../api/batches';
+import { lookupBatches } from '../../api/batches';
 import { ApiError } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import { CAPTURE_ARCHIVE_POLL_MS, DATASET_ARCHIVE_POLL_MS } from '../pollingPolicy';
@@ -61,7 +69,8 @@ import type {
   CaptureArchiveProgress,
   CaptureDetail,
   CaptureListItem,
-  BatchListResponse,
+  CaptureSearchQuery,
+  BatchLookupResponse,
   Dataset,
   DatasetArchiveProgress,
 } from '../../api/types';
@@ -144,6 +153,57 @@ const ADDABLE_STATES = new Set(['completed', 'failed', 'interrupted']);
 /** How many candidate captures the rail builds at once. The rest are reachable
  *  by narrowing the search — the boundary is stated, never silent. */
 const CANDIDATE_LIMIT = 50;
+const BULK_INTENT_STORAGE_KEY = 'kairos:dataset-membership-bulk-intent:v1';
+
+interface BulkAddSnapshot {
+  datasetId: string;
+  datasetName: string;
+  join: CandidateFilterJoin;
+  conditions: Array<Omit<CandidateFilterCondition, 'id'>>;
+  selectionId: string | null;
+  expiresAt: string | null;
+  matched: number | null;
+  requestId: string;
+}
+
+interface PersistedBulkIntent {
+  snapshot: BulkAddSnapshot;
+  runId: string | null;
+  runRequested: boolean;
+}
+
+function readBulkIntent(): PersistedBulkIntent | null {
+  try {
+    const raw = sessionStorage.getItem(BULK_INTENT_STORAGE_KEY);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<PersistedBulkIntent>;
+    if (
+      !value.snapshot ||
+      typeof value.snapshot.datasetId !== 'string' ||
+      typeof value.snapshot.requestId !== 'string' ||
+      typeof value.runRequested !== 'boolean'
+    ) {
+      return null;
+    }
+    return {
+      snapshot: value.snapshot,
+      runId: value.runId ?? null,
+      runRequested: value.runRequested,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeBulkIntent(intent: PersistedBulkIntent | null): void {
+  try {
+    if (intent) sessionStorage.setItem(BULK_INTENT_STORAGE_KEY, JSON.stringify(intent));
+    else sessionStorage.removeItem(BULK_INTENT_STORAGE_KEY);
+  } catch {
+    // Storage can be unavailable in a hardened browser; the live run remains
+    // server-owned and the dialog continues to work for this page session.
+  }
+}
 
 /** The scope the center's summary describes: the selected dataset, or — when
  *  none is selected — every member of every dataset in view. */
@@ -316,6 +376,12 @@ export interface DatasetsState {
   /** Finished captures not already in the selected dataset, newest first and
    *  capped at CANDIDATE_LIMIT. */
   candidates: CaptureListItem[];
+  /** Current server-page number in the candidate cursor history (one based). */
+  candidatePage: number;
+  canPreviousCandidatePage: boolean;
+  canNextCandidatePage: boolean;
+  previousCandidatePage: () => void;
+  nextCandidatePage: () => void;
   /** How many matched before the cap, so the rail can say what it is not
    *  showing. */
   candidateMatchCount: number;
@@ -329,7 +395,7 @@ export interface DatasetsState {
   ) => void;
   removeCandidateCondition: (id: number) => void;
   clearCandidateConditions: () => void;
-  conditionFilterStatus: "loading" | "ready" | "error";
+  conditionFilterStatus: 'loading' | 'ready' | 'error';
   /** Legacy candidates excluded from an active condition/any filter because
    * their current Batch label is unavailable. */
   unresolvedLegacyConditionCount: number;
@@ -345,18 +411,27 @@ export interface DatasetsState {
   blockedCandidateCount: number;
 
   // ---- adding every matched capture ------------------------------------
-  bulkAddAvailableCount: number;
   bulkAddOpen: boolean;
   bulkAddTargetDatasetName: string | null;
   bulkAddTargetCount: number;
+  bulkAddExpiresAt: string | null;
   bulkAddCatalogTruncated: boolean;
+  bulkAddPreflighting: boolean;
   openBulkAdd: () => void;
   cancelBulkAdd: () => void;
   confirmBulkAdd: () => void;
+  refreshBulkAddSelection: () => void;
   retryBulkAddFailures: () => void;
   bulkAddBusy: boolean;
   bulkAddDone: number;
   bulkAddTotal: number;
+  bulkAddTerminal: boolean;
+  /** The frozen server set expired; it must be re-reviewed before a new run. */
+  bulkAddSelectionExpired: boolean;
+  /** A run POST may have reached the server even when its response was lost. */
+  bulkAddCanRetryRequest: boolean;
+  /** Members may be durable while only the provenance receipt needs retrying. */
+  bulkAddReceiptFailed: boolean;
   bulkAddFailures: BulkAddFailure[];
   bulkAddError: unknown;
 
@@ -485,6 +560,7 @@ function terminated(text: string): string {
 
 export function useDatasetsState(): DatasetsState {
   const queryClient = useQueryClient();
+  const [restoredBulkIntent] = useState(readBulkIntent);
   // Seed every addressable field from the query string ONCE — this is what a
   // deep link, a reload, and a return to the tab (the shell unmounts this
   // screen on a tab switch) all restore from.
@@ -545,18 +621,33 @@ export function useDatasetsState(): DatasetsState {
     CandidateFilterCondition[]
   >([]);
   const [candidateJoin, setCandidateJoin] = useState<CandidateFilterJoin>('and');
+  // The search API deliberately exposes only a forward cursor. Keep the
+  // visited boundaries, rather than accumulating every older capture in the
+  // browser, so Previous remains possible without turning a large catalog into
+  // client state.
+  const [candidateCursorHistory, setCandidateCursorHistory] = useState<
+    Array<string | null>
+  >([null]);
   const [showBlockedCandidates, setShowBlockedCandidates] = useState(false);
-  const bulkAdd = useBulkRun<BulkAddFailure>();
-  const [bulkAddOpen, setBulkAddOpen] = useState(false);
-  const [bulkAddSnapshot, setBulkAddSnapshot] = useState<{
+  const [bulkAddOpen, setBulkAddOpen] = useState(() => restoredBulkIntent !== null);
+  const [bulkAddSnapshot, setBulkAddSnapshot] = useState<BulkAddSnapshot | null>(
+    () => restoredBulkIntent?.snapshot ?? null,
+  );
+  const [bulkRunRef, setBulkRunRef] = useState<{
     datasetId: string;
-    datasetName: string;
-    captures: CaptureListItem[];
-    catalogTruncated: boolean;
-    join: CandidateFilterJoin;
-    conditions: Array<Omit<CandidateFilterCondition, 'id'>>;
-    matched: number;
-  } | null>(null);
+    runId: string;
+  } | null>(() =>
+    restoredBulkIntent?.runId
+      ? {
+          datasetId: restoredBulkIntent.snapshot.datasetId,
+          runId: restoredBulkIntent.runId,
+        }
+      : null,
+  );
+  const [bulkRunRequested, setBulkRunRequested] = useState(
+    () => restoredBulkIntent?.runRequested ?? false,
+  );
+  const bulkRecoveryAttempted = useRef(false);
   const [archiveTarget, setArchiveTarget] = useState<CaptureListItem | null>(null);
   const [archiveProgress, setArchiveProgress] = useState<{
     done: number;
@@ -609,30 +700,75 @@ export function useDatasetsState(): DatasetsState {
     listQuery.isSuccess &&
     !datasets.some((d) => d.dataset_id === selectedDatasetId);
 
+  const candidateCursor = candidateCursorHistory.at(-1) ?? null;
+  const candidateQuery = useMemo(
+    () => ({
+      query: {
+        join: candidateJoin,
+        predicates: candidateConditions.map(({ field, operator, value }) => ({
+          field,
+          operator,
+          value,
+        })),
+        states: ['completed', 'failed', 'interrupted'],
+        exclude_dataset_id: selectedDatasetId,
+      } satisfies CaptureSearchQuery,
+      cursor: candidateCursor,
+      limit: 100,
+    }),
+    [candidateCursor, candidateConditions, candidateJoin, selectedDatasetId],
+  );
   const capturesQuery = useQuery({
-    queryKey: queryKeys.captureList(CAPTURE_SCOPE),
-    queryFn: ({ signal }) => listAllCaptures({}, signal),
+    queryKey: queryKeys.captureSearch(CAPTURE_SCOPE, candidateQuery),
+    queryFn: ({ signal }) => searchCaptures(candidateQuery, signal),
+    placeholderData: keepPreviousData,
   });
   const captures = useMemo(() => capturesQuery.data?.items ?? [], [capturesQuery.data]);
-  // `listAllCaptures` follows the cursor for at most MAX_PAGES and then stops,
-  // returning what it has WITH the unfinished cursor — so a non-null cursor
-  // here means the sweep did not reach the end of the catalog. The signal was
-  // already in the response and every consumer threw it away, which is how a
-  // rail that lists 10,000 of 12,000 recordings ends as quietly as one that
-  // lists all of them (E-27).
+  // The candidates rail deliberately holds one server page. A non-null cursor
+  // is visible to the operator rather than being followed into an unbounded
+  // browser-side catalog sweep.
   const catalogTruncated = capturesQuery.data?.next_cursor != null;
+  const resetCandidatePage = useCallback(() => setCandidateCursorHistory([null]), []);
+  // Changing the displayed target or a local candidate predicate changes what
+  // an operator is trying to inspect. Returning to its first page prevents a
+  // cursor boundary for the former scope from reading as a complete result.
+  useEffect(() => {
+    resetCandidatePage();
+  }, [selectedDatasetId, candidateConditions, candidateJoin, resetCandidatePage]);
+  const bulkRunQuery = useQuery({
+    queryKey: queryKeys.datasetMembershipBulkRun(
+      bulkRunRef?.datasetId ?? '',
+      bulkRunRef?.runId ?? '',
+    ),
+    queryFn: ({ signal }) =>
+      getDatasetMembershipBulkRun(bulkRunRef!.datasetId, bulkRunRef!.runId, signal),
+    enabled: bulkRunRef !== null,
+    refetchInterval: (query) => {
+      const state = query.state.data?.state;
+      return state === 'pending' || state === 'running' ? 1000 : false;
+    },
+  });
   const capturesById = useMemo(() => indexCaptures(captures), [captures]);
+  const pageBatchIds = useMemo(
+    () => [
+      ...new Set(
+        captures.flatMap((capture) => (capture.batch_id ? [capture.batch_id] : [])),
+      ),
+    ],
+    [captures],
+  );
 
   // Only legacy captures need a current Batch lookup. A collection_context is
   // immutable evidence from Start, so a later Batch edit cannot rewrite the
   // condition shown or filtered here.
   const batchesQuery = useQuery({
-    queryKey: queryKeys.batches,
-    queryFn: ({ signal }) => listBatches({}, signal),
+    queryKey: ['batches', 'lookup', pageBatchIds],
+    queryFn: ({ signal }) => lookupBatches(pageBatchIds, signal),
+    enabled: pageBatchIds.length > 0,
   });
   const conditionByBatchId = useMemo(() => {
     const byId = new Map<string, string | null>();
-    for (const batch of (batchesQuery.data as BatchListResponse | undefined)?.items ??
+    for (const batch of (batchesQuery.data as BatchLookupResponse | undefined)?.items ??
       []) {
       byId.set(batch.batch_id, batch.condition ?? null);
     }
@@ -1391,6 +1527,9 @@ export function useDatasetsState(): DatasetsState {
     () => new Set(scopeAllMembers.map((row) => row.captureId)),
     [scopeAllMembers],
   );
+  const hasConditionFilter = candidateConditions.some(
+    (condition) => condition.field === 'condition' || condition.field === 'any',
+  );
   const matchedCandidates = useMemo(
     () =>
       captures.filter((capture) => {
@@ -1400,11 +1539,15 @@ export function useDatasetsState(): DatasetsState {
         ) {
           return false;
         }
+        // The server applies predicates to collection-context captures. Legacy
+        // rows still need this local check because their condition can only be
+        // resolved through a Batch lookup and may be unavailable.
+        if (hasCollectionContext(capture)) return true;
         const condition = conditionForCapture(capture);
         return candidateMatchesConditions(
-            capture,
-            candidateConditions,
-            candidateJoin,
+          capture,
+          candidateConditions,
+          candidateJoin,
           condition.status === 'ready' ? condition.value : null,
         );
       }),
@@ -1415,9 +1558,6 @@ export function useDatasetsState(): DatasetsState {
       candidateJoin,
       conditionForCapture,
     ],
-  );
-  const hasConditionFilter = candidateConditions.some(
-    (condition) => condition.field === 'condition' || condition.field === 'any',
   );
   const unresolvedLegacyConditionCount = useMemo(
     () =>
@@ -1454,8 +1594,8 @@ export function useDatasetsState(): DatasetsState {
     rawValue: string,
   ) => {
     const value = rawValue.trim();
-    if (value === "") return;
-    const effectiveOperator = field === "task_result" ? "equals" : operator;
+    if (value === '') return;
+    const effectiveOperator = field === 'task_result' ? 'equals' : operator;
     setCandidateConditions((current) => {
       const duplicate = current.some(
         (condition) =>
@@ -1476,93 +1616,164 @@ export function useDatasetsState(): DatasetsState {
     });
   };
 
+  const previousCandidatePage = useCallback(() => {
+    setCandidateCursorHistory((history) =>
+      history.length > 1 ? history.slice(0, -1) : history,
+    );
+  }, []);
+  const nextCandidatePage = useCallback(() => {
+    const next = capturesQuery.data?.next_cursor;
+    if (!next) return;
+    setCandidateCursorHistory((history) =>
+      history.at(-1) === next ? history : [...history, next],
+    );
+  }, [capturesQuery.data?.next_cursor]);
+
+  const makeBulkRequestId = () =>
+    typeof crypto.randomUUID === 'function'
+      ? crypto.randomUUID()
+      : `bulk-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+  const bulkSelectionMutation = useMutation({
+    mutationFn: async (snapshot: NonNullable<typeof bulkAddSnapshot>) => {
+      const selection = await createCaptureSelection({
+        query: {
+          join: snapshot.join,
+          predicates: snapshot.conditions,
+          states: ['completed', 'failed', 'interrupted'],
+          review_statuses: ['adopted'],
+          present_on_instance: true,
+          exclude_dataset_id: snapshot.datasetId,
+        },
+      });
+      return {
+        ...snapshot,
+        selectionId: selection.selection_id,
+        expiresAt: selection.expires_at,
+        matched: selection.matched_count,
+      };
+    },
+    onSuccess: setBulkAddSnapshot,
+  });
+
   const openBulkAdd = () => {
-    if (
-      !selectedDatasetRecord ||
-      selectedDatasetRecord.status !== "active" ||
-      addableCandidates.length === 0
-    ) {
+    if (!selectedDatasetRecord || selectedDatasetRecord.status !== 'active') {
       return;
     }
-    bulkAdd.reset();
-    setBulkAddSnapshot({
+    setBulkRunRef(null);
+    setBulkRunRequested(false);
+    bulkRecoveryAttempted.current = false;
+    const snapshot = {
       datasetId: selectedDatasetRecord.dataset_id,
       datasetName: selectedDatasetRecord.name,
-      captures: [...addableCandidates],
-      catalogTruncated,
       join: candidateJoin,
       conditions: candidateConditions.map(({ field, operator, value }) => ({
         field,
         operator,
         value,
       })),
-      matched: addableCandidates.length,
-    });
+      selectionId: null,
+      expiresAt: null,
+      matched: null,
+      requestId: makeBulkRequestId(),
+    };
+    setBulkAddSnapshot(snapshot);
     setBulkAddOpen(true);
+    bulkSelectionMutation.mutate(snapshot);
   };
 
-  const runBulkAdd = async (items: CaptureListItem[]) => {
-    const snapshot = bulkAddSnapshot;
-    if (!snapshot || bulkAdd.running || items.length === 0) return;
-    await bulkAdd.run<CaptureListItem>({
-      items,
-      attempt: async (capture) => {
-        try {
-          await addDatasetMember(snapshot.datasetId, capture.capture_id);
-          return null;
-        } catch (error) {
-          return {
-            captureId: capture.capture_id,
-            message: captureErrorText(error),
-          };
-        }
-      },
-      afterAll: async ({ succeeded, failures }) => {
-        await invalidateDatasets(snapshot.datasetId);
-        try {
-          await recordDatasetSelectionRecipe(snapshot.datasetId, {
-            kind: 'filtered_bulk',
-            join: snapshot.join,
-            conditions: snapshot.conditions.map(({ field, operator, value }) => ({
-              field,
-              operator,
-              value,
-            })),
-            matched: snapshot.matched,
-            attempted: items.length,
-            succeeded,
-            failed: failures.length,
-            catalog_truncated: snapshot.catalogTruncated,
-          });
-          await invalidateDatasets(snapshot.datasetId);
-        } catch (error) {
-          showToast(
-            `Members were added but recipe was not saved: ${captureErrorText(error)}`,
-          );
-          return;
-        }
-        if (failures.length === 0) {
-          setBulkAddOpen(false);
-          setBulkAddSnapshot(null);
-          showToast(
-            `Added ${succeeded} recording${succeeded === 1 ? "" : "s"} to ` +
-              `“${snapshot.datasetName}” — nothing moved on disk`,
-          );
-        }
-        // A partial run stays open: its per-capture refusal list is the result,
-        // and the successful memberships are deliberately not rolled back.
-      },
+  const startBulkAddMutation = useMutation({
+    mutationFn: async () => {
+      const snapshot = bulkAddSnapshot;
+      if (!snapshot) throw new Error('No capture selection is ready to add.');
+      if (!snapshot.selectionId)
+        throw new Error('The server selection is not ready yet.');
+      return createDatasetMembershipBulkRun(snapshot.datasetId, {
+        selection_id: snapshot.selectionId,
+        request_id: snapshot.requestId,
+      });
+    },
+    onSuccess: (run) => {
+      setBulkRunRef({ datasetId: run.dataset_id, runId: run.run_id });
+    },
+  });
+
+  useEffect(() => {
+    if (
+      !bulkRunRequested ||
+      bulkRunRef ||
+      !bulkAddSnapshot?.selectionId ||
+      bulkRecoveryAttempted.current
+    ) {
+      return;
+    }
+    bulkRecoveryAttempted.current = true;
+    startBulkAddMutation.mutate();
+  }, [
+    bulkAddSnapshot?.selectionId,
+    bulkRunRef,
+    bulkRunRequested,
+    startBulkAddMutation,
+  ]);
+
+  const retryBulkAddMutation = useMutation({
+    mutationFn: async () => {
+      if (!bulkRunRef) throw new Error('No partial bulk run is available to retry.');
+      return retryDatasetMembershipBulkRun(bulkRunRef.datasetId, bulkRunRef.runId);
+    },
+    onSuccess: (run) => {
+      setBulkRunRef({ datasetId: run.dataset_id, runId: run.run_id });
+      queryClient.setQueryData(
+        queryKeys.datasetMembershipBulkRun(run.dataset_id, run.run_id),
+        run,
+      );
+    },
+  });
+
+  const bulkRun = bulkRunQuery.data ?? null;
+  const bulkRunFinished =
+    bulkRun?.state === 'completed' ||
+    bulkRun?.state === 'partial' ||
+    bulkRun?.state === 'failed_receipt';
+  useEffect(() => {
+    if (!bulkRunFinished || !bulkRun) return;
+    void invalidateDatasets(bulkRun.dataset_id);
+  }, [bulkRun, bulkRunFinished, invalidateDatasets]);
+  useEffect(() => {
+    if (!bulkAddSnapshot) {
+      writeBulkIntent(null);
+      return;
+    }
+    writeBulkIntent({
+      snapshot: bulkAddSnapshot,
+      runId: bulkRunRef?.runId ?? null,
+      runRequested: bulkRunRequested,
     });
-  };
+  }, [bulkAddSnapshot, bulkRunRef?.runId, bulkRunRequested]);
+
+  const closeCompletedBulkAdd = useCallback(() => {
+    const snapshot = bulkAddSnapshot;
+    if (!snapshot || !bulkRun || bulkRun.state !== 'completed') return;
+    setBulkAddOpen(false);
+    setBulkAddSnapshot(null);
+    setBulkRunRef(null);
+    setBulkRunRequested(false);
+    showToast(
+      `Added ${bulkRun.succeeded} recording${bulkRun.succeeded === 1 ? '' : 's'} to ` +
+        `“${snapshot.datasetName}” — nothing moved on disk`,
+    );
+  }, [bulkAddSnapshot, bulkRun, showToast]);
 
   const retryBulkAddFailures = () => {
-    const snapshot = bulkAddSnapshot;
-    if (!snapshot) return;
-    const failedIds = new Set(bulkAdd.failures.map((failure) => failure.captureId));
-    void runBulkAdd(
-      snapshot.captures.filter((capture) => failedIds.has(capture.capture_id)),
-    );
+    if (bulkRun?.state === 'partial' || bulkRun?.state === 'failed_receipt') {
+      retryBulkAddMutation.mutate();
+    }
   };
+
+  const startBulkAddError = startBulkAddMutation.error;
+  const bulkAddSelectionExpired =
+    startBulkAddError instanceof ApiError &&
+    startBulkAddError.code === 'capture_selection_expired';
 
   return {
     rows,
@@ -1721,6 +1932,11 @@ export function useDatasetsState(): DatasetsState {
       : null,
 
     candidates: visibleCandidates.slice(0, CANDIDATE_LIMIT),
+    candidatePage: candidateCursorHistory.length,
+    canPreviousCandidatePage: candidateCursorHistory.length > 1,
+    canNextCandidatePage: catalogTruncated,
+    previousCandidatePage,
+    nextCandidatePage,
     candidateMatchCount: visibleCandidates.length,
     candidateConditions,
     candidateJoin,
@@ -1735,11 +1951,11 @@ export function useDatasetsState(): DatasetsState {
       (capture) => !hasCollectionContext(capture) && Boolean(capture.batch_id),
     )
       ? batchesQuery.isPending
-      ? "loading"
-      : batchesQuery.isError
-        ? "error"
+        ? 'loading'
+        : batchesQuery.isError
+          ? 'error'
           : 'ready'
-        : "ready",
+      : 'ready',
     unresolvedLegacyConditionCount,
     conditionForCapture,
     addMember: (capture) => addMutation.mutate(capture),
@@ -1748,27 +1964,97 @@ export function useDatasetsState(): DatasetsState {
     toggleBlockedCandidates: () => setShowBlockedCandidates((v) => !v),
     blockedCandidateCount: matchedCandidates.length - addableCandidates.length,
 
-    bulkAddAvailableCount: addableCandidates.length,
+    // A page is only an inspection aid. The dialog freezes its own complete
+    // server selection before it lets the operator confirm a membership run.
+    // The rail is only a page inspector. It must not call a page total the
+    // full server-side eligibility count; opening Bulk Add always preflights
+    // the complete query and reports zero honestly there.
     bulkAddOpen,
     bulkAddTargetDatasetName: bulkAddSnapshot?.datasetName ?? null,
-    bulkAddTargetCount: bulkAddSnapshot?.captures.length ?? 0,
-    bulkAddCatalogTruncated: bulkAddSnapshot?.catalogTruncated ?? false,
+    // The server's materialized selection is the only execution count.
+    bulkAddTargetCount: bulkRun?.matched_count ?? bulkAddSnapshot?.matched ?? 0,
+    bulkAddExpiresAt: bulkAddSnapshot?.expiresAt ?? null,
+    bulkAddCatalogTruncated: false,
+    bulkAddPreflighting: bulkSelectionMutation.isPending,
     openBulkAdd,
     cancelBulkAdd: () => {
-      if (bulkAdd.running) return;
+      if (
+        bulkSelectionMutation.isPending ||
+        startBulkAddMutation.isPending ||
+        retryBulkAddMutation.isPending
+      )
+        return;
       setBulkAddOpen(false);
       setBulkAddSnapshot(null);
-      bulkAdd.reset();
+      setBulkRunRef(null);
+      setBulkRunRequested(false);
+      bulkRecoveryAttempted.current = false;
+      bulkSelectionMutation.reset();
+      startBulkAddMutation.reset();
+      retryBulkAddMutation.reset();
     },
     confirmBulkAdd: () => {
-      if (bulkAddSnapshot) void runBulkAdd(bulkAddSnapshot.captures);
+      if (bulkRun?.state === 'completed') {
+        closeCompletedBulkAdd();
+      } else if (
+        bulkAddSnapshot?.selectionId &&
+        !bulkSelectionMutation.isPending &&
+        !bulkRun
+      ) {
+        // Persist before POST: a navigation or a lost response immediately
+        // after Confirm must recover this exact idempotency key on reload.
+        writeBulkIntent({
+          snapshot: bulkAddSnapshot,
+          runId: null,
+          runRequested: true,
+        });
+        setBulkRunRequested(true);
+        startBulkAddMutation.mutate();
+      }
+    },
+    refreshBulkAddSelection: () => {
+      const snapshot = bulkAddSnapshot;
+      if (!snapshot || bulkSelectionMutation.isPending || bulkRun) return;
+      const refreshed = {
+        ...snapshot,
+        selectionId: null,
+        expiresAt: null,
+        matched: null,
+        requestId: makeBulkRequestId(),
+      };
+      setBulkAddSnapshot(refreshed);
+      setBulkRunRequested(false);
+      bulkRecoveryAttempted.current = false;
+      startBulkAddMutation.reset();
+      bulkSelectionMutation.mutate(refreshed);
     },
     retryBulkAddFailures,
-    bulkAddBusy: bulkAdd.running,
-    bulkAddDone: bulkAdd.done,
-    bulkAddTotal: bulkAdd.total,
-    bulkAddFailures: bulkAdd.failures,
-    bulkAddError: bulkAdd.error,
+    bulkAddBusy:
+      bulkSelectionMutation.isPending ||
+      startBulkAddMutation.isPending ||
+      retryBulkAddMutation.isPending ||
+      bulkRun?.state === 'pending' ||
+      bulkRun?.state === 'running',
+    bulkAddDone: bulkRun?.attempted ?? 0,
+    bulkAddTotal: bulkRun?.matched_count ?? bulkAddSnapshot?.matched ?? 0,
+    bulkAddTerminal: bulkRunFinished,
+    bulkAddReceiptFailed: bulkRun?.state === 'failed_receipt',
+    bulkAddSelectionExpired,
+    bulkAddCanRetryRequest:
+      startBulkAddMutation.isError &&
+      !bulkAddSelectionExpired &&
+      Boolean(bulkAddSnapshot?.selectionId) &&
+      !bulkRun,
+    bulkAddFailures: (bulkRun?.failures ?? []).map((failure) => ({
+      captureId: failure.capture_id,
+      message: failure.message,
+    })),
+    bulkAddError:
+      bulkSelectionMutation.error ??
+      startBulkAddMutation.error ??
+      retryBulkAddMutation.error ??
+      bulkRunQuery.error ??
+      null,
 
     deletion,
     splitDeploy,

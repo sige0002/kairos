@@ -29,6 +29,8 @@ from api_orchestrator.models import (
     BatchCreateRequest,
     BatchDetail,
     BatchListResponse,
+    BatchLookupRequest,
+    BatchLookupResponse,
     BatchPatchRequest,
     BatchSummary,
     CoverageRow,
@@ -195,6 +197,14 @@ async def list_batches(
         ],
         total=store.count_batches(status, robot=robot, operator=operator),
     )
+
+
+@router.post("/lookup", response_model=BatchLookupResponse)
+async def lookup_batches(
+    request: Request, body: BatchLookupRequest
+) -> BatchLookupResponse:
+    """Resolve only the batch IDs a capture page actually references."""
+    return BatchLookupResponse(items=_store(request).batches_for_ids(body.batch_ids))
 
 
 # Declared BEFORE ``/{batch_id}``: Starlette matches routes in registration

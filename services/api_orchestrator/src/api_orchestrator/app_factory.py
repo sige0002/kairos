@@ -28,7 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
@@ -84,8 +84,11 @@ from api_orchestrator.routers import system as system_router
 from api_orchestrator.routers import topics as topics_router
 from api_orchestrator.routers import transfer as transfer_router
 from api_orchestrator.routers import validation as validation_router
+from api_orchestrator.routers import validation_runs as validation_runs_router
 from api_orchestrator.store import CaptureStore
 from api_orchestrator.streamer_client import StreamerClient
+from api_orchestrator.validation_run_store import ValidationRunStore
+from api_orchestrator.validation_supervisor import ValidationRunSupervisor
 
 logger = logging.getLogger("kairos")
 
@@ -203,6 +206,7 @@ def create_orchestrator_app(
     dora_runner = DoraRunnerClient(
         f"http://{settings.dora_runner_host}:{settings.dora_runner_port}", client
     )
+    validation_run_store = ValidationRunStore(layout.data_dir / "validation_runs.db")
     importer = ImporterClient(
         f"http://{settings.importer_host}:{settings.importer_port}", client
     )
@@ -306,6 +310,14 @@ def create_orchestrator_app(
         recorder=recorder,
         on_settle=record_service.settle_adopted,
     )
+    validation_supervisor = ValidationRunSupervisor(
+        validation_run_store,
+        capture_store,
+        dora_runner,
+        layout.data_dir,
+        instance_id=instance_id,
+        config_catalog=config_catalog,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -348,9 +360,36 @@ def create_orchestrator_app(
             await record_service.reconcile_on_startup()
         except Exception:  # noqa: BLE001 - never block startup on reconcile
             logger.exception("startup reconciliation failed")
+
+        # The bulk-run claim is durable and chunked, so resuming a very large
+        # interrupted membership operation must not hold API readiness hostage.
+        # Keep the task owned by this app and cancel/await it at shutdown.
+        async def resume_membership_bulk_runs() -> None:
+            try:
+                await asyncio.to_thread(
+                    dataset_service.resume_pending_membership_bulk_runs
+                )
+            except Exception:  # noqa: BLE001 - resume remains durable for next boot
+                logger.exception("membership bulk-run resume failed")
+
+        membership_resume_task = asyncio.create_task(resume_membership_bulk_runs())
+        # Reacquire leases from durable run intent before requests can delete a
+        # capture whose dora worker survived only the orchestrator restart.
+        await validation_supervisor.start()
         await reconciler.start()
         yield
+        # Cancelling an ``asyncio.to_thread`` awaiter does not stop its worker
+        # thread.  Ask every membership worker to leave between member writes,
+        # wait until each durable claim is back in ``pending``, and only then
+        # tear down the services those threads use.
+        dataset_service.request_stop()
+        await asyncio.to_thread(dataset_service.wait_idle)
+        membership_resume_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await membership_resume_task
         await reconciler.stop()
+        await validation_supervisor.stop()
+        validation_run_store.close()
         # Before the views drain: a finishing archive run schedules one last
         # views refresh, which must still find a refresher to schedule on.
         await dataset_archiver.drain()
@@ -381,6 +420,8 @@ def create_orchestrator_app(
     app.state.monitor_client = monitor
     app.state.streamer_client = streamer
     app.state.dora_runner_client = dora_runner
+    app.state.validation_run_store = validation_run_store
+    app.state.validation_supervisor = validation_supervisor
     app.state.importer_client = importer
     app.state.lerobot_exporter_client = lerobot_exporter
     # In-flight LeRobot exports (§6.2). Progress only — the durable outcome is
@@ -418,6 +459,7 @@ def create_orchestrator_app(
     app.include_router(config_router.router)
     app.include_router(record_router.router)
     app.include_router(captures_router.router)
+    app.include_router(captures_router.selection_router)
     app.include_router(batches_router.router)
     app.include_router(topics_router.router)
     app.include_router(system_router.router)
@@ -427,6 +469,7 @@ def create_orchestrator_app(
     app.include_router(jobs_router.router)
     app.include_router(validation_router.router)
     app.include_router(validation_router.presets_router)
+    app.include_router(validation_runs_router.router)
     app.include_router(files_router.router)
     app.include_router(datasets_router.router)
     app.include_router(exports_router.router)

@@ -31,10 +31,8 @@ import { ScreenTitle } from '../shared/ScreenTitle';
 // columns grow with the viewport (the detail pane, weighted 1.2fr, gets the
 // larger share); the table column keeps a hard 580px floor so its row grid
 // never clips. Collapsing the filter rail hands its 216→44px back to those two.
-const GRID_EXPANDED =
-  'lg:grid-cols-[216px_minmax(580px,0.8fr)_minmax(400px,1.2fr)]';
-const GRID_COLLAPSED =
-  'lg:grid-cols-[44px_minmax(580px,0.8fr)_minmax(400px,1.2fr)]';
+const GRID_EXPANDED = 'lg:grid-cols-[216px_minmax(580px,0.8fr)_minmax(400px,1.2fr)]';
+const GRID_COLLAPSED = 'lg:grid-cols-[44px_minmax(580px,0.8fr)_minmax(400px,1.2fr)]';
 
 export function ReviewScreen() {
   const rv = useReviewState();
@@ -71,7 +69,31 @@ export function ReviewScreen() {
     <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
       <ScreenTitle>Review</ScreenTitle>
       <div className="flex flex-wrap items-center gap-2.5">
+        <p data-testid="review-page-scope" className="text-xs text-gray-500">
+          Page scope: {rv.rows.length} shown of {rv.serverTotal} matching. Lane and bulk
+          actions apply only to this page.
+        </p>
         <div className="flex-1" />
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            data-testid="review-previous-page"
+            disabled={!rv.hasPreviousPage}
+            onClick={rv.previousPage}
+            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] font-semibold text-gray-600 disabled:cursor-not-allowed disabled:text-gray-300"
+          >
+            Previous
+          </button>
+          <button
+            type="button"
+            data-testid="review-next-page"
+            disabled={!rv.hasNextPage}
+            onClick={rv.nextPage}
+            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] font-semibold text-gray-600 disabled:cursor-not-allowed disabled:text-gray-300"
+          >
+            Next
+          </button>
+        </div>
         <button
           type="button"
           data-testid="review-import-bags"
@@ -231,6 +253,17 @@ export function ReviewScreen() {
           operatorOptions={rv.operatorOptions}
           operatorFilter={rv.operatorFilter}
           onOperatorChange={rv.setOperatorFilter}
+          qualityFilter={rv.qualityFilter}
+          onQualityChange={rv.setQualityFilter}
+          resultFilter={rv.resultFilter}
+          onResultChange={rv.setResultFilter}
+          conditionFilter={rv.conditionFilter}
+          conditionOptions={rv.conditionOptions}
+          onConditionChange={rv.setConditionFilter}
+          startedFrom={rv.startedFrom}
+          startedTo={rv.startedTo}
+          onStartedFromChange={rv.setStartedFrom}
+          onStartedToChange={rv.setStartedTo}
           batchFilterLabel={rv.batchFilterLabel}
           onClearBatchFilter={() => rv.toggleBatchFilter(null)}
           onClearFilters={rv.clearFilters}

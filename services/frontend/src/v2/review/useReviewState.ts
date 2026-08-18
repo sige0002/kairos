@@ -18,17 +18,18 @@
 // removes the source. Keeping the old name next to the new endpoint would be
 // the most dangerous kind of familiar.
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { listAllCaptures } from '../../api/captures';
+import { searchCaptures } from '../../api/captures';
 import { getRetention } from '../../api/system';
 import { getPullStatus, pullCapture } from '../../api/transfer';
-import { listBatches } from '../../api/batches';
+import { lookupBatches } from '../../api/batches';
 import { queryKeys } from '../../api/queryKeys';
 import { TRANSFER_PROGRESS_POLL_MS } from '../pollingPolicy';
 import type {
-  BatchListResponse,
+  BatchLookupResponse,
   CaptureListItem,
+  CaptureSearchQuery,
   Quality,
   QualitySource,
   ReviewStatus,
@@ -58,9 +59,9 @@ import type {
   TransferSlot,
 } from './types';
 import { useToast } from '../shared/useToast';
+import { readReviewSearch, writeReviewSearch } from './url';
 
-/** Review's own fetch scope: one sweep of everything reviewable, a different
- *  shape from any per-page list, so it gets its own cache entry. */
+/** Review's bounded server-search scope, distinct from generic capture lists. */
 const REVIEW_SCOPE = 'review';
 
 const QUALITY_ORDER: DisplayQuality[] = ['Good', 'Needs review', 'Not usable'];
@@ -71,6 +72,13 @@ const LANE_ORDER: Record<ReviewLane, number> = {
   needs_check: 0,
   ready: 1,
   excluded: 2,
+};
+
+const utcDayStart = (day: string) => `${day}T00:00:00.000Z`;
+const utcDayAfter = (day: string) => {
+  const date = new Date(`${day}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString();
 };
 
 // ---- display vocabulary -> the server enums the API takes ------------------
@@ -139,11 +147,14 @@ export interface ReviewState {
   isLoading: boolean;
   isError: boolean;
   errorMessage: string | null;
-  /** True when the capture sweep hit its page cap and stopped short of the end
-   *  of the catalog. The rows below — and every tally, lane count and bulk set
-   *  taken over them — are then about what was fetched, not about everything
-   *  there is, which is a difference the screen has to say out loud (E-27). */
+  /** True when this server page has a following page. All row-derived counts
+   *  are intentionally page-scoped and the screen says so explicitly. */
   catalogTruncated: boolean;
+  serverTotal: number;
+  hasNextPage: boolean;
+  hasPreviousPage: boolean;
+  nextPage: () => void;
+  previousPage: () => void;
 
   rows: DecoratedEpisode[];
   /** Count of NEEDS CHECK exceptions — the operator's work queue. */
@@ -158,6 +169,17 @@ export interface ReviewState {
   operatorFilter: string;
   setOperatorFilter: (v: string) => void;
   operatorOptions: string[];
+  qualityFilter: Quality | null;
+  setQualityFilter: (v: Quality | null) => void;
+  resultFilter: TaskResult | null;
+  setResultFilter: (v: TaskResult | null) => void;
+  conditionFilter: string;
+  setConditionFilter: (v: string) => void;
+  conditionOptions: string[];
+  startedFrom: string | null;
+  setStartedFrom: (v: string | null) => void;
+  startedTo: string | null;
+  setStartedTo: (v: string | null) => void;
   clearFilters: () => void;
 
   // ---- batch filter + batch-level bulk decisions --------------------------
@@ -270,31 +292,187 @@ const batchFailure = (
 
 export function useReviewState(): ReviewState {
   const queryClient = useQueryClient();
-  const capturesQuery = useQuery({
-    queryKey: queryKeys.captureList(REVIEW_SCOPE),
-    // Follow the cursor to exhaustion: the lane counts and the bulk sets must
-    // cover EVERY reviewable capture, and a single page silently drops the tail
-    // once the catalog outgrows it.
-    queryFn: ({ signal }) => listAllCaptures({}, signal),
+  const [search, setSearchValue] = useState(() => readReviewSearch().q);
+  const [operatorFilter, setOperatorFilterValue] = useState(
+    () => readReviewSearch().operator ?? ALL_OPERATORS,
+  );
+  const [batchFilter, setBatchFilter] = useState(() => readReviewSearch().batch);
+  const [qualityFilter, setQualityFilterValue] = useState<Quality | null>(
+    () => readReviewSearch().quality,
+  );
+  const [resultFilter, setResultFilterValue] = useState<TaskResult | null>(
+    () => readReviewSearch().result,
+  );
+  const [conditionFilter, setConditionFilterValue] = useState(
+    () => readReviewSearch().condition ?? '',
+  );
+  const [startedFrom, setStartedFromValue] = useState(() => readReviewSearch().from);
+  const [startedTo, setStartedToValue] = useState(() => readReviewSearch().to);
+  const [cursorStack, setCursorStack] = useState<string[]>(() => {
+    const cursor = readReviewSearch().cursor;
+    return cursor ? [cursor] : [];
   });
-  // The sweep stops after MAX_PAGES and returns what it has WITH the unfinished
-  // cursor, so a non-null cursor means it never reached the end of the catalog.
+  const currentCursor = cursorStack.at(-1) ?? null;
+  const resetPage = useCallback(() => setCursorStack([]), []);
+  const setSearch = useCallback(
+    (value: string) => {
+      setSearchValue(value);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const setOperatorFilter = useCallback(
+    (value: string) => {
+      setOperatorFilterValue(value);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const setQualityFilter = useCallback(
+    (value: Quality | null) => {
+      setQualityFilterValue(value);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const setResultFilter = useCallback(
+    (value: TaskResult | null) => {
+      setResultFilterValue(value);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const setConditionFilter = useCallback(
+    (value: string) => {
+      setConditionFilterValue(value);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const setStartedFrom = useCallback(
+    (value: string | null) => {
+      setStartedFromValue(value ? utcDayStart(value) : null);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const setStartedTo = useCallback(
+    (value: string | null) => {
+      setStartedToValue(value ? utcDayAfter(value) : null);
+      resetPage();
+    },
+    [resetPage],
+  );
+  const searchQuery = useMemo<CaptureSearchQuery>(() => {
+    const predicates: NonNullable<CaptureSearchQuery['predicates']> = [];
+    if (search.trim())
+      predicates.push({ field: 'any', operator: 'contains', value: search.trim() });
+    if (operatorFilter !== ALL_OPERATORS)
+      predicates.push({ field: 'operator', operator: 'equals', value: operatorFilter });
+    if (batchFilter)
+      predicates.push({ field: 'batch_id', operator: 'equals', value: batchFilter });
+    if (qualityFilter)
+      predicates.push({ field: 'quality', operator: 'equals', value: qualityFilter });
+    if (resultFilter)
+      predicates.push({
+        field: 'task_result',
+        operator: 'equals',
+        value: resultFilter,
+      });
+    if (conditionFilter.trim())
+      predicates.push({
+        field: 'condition',
+        operator: 'equals',
+        value: conditionFilter.trim(),
+      });
+    return { predicates, started_from: startedFrom, started_to: startedTo };
+  }, [
+    batchFilter,
+    conditionFilter,
+    operatorFilter,
+    qualityFilter,
+    resultFilter,
+    search,
+    startedFrom,
+    startedTo,
+  ]);
+  useEffect(() => {
+    writeReviewSearch({
+      q: search,
+      operator: operatorFilter === ALL_OPERATORS ? null : operatorFilter,
+      batch: batchFilter,
+      quality: qualityFilter,
+      result: resultFilter,
+      condition: conditionFilter.trim() || null,
+      from: startedFrom,
+      to: startedTo,
+      cursor: currentCursor,
+    });
+  }, [
+    batchFilter,
+    conditionFilter,
+    currentCursor,
+    operatorFilter,
+    qualityFilter,
+    resultFilter,
+    search,
+    startedFrom,
+    startedTo,
+  ]);
+  const capturesQuery = useQuery({
+    queryKey: queryKeys.captureSearch(REVIEW_SCOPE, {
+      query: searchQuery,
+      cursor: currentCursor,
+    }),
+    // One bounded server page. Do not recreate the retired whole-catalog walk
+    // in the browser: server total/facets and explicit paging own that job.
+    queryFn: ({ signal }) =>
+      searchCaptures(
+        {
+          query: searchQuery,
+          cursor: currentCursor,
+          limit: 100,
+          facets: ['operator', 'condition', 'quality', 'task_result'],
+        },
+        signal,
+      ),
+  });
+  // A cursor means this is one server page, not a local whole-catalog sweep.
   const catalogTruncated = capturesQuery.data?.next_cursor != null;
+  const nextPage = useCallback(() => {
+    const cursor = capturesQuery.data?.next_cursor;
+    if (cursor) setCursorStack((current) => [...current, cursor]);
+  }, [capturesQuery.data?.next_cursor]);
+  const previousPage = useCallback(
+    () => setCursorStack((current) => current.slice(0, -1)),
+    [],
+  );
+  const pageBatchIds = useMemo(
+    () => [
+      ...new Set(
+        (capturesQuery.data?.items ?? []).flatMap((capture) =>
+          capture.batch_id ? [capture.batch_id] : [],
+        ),
+      ),
+    ],
+    [capturesQuery.data],
+  );
 
   // Batch numbers for the row labels. A separate, best-effort read: the batch
   // is display metadata, so a failure costs a "—" in one column rather than
   // the screen.
   const batchesQuery = useQuery({
-    queryKey: queryKeys.batches,
-    queryFn: ({ signal }) => listBatches({}, signal),
+    queryKey: ['batches', 'lookup', pageBatchIds],
+    queryFn: ({ signal }) => lookupBatches(pageBatchIds, signal),
+    enabled: pageBatchIds.length > 0,
   });
   const batchSeq: BatchSeqLookup = useMemo(() => {
     const byId = new Map<
       string,
       { seq: number | null; createdAt: string | null; condition: string | null }
     >();
-    for (const b of (batchesQuery.data as BatchListResponse | undefined)
-      ?.items ?? []) {
+    for (const b of (batchesQuery.data as BatchLookupResponse | undefined)?.items ??
+      []) {
       byId.set(b.batch_id, {
         seq: b.batch_seq ?? null,
         createdAt: b.created_at ?? null,
@@ -342,7 +520,7 @@ export function useReviewState(): ReviewState {
   // ---- toast --------------------------------------------------------------
   const { toast, showToast } = useToast();
 
-  const reviewSave = useReviewSave(REVIEW_SCOPE);
+  const reviewSave = useReviewSave();
 
   // ---- optimistic overlay -------------------------------------------------
   // The ONLY local state over the server's values: what the operator just
@@ -356,6 +534,12 @@ export function useReviewState(): ReviewState {
     >
   >({});
   const [transfers, setTransfers] = useState<Record<string, TransferSlot>>({});
+  // A save banner can outlive a server-side filter change. Retain only the
+  // small, human-readable subject fields for pages this session has already
+  // seen, so the banner never degrades to an opaque capture id.
+  const seenSubjects = useRef(
+    new Map<string, Pick<DecoratedEpisode, 'captureId' | 'ep' | 'runId'>>(),
+  );
 
   const clearPending = useCallback((captureId: string) => {
     setPending((cur) => {
@@ -394,6 +578,9 @@ export function useReviewState(): ReviewState {
       }),
     [baseEpisodes, pending, transfers],
   );
+  useEffect(() => {
+    for (const row of decorated) seenSubjects.current.set(row.captureId, row);
+  }, [decorated]);
 
   // The two batch-level bulk runs (their operations are further down). They are
   // declared up here because the batch FILTER also clears the return notice —
@@ -406,16 +593,17 @@ export function useReviewState(): ReviewState {
   // ---- filters / search ---------------------------------------------------
   const [showExcluded, setShowExcluded] = useState(false);
   const toggleExcluded = useCallback(() => setShowExcluded((v) => !v), []);
-  const [search, setSearch] = useState('');
-  const [operatorFilter, setOperatorFilter] = useState<string>(ALL_OPERATORS);
-  const [batchFilter, setBatchFilter] = useState<string | null>(null);
-  const toggleBatchFilter = useCallback((batchId: string | null) => {
-    // Drop any previous batch's return failures: the notice names a count with
-    // no batch on it, so carrying it across a filter change would pin one
-    // batch's failure onto another.
-    resetReturnBatch();
-    setBatchFilter((cur) => (batchId === null || cur === batchId ? null : batchId));
-  }, [resetReturnBatch]);
+  const toggleBatchFilter = useCallback(
+    (batchId: string | null) => {
+      // Drop any previous batch's return failures: the notice names a count with
+      // no batch on it, so carrying it across a filter change would pin one
+      // batch's failure onto another.
+      resetReturnBatch();
+      setBatchFilter((cur) => (batchId === null || cur === batchId ? null : batchId));
+      resetPage();
+    },
+    [resetPage, resetReturnBatch],
+  );
 
   // ---- retention (advisory) ----------------------------------------------
   const [retentionFilterActive, setRetentionFilterActive] = useState(false);
@@ -442,63 +630,57 @@ export function useReviewState(): ReviewState {
     (!retentionBannerDismissed || retentionFilterActive);
 
   const clearFilters = useCallback(() => {
-    setSearch('');
-    setOperatorFilter(ALL_OPERATORS);
+    setSearchValue('');
+    setOperatorFilterValue(ALL_OPERATORS);
     setBatchFilter(null);
+    setQualityFilterValue(null);
+    setResultFilterValue(null);
+    setConditionFilterValue('');
+    setStartedFromValue(null);
+    setStartedToValue(null);
+    resetPage();
     setRetentionFilterActive(false);
-  }, []);
+  }, [resetPage]);
 
   const operatorOptions = useMemo(() => {
-    const set = new Set<string>();
-    for (const e of baseEpisodes) if (e.operator) set.add(e.operator);
-    return [...set].sort((a, b) => a.localeCompare(b));
-  }, [baseEpisodes]);
+    const options = (capturesQuery.data?.facets?.operator?.values ?? []).flatMap(
+      (entry) => (entry.value ? [entry.value] : []),
+    );
+    if (operatorFilter !== ALL_OPERATORS && !options.includes(operatorFilter)) {
+      options.push(operatorFilter);
+    }
+    return options.sort((a, b) => a.localeCompare(b));
+  }, [capturesQuery.data?.facets?.operator, operatorFilter]);
+  const conditionOptions = useMemo(() => {
+    const options = (capturesQuery.data?.facets?.condition?.values ?? []).flatMap(
+      (entry) => (entry.value ? [entry.value] : []),
+    );
+    if (conditionFilter && !options.includes(conditionFilter)) {
+      options.push(conditionFilter);
+    }
+    return options.sort((a, b) => a.localeCompare(b));
+  }, [capturesQuery.data?.facets?.condition, conditionFilter]);
 
   const rows = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return decorated
-      .filter((r) => showExcluded || !r.isExcluded)
-      .filter((r) => operatorFilter === ALL_OPERATORS || r.operator === operatorFilter)
-      .filter((r) => !batchFilter || r.batchId === batchFilter)
-      .filter((r) => !retentionFilterActive || retentionCandidateIds.has(r.captureId))
-      .filter((r) => {
-        if (!q) return true;
-        // Every on-screen identity is searchable: the operator reads run_id,
-        // a capture_id pasted from a log or a URL must find its row, and the
-        // operator NAME the row displays must match too (typing "ux-audit"
-        // returned "0 shown" while the Operator column said exactly that —
-        // audit P2).
-        return (
-          // Only a real number is searchable; an unnumbered row must not be
-          // findable by typing "null".
-          (r.ep !== null && `#${r.ep}`.includes(q)) ||
-          r.captureId.toLowerCase().includes(q) ||
-          (r.runId?.toLowerCase().includes(q) ?? false) ||
-          (r.operator?.toLowerCase().includes(q) ?? false)
-        );
-      })
-      // Lane first (the work queue), then newest recording first WITHIN a lane.
-      // Deliberately NOT by `ep`: that is index_in_batch, which restarts at 1
-      // in every batch, so ordering by it interleaves two batches into a
-      // meaningless 3,2,2,1,1. started_at is a global ordering; capture_id is
-      // the tiebreak because UUIDv7 is time-ordered, so it agrees with it.
-      .sort((a, b) => {
-        const lane = LANE_ORDER[a.reviewLane] - LANE_ORDER[b.reviewLane];
-        if (lane !== 0) return lane;
-        const ta = a.startedAt ? Date.parse(a.startedAt) : NaN;
-        const tb = b.startedAt ? Date.parse(b.startedAt) : NaN;
-        if (!Number.isNaN(ta) && !Number.isNaN(tb) && ta !== tb) return tb - ta;
-        return b.captureId.localeCompare(a.captureId);
-      });
-  }, [
-    decorated,
-    search,
-    operatorFilter,
-    batchFilter,
-    showExcluded,
-    retentionFilterActive,
-    retentionCandidateIds,
-  ]);
+    return (
+      decorated
+        .filter((r) => showExcluded || !r.isExcluded)
+        .filter((r) => !retentionFilterActive || retentionCandidateIds.has(r.captureId))
+        // Lane first (the work queue), then newest recording first WITHIN a lane.
+        // Deliberately NOT by `ep`: that is index_in_batch, which restarts at 1
+        // in every batch, so ordering by it interleaves two batches into a
+        // meaningless 3,2,2,1,1. started_at is a global ordering; capture_id is
+        // the tiebreak because UUIDv7 is time-ordered, so it agrees with it.
+        .sort((a, b) => {
+          const lane = LANE_ORDER[a.reviewLane] - LANE_ORDER[b.reviewLane];
+          if (lane !== 0) return lane;
+          const ta = a.startedAt ? Date.parse(a.startedAt) : NaN;
+          const tb = b.startedAt ? Date.parse(b.startedAt) : NaN;
+          if (!Number.isNaN(ta) && !Number.isNaN(tb) && ta !== tb) return tb - ta;
+          return b.captureId.localeCompare(a.captureId);
+        })
+    );
+  }, [decorated, showExcluded, retentionFilterActive, retentionCandidateIds]);
 
   const nExcluded = useMemo(
     () => decorated.filter((r) => r.isExcluded).length,
@@ -511,7 +693,10 @@ export function useReviewState(): ReviewState {
 
   // ---- selection ----------------------------------------------------------
   const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
-  const select = useCallback((captureId: string) => setSelectedCaptureId(captureId), []);
+  const select = useCallback(
+    (captureId: string) => setSelectedCaptureId(captureId),
+    [],
+  );
   useEffect(() => {
     if (selectedCaptureId || decorated.length === 0) return;
     // Same global newest-first order as the table sort above — `ep` is
@@ -538,7 +723,9 @@ export function useReviewState(): ReviewState {
   // a later edit that reads a different list without updating the deps would
   // answer from a stale one, which is the same bug wearing a cache. Read live.
   const captureSubject = (captureId: string) => {
-    const row = decorated.find((r) => r.captureId === captureId);
+    const row =
+      decorated.find((r) => r.captureId === captureId) ??
+      seenSubjects.current.get(captureId);
     return row ? subjectOf(row) : captureId;
   };
 
@@ -547,7 +734,11 @@ export function useReviewState(): ReviewState {
   const applyReview = useCallback(
     async (
       row: DecoratedEpisode,
-      overlay: { quality?: DisplayQuality; task?: DisplayTaskResult; status?: ReviewStatus },
+      overlay: {
+        quality?: DisplayQuality;
+        task?: DisplayTaskResult;
+        status?: ReviewStatus;
+      },
       changes: Parameters<ReviewSaveState['save']>[1],
       options?: Parameters<ReviewSaveState['save']>[2],
     ): Promise<ReviewSaveResult> => {
@@ -557,7 +748,10 @@ export function useReviewState(): ReviewState {
       // unanswered — the row would snap back to the stored value mid-flight.
       if (reviewSave.isSaving(row.captureId))
         return { capture: null, error: null, skipped: true };
-      setPending((cur) => ({ ...cur, [row.captureId]: { ...cur[row.captureId], ...overlay } }));
+      setPending((cur) => ({
+        ...cur,
+        [row.captureId]: { ...cur[row.captureId], ...overlay },
+      }));
       const result = await reviewSave.save(row.capture, changes, options);
       clearPending(row.captureId);
       return result;
@@ -930,17 +1124,19 @@ export function useReviewState(): ReviewState {
     // Adopting is the operator choosing the opposite of the exclusion they are
     // being offered a way back from. Theirs is the newer decision.
     if (excludeUndo?.captureId === selected.captureId) setExcludeUndo(null);
-    void applyReview(selected, { status: 'adopted' }, { review_status: 'adopted' }).then(
-      ({ capture }) => {
-        if (capture) {
-          showToast(
-            exception
-              ? `${subjectOf(selected)} marked OK — included`
-              : `${subjectOf(selected)} adopted — datasets can use it`,
-          );
-        }
-      },
-    );
+    void applyReview(
+      selected,
+      { status: 'adopted' },
+      { review_status: 'adopted' },
+    ).then(({ capture }) => {
+      if (capture) {
+        showToast(
+          exception
+            ? `${subjectOf(selected)} marked OK — included`
+            : `${subjectOf(selected)} adopted — datasets can use it`,
+        );
+      }
+    });
   }, [selected, applyReview, showToast, excludeUndo]);
 
   const cycleFinalQuality = useCallback(() => {
@@ -964,11 +1160,13 @@ export function useReviewState(): ReviewState {
     // Unset base → the first click sets Success; thereafter it toggles.
     const next: DisplayTaskResult =
       selected.effectiveTask === 'Success' ? 'Failure' : 'Success';
-    void applyReview(selected, { task: next }, { task_result: toServerTask(next) }).then(
-      ({ capture }) => {
-        if (capture) showToast(`${subjectOf(selected)} task result → ${next}`);
-      },
-    );
+    void applyReview(
+      selected,
+      { task: next },
+      { task_result: toServerTask(next) },
+    ).then(({ capture }) => {
+      if (capture) showToast(`${subjectOf(selected)} task result → ${next}`);
+    });
   }, [selected, applyReview, showToast]);
 
   // ---- deep links ---------------------------------------------------------
@@ -1007,7 +1205,8 @@ export function useReviewState(): ReviewState {
     (captureId: string) => {
       const seedRow = baseEpisodes.find((e) => e.captureId === captureId);
       setTransfers((prev) => {
-        const cur = prev[captureId] ?? initialTransferSlot(seedRow?.transfer ?? 'awaiting');
+        const cur =
+          prev[captureId] ?? initialTransferSlot(seedRow?.transfer ?? 'awaiting');
         if (cur.phase !== 'awaiting') return prev;
         return { ...prev, [captureId]: transferReducer(cur, { type: 'START' }) };
       });
@@ -1029,7 +1228,8 @@ export function useReviewState(): ReviewState {
   useEffect(() => {
     const doneIds = baseEpisodes
       .filter(
-        (e) => e.transfer === 'here' && transfers[e.captureId]?.phase === 'transferring',
+        (e) =>
+          e.transfer === 'here' && transfers[e.captureId]?.phase === 'transferring',
       )
       .map((e) => e.captureId);
     if (!doneIds.length) return;
@@ -1125,6 +1325,11 @@ export function useReviewState(): ReviewState {
     isError,
     errorMessage,
     catalogTruncated,
+    serverTotal: capturesQuery.data?.total ?? 0,
+    hasNextPage: capturesQuery.data?.next_cursor != null,
+    hasPreviousPage: cursorStack.length > 0,
+    nextPage,
+    previousPage,
 
     rows,
     nNeedsCheck,
@@ -1138,6 +1343,17 @@ export function useReviewState(): ReviewState {
     operatorFilter,
     setOperatorFilter,
     operatorOptions,
+    qualityFilter,
+    setQualityFilter,
+    resultFilter,
+    setResultFilter,
+    conditionFilter,
+    setConditionFilter,
+    conditionOptions,
+    startedFrom,
+    setStartedFrom,
+    startedTo,
+    setStartedTo,
     clearFilters,
 
     batchFilter,

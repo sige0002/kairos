@@ -94,6 +94,12 @@ TEMPLATES_SIDECAR = "validation_templates.json"
 PLAN_CATALOG_SIDECAR = "plan_catalog.json"
 _PLAN_ID_NAMESPACE = uuid.UUID("7bb397a4-c9f4-5b87-8e90-fba28373bd77")
 
+
+def _search_fold(value: object) -> str:
+    """NFC + Unicode casefold, matching the Console's case-insensitive search."""
+    return unicodedata.normalize("NFC", "" if value is None else str(value)).casefold()
+
+
 # Replica states that mean "the bytes are on this machine right now". The §9-3
 # threshold guard counts these as its denominator, and the digest job only ever
 # runs against one of them.
@@ -256,6 +262,15 @@ class DatasetMemberExistsError(Exception):
         super().__init__(f"{capture_id} is already in dataset {dataset_id}")
         self.dataset_id = dataset_id
         self.capture_id = capture_id
+
+
+class DatasetNotActiveError(Exception):
+    """A membership write lost the race with archive/freeze."""
+
+    def __init__(self, dataset_id: str, status: str) -> None:
+        super().__init__(f"dataset {dataset_id} is {status}, not active")
+        self.dataset_id = dataset_id
+        self.status = status
 
 
 class CaptureStore:
@@ -493,6 +508,580 @@ class CaptureStore:
             self._attach_memberships(conn, captures)
         next_cursor = int(page[-1]["seq"]) if has_more and page else None
         return captures, next_cursor
+
+    def search_captures(
+        self,
+        limit: int,
+        cursor: int | None,
+        *,
+        query: dict[str, Any],
+        facets: list[str],
+        instance_id: str | None,
+    ) -> tuple[list[Capture], int | None, int, dict[str, dict[str, Any]]]:
+        """Search a coherent capture snapshot, including optional facets.
+
+        ``collection_context`` being present is decisive for condition lookup:
+        an explicit JSON null is recorded absence, not permission to consult a
+        subsequently edited Batch.  Only legacy rows with no context fall back
+        to the Batch's old label.
+        """
+        with self._conn() as conn:
+            conn.create_function("kairos_casefold", 1, _search_fold, deterministic=True)
+            conn.execute("BEGIN")
+            where, params = self._capture_search_where(query, instance_id)
+            cursor_where = list(where)
+            cursor_params = list(params)
+            if cursor is not None:
+                cursor_where.append("c.seq < ?")
+                cursor_params.append(cursor)
+            where_sql = f" WHERE {' AND '.join(cursor_where)}" if cursor_where else ""
+            rows = conn.execute(
+                "SELECT c.* FROM captures_with_lease c "
+                "LEFT JOIN batches b ON b.batch_id = c.batch_id"
+                f"{where_sql} ORDER BY c.seq DESC LIMIT ?",
+                (*cursor_params, limit + 1),
+            ).fetchall()
+            has_more = len(rows) > limit
+            page = rows[:limit]
+            captures = [self._capture_from_row(row) for row in page]
+            self._attach_replica(conn, captures, instance_id or self._instance_id)
+            self._attach_memberships(conn, captures)
+            base_sql = f" WHERE {' AND '.join(where)}" if where else ""
+            total = int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM captures c "
+                    "LEFT JOIN batches b ON b.batch_id = c.batch_id" + base_sql,
+                    params,
+                ).fetchone()[0]
+            )
+            facet_data: dict[str, dict[str, Any]] = {}
+            for field in dict.fromkeys(facets):
+                expression = self._capture_search_expression(field)
+                if expression is None:
+                    continue
+                facet_query = dict(query)
+                facet_query["predicates"] = [
+                    predicate
+                    for predicate in query.get("predicates") or []
+                    if predicate["field"] != field
+                ]
+                facet_where, facet_params = self._capture_search_where(
+                    facet_query, instance_id
+                )
+                facet_where_sql = (
+                    f" WHERE {' AND '.join(facet_where)}" if facet_where else ""
+                )
+                rows_for_facet = conn.execute(
+                    f"SELECT {expression} AS value, COUNT(*) AS count "
+                    "FROM captures c LEFT JOIN batches b ON b.batch_id = c.batch_id"
+                    + facet_where_sql
+                    + f" GROUP BY {expression} ORDER BY count DESC, value LIMIT 101",
+                    facet_params,
+                ).fetchall()
+                values = [
+                    {"value": row["value"], "count": int(row["count"])}
+                    for row in rows_for_facet[:100]
+                ]
+                facet_total = int(
+                    conn.execute(
+                        "SELECT COUNT(*) FROM captures c "
+                        "LEFT JOIN batches b ON b.batch_id = c.batch_id"
+                        + facet_where_sql,
+                        facet_params,
+                    ).fetchone()[0]
+                )
+                facet_data[field] = {
+                    "values": values,
+                    "truncated": len(rows_for_facet) > 100,
+                    "other_count": max(
+                        0, facet_total - sum(v["count"] for v in values)
+                    ),
+                }
+        next_cursor = int(page[-1]["seq"]) if has_more and page else None
+        return captures, next_cursor, total, facet_data
+
+    @staticmethod
+    def _capture_search_expression(field: str) -> str | None:
+        condition = (
+            "CASE WHEN c.collection_context IS NOT NULL "
+            "THEN json_extract(c.collection_context, '$.condition') "
+            "ELSE b.condition END"
+        )
+        return {
+            "operator": "c.operator",
+            "task": "c.task",
+            "condition": condition,
+            "run_id": "c.run_id",
+            "capture_id": "c.capture_id",
+            "task_result": "c.task_result",
+            "failure_reason": "c.failure_reason",
+            "quality": "c.quality",
+            "review_status": "c.review_status",
+            "robot": "c.robot",
+            "batch_id": "c.batch_id",
+        }.get(field)
+
+    def _capture_search_where(
+        self, query: dict[str, Any], instance_id: str | None
+    ) -> tuple[list[str], list[Any]]:
+        """Compile the public, value-bound selection DSL to SQLite clauses."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        states = query.get("states") or []
+        if states:
+            clauses.append("c.state IN (" + ", ".join("?" for _ in states) + ")")
+            params.extend(states)
+        else:
+            placeholders = ", ".join("?" for _ in TOMBSTONE_STATES)
+            clauses.append(f"c.state NOT IN ({placeholders})")
+            params.extend(sorted(TOMBSTONE_STATES))
+        review_statuses = query.get("review_statuses") or []
+        if review_statuses:
+            clauses.append(
+                "c.review_status IN (" + ", ".join("?" for _ in review_statuses) + ")"
+            )
+            params.extend(review_statuses)
+        started_from = query.get("started_from")
+        if started_from is not None:
+            clauses.append("julianday(c.started_at) >= julianday(?)")
+            params.append(started_from)
+        started_to = query.get("started_to")
+        if started_to is not None:
+            clauses.append("julianday(c.started_at) < julianday(?)")
+            params.append(started_to)
+        present = query.get("present_on_instance")
+        if present is not None:
+            owner = instance_id or self._instance_id
+            if owner is None:
+                clauses.append("0")
+            else:
+                states_sql = ", ".join("?" for _ in PRESENT_REPLICA_STATES)
+                exists = (
+                    "EXISTS (SELECT 1 FROM replicas r "
+                    "WHERE r.capture_id = c.capture_id "
+                    "AND r.instance_id = ? AND r.state IN (" + states_sql + "))"
+                )
+                clauses.append(exists if present else f"NOT {exists}")
+                params.append(owner)
+                params.extend(sorted(PRESENT_REPLICA_STATES))
+        excluded = query.get("exclude_dataset_id")
+        if excluded:
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM dataset_members dm "
+                "WHERE dm.dataset_id = ? AND dm.capture_id = c.capture_id)"
+            )
+            params.append(excluded)
+        predicates = query.get("predicates") or []
+        predicate_clauses: list[str] = []
+        for predicate in predicates:
+            field = predicate["field"]
+            value = _search_fold(predicate["value"])
+            expressions: list[str]
+            if field == "any":
+                expressions = [
+                    expr
+                    for name in (
+                        "operator",
+                        "task",
+                        "condition",
+                        "run_id",
+                        "capture_id",
+                        "task_result",
+                        "failure_reason",
+                        "quality",
+                        "review_status",
+                        "robot",
+                        "batch_id",
+                    )
+                    if (expr := self._capture_search_expression(name)) is not None
+                ]
+            else:
+                expression = self._capture_search_expression(field)
+                expressions = [expression] if expression is not None else []
+            comparisons: list[str] = []
+            for expression in expressions:
+                if predicate["operator"] == "equals":
+                    comparisons.append(
+                        f"kairos_casefold(COALESCE({expression}, '')) = ?"
+                    )
+                    params.append(value)
+                else:
+                    comparisons.append(
+                        f"kairos_casefold(COALESCE({expression}, '')) "
+                        "LIKE ? ESCAPE '\\'"
+                    )
+                    escaped = (
+                        value.replace("\\", "\\\\")
+                        .replace("%", "\\%")
+                        .replace("_", "\\_")
+                    )
+                    params.append(f"%{escaped}%")
+            predicate_clauses.append("(" + " OR ".join(comparisons or ["0"]) + ")")
+        if predicate_clauses:
+            joiner = " AND " if query.get("join", "and") == "and" else " OR "
+            clauses.append("(" + joiner.join(predicate_clauses) + ")")
+        return clauses, params
+
+    def create_capture_selection(
+        self, query: dict[str, Any], *, instance_id: str | None, expires_at: str
+    ) -> tuple[str, int]:
+        """Freeze matching capture IDs in one write transaction.
+
+        The selection is an expiring DB work item; it intentionally is not
+        rebuild truth.  Member rows/ledger are still the durable outcome.
+        """
+        selection_id = str(uuid.uuid4())
+        created_at = utc_now_iso8601()
+        with self._conn() as conn:
+            conn.create_function("kairos_casefold", 1, _search_fold, deterministic=True)
+            conn.execute("BEGIN IMMEDIATE")
+            # Bulk runs copy both frozen IDs and query provenance into their
+            # own rows. Once a selection expires, no consumer may resolve it;
+            # retaining its potentially huge item set would leak one catalog
+            # snapshot per Bulk Add forever.
+            expired = (
+                "SELECT s.selection_id FROM capture_selections s "
+                "WHERE s.expires_at <= ?"
+            )
+            conn.execute(
+                "DELETE FROM capture_selection_items WHERE selection_id IN ("
+                + expired
+                + ")",
+                (created_at,),
+            )
+            conn.execute(
+                "DELETE FROM capture_selections WHERE selection_id IN ("
+                + expired
+                + ")",
+                (created_at,),
+            )
+            where, params = self._capture_search_where(query, instance_id)
+            where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+            rows = conn.execute(
+                "SELECT c.capture_id FROM captures c LEFT JOIN batches b "
+                "ON b.batch_id = c.batch_id" + where_sql + " ORDER BY c.capture_id ASC",
+                params,
+            ).fetchall()
+            capture_ids = [str(row["capture_id"]) for row in rows]
+            conn.execute(
+                "INSERT INTO capture_selections "
+                "(selection_id, query_json, created_at, expires_at, matched_count) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (
+                    selection_id,
+                    json.dumps(query),
+                    created_at,
+                    expires_at,
+                    len(capture_ids),
+                ),
+            )
+            conn.executemany(
+                "INSERT INTO capture_selection_items "
+                "(selection_id, ordinal, capture_id) "
+                "VALUES (?, ?, ?)",
+                [
+                    (selection_id, ordinal, capture_id)
+                    for ordinal, capture_id in enumerate(capture_ids)
+                ],
+            )
+        return selection_id, len(capture_ids)
+
+    def capture_selection_capture_ids(self, selection_id: str) -> list[str]:
+        """Resolve a live snapshot without consuming its frozen ID order.
+
+        Selections are shared inputs: Dataset bulk and Validation may both use
+        the same immutable population before its expiry.  A missing or expired
+        header is intentionally indistinguishable to callers, because neither
+        can safely be retried as though it still described the current search.
+        """
+        with self._conn() as conn:
+            conn.execute("BEGIN")
+            selection = conn.execute(
+                "SELECT 1 FROM capture_selections WHERE selection_id = ? "
+                "AND expires_at > ?",
+                (selection_id, utc_now_iso8601()),
+            ).fetchone()
+            if selection is None:
+                raise KeyError(selection_id)
+            rows = conn.execute(
+                "SELECT capture_id FROM capture_selection_items "
+                "WHERE selection_id = ? ORDER BY ordinal",
+                (selection_id,),
+            ).fetchall()
+        return [str(row["capture_id"]) for row in rows]
+
+    def create_membership_bulk_run(
+        self, dataset_id: str, selection_id: str, request_id: str
+    ) -> dict[str, Any]:
+        """Create an idempotent work row from a still-valid frozen selection."""
+        now = utc_now_iso8601()
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            existing = conn.execute(
+                "SELECT * FROM dataset_membership_bulk_runs "
+                "WHERE dataset_id = ? AND request_id = ?",
+                (dataset_id, request_id),
+            ).fetchone()
+            if existing is not None:
+                if existing["selection_id"] != selection_id:
+                    raise ValueError(
+                        "request_id was already used for another selection"
+                    )
+                return dict(existing)
+            selection = conn.execute(
+                "SELECT matched_count, query_json FROM capture_selections "
+                "WHERE selection_id = ? AND expires_at > ?",
+                (selection_id, now),
+            ).fetchone()
+            if selection is None:
+                raise KeyError(selection_id)
+            run_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO dataset_membership_bulk_runs "
+                "(run_id, dataset_id, selection_id, query_json, request_id, state, "
+                "matched_count, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                (
+                    run_id,
+                    dataset_id,
+                    selection_id,
+                    selection["query_json"],
+                    request_id,
+                    int(selection["matched_count"]),
+                    now,
+                    now,
+                ),
+            )
+            conn.execute(
+                "INSERT INTO dataset_membership_bulk_items (run_id, capture_id) "
+                "SELECT ?, capture_id FROM capture_selection_items "
+                "WHERE selection_id = ?",
+                (run_id, selection_id),
+            )
+            return dict(
+                conn.execute(
+                    "SELECT * FROM dataset_membership_bulk_runs WHERE run_id = ?",
+                    (run_id,),
+                ).fetchone()
+            )
+
+    def get_membership_bulk_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM dataset_membership_bulk_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            result = dict(row)
+            counts = conn.execute(
+                "SELECT COUNT(*) AS items, SUM(state = 'succeeded') AS succeeded, "
+                "SUM(state = 'failed') AS failed "
+                "FROM dataset_membership_bulk_items WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if int(counts["items"] or 0) > 0:
+                result["succeeded"] = int(counts["succeeded"] or 0)
+                result["failed"] = int(counts["failed"] or 0)
+                result["attempted"] = result["succeeded"] + result["failed"]
+            return result
+
+    def membership_bulk_query(self, run_id: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT query_json FROM dataset_membership_bulk_runs WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(row["query_json"])
+        except (TypeError, ValueError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def mark_membership_bulk_receipt(self, run_id: str, state: str) -> None:
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET receipt_state = ?, "
+                "updated_at = ? "
+                "WHERE run_id = ?",
+                (state, utc_now_iso8601(), run_id),
+            )
+            if state == "recorded":
+                conn.execute(
+                    "DELETE FROM dataset_membership_bulk_items WHERE run_id = ? "
+                    "AND EXISTS (SELECT 1 FROM dataset_membership_bulk_runs "
+                    "WHERE run_id = ? AND state = 'completed')",
+                    (run_id, run_id),
+                )
+
+    def mark_membership_bulk_receipt_failed(self, run_id: str) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET state = 'failed_receipt', "
+                "receipt_state = 'failed', updated_at = ? WHERE run_id = ?",
+                (utc_now_iso8601(), run_id),
+            )
+
+    def pending_membership_bulk_runs(self) -> list[str]:
+        """Runs left by a normal process restart (not a schema rebuild)."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT run_id FROM dataset_membership_bulk_runs "
+                "WHERE state IN ('pending', 'running') ORDER BY created_at"
+            ).fetchall()
+        return [str(row["run_id"]) for row in rows]
+
+    def membership_bulk_runs_needing_receipt(self) -> list[dict[str, Any]]:
+        """Terminal membership passes whose separate receipt did not land."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM dataset_membership_bulk_runs "
+                "WHERE state IN ('completed', 'partial', 'failed_receipt') "
+                "AND receipt_state != 'recorded' ORDER BY updated_at"
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def reset_running_membership_bulk_runs(self) -> None:
+        """Make work abandoned by a stopped process claimable again."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET state = 'pending', "
+                "updated_at = ? WHERE state = 'running'",
+                (utc_now_iso8601(),),
+            )
+
+    def claim_membership_bulk_run(self, run_id: str) -> bool:
+        """Elect one worker; duplicate delivery must not rewrite item results."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET state = 'running', "
+                "updated_at = ? WHERE run_id = ? AND state IN ('pending', 'partial')",
+                (utc_now_iso8601(), run_id),
+            )
+        return cur.rowcount == 1
+
+    def requeue_failed_membership_bulk_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            claimed = conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET state = 'pending', "
+                "attempt = attempt + 1, receipt_state = 'pending', updated_at = ? "
+                "WHERE run_id = ? AND state IN ('partial', 'failed_receipt')",
+                (utc_now_iso8601(), run_id),
+            )
+            if claimed.rowcount != 1:
+                return None
+            conn.execute(
+                "UPDATE dataset_membership_bulk_items SET state = 'pending', "
+                "error_code = NULL, error_message = NULL WHERE run_id = ? "
+                "AND state = 'failed'",
+                (run_id,),
+            )
+            row = conn.execute(
+                "SELECT * FROM dataset_membership_bulk_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return dict(row)
+
+    def release_membership_bulk_run(self, run_id: str) -> None:
+        """Return an unexpectedly interrupted claimed run to its durable queue."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET state = 'pending', "
+                "updated_at = ? WHERE run_id = ? AND state = 'running'",
+                (utc_now_iso8601(), run_id),
+            )
+
+    def pending_membership_bulk_capture_ids(
+        self, run_id: str, *, retry_failed: bool
+    ) -> list[str]:
+        states = ("pending", "failed") if retry_failed else ("pending",)
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT capture_id FROM dataset_membership_bulk_items WHERE run_id = ? "
+                "AND state IN ("
+                + ", ".join("?" for _ in states)
+                + ") ORDER BY capture_id",
+                (run_id, *states),
+            ).fetchall()
+        return [str(row["capture_id"]) for row in rows]
+
+    def mark_membership_bulk_item(
+        self,
+        run_id: str,
+        capture_id: str,
+        *,
+        success: bool,
+        code: str | None = None,
+        message: str | None = None,
+    ) -> None:
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE dataset_membership_bulk_items SET state = ?, error_code = ?, "
+                "error_message = ? "
+                "WHERE run_id = ? AND capture_id = ?",
+                (
+                    "succeeded" if success else "failed",
+                    code,
+                    message,
+                    run_id,
+                    capture_id,
+                ),
+            )
+
+    def finish_membership_bulk_run(self, run_id: str) -> dict[str, Any] | None:
+        """Recount persisted item truth after a worker pass."""
+        now = utc_now_iso8601()
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS pending, SUM(state = 'succeeded') AS succeeded, "
+                "SUM(state = 'failed') AS failed FROM dataset_membership_bulk_items "
+                "WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            pending = (
+                int(row["pending"] or 0)
+                - int(row["succeeded"] or 0)
+                - int(row["failed"] or 0)
+            )
+            succeeded = int(row["succeeded"] or 0)
+            failed = int(row["failed"] or 0)
+            state = (
+                "completed"
+                if not pending and not failed
+                else "partial"
+                if not pending
+                else "pending"
+            )
+            conn.execute(
+                "UPDATE dataset_membership_bulk_runs SET state = ?, attempted = ?, "
+                "succeeded = ?, failed = ?, updated_at = ? WHERE run_id = ?",
+                (state, succeeded + failed, succeeded, failed, now, run_id),
+            )
+            saved = conn.execute(
+                "SELECT * FROM dataset_membership_bulk_runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+        return dict(saved) if saved is not None else None
+
+    def membership_bulk_failures(self, run_id: str) -> list[dict[str, str]]:
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT capture_id, error_code, error_message "
+                "FROM dataset_membership_bulk_items "
+                "WHERE run_id = ? AND state = 'failed' ORDER BY capture_id LIMIT 100",
+                (run_id,),
+            ).fetchall()
+        return [
+            {
+                "capture_id": str(row["capture_id"]),
+                "code": str(row["error_code"] or "bulk_failed"),
+                "message": str(row["error_message"] or "Membership was refused."),
+            }
+            for row in rows
+        ]
 
     def present_terminal_ids(
         self, states: Iterable[str], *, instance_id: str
@@ -753,7 +1342,7 @@ class CaptureStore:
     # ---- leases (§7.1) -----------------------------------------------------
 
     def acquire_lease(self, capture_id: str, owner: str, *, ttl_s: float) -> bool:
-        """Take or renew *owner*'s hold on a capture. Always succeeds.
+        """Take or renew *owner*'s shared hold unless an exclusive writer owns it.
 
         §7.1's lease is SHARED: several readers may hold one capture at once,
         which is what lets the N camera encoders of a single recording run in
@@ -775,15 +1364,54 @@ class CaptureStore:
         stamp = utc_iso8601_of(now)
         expires = utc_iso8601_of(now + timedelta(seconds=ttl_s))
         with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 "DELETE FROM capture_leases WHERE capture_id = ? AND expires_at <= ?",
                 (capture_id, stamp),
             )
+            writer = conn.execute(
+                "SELECT 1 FROM capture_leases WHERE capture_id = ? "
+                "AND owner LIKE 'writer:%' AND owner != ? AND expires_at > ? LIMIT 1",
+                (capture_id, owner, stamp),
+            ).fetchone()
+            if writer is not None:
+                return False
             conn.execute(
                 "INSERT INTO capture_leases (capture_id, owner, expires_at, "
                 "acquired_at) VALUES (?, ?, ?, ?) "
                 "ON CONFLICT (capture_id, owner) DO UPDATE SET expires_at = "
                 "excluded.expires_at",
+                (capture_id, owner, expires, stamp),
+            )
+        return True
+
+    def acquire_writer_lease(
+        self, capture_id: str, owner: str, *, ttl_s: float
+    ) -> bool:
+        """Exclusively arbitrate a byte-moving writer against all readers."""
+        if not owner.startswith("writer:"):
+            raise ValueError("writer lease owners must start with 'writer:'")
+        now = datetime.now(UTC)
+        stamp = utc_iso8601_of(now)
+        expires = utc_iso8601_of(now + timedelta(seconds=ttl_s))
+        with self._conn() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute(
+                "DELETE FROM capture_leases WHERE capture_id = ? AND expires_at <= ?",
+                (capture_id, stamp),
+            )
+            holder = conn.execute(
+                "SELECT 1 FROM capture_leases WHERE capture_id = ? "
+                "AND owner != ? AND expires_at > ? LIMIT 1",
+                (capture_id, owner, stamp),
+            ).fetchone()
+            if holder is not None:
+                return False
+            conn.execute(
+                "INSERT INTO capture_leases "
+                "(capture_id, owner, expires_at, acquired_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT (capture_id, owner) DO UPDATE SET "
+                "expires_at = excluded.expires_at",
                 (capture_id, owner, expires, stamp),
             )
         return True
@@ -1154,6 +1782,13 @@ class CaptureStore:
         membership_id = membership_id or new_membership_id()
         created_at = utc_now_iso8601()
         with self._conn() as conn:
+            dataset = conn.execute(
+                "SELECT status FROM datasets WHERE dataset_id = ?", (dataset_id,)
+            ).fetchone()
+            if dataset is None:
+                raise KeyError(dataset_id)
+            if dataset["status"] != "active":
+                raise DatasetNotActiveError(dataset_id, str(dataset["status"]))
             if display_index is None:
                 row = conn.execute(
                     "SELECT index_high_water FROM datasets WHERE dataset_id = ?",
@@ -1205,6 +1840,17 @@ class CaptureStore:
             row = conn.execute(
                 "SELECT * FROM dataset_members WHERE membership_id = ?",
                 (membership_id,),
+            ).fetchone()
+        return self._member_from_row(row) if row is not None else None
+
+    def get_dataset_membership(
+        self, dataset_id: str, capture_id: str
+    ) -> DatasetMember | None:
+        """Return the unique membership for one dataset/capture pair."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM dataset_members WHERE dataset_id = ? AND capture_id = ?",
+                (dataset_id, capture_id),
             ).fetchone()
         return self._member_from_row(row) if row is not None else None
 
@@ -1265,6 +1911,7 @@ class CaptureStore:
         destination: str,
         mode: str = "move",
         at: str | None = None,
+        expected_capture_ids: list[str] | None = None,
     ) -> bool:
         """active → archiving, and the destination claimed with it.
 
@@ -1300,6 +1947,17 @@ class CaptureStore:
         operator clears the debris out of it, because Resume will come back.
         """
         with self._conn() as conn:
+            if expected_capture_ids is not None:
+                current = [
+                    str(row["capture_id"])
+                    for row in conn.execute(
+                        "SELECT capture_id FROM dataset_members "
+                        "WHERE dataset_id = ? ORDER BY display_index",
+                        (dataset_id,),
+                    ).fetchall()
+                ]
+                if current != expected_capture_ids:
+                    return False
             rows = conn.execute(
                 "SELECT dataset_id, archive_destination FROM datasets "
                 "WHERE dataset_id != ? AND archive_destination IS NOT NULL "
@@ -1709,6 +2367,25 @@ class CaptureStore:
         if batch is None:
             raise KeyError(batch_id)
         return batch
+
+    def batches_for_ids(self, batch_ids: list[str]) -> list[Batch]:
+        """Fetch known batches in caller order without an unbounded catalog read."""
+        if not batch_ids:
+            return []
+        found: dict[str, Batch] = {}
+        # SQLite's variable limit varies by build.  Chunk defensively even
+        # though the HTTP boundary caps a request at 1000 IDs.
+        for start in range(0, len(batch_ids), 500):
+            chunk = batch_ids[start : start + 500]
+            placeholders = ", ".join("?" for _ in chunk)
+            with self._conn() as conn:
+                rows = conn.execute(
+                    f"SELECT * FROM batches WHERE batch_id IN ({placeholders})", chunk
+                ).fetchall()
+            found.update(
+                {str(row["batch_id"]): self._batch_from_row(row) for row in rows}
+            )
+        return [found[batch_id] for batch_id in batch_ids if batch_id in found]
 
     def batch_seqs_for_ids(self, batch_ids: list[str]) -> dict[str, int | None]:
         if not batch_ids:

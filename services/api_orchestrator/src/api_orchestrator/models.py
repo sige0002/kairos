@@ -16,6 +16,7 @@ joined to an ``Episode`` is now a single :class:`Capture`.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from kairos_common import Compression, Durability, JobState, Reliability
@@ -51,6 +52,8 @@ __all__ = [
     "BatchCoverageScope",
     "BatchCreateRequest",
     "BatchDetail",
+    "BatchLookupRequest",
+    "BatchLookupResponse",
     "BatchListResponse",
     "BatchPatchRequest",
     "BatchStatus",
@@ -61,6 +64,10 @@ __all__ = [
     "CaptureDetail",
     "CaptureError",
     "CaptureListResponse",
+    "CaptureSearchRequest",
+    "CaptureSearchResponse",
+    "CaptureSelectionCreateRequest",
+    "CaptureSelectionResponse",
     "CollectionContextSnapshot",
     "CaptureState",
     "CaptureTopic",
@@ -451,6 +458,112 @@ class CaptureListResponse(BaseModel):
     next_cursor: str | None = None
 
 
+# ---- server-side capture search / materialized selections -----------------
+
+CaptureSearchField = Literal[
+    "any",
+    "operator",
+    "task",
+    "condition",
+    "run_id",
+    "capture_id",
+    "task_result",
+    "failure_reason",
+    "quality",
+    "review_status",
+    "robot",
+    "batch_id",
+]
+CaptureSearchOperator = Literal["contains", "equals"]
+CaptureFacetField = Literal[
+    "operator",
+    "task",
+    "condition",
+    "task_result",
+    "failure_reason",
+    "quality",
+    "review_status",
+    "robot",
+    "batch_id",
+]
+
+
+class CaptureSearchPredicate(BaseModel):
+    field: CaptureSearchField
+    operator: CaptureSearchOperator
+    value: str = Field(min_length=1, max_length=500)
+
+    @field_validator("value")
+    @classmethod
+    def _nonblank_value(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("value must not be blank")
+        return value
+
+
+class CaptureSearchQuery(BaseModel):
+    """The portable selection language shared by search and snapshots."""
+
+    join: Literal["and", "or"] = "and"
+    predicates: list[CaptureSearchPredicate] = Field(
+        default_factory=list, max_length=20
+    )
+    states: list[CaptureState] = Field(default_factory=list)
+    review_statuses: list[ReviewStatus] = Field(default_factory=list)
+    started_from: datetime | None = None
+    started_to: datetime | None = None
+    present_on_instance: bool | None = None
+    exclude_dataset_id: str | None = None
+
+    @field_validator("started_from", "started_to")
+    @classmethod
+    def _require_aware_rfc3339(cls, value: datetime | None) -> datetime | None:
+        if value is not None and value.tzinfo is None:
+            raise ValueError("timestamp must include a timezone offset")
+        return value.astimezone(UTC) if value is not None else None
+
+    @model_validator(mode="after")
+    def _validate_started_range(self) -> CaptureSearchQuery:
+        if self.started_from is not None and self.started_to is not None:
+            if self.started_from >= self.started_to:
+                raise ValueError("started_from must be before started_to")
+        return self
+
+
+class CaptureFacetValue(BaseModel):
+    value: str | None = None
+    count: int
+
+
+class CaptureFacet(BaseModel):
+    values: list[CaptureFacetValue] = Field(default_factory=list)
+    truncated: bool = False
+    other_count: int = 0
+
+
+class CaptureSearchRequest(BaseModel):
+    query: CaptureSearchQuery = Field(default_factory=CaptureSearchQuery)
+    cursor: str | None = None
+    limit: int = Field(default=50, ge=1, le=1000)
+    facets: list[CaptureFacetField] = Field(default_factory=list, max_length=8)
+
+
+class CaptureSearchResponse(CaptureListResponse):
+    total: int
+    facets: dict[str, CaptureFacet] = Field(default_factory=dict)
+
+
+class CaptureSelectionCreateRequest(BaseModel):
+    query: CaptureSearchQuery = Field(default_factory=CaptureSearchQuery)
+
+
+class CaptureSelectionResponse(BaseModel):
+    selection_id: str
+    matched_count: int
+    expires_at: str
+
+
 class ReviewSaveRequest(BaseModel):
     """Body for ``PATCH /api/v1/captures/{id}/review`` (§4.1).
 
@@ -596,7 +709,18 @@ class CaptureArchiveProgress(BaseModel):
 
 class DatasetSelectionCondition(BaseModel):
     field: Literal[
-        "any", "operator", "task", "condition", "run_id", "capture_id", "task_result"
+        "any",
+        "operator",
+        "task",
+        "condition",
+        "run_id",
+        "capture_id",
+        "task_result",
+        "failure_reason",
+        "quality",
+        "review_status",
+        "robot",
+        "batch_id",
     ]
     operator: Literal["contains", "equals"]
     value: str = Field(min_length=1, max_length=500)
@@ -616,11 +740,19 @@ class DatasetSelectionRecipeCreateRequest(BaseModel):
     kind: Literal["filtered_bulk"] = "filtered_bulk"
     join: Literal["and", "or"]
     conditions: list[DatasetSelectionCondition] = Field(default_factory=list)
+    # Full snapshot query for server-owned bulk runs. The older `join` and
+    # `conditions` fields remain as the browser's compact recipe vocabulary.
+    selection_query: CaptureSearchQuery | None = None
     matched: int = Field(ge=0)
     attempted: int = Field(ge=0)
     succeeded: int = Field(ge=0)
     failed: int = Field(ge=0)
     catalog_truncated: bool = False
+    # Added for server-owned snapshot bulk runs. Existing browser-written
+    # receipts leave these null and retain their original meaning.
+    bulk_run_id: str | None = None
+    attempt: int | None = Field(default=None, ge=1)
+    cumulative: bool = False
 
     @model_validator(mode="after")
     def _counts_match_run(self) -> DatasetSelectionRecipeCreateRequest:
@@ -879,6 +1011,32 @@ class DatasetMemberCreateRequest(BaseModel):
     """Body for ``POST /api/v1/datasets/{id}/members``."""
 
     capture_id: str
+
+
+class DatasetMembershipBulkRunCreateRequest(BaseModel):
+    """Start (or idempotently recover) one server-side snapshot add."""
+
+    selection_id: str
+    request_id: str = Field(min_length=1, max_length=128)
+
+
+class DatasetMembershipBulkFailure(BaseModel):
+    capture_id: str
+    code: str
+    message: str
+
+
+class DatasetMembershipBulkRun(BaseModel):
+    run_id: str
+    dataset_id: str
+    selection_id: str
+    state: Literal["pending", "running", "completed", "partial", "failed_receipt"]
+    matched_count: int
+    attempted: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    pending: int = 0
+    failures: list[DatasetMembershipBulkFailure] = Field(default_factory=list)
 
 
 class DatasetListResponse(BaseModel):
@@ -1141,6 +1299,34 @@ class BatchListResponse(BaseModel):
 
     items: list[BatchSummary] = Field(default_factory=list)
     total: int | None = None
+
+
+class BatchLookupRequest(BaseModel):
+    """Resolve a page's batch labels without downloading the catalog."""
+
+    batch_ids: list[str] = Field(min_length=1)
+
+    @field_validator("batch_ids")
+    @classmethod
+    def _dedupe_and_bound(cls, batch_ids: list[str]) -> list[str]:
+        unique: list[str] = []
+        seen: set[str] = set()
+        for batch_id in batch_ids:
+            value = batch_id.strip()
+            if not value:
+                raise ValueError("batch_ids must not contain blank values")
+            if value not in seen:
+                unique.append(value)
+                seen.add(value)
+        if len(unique) > 1000:
+            raise ValueError("at most 1000 distinct batch_ids are allowed")
+        return unique
+
+
+class BatchLookupResponse(BaseModel):
+    """Existing batch rows in request order; unknown IDs are absent."""
+
+    items: list[Batch] = Field(default_factory=list)
 
 
 class CoverageRow(BaseModel):

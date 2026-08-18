@@ -18,6 +18,7 @@ import { HIT_AREA_CHIP, HIT_AREA_TAB } from './v2/shared/hitArea';
 import { PanelBoundary } from './components/ErrorBoundary';
 import { Hexagon, StatusDot, cn } from './components/ui';
 import { OPERATOR_STORAGE_KEY, type SseStatus } from './store/uiStore';
+import { StoreHealthBanner } from './v2/store/StoreHealthBanner';
 
 // ---- per-tab pages (deep link + pop-out) ------------------------------------
 // Each tab is addressable by URL (`?tab=<id>`); `?tab=<id>&solo=1` renders ONLY
@@ -512,6 +513,7 @@ function Shell({ config }: { config: RuntimeConfig }) {
   return (
     <>
       <Header active={active} config={config} />
+      <StoreHealthBanner />
       <TabPanel active={active} />
     </>
   );
@@ -567,6 +569,7 @@ function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) 
         {active === 'collect' && <OperatorChip />}
         <BatchRestoreNotice />
       </header>
+      <StoreHealthBanner solo />
       <section
         role="tabpanel"
         aria-label={label}

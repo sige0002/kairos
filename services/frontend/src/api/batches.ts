@@ -17,6 +17,7 @@ import type {
   BatchCreateRequest,
   BatchDetail,
   BatchListResponse,
+  BatchLookupResponse,
   BatchPatchRequest,
 } from './types';
 
@@ -46,6 +47,18 @@ export function listBatches(
   if (filters.robot) query.robot = filters.robot;
   if (filters.operator) query.operator = filters.operator;
   return apiGet<BatchListResponse>('/batches', { signal, query });
+}
+
+/** Resolve only the Batch metadata referenced by the current capture page. */
+export function lookupBatches(
+  batchIds: string[],
+  signal?: AbortSignal,
+): Promise<BatchLookupResponse> {
+  return apiPost<BatchLookupResponse>(
+    '/batches/lookup',
+    { batch_ids: batchIds },
+    { signal },
+  );
 }
 
 /**

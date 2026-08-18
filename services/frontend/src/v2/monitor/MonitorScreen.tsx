@@ -40,6 +40,19 @@ const MON_NAV = [
 ] as const;
 type MonView = (typeof MON_NAV)[number];
 
+function routeMonView(): MonView {
+  return new URLSearchParams(window.location.search).get('view') === 'store'
+    ? 'Store'
+    : 'Overview';
+}
+
+function writeMonView(view: MonView): void {
+  const params = new URLSearchParams(window.location.search);
+  if (view === 'Store') params.set('view', 'store');
+  else params.delete('view');
+  window.history.replaceState(null, '', `${window.location.pathname}?${params}`);
+}
+
 export function MonitorScreen() {
   // Seeded by the app shell before any tab renders (see CollectScreen) — reads
   // the same cache instead of threading a `config` prop down from App.tsx.
@@ -50,7 +63,15 @@ export function MonitorScreen() {
   const setActiveTab = useUiStore((s) => s.setActiveTab);
   // Overview is the diagnostic landing (§11 order); the operator drills into the
   // other sub-views from there.
-  const [monView, setMonView] = useState<MonView>('Overview');
+  // Store health is the one Monitor sub-view reached from a global warning, so
+  // it is addressable and survives a reload/pop-out. Other sub-views remain
+  // local navigation; making only this safety-relevant destination routable
+  // avoids turning incidental chart state into a second router.
+  const [monView, setMonView] = useState<MonView>(routeMonView);
+  const selectMonView = (view: MonView) => {
+    setMonView(view);
+    writeMonView(view);
+  };
 
   // The Topics view's primary chart panel (index 0) is what Overview's "chart →"
   // links target: set its topic set, then switch to Topics so the click lands on
@@ -58,7 +79,7 @@ export function MonitorScreen() {
   const panels = usePanels();
   const openTopics = (topic?: string) => {
     if (topic && panels[0]) setPanelTopics(panels[0].id, [topic]);
-    setMonView('Topics');
+    selectMonView('Topics');
   };
 
   return (
@@ -74,7 +95,7 @@ export function MonitorScreen() {
               type="button"
               data-testid={`mon-nav-${label}`}
               aria-pressed={label === monView}
-              onClick={() => setMonView(label)}
+              onClick={() => selectMonView(label)}
               className={cn(
                 'rounded-lg px-3.5 py-1.5 text-[12.5px] font-medium transition-colors',
                 label === monView
@@ -103,7 +124,7 @@ export function MonitorScreen() {
         <OverviewView
           config={config}
           onOpenTopics={openTopics}
-          onOpenSignals={() => setMonView('Signals')}
+          onOpenSignals={() => selectMonView('Signals')}
         />
       ) : monView === 'Topics' ? (
         <TopicsView config={config} />

@@ -25,7 +25,7 @@ returns the dataset to ``active`` without deleting destination files.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response, status
 from kairos_common.archive_paths import parse_archive_roots
 
 from api_orchestrator.dataset_archive import DatasetArchiver
@@ -40,6 +40,8 @@ from api_orchestrator.models import (
     DatasetListResponse,
     DatasetMember,
     DatasetMemberCreateRequest,
+    DatasetMembershipBulkRun,
+    DatasetMembershipBulkRunCreateRequest,
     DatasetSelectionRecipe,
     DatasetSelectionRecipeCreateRequest,
     DatasetUpdateRequest,
@@ -126,6 +128,56 @@ async def add_member(
 ) -> DatasetMember:
     """Add a capture, allocating the next never-before-issued display_index."""
     return service.add_member(dataset_id, body.capture_id)
+
+
+@router.post(
+    "/{dataset_id}/membership-bulk-runs",
+    response_model=DatasetMembershipBulkRun,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def start_membership_bulk_run(
+    dataset_id: str,
+    body: DatasetMembershipBulkRunCreateRequest,
+    background: BackgroundTasks,
+    service: DatasetService = Depends(get_dataset_service),
+) -> DatasetMembershipBulkRun:
+    """Start an idempotent server-side add from a frozen capture selection."""
+    run = service.start_membership_bulk_run(
+        dataset_id, selection_id=body.selection_id, request_id=body.request_id
+    )
+    if run.state == "pending":
+        background.add_task(service.run_membership_bulk, run.run_id)
+    return run
+
+
+@router.get(
+    "/{dataset_id}/membership-bulk-runs/{run_id}",
+    response_model=DatasetMembershipBulkRun,
+)
+def get_membership_bulk_run(
+    dataset_id: str,
+    run_id: str,
+    service: DatasetService = Depends(get_dataset_service),
+) -> DatasetMembershipBulkRun:
+    return service.get_membership_bulk_run(dataset_id, run_id)
+
+
+@router.post(
+    "/{dataset_id}/membership-bulk-runs/{run_id}/retry",
+    response_model=DatasetMembershipBulkRun,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_membership_bulk_run(
+    dataset_id: str,
+    run_id: str,
+    background: BackgroundTasks,
+    service: DatasetService = Depends(get_dataset_service),
+) -> DatasetMembershipBulkRun:
+    """Retry only previously refused frozen IDs; successes are never replayed."""
+    run = service.retry_membership_bulk_run(dataset_id, run_id)
+    if run.state == "pending":
+        background.add_task(service.run_membership_bulk, run.run_id)
+    return run
 
 
 @router.delete("/{dataset_id}/members/{membership_id}", status_code=204)

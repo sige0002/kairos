@@ -37,7 +37,13 @@ import {
 import type { CaptureListItem } from '../../api/types';
 import type { DatasetsState } from './useDatasetsState';
 
-function CandidateRow({ capture, state }: { capture: CaptureListItem; state: DatasetsState }) {
+function CandidateRow({
+  capture,
+  state,
+}: {
+  capture: CaptureListItem;
+  state: DatasetsState;
+}) {
   const adding = state.addingCaptureId === capture.capture_id;
   const memberships = capture.memberships ?? [];
   // A frozen dataset (§6.x) cannot take members any more than no dataset can —
@@ -140,19 +146,29 @@ export function BuildRail({ state }: { state: DatasetsState }) {
 
       <div className="shrink-0 border-b border-gray-100 px-[18px] py-[13px]">
         {target && state.isDatasetFrozen(target.dataset.dataset_id) ? (
-          <p data-testid="build-target-frozen" className="break-words text-[12.5px] leading-relaxed text-gray-500">
-            <span className="font-semibold text-gray-800">{target.dataset.name}</span> is{' '}
-            {target.dataset.status} — its member set is frozen and takes no more
+          <p
+            data-testid="build-target-frozen"
+            className="break-words text-[12.5px] leading-relaxed text-gray-500"
+          >
+            <span className="font-semibold text-gray-800">{target.dataset.name}</span>{' '}
+            is {target.dataset.status} — its member set is frozen and takes no more
             recordings. Select an active dataset to keep building.
           </p>
         ) : target ? (
-          <p data-testid="build-target" className="break-words text-[12.5px] leading-relaxed text-gray-600">
-            Adding to <span className="font-semibold text-gray-900">{target.dataset.name}</span> —{' '}
+          <p
+            data-testid="build-target"
+            className="break-words text-[12.5px] leading-relaxed text-gray-600"
+          >
+            Adding to{' '}
+            <span className="font-semibold text-gray-900">{target.dataset.name}</span> —{' '}
             {memberCount(target.dataset.member_count)}. Each recording gets the next
             number, and a number retired by a removal is never handed out again.
           </p>
         ) : (
-          <p data-testid="build-no-target" className="text-[12.5px] leading-relaxed text-gray-500">
+          <p
+            data-testid="build-no-target"
+            className="text-[12.5px] leading-relaxed text-gray-500"
+          >
             Select a dataset on the left (or create one) to add recordings to it.
           </p>
         )}
@@ -169,8 +185,8 @@ export function BuildRail({ state }: { state: DatasetsState }) {
             className="text-[11px] leading-relaxed text-amber-700"
           >
             {state.unresolvedLegacyConditionCount} legacy recording
-            {state.unresolvedLegacyConditionCount === 1 ? '' : 's'} could not be evaluated
-            and will not be included.
+            {state.unresolvedLegacyConditionCount === 1 ? '' : 's'} could not be
+            evaluated and will not be included.
           </p>
         )}
         <button
@@ -180,23 +196,48 @@ export function BuildRail({ state }: { state: DatasetsState }) {
           disabled={
             !target ||
             state.isDatasetFrozen(target.dataset.dataset_id) ||
-            state.bulkAddAvailableCount === 0 ||
             state.addingCaptureId !== null ||
             state.bulkAddBusy
           }
           className="w-full cursor-pointer rounded-control bg-teal-700 px-3 py-2 text-[12px] font-bold text-white shadow-btn transition-colors hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
         >
-          {state.bulkAddAvailableCount === 0
-            ? 'No available matches'
-            : state.candidateConditions.length > 0
-              ? `Add ${state.bulkAddAvailableCount} match${state.bulkAddAvailableCount === 1 ? '' : 'es'}`
-              : `Add all ${state.bulkAddAvailableCount} available`}
+          Check matching recordings
         </button>
       </div>
 
-      <div data-testid="dataset-candidates" className="min-h-0 flex-1 overflow-y-auto px-[14px] py-2.5">
+      <div
+        data-testid="dataset-candidates"
+        className="min-h-0 flex-1 overflow-y-auto px-[14px] py-2.5"
+      >
+        <div
+          data-testid="dataset-candidate-pagination"
+          className="mb-2 flex items-center gap-2 px-1 text-[11px] text-gray-500"
+        >
+          <button
+            type="button"
+            data-testid="dataset-candidates-previous"
+            onClick={state.previousCandidatePage}
+            disabled={!state.canPreviousCandidatePage}
+            className="rounded-chip border border-gray-200 px-2 py-0.5 font-semibold hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Previous
+          </button>
+          <span aria-live="polite">Page {state.candidatePage}</span>
+          <button
+            type="button"
+            data-testid="dataset-candidates-next"
+            onClick={state.nextCandidatePage}
+            disabled={!state.canNextCandidatePage}
+            className="rounded-chip border border-gray-200 px-2 py-0.5 font-semibold hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+          </button>
+        </div>
         {state.candidates.length === 0 ? (
-          <p data-testid="dataset-candidates-empty" className="px-1 py-3 text-[12.5px] text-gray-500">
+          <p
+            data-testid="dataset-candidates-empty"
+            className="px-1 py-3 text-[12.5px] text-gray-500"
+          >
             {state.candidateConditions.some(
               (condition) =>
                 condition.field === 'condition' || condition.field === 'any',
@@ -204,8 +245,7 @@ export function BuildRail({ state }: { state: DatasetsState }) {
               ? 'Loading legacy recording conditions… Snapshot matches remain available.'
               : state.candidateConditions.some(
                     (condition) =>
-                      condition.field === 'condition' ||
-                      condition.field === 'any',
+                      condition.field === 'condition' || condition.field === 'any',
                   ) && state.conditionFilterStatus === 'error'
                 ? 'Some legacy recording conditions could not be loaded. Snapshot matches remain available.'
                 : state.candidateConditions.length > 0
@@ -220,7 +260,10 @@ export function BuildRail({ state }: { state: DatasetsState }) {
               <CandidateRow key={capture.capture_id} capture={capture} state={state} />
             ))}
             {hidden > 0 && (
-              <span data-testid="dataset-candidates-more" className="px-1 py-1 text-[11px] text-gray-500">
+              <span
+                data-testid="dataset-candidates-more"
+                className="px-1 py-1 text-[11px] text-gray-500"
+              >
                 {hidden} more match — narrow the search to reach them.
               </span>
             )}
@@ -234,9 +277,9 @@ export function BuildRail({ state }: { state: DatasetsState }) {
             data-testid="catalog-truncated"
             className="mt-1.5 rounded-control border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800"
           >
-            This is not the whole catalog — there are more recordings than one
-            sweep fetches, so the oldest are not listed here and are not
-            included in bulk add.
+            This is page {state.candidatePage}, not the whole catalog. Use Next to
+            inspect older recordings; Bulk Add asks the server to evaluate and freeze
+            the full current filter before it changes membership.
           </p>
         )}
         {state.blockedCandidateCount > 0 && (
@@ -258,8 +301,8 @@ export function BuildRail({ state }: { state: DatasetsState }) {
         data-testid="views-note"
         className="shrink-0 border-t border-gray-100 px-[18px] py-[11px] text-[11px] leading-relaxed text-gray-500"
       >
-        The browsable views/ tree is regenerated by the server after every change
-        here. There is nothing to refresh from this screen.
+        The browsable views/ tree is regenerated by the server after every change here.
+        There is nothing to refresh from this screen.
       </p>
 
       <ArchiveDialog state={state} />

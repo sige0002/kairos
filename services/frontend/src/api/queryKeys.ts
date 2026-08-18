@@ -22,6 +22,8 @@ export const queryKeys = {
   // follow-the-cursor sweep) without colliding with a plain list.
   captures: ['captures'] as const,
   captureList: (scope: string) => ['captures', 'list', scope] as const,
+  captureSearch: (scope: string, query: unknown) =>
+    ['captures', 'search', scope, query] as const,
   capture: (id: string) => ['captures', 'detail', id] as const,
   pipelines: ['pipelines'] as const,
   validationPresets: ['validation', 'presets'] as const,
@@ -32,6 +34,10 @@ export const queryKeys = {
   // Logical datasets (§6): identity is dataset_id, never a directory string.
   datasets: ['datasets'] as const,
   dataset: (datasetId: string) => ['datasets', 'detail', datasetId] as const,
+  datasetMembershipBulkRun: (datasetId: string, runId: string) =>
+    ['datasets', datasetId, 'membership-bulk-runs', runId] as const,
+  validationRuns: ['validation', 'runs'] as const,
+  validationRun: (runId: string) => ['validation', 'runs', runId] as const,
   // The archive run's progress (§6.x). Its own key, not dataset(id): it is
   // polled every second while a run executes, and invalidating the detail
   // subtree at that rate would rerender the whole screen once a second.

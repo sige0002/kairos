@@ -40,7 +40,7 @@ from dora_runner.models import JobResult, JobStatus, ValidationTemplate
 
 # Bumped whenever the schema changes in a non-additive way; recorded via
 # ``PRAGMA user_version``. Version 2 keys jobs by capture_id (§10.5).
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -52,14 +52,18 @@ CREATE TABLE IF NOT EXISTS jobs (
     pipeline   TEXT NOT NULL,
     -- The job's params (JSON): makes the persisted row self-describing.
     params     TEXT NOT NULL DEFAULT '{}',
+    idempotency_key TEXT UNIQUE,
     state      TEXT NOT NULL,
     progress   REAL NOT NULL DEFAULT 0,
+    execution_active INTEGER NOT NULL DEFAULT 0,
     logs_tail  TEXT NOT NULL DEFAULT '[]',
     result     TEXT,
     created_at TEXT,
     updated_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_jobs_seq ON jobs (seq DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jobs_idempotency_key
+    ON jobs (idempotency_key) WHERE idempotency_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS validation_templates (
     seq             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,6 +107,8 @@ class JobRecord:
     progress: float = 0.0
     logs_tail: list[str] = field(default_factory=list)
     result: JobResult | None = None
+    idempotency_key: str | None = None
+    execution_active: bool = False
     task: asyncio.Task[None] | None = None
     # Cooperative cancellation: cancel of a RUNNING job sets this event (a
     # ``threading.Event`` because the heavy work runs in a threadpool or a
@@ -122,6 +128,7 @@ class JobRecord:
             progress=self.progress,
             logs_tail=self.logs_tail[-50:],
             cancel_requested=self.cancel_requested,
+            execution_active=self.execution_active,
         )
 
 
@@ -181,8 +188,19 @@ class RunnerStore:
         orchestrator refills (it injects the full template object into a job's
         params), and it has not changed shape.
         """
-        if user_version(conn) < _SCHEMA_VERSION:
+        if user_version(conn) < 2:
             conn.execute("DROP TABLE IF EXISTS jobs")
+            return
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(jobs)").fetchall()
+        }
+        if "idempotency_key" not in columns:
+            conn.execute("ALTER TABLE jobs ADD COLUMN idempotency_key TEXT")
+        if "execution_active" not in columns:
+            conn.execute(
+                "ALTER TABLE jobs ADD COLUMN execution_active "
+                "INTEGER NOT NULL DEFAULT 0"
+            )
 
     def _conn(self) -> AbstractContextManager[sqlite3.Connection]:
         """Yield a connection under the lock, committing on success."""
@@ -210,12 +228,14 @@ class RunnerStore:
             conn.execute(
                 """
                 INSERT INTO jobs
-                    (job_id, capture_id, pipeline, params, state, progress,
-                     logs_tail, result, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (job_id, capture_id, pipeline, params, idempotency_key, state,
+                     progress, execution_active, logs_tail, result, created_at,
+                     updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     state = excluded.state,
                     progress = excluded.progress,
+                    execution_active = excluded.execution_active,
                     logs_tail = excluded.logs_tail,
                     result = COALESCE(excluded.result, jobs.result),
                     updated_at = excluded.updated_at
@@ -225,8 +245,10 @@ class RunnerStore:
                     job.capture_id,
                     job.pipeline,
                     json.dumps(job.params),
+                    job.idempotency_key,
                     job.state.value,
                     job.progress,
+                    int(job.execution_active),
                     json.dumps(job.logs_tail),
                     result_json,
                     now,
@@ -254,6 +276,33 @@ class RunnerStore:
             state=JobState(row["state"]),
             progress=float(row["progress"]),
             logs_tail=logs[-50:],
+            execution_active=bool(row["execution_active"]),
+        )
+
+    def get_job_by_idempotency_key(self, key: str) -> JobRecord | None:
+        """Return the durable submission record for one idempotency key."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT * FROM jobs WHERE idempotency_key = ?", (key,)
+            ).fetchone()
+        if row is None:
+            return None
+        result = (
+            JobResult.model_validate(json.loads(row["result"]))
+            if row["result"]
+            else None
+        )
+        return JobRecord(
+            job_id=row["job_id"],
+            capture_id=row["capture_id"],
+            pipeline=row["pipeline"],
+            params=json.loads(row["params"]) if row["params"] else {},
+            idempotency_key=row["idempotency_key"],
+            state=JobState(row["state"]),
+            progress=float(row["progress"]),
+            execution_active=bool(row["execution_active"]),
+            logs_tail=json.loads(row["logs_tail"]) if row["logs_tail"] else [],
+            result=result,
         )
 
     def get_persisted_result(self, job_id: str) -> JobResult | None:
@@ -267,7 +316,7 @@ class RunnerStore:
         return JobResult.model_validate(json.loads(row["result"]))
 
     def reconcile_interrupted_jobs(self) -> int:
-        """Fail any job left ``queued``/``running`` by a previous process.
+        """Resolve work that a previous process still marked active.
 
         In-flight execution does not survive a restart (state is persisted, work is
         not), so an orphaned row is resolved to a terminal ``failed`` state carrying
@@ -278,17 +327,28 @@ class RunnerStore:
         result_json = json.dumps({"summary": _INTERRUPTED_SUMMARY, "artifacts": []})
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT job_id, logs_tail FROM jobs "
-                "WHERE state IN ('queued', 'running')"
+                "SELECT job_id, state, logs_tail FROM jobs "
+                "WHERE state IN ('queued', 'running') OR execution_active = 1"
             ).fetchall()
             for row in rows:
+                if row["state"] not in ("queued", "running"):
+                    # A timeout/cancel grace period can label a job terminal
+                    # while its non-cooperative worker is still alive. A
+                    # process restart proves that worker is now gone; preserve
+                    # the terminal verdict/result and clear only this fact.
+                    conn.execute(
+                        "UPDATE jobs SET execution_active = 0, updated_at = ? "
+                        "WHERE job_id = ?",
+                        (now, row["job_id"]),
+                    )
+                    continue
                 logs = json.loads(row["logs_tail"]) if row["logs_tail"] else []
                 logs.append(_INTERRUPTED_MESSAGE)
                 conn.execute(
                     """
                     UPDATE jobs
                     SET state = ?, progress = 1.0, logs_tail = ?, result = ?,
-                        updated_at = ?
+                        execution_active = 0, updated_at = ?
                     WHERE job_id = ?
                     """,
                     (

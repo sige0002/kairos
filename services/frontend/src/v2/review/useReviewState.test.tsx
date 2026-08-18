@@ -15,7 +15,9 @@ function wrapper({ children }: { children: ReactNode }) {
   return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
 }
 
-function capture(partial: Partial<CaptureListItem> & { capture_id: string }): CaptureListItem {
+function capture(
+  partial: Partial<CaptureListItem> & { capture_id: string },
+): CaptureListItem {
   return {
     state: 'completed',
     review_status: 'pending',
@@ -23,6 +25,21 @@ function capture(partial: Partial<CaptureListItem> & { capture_id: string }): Ca
     replica: { instance_id: 'inst', state: 'present_verified' },
     digest_state: 'complete',
     ...partial,
+  };
+}
+
+function collectionContext(condition: string) {
+  return {
+    batch_id: null,
+    batch_seq: null,
+    project_id: null,
+    task_id: null,
+    condition_id: null,
+    project: null,
+    task: null,
+    condition,
+    robot: null,
+    operator: null,
   };
 }
 
@@ -65,6 +82,7 @@ function mockServer(initial: CaptureListItem[], options: ServerOptions = {}) {
   const reviewCalls: { captureId: string; body: Record<string, unknown> }[] = [];
   const deleteCalls: { captureId: string; body: Record<string, unknown> }[] = [];
   const pullCalls: string[] = [];
+  const searchCalls: Record<string, unknown>[] = [];
   const heldReviews: (() => void)[] = [];
   // The caller's own object, NOT a copy: tests below mutate the map they passed
   // in to stop refusing partway through a run, and a copy would quietly ignore
@@ -122,6 +140,70 @@ function mockServer(initial: CaptureListItem[], options: ServerOptions = {}) {
       return Promise.resolve(jsonResponse({}, 200));
     }
 
+    if (method === 'POST' && url.endsWith('/captures/search')) {
+      searchCalls.push(body);
+      const query = (body.query ?? {}) as {
+        predicates?: { field?: string; operator?: string; value?: string }[];
+        started_from?: string | null;
+        started_to?: string | null;
+      };
+      const matches = (
+        item: CaptureListItem,
+        predicate: { field?: string; operator?: string; value?: string },
+      ) => {
+        const value = predicate.value ?? '';
+        const fieldValue = (field: string) => {
+          if (field === 'condition') return item.collection_context?.condition ?? '';
+          if (field === 'batch_id') return item.batch_id ?? '';
+          return String(item[field as keyof CaptureListItem] ?? '');
+        };
+        if (predicate.field === 'any') {
+          return Object.values(item)
+            .join(' ')
+            .toLocaleLowerCase()
+            .includes(value.toLocaleLowerCase());
+        }
+        const actual = fieldValue(predicate.field ?? '');
+        return predicate.operator === 'contains'
+          ? actual.toLocaleLowerCase().includes(value.toLocaleLowerCase())
+          : actual === value;
+      };
+      const matched = items.filter((item) => {
+        const started = item.started_at ?? '';
+        return (
+          (query.predicates ?? []).every((predicate) => matches(item, predicate)) &&
+          (!query.started_from || started >= query.started_from) &&
+          (!query.started_to || started < query.started_to)
+        );
+      });
+      const facet = (field: 'operator' | 'condition' | 'quality' | 'task_result') => {
+        const values = new Map<string, number>();
+        for (const item of matched) {
+          const value =
+            field === 'condition' ? item.collection_context?.condition : item[field];
+          if (value) values.set(String(value), (values.get(String(value)) ?? 0) + 1);
+        }
+        return {
+          values: [...values].map(([value, count]) => ({ value, count })),
+          other_count: 0,
+          truncated: false,
+        };
+      };
+      return Promise.resolve(
+        jsonResponse({
+          items: matched,
+          next_cursor: options.capturesNeverEnd ? 'more' : null,
+          total: matched.length,
+          facets: {
+            operator: facet('operator'),
+            condition: facet('condition'),
+            quality: facet('quality'),
+            task_result: facet('task_result'),
+          },
+        }),
+      );
+    }
+
     const detail = url.match(/\/captures\/([^/?]+)$/);
     if (method === 'GET' && detail) {
       const id = decodeURIComponent(detail[1]!);
@@ -156,6 +238,7 @@ function mockServer(initial: CaptureListItem[], options: ServerOptions = {}) {
     reviewCalls,
     deleteCalls,
     pullCalls,
+    searchCalls,
     items: () => items,
     /** Change what the server stores, with no client call involved — another
      *  terminal's save, seen by this one only on the next sweep. */
@@ -191,6 +274,7 @@ async function renderReview() {
 beforeEach(() => {
   setApiBase('/api/v1');
   setSplitMode(false);
+  history.replaceState({}, '', '/?tab=review');
 });
 
 afterEach(() => {
@@ -207,6 +291,22 @@ test('captures load into rows keyed by capture_id', async () => {
   expect(result.current.operatorOptions).toEqual(['ana', 'bo']);
 });
 
+test('keeps deep-linked facet values selectable when a limited facet omits them', async () => {
+  history.replaceState({}, '', '/?tab=review&operator=remote&condition=rare');
+  mockServer([
+    capture({
+      capture_id: 'c1',
+      operator: 'ana',
+      collection_context: collectionContext('left'),
+    }),
+  ]);
+
+  const { result } = await renderReview();
+
+  expect(result.current.operatorOptions).toContain('remote');
+  expect(result.current.conditionOptions).toContain('rare');
+});
+
 test('a quality edit sends base_revision and lands', async () => {
   const server = mockServer([capture({ capture_id: 'c1', review_revision: 2 })]);
   const { result } = await renderReview();
@@ -221,7 +321,9 @@ test('a quality edit sends base_revision and lands', async () => {
     quality_source: 'operator',
   });
   await waitFor(() =>
-    expect(result.current.rows.find((r) => r.captureId === 'c1')!.reviewRevision).toBe(3),
+    expect(result.current.rows.find((r) => r.captureId === 'c1')!.reviewRevision).toBe(
+      3,
+    ),
   );
 });
 
@@ -312,7 +414,10 @@ test('excluding saves review_status excluded and moves the row out of the defaul
   await waitFor(() => expect(result.current.nExcluded).toBe(1));
   expect(result.current.rows).toHaveLength(0);
   // Named without an episode number, and offered back.
-  expect(result.current.excludeUndo).toMatchObject({ captureId: 'c1', subject: 'run_a' });
+  expect(result.current.excludeUndo).toMatchObject({
+    captureId: 'c1',
+    subject: 'run_a',
+  });
   act(() => result.current.toggleExcluded());
   expect(result.current.rows).toHaveLength(1);
 });
@@ -410,13 +515,18 @@ test('a bulk removal reports each failure by id and keeps going', async () => {
 });
 
 test('the retention banner is advisory: it filters and never deletes', async () => {
-  const server = mockServer([capture({ capture_id: 'c1' }), capture({ capture_id: 'c2' })], {
-    retention: {
-      days: 30,
-      candidates: [{ capture_id: 'c1', state: 'completed', review_status: 'pending' }],
-      total_bytes: 2_048,
+  const server = mockServer(
+    [capture({ capture_id: 'c1' }), capture({ capture_id: 'c2' })],
+    {
+      retention: {
+        days: 30,
+        candidates: [
+          { capture_id: 'c1', state: 'completed', review_status: 'pending' },
+        ],
+        total_bytes: 2_048,
+      },
     },
-  });
+  );
   const { result } = await renderReview();
   await waitFor(() => expect(result.current.showRetentionBanner).toBe(true));
   expect(result.current.retentionCandidateCount).toBe(1);
@@ -482,9 +592,24 @@ test('search finds a row by capture_id as well as by run_id', async () => {
 
 function batchOf3(status: 'pending' | 'excluded') {
   return [
-    capture({ capture_id: 'c1', run_id: 'run_1', batch_id: 'b1', review_status: status }),
-    capture({ capture_id: 'c2', run_id: 'run_2', batch_id: 'b1', review_status: status }),
-    capture({ capture_id: 'c3', run_id: 'run_3', batch_id: 'b1', review_status: status }),
+    capture({
+      capture_id: 'c1',
+      run_id: 'run_1',
+      batch_id: 'b1',
+      review_status: status,
+    }),
+    capture({
+      capture_id: 'c2',
+      run_id: 'run_2',
+      batch_id: 'b1',
+      review_status: status,
+    }),
+    capture({
+      capture_id: 'c3',
+      run_id: 'run_3',
+      batch_id: 'b1',
+      review_status: status,
+    }),
   ];
 }
 
@@ -537,7 +662,9 @@ test('a batch exclude names the members it could not exclude', async () => {
 });
 
 test('a batch return to review names the members it could not return', async () => {
-  const server = mockServer(batchOf3('excluded'), { reviewErrors: { c2: SIDECAR_500 } });
+  const server = mockServer(batchOf3('excluded'), {
+    reviewErrors: { c2: SIDECAR_500 },
+  });
   const { result } = await renderReview();
   act(() => result.current.toggleBatchFilter('b1'));
   await waitFor(() => expect(result.current.batchExcluded).toHaveLength(3));
@@ -826,7 +953,9 @@ test('a bulk run reports a member it stepped over, and does not call it a failur
   await waitFor(() => expect(result.current.excludeBatchRunning).toBe(false));
 
   expect(server.reviewCalls.map((c) => c.captureId)).toEqual(['c1', 'c2', 'c3']);
-  const skipped = result.current.excludeBatchFailures.find((f) => f.captureId === 'c1')!;
+  const skipped = result.current.excludeBatchFailures.find(
+    (f) => f.captureId === 'c1',
+  )!;
   expect(skipped).toBeDefined();
   expect(skipped.error).toMatch(/still being written/);
   expect(skipped.error).not.toMatch(/save failed/);
@@ -963,6 +1092,44 @@ test('a banner names its capture even when the filters have hidden it', async ()
   expect(result.current.captureSubject('c1')).toBe('Episode #1');
 });
 
+test('sends UTC calendar-day bounds and server predicates for Review filters', async () => {
+  const server = mockServer([
+    capture({
+      capture_id: 'c1',
+      operator: 'ana',
+      collection_context: collectionContext('left'),
+      started_at: '2026-08-01T12:00:00.000Z',
+    }),
+  ]);
+  const { result } = await renderReview();
+
+  act(() => {
+    result.current.setSearch('pick');
+    result.current.setOperatorFilter('ana');
+    result.current.setConditionFilter('left');
+    result.current.setQualityFilter('good');
+    result.current.setResultFilter('failure');
+    result.current.setStartedFrom('2026-08-01');
+    result.current.setStartedTo('2026-08-01');
+  });
+
+  await waitFor(() =>
+    expect(server.searchCalls.at(-1)).toMatchObject({
+      query: {
+        predicates: [
+          { field: 'any', operator: 'contains', value: 'pick' },
+          { field: 'operator', operator: 'equals', value: 'ana' },
+          { field: 'quality', operator: 'equals', value: 'good' },
+          { field: 'task_result', operator: 'equals', value: 'failure' },
+          { field: 'condition', operator: 'equals', value: 'left' },
+        ],
+        started_from: '2026-08-01T00:00:00.000Z',
+        started_to: '2026-08-02T00:00:00.000Z',
+      },
+    }),
+  );
+});
+
 test('a displaced failure notice loses the reason, not the fact', async () => {
   // `conflict` and `failure` are one slot each, not lists, so a second failure
   // displaces the first. That became reachable when banners started outliving
@@ -1007,19 +1174,31 @@ test('a displaced failure notice loses the reason, not the fact', async () => {
   expect(result.current.nNeedsCheck).toBe(2);
 });
 
-// ---- the catalog sweep's own limit ---------------------------------------
-// Review's rows, its lane counts and its bulk sets all come from one cursor
-// sweep that gives up after MAX_PAGES. When it does, every one of those is a
-// number about what was fetched, presented as a number about the catalog — so
-// the state has to carry the fact, not just the rows (E-27).
+// ---- server page boundaries ----------------------------------------------
 
-test('a sweep that stops short of the end of the catalog is reported', async () => {
+test('a server page with a next cursor reports its bounded scope', async () => {
   mockServer([capture({ capture_id: 'c1' })], { capturesNeverEnd: true });
   const { result } = await renderReview();
 
   expect(result.current.catalogTruncated).toBe(true);
   // The rows it did fetch are still usable — this is a caveat, not an error.
   expect(result.current.rows.length).toBeGreaterThan(0);
+});
+
+test('follows and pops the server cursor stack', async () => {
+  const server = mockServer([capture({ capture_id: 'c1' })], {
+    capturesNeverEnd: true,
+  });
+  const { result } = await renderReview();
+
+  expect(result.current.hasPreviousPage).toBe(false);
+  act(() => result.current.nextPage());
+  await waitFor(() => expect(result.current.hasPreviousPage).toBe(true));
+  expect(server.searchCalls.at(-1)).toMatchObject({ cursor: 'more' });
+
+  act(() => result.current.previousPage());
+  await waitFor(() => expect(result.current.hasPreviousPage).toBe(false));
+  expect(window.location.search).not.toContain('cursor=');
 });
 
 test('a catalog that fits reports nothing — the flag is not decoration', async () => {
@@ -1293,7 +1472,6 @@ test('adopting the capture instead retires the offer — no silent demotion', as
   expect(
     result.current.rows.find((r) => r.captureId === 'c1')!.effectiveReviewStatus,
   ).toBe('adopted');
-
 });
 
 test('adopting DISCARDS the memo, so a later exclusion cannot resurrect it', async () => {

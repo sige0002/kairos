@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -46,11 +48,17 @@ from api_orchestrator.models import (
     Dataset,
     DatasetDetail,
     DatasetMember,
+    DatasetMembershipBulkFailure,
+    DatasetMembershipBulkRun,
     DatasetSelectionRecipe,
     DatasetSelectionRecipeCreateRequest,
     DatasetUpdateRequest,
 )
-from api_orchestrator.store import CaptureStore, DatasetMemberExistsError
+from api_orchestrator.store import (
+    CaptureStore,
+    DatasetMemberExistsError,
+    DatasetNotActiveError,
+)
 from api_orchestrator.verdict import (
     GATING_PIPELINES,
     Verdict,
@@ -123,6 +131,13 @@ class DatasetService:
         self._layout = layout
         self._instance_id = instance_id
         self._on_change = on_change
+        self._bulk_guard = threading.Lock()
+        self._bulk_idle = threading.Condition(self._bulk_guard)
+        self._bulk_running: set[str] = set()
+        self._bulk_resuming = 0
+        # Clear on construction: a newly started API process may resume
+        # durable work. Shutdown sets this cooperatively before waiting.
+        self._bulk_stop = threading.Event()
 
     def _verdict_of(self, capture_id: str) -> Verdict:
         """Read the gating pipelines' reports and fold them (see verdict.py).
@@ -275,13 +290,18 @@ class DatasetService:
         return _dataset(row, member_count=len(members))
 
     def record_selection(
-        self, dataset_id: str, request: DatasetSelectionRecipeCreateRequest
+        self,
+        dataset_id: str,
+        request: DatasetSelectionRecipeCreateRequest,
+        *,
+        allow_inactive: bool = False,
     ) -> DatasetSelectionRecipe:
         """Persist one completed filtered Bulk Add run without changing members."""
         dataset = self._store.get_dataset(dataset_id)
         if dataset is None:
             raise _not_found(dataset_id)
-        self._require_active(dataset)
+        if not allow_inactive:
+            self._require_active(dataset)
         recipe = DatasetSelectionRecipe(
             **request.model_dump(),
             recipe_id=str(uuid4()),
@@ -348,7 +368,15 @@ class DatasetService:
         self._store.delete_dataset(dataset_id)
         self._views_changed()
 
-    def add_member(self, dataset_id: str, capture_id: str) -> DatasetMember:
+    def add_member(
+        self,
+        dataset_id: str,
+        capture_id: str,
+        *,
+        refresh_views: bool = True,
+        reclaim_index: int | None = None,
+        reclaim_index_known: bool = False,
+    ) -> DatasetMember:
         """Add a capture to a dataset, allocating the next unused number."""
         dataset = self._store.get_dataset(dataset_id)
         if dataset is None:
@@ -424,8 +452,19 @@ class DatasetService:
             member = self._store.add_dataset_member(
                 dataset_id,
                 capture_id,
-                display_index=self._reclaimable_index(dataset_id, capture_id),
+                display_index=(
+                    reclaim_index
+                    if reclaim_index_known
+                    else self._reclaimable_index(dataset_id, capture_id)
+                ),
             )
+        except DatasetNotActiveError as exc:
+            raise ApiError(
+                status_code=409,
+                code="dataset_not_active",
+                message="The dataset became frozen before this member was added.",
+                details={"dataset_id": dataset_id, "status": exc.status},
+            ) from exc
         except DatasetMemberExistsError as exc:
             raise ApiError(
                 status_code=409,
@@ -453,10 +492,352 @@ class DatasetService:
             # Undo the membership, but NOT the high-water mark: the number was
             # issued, and re-issuing it after a failure is exactly the reuse
             # §6 forbids.
-            self._store.remove_dataset_member(dataset_id, member.membership_id)
+            current = self._store.get_dataset(dataset_id)
+            if current is not None and current["status"] == "active":
+                self._store.remove_dataset_member(dataset_id, member.membership_id)
             raise
-        self._views_changed()
+        if refresh_views:
+            self._views_changed()
         return member
+
+    def start_membership_bulk_run(
+        self, dataset_id: str, *, selection_id: str, request_id: str
+    ) -> DatasetMembershipBulkRun:
+        """Create an idempotent run whose items are frozen selection IDs."""
+        dataset = self._store.get_dataset(dataset_id)
+        if dataset is None:
+            raise _not_found(dataset_id)
+        self._require_active(dataset)
+        try:
+            row = self._store.create_membership_bulk_run(
+                dataset_id, selection_id, request_id
+            )
+        except ValueError as exc:
+            raise ApiError(
+                status_code=409,
+                code="idempotency_conflict",
+                message="request_id was already used for another selection.",
+                details={"request_id": request_id},
+            ) from exc
+        except KeyError as exc:
+            raise ApiError(
+                status_code=409,
+                code="capture_selection_expired",
+                message="This capture selection expired; search again before adding.",
+                details={"selection_id": selection_id},
+            ) from exc
+        return self._bulk_run_model(row)
+
+    def run_membership_bulk(self, run_id: str, *, retry_failed: bool = False) -> None:
+        """Process frozen IDs one by one through the normal member gate.
+
+        The normal ``add_member`` path remains the authority for validation,
+        ledger append and display-index rules. A partial run is deliberate: its
+        successful rows are durable and retry only revisits refused IDs.
+        """
+        with self._bulk_idle:
+            if run_id in self._bulk_running:
+                return
+            self._bulk_running.add(run_id)
+        claimed = False
+        try:
+            if self._bulk_stop.is_set():
+                return
+            if not self._store.claim_membership_bulk_run(run_id):
+                return
+            claimed = True
+            run = self._store.get_membership_bulk_run(run_id)
+            if run is None:
+                return
+            changed = False
+            capture_ids = self._store.pending_membership_bulk_capture_ids(
+                run_id, retry_failed=retry_failed
+            )
+            # Looking up a reclaimed index by rescanning lifecycle.jsonl for
+            # every capture turns a 100k bulk run into quadratic I/O. Read the
+            # ledger once for this frozen pass; an absent key deliberately
+            # means "allocate a fresh number" and must not trigger another
+            # scan in add_member.
+            reclaimed = self._reclaimable_indexes(str(run["dataset_id"]), capture_ids)
+            for capture_id in capture_ids:
+                if self._bulk_stop.is_set():
+                    # Do not turn unvisited rows into failures. Their pending
+                    # state and the released run make them restart-safe.
+                    if changed:
+                        self._views_changed()
+                    self._store.release_membership_bulk_run(run_id)
+                    claimed = False
+                    return
+                try:
+                    self.add_member(
+                        str(run["dataset_id"]),
+                        capture_id,
+                        refresh_views=False,
+                        reclaim_index=reclaimed.get(capture_id),
+                        reclaim_index_known=True,
+                    )
+                except ApiError as exc:
+                    if exc.code == "dataset_member_exists":
+                        # The process may have died after add_member committed
+                        # its ledger line but before this work-item receipt was
+                        # marked. The selected desired state is already true;
+                        # classify the retry as success rather than inventing a
+                        # partial failure for a member that is visibly present.
+                        try:
+                            self._ensure_bulk_member_ledger(
+                                str(run["dataset_id"]), capture_id
+                            )
+                        except ApiError as repair_error:
+                            self._store.mark_membership_bulk_item(
+                                run_id,
+                                capture_id,
+                                success=False,
+                                code=repair_error.code,
+                                message=repair_error.message,
+                            )
+                        else:
+                            self._store.mark_membership_bulk_item(
+                                run_id, capture_id, success=True
+                            )
+                            changed = True
+                    else:
+                        self._store.mark_membership_bulk_item(
+                            run_id,
+                            capture_id,
+                            success=False,
+                            code=exc.code,
+                            message=exc.message,
+                        )
+                else:
+                    self._store.mark_membership_bulk_item(
+                        run_id, capture_id, success=True
+                    )
+                    changed = True
+            if changed:
+                self._views_changed()
+            finished = self._store.finish_membership_bulk_run(run_id)
+            if finished is not None:
+                self._record_bulk_receipt(finished)
+        except Exception:  # noqa: BLE001 - preserve a retryable durable queue
+            logger.exception(
+                "membership bulk worker interrupted", extra={"run_id": run_id}
+            )
+            self._store.release_membership_bulk_run(run_id)
+            claimed = False
+        finally:
+            if claimed:
+                # A stop can arrive after the final item but before receipt
+                # bookkeeping. Returning the durable claim is safer than
+                # letting a closing process retain a running row.
+                self._store.release_membership_bulk_run(run_id)
+            with self._bulk_idle:
+                self._bulk_running.discard(run_id)
+                self._bulk_idle.notify_all()
+
+    def resume_pending_membership_bulk_runs(self) -> None:
+        """Continue work rows that survived a normal API-process restart."""
+        with self._bulk_idle:
+            self._bulk_resuming += 1
+        try:
+            if self._bulk_stop.is_set():
+                return
+            self._store.reset_running_membership_bulk_runs()
+            for run_id in self._store.pending_membership_bulk_runs():
+                if self._bulk_stop.is_set():
+                    return
+                self.run_membership_bulk(run_id)
+            # `finish_membership_bulk_run` and receipt append are intentionally
+            # separate durable steps: memberships must survive a receipt I/O
+            # failure. Close the crash window by replaying only that second
+            # step; never re-add successful members during startup recovery.
+            for run in self._store.membership_bulk_runs_needing_receipt():
+                if self._bulk_stop.is_set():
+                    return
+                self._record_bulk_receipt(run)
+        finally:
+            with self._bulk_idle:
+                self._bulk_resuming -= 1
+                self._bulk_idle.notify_all()
+
+    def request_stop(self) -> None:
+        """Ask background and resume workers to stop between member writes."""
+        self._bulk_stop.set()
+
+    def wait_idle(self, timeout: float | None = None) -> bool:
+        """Wait until every request/resume worker has released its DB claim."""
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._bulk_idle:
+            while self._bulk_running or self._bulk_resuming:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return False
+                self._bulk_idle.wait(remaining)
+        return True
+
+    def get_membership_bulk_run(
+        self, dataset_id: str, run_id: str
+    ) -> DatasetMembershipBulkRun:
+        run = self._store.get_membership_bulk_run(run_id)
+        if run is None or run["dataset_id"] != dataset_id:
+            raise ApiError(
+                status_code=404,
+                code="dataset_bulk_run_not_found",
+                message=f"No membership bulk run {run_id} for this dataset.",
+                details={"dataset_id": dataset_id, "run_id": run_id},
+            )
+        return self._bulk_run_model(run)
+
+    def retry_membership_bulk_run(
+        self, dataset_id: str, run_id: str
+    ) -> DatasetMembershipBulkRun:
+        run = self.get_membership_bulk_run(dataset_id, run_id)
+        if run.state == "completed":
+            return run
+        row = self._store.requeue_failed_membership_bulk_run(run_id)
+        if row is None:
+            raise ApiError(
+                status_code=409,
+                code="bulk_run_not_retryable",
+                message="This membership bulk run is already being processed.",
+                details={"dataset_id": dataset_id, "run_id": run_id},
+            )
+        return self._bulk_run_model(row)
+
+    def _bulk_run_model(self, row: dict[str, Any]) -> DatasetMembershipBulkRun:
+        failures = [
+            DatasetMembershipBulkFailure(**failure)
+            for failure in self._store.membership_bulk_failures(str(row["run_id"]))
+        ]
+        pending = max(
+            0, int(row["matched_count"]) - int(row["succeeded"]) - int(row["failed"])
+        )
+        return DatasetMembershipBulkRun(
+            run_id=str(row["run_id"]),
+            dataset_id=str(row["dataset_id"]),
+            selection_id=str(row["selection_id"]),
+            state=str(row["state"]),
+            matched_count=int(row["matched_count"]),
+            attempted=int(row["attempted"]),
+            succeeded=int(row["succeeded"]),
+            failed=int(row["failed"]),
+            pending=pending,
+            failures=failures,
+        )
+
+    def _record_bulk_receipt(self, run: dict[str, Any]) -> None:
+        """Persist one deduplicated, cumulative receipt for a completed pass."""
+        if run.get("receipt_state") == "recorded":
+            return
+        dataset = self._store.get_dataset(str(run["dataset_id"]))
+        existing = next(
+            (
+                recipe
+                for recipe in _selection_recipes(dataset or {})
+                if recipe.get("bulk_run_id") == run["run_id"]
+                and recipe.get("attempt") == run["attempt"]
+            ),
+            None,
+        )
+        if existing is not None:
+            try:
+                events = ledger_v2.dataset_events(self._layout.data_dir)
+                recorded = any(
+                    event.get("kind") == "dataset_selection_recorded"
+                    and event.get("dataset_id") == run["dataset_id"]
+                    and isinstance(event.get("recipe"), dict)
+                    and event["recipe"].get("bulk_run_id") == run["run_id"]
+                    and event["recipe"].get("attempt") == run["attempt"]
+                    for event in events
+                )
+                if not recorded:
+                    assert dataset is not None
+                    self._append(
+                        "dataset_selection_recorded",
+                        {
+                            "dataset_id": run["dataset_id"],
+                            "dataset_name": dataset["name"],
+                            "name": dataset["name"],
+                            "operator": dataset["operator"],
+                            "task": dataset["task"],
+                            "recipe": existing,
+                        },
+                    )
+            except (ApiError, ledger_v2.LedgerUnreadableError):
+                self._store.mark_membership_bulk_receipt_failed(str(run["run_id"]))
+            else:
+                self._store.mark_membership_bulk_receipt(str(run["run_id"]), "recorded")
+            return
+        query = self._store.membership_bulk_query(str(run["run_id"])) or {}
+        try:
+            self.record_selection(
+                str(run["dataset_id"]),
+                DatasetSelectionRecipeCreateRequest(
+                    join=query.get("join", "and"),
+                    conditions=query.get("predicates", []),
+                    selection_query=query,
+                    matched=int(run["matched_count"]),
+                    attempted=int(run["attempted"]),
+                    succeeded=int(run["succeeded"]),
+                    failed=int(run["failed"]),
+                    catalog_truncated=False,
+                    bulk_run_id=str(run["run_id"]),
+                    attempt=int(run["attempt"]),
+                    cumulative=True,
+                ),
+                # The membership pass was already committed before this
+                # separate receipt step. An archive between those steps must
+                # not make its provenance permanently unrecoverable.
+                allow_inactive=True,
+            )
+        except ApiError:
+            # Memberships already have their own ledger truth. Do not pretend
+            # the provenance receipt landed, and do not roll successful rows
+            # back merely because its append failed.
+            self._store.mark_membership_bulk_receipt_failed(str(run["run_id"]))
+        else:
+            self._store.mark_membership_bulk_receipt(str(run["run_id"]), "recorded")
+
+    def _ensure_bulk_member_ledger(self, dataset_id: str, capture_id: str) -> None:
+        """Repair the row-first crash window before calling an item successful."""
+        member = self._store.get_dataset_membership(dataset_id, capture_id)
+        dataset = self._store.get_dataset(dataset_id)
+        if member is None or dataset is None:
+            raise ApiError(
+                status_code=409,
+                code="dataset_member_missing",
+                message="The existing membership could not be re-read safely.",
+                details={"dataset_id": dataset_id, "capture_id": capture_id},
+            )
+        try:
+            events = ledger_v2.dataset_events(self._layout.data_dir)
+        except ledger_v2.LedgerUnreadableError as exc:
+            raise ApiError(
+                status_code=503,
+                code="ledger_unreadable",
+                message="The membership ledger could not be checked for recovery.",
+                details={"dataset_id": dataset_id, "capture_id": capture_id},
+            ) from exc
+        if any(
+            event.get("kind") == "dataset_member_added"
+            and event.get("dataset_id") == dataset_id
+            and event.get("capture_id") == capture_id
+            and event.get("membership_id") == member.membership_id
+            and event.get("display_index") == member.display_index
+            for event in events
+        ):
+            return
+        self._append(
+            "dataset_member_added",
+            {
+                "dataset_id": dataset_id,
+                "membership_id": member.membership_id,
+                "display_index": member.display_index,
+                "operator": dataset.get("operator"),
+                "task": dataset.get("task"),
+                "dataset_name": dataset.get("name"),
+            },
+            capture_id=capture_id,
+        )
 
     def remove_member(self, dataset_id: str, membership_id: str) -> None:
         """Remove one member. Its display_index stays retired forever."""
@@ -793,6 +1174,41 @@ class DatasetService:
                 if isinstance(index, int) and not isinstance(index, bool):
                     last = index
         return last
+
+    def _reclaimable_indexes(
+        self, dataset_id: str, capture_ids: list[str]
+    ) -> dict[str, int]:
+        """Return reusable numbers for a frozen bulk pass in one ledger read."""
+        wanted = set(capture_ids)
+        if not wanted:
+            return {}
+        try:
+            events = ledger_v2.dataset_events(self._layout.data_dir)
+        except ledger_v2.LedgerUnreadableError as exc:
+            path = ledger_v2.ledger_path(self._layout.data_dir)
+            raise ApiError(
+                status_code=503,
+                code="ledger_unreadable",
+                message=(
+                    f"The lifecycle ledger ({path}) could not be read. "
+                    "Repair or restore it before adding dataset members."
+                ),
+                details={"dataset_id": dataset_id},
+            ) from exc
+        result: dict[str, int] = {}
+        for event in events:
+            capture_id = event.get("capture_id")
+            index = event.get("display_index")
+            if (
+                event.get("dataset_id") == dataset_id
+                and event.get("kind") == "dataset_member_added"
+                and isinstance(capture_id, str)
+                and capture_id in wanted
+                and isinstance(index, int)
+                and not isinstance(index, bool)
+            ):
+                result[capture_id] = index
+        return result
 
     @staticmethod
     def _require_active(dataset: dict[str, Any]) -> None:

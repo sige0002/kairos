@@ -31,6 +31,7 @@ from api_orchestrator.store import (
     BatchExistsError,
     CaptureStore,
     DatasetMemberExistsError,
+    DatasetNotActiveError,
     PlanCatalogConflictError,
 )
 from kairos_common.ids import new_capture_id, new_dataset_id
@@ -329,6 +330,28 @@ class TestLease:
         assert store.has_live_lease(capture.capture_id) is False
         assert store.acquire_lease(capture.capture_id, "export", ttl_s=60) is True
 
+    def test_writer_lease_atomically_excludes_readers(
+        self, store: CaptureStore
+    ) -> None:
+        capture = store.create_capture(_make_capture())
+        writer = f"writer:archive:{capture.capture_id}"
+        assert store.acquire_writer_lease(capture.capture_id, writer, ttl_s=60)
+        assert store.acquire_lease(capture.capture_id, "job:late", ttl_s=60) is False
+        assert store.release_lease(capture.capture_id, writer)
+        assert store.acquire_lease(capture.capture_id, "job:late", ttl_s=60) is True
+
+    def test_writer_lease_refuses_existing_reader(self, store: CaptureStore) -> None:
+        capture = store.create_capture(_make_capture())
+        assert store.acquire_lease(capture.capture_id, "job:live", ttl_s=60)
+        assert (
+            store.acquire_writer_lease(
+                capture.capture_id,
+                f"writer:delete:{capture.capture_id}",
+                ttl_s=60,
+            )
+            is False
+        )
+
     def test_release_only_succeeds_for_the_holder(self, store: CaptureStore) -> None:
         capture = store.create_capture(_make_capture())
         store.acquire_lease(capture.capture_id, "digest", ttl_s=60)
@@ -469,6 +492,31 @@ class TestDatasetArchive:
         assert row["status"] == "archiving"
         assert row["archive_destination"] == "/mnt/nas/ds"
         assert row["archive_started_at"] is not None
+
+    def test_start_rejects_a_member_snapshot_that_changed(
+        self, store: CaptureStore
+    ) -> None:
+        dataset_id = self._dataset(store)
+        first = store.create_capture(_make_capture(run_id="run_archive_first"))
+        second = store.create_capture(_make_capture(run_id="run_archive_second"))
+        store.add_dataset_member(dataset_id, first.capture_id)
+        frozen = [first.capture_id]
+        store.add_dataset_member(dataset_id, second.capture_id)
+
+        assert not store.begin_dataset_archive(
+            dataset_id,
+            destination="/mnt/nas/ds",
+            expected_capture_ids=frozen,
+        )
+        assert store.get_dataset(dataset_id)["status"] == "active"
+
+    def test_archiving_dataset_refuses_a_late_member(self, store: CaptureStore) -> None:
+        dataset_id = self._dataset(store)
+        assert store.begin_dataset_archive(dataset_id, destination="/mnt/nas/ds")
+        capture = store.create_capture(_make_capture(run_id="run_archive_late"))
+
+        with pytest.raises(DatasetNotActiveError):
+            store.add_dataset_member(dataset_id, capture.capture_id)
 
     def test_abort_rolls_an_unledgered_start_back(self, store: CaptureStore) -> None:
         dataset_id = self._dataset(store)

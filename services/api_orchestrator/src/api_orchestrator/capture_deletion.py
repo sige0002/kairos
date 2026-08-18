@@ -45,6 +45,7 @@ _LEDGER_KIND: dict[str, str] = {
 # the replica stays ``trashed`` and the condition is surfaced, which is a
 # problem an operator can see rather than a background task spinning forever.
 MAX_REAP_ATTEMPTS = 3
+_WRITER_LEASE_TTL_S = 24 * 60 * 60
 
 
 class CaptureDeletionMixin:
@@ -82,17 +83,24 @@ class CaptureDeletionMixin:
             self._reject_active(capture)
             self._reject_leased(capture)
             self._reject_dataset_member(capture)
-
-            self._append_tombstone(capture, kind=kind, reason=reason)
-            self._store.update_capture(
-                capture_id,
-                state=CaptureState.delete_pending,
-                deleted_at=utc_now_iso8601(),
-                delete_kind=kind,
-                delete_reason=reason,
-            )
-            await asyncio.to_thread(self._finish_delete, capture_id, kind)
-            return self.get(capture_id)
+            writer = f"writer:delete:{capture_id}"
+            while not self._store.acquire_writer_lease(
+                capture_id, writer, ttl_s=_WRITER_LEASE_TTL_S
+            ):
+                self._reject_leased(capture)
+            try:
+                self._append_tombstone(capture, kind=kind, reason=reason)
+                self._store.update_capture(
+                    capture_id,
+                    state=CaptureState.delete_pending,
+                    deleted_at=utc_now_iso8601(),
+                    delete_kind=kind,
+                    delete_reason=reason,
+                )
+                await asyncio.to_thread(self._finish_delete, capture_id, kind)
+                return self.get(capture_id)
+            finally:
+                self._store.release_lease(capture_id, writer)
 
     def _finish_delete(self, capture_id: str, kind: DeleteKind) -> None:
         """Steps 3-4: rename into ``.trash`` and confirm the tombstone.

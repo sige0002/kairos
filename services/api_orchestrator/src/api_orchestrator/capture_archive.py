@@ -40,6 +40,8 @@ from api_orchestrator.models import (
     CaptureError,
 )
 
+_WRITER_LEASE_TTL_S = 24 * 60 * 60
+
 if TYPE_CHECKING:
     from api_orchestrator.layout import DataLayout
     from api_orchestrator.store import CaptureStore
@@ -219,13 +221,21 @@ class CaptureArchiveMixin:
             self._reject_active(capture)
             self._reject_leased(capture)
             self._reject_dataset_member(capture)
-            response = await self._archive_into(
-                capture,
-                destination / capture_id,
-                operator=operator,
-                reason=reason,
-                progress=progress,
-            )
+            writer = f"writer:archive:{capture_id}"
+            while not self._store.acquire_writer_lease(
+                capture_id, writer, ttl_s=_WRITER_LEASE_TTL_S
+            ):
+                self._reject_leased(capture)
+            try:
+                response = await self._archive_into(
+                    capture,
+                    destination / capture_id,
+                    operator=operator,
+                    reason=reason,
+                    progress=progress,
+                )
+            finally:
+                self._store.release_lease(capture_id, writer)
 
         logger.info(
             "capture archived",
@@ -265,16 +275,24 @@ class CaptureArchiveMixin:
             self._reject_active(capture)
             self._reject_leased(capture)
             self._reject_dataset_member(capture, except_dataset=dataset_id)
-            response = await self._archive_into(
-                capture,
-                target,
-                extra_payload={
-                    "dataset_id": dataset_id,
-                    "membership_id": membership_id,
-                    "display_index": display_index,
-                },
-                progress=progress,
-            )
+            writer = f"writer:archive:{capture_id}"
+            while not self._store.acquire_writer_lease(
+                capture_id, writer, ttl_s=_WRITER_LEASE_TTL_S
+            ):
+                self._reject_leased(capture)
+            try:
+                response = await self._archive_into(
+                    capture,
+                    target,
+                    extra_payload={
+                        "dataset_id": dataset_id,
+                        "membership_id": membership_id,
+                        "display_index": display_index,
+                    },
+                    progress=progress,
+                )
+            finally:
+                self._store.release_lease(capture_id, writer)
 
         logger.info(
             "dataset member archived",

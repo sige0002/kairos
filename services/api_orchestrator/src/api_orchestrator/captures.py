@@ -243,6 +243,35 @@ class CaptureService(CaptureReviewMixin, CaptureDeletionMixin, CaptureArchiveMix
         )
         return items, (str(next_seq) if next_seq is not None else None)
 
+    def search(
+        self,
+        limit: int,
+        cursor: int | None,
+        *,
+        query: dict[str, Any],
+        facets: list[str],
+    ) -> tuple[list[Capture], int | None, int, dict[str, dict[str, Any]]]:
+        """Search capture rows without asking a browser to sweep the catalog."""
+        return self._store.search_captures(
+            limit,
+            cursor,
+            query=query,
+            facets=facets,
+            instance_id=self._instance_id,
+        )
+
+    def create_selection(
+        self, query: dict[str, Any], *, expires_at: str
+    ) -> tuple[str, int]:
+        """Freeze an ordered ID set for a later dataset bulk run."""
+        return self._store.create_capture_selection(
+            query, instance_id=self._instance_id, expires_at=expires_at
+        )
+
+    def selection_capture_ids(self, selection_id: str) -> list[str]:
+        """Resolve an unexpired materialized selection for another service."""
+        return self._store.capture_selection_capture_ids(selection_id)
+
     # ---- manifest reconciliation (§3, §8) ----------------------------------
 
     def adopt_manifest_facts(self, capture_id: str) -> bool:

@@ -221,7 +221,10 @@ class DatasetArchiver:
 
         try:
             claimed = self._store.begin_dataset_archive(
-                dataset_id, destination=str(dataset_dir), mode=run_mode
+                dataset_id,
+                destination=str(dataset_dir),
+                mode=run_mode,
+                expected_capture_ids=[member.capture_id for member in members],
             )
         except ArchiveDestinationTakenError as exc:
             # The folder looked empty a moment ago, but a run that has not

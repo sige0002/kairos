@@ -89,7 +89,12 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
       if (options.reviewError) {
         return answer(
           jsonResponse(
-            { error: { code: options.reviewError.code, message: options.reviewError.message } },
+            {
+              error: {
+                code: options.reviewError.code,
+                message: options.reviewError.message,
+              },
+            },
             options.reviewError.status,
           ),
         );
@@ -132,6 +137,17 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
       return Promise.reject(new TypeError('Failed to fetch'));
     }
 
+    if (method === 'POST' && url.endsWith('/captures/search')) {
+      return Promise.resolve(
+        jsonResponse({
+          items,
+          next_cursor: options.capturesNeverEnd ? 'more' : null,
+          total: items.length,
+          facets: {},
+        }),
+      );
+    }
+
     const detail = url.match(/\/captures\/([^/?]+)$/);
     if (method === 'GET' && detail) {
       const id = decodeURIComponent(detail[1]!);
@@ -139,7 +155,8 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
       return Promise.resolve(jsonResponse(found ?? { ...capture({ capture_id: id }) }));
     }
 
-    if (url.includes('/config/options')) return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
+    if (url.includes('/config/options'))
+      return Promise.resolve(jsonResponse(CONFIG_OPTIONS));
     if (url.includes('/transfer/status'))
       return Promise.resolve(
         jsonResponse({ available: options.transferAvailable ?? false }),
@@ -147,7 +164,8 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
     if (url.includes('/retention'))
       return Promise.resolve(jsonResponse({ days: 0, candidates: [], total_bytes: 0 }));
     if (url.includes('/batches')) {
-      if (options.batchesError) return Promise.reject(new TypeError('Batch service unavailable'));
+      if (options.batchesError)
+        return Promise.reject(new TypeError('Batch service unavailable'));
       return Promise.resolve(jsonResponse({ items: options.batches ?? [] }));
     }
     if (url.includes('/captures'))
@@ -210,11 +228,11 @@ test('the right detail shows the recorded condition immediately below Task', asy
   mockApi(
     [
       capture({
-        capture_id: "c1",
-        run_id: "run_1",
+        capture_id: 'c1',
+        run_id: 'run_1',
         index_in_batch: 1,
-        batch_id: "batch-1",
-        task: "Pick and Place",
+        batch_id: 'batch-1',
+        task: 'Pick and Place',
         collection_context: {
           batch_id: 'batch-1',
           batch_seq: 1,
@@ -232,13 +250,13 @@ test('the right detail shows the recorded condition immediately below Task', asy
     {
       batches: [
         {
-          batch_id: "batch-1",
-          project: "Manipulation",
-          task: "Pick and Place",
+          batch_id: 'batch-1',
+          project: 'Manipulation',
+          task: 'Pick and Place',
           condition: 'Current right bin',
-          operator: "op_a",
+          operator: 'op_a',
           target_episodes: 30,
-          status: "completed",
+          status: 'completed',
           episode_count: 1,
         },
       ],
@@ -246,12 +264,12 @@ test('the right detail shows the recorded condition immediately below Task', asy
   );
   renderWithClient(<ReviewScreen />);
 
-  const inspection = await screen.findByTestId("review-inspection");
+  const inspection = await screen.findByTestId('review-inspection');
   expect(screen.getByTestId('review-condition')).toHaveTextContent('Recorded left bin');
-  const labels = Array.from(inspection.querySelectorAll("dt")).map((node) =>
+  const labels = Array.from(inspection.querySelectorAll('dt')).map((node) =>
     node.textContent?.trim(),
   );
-  expect(labels.indexOf("Condition")).toBe(labels.indexOf("Task") + 1);
+  expect(labels.indexOf('Condition')).toBe(labels.indexOf('Task') + 1);
 });
 
 test('the detail calls an explicit snapshot condition null Not recorded', async () => {
@@ -291,7 +309,9 @@ test('the detail calls an explicit snapshot condition null Not recorded', async 
   );
   renderWithClient(<ReviewScreen />);
 
-  expect(await screen.findByTestId('review-condition')).toHaveTextContent('Not recorded');
+  expect(await screen.findByTestId('review-condition')).toHaveTextContent(
+    'Not recorded',
+  );
 });
 
 test('a legacy capture says Unavailable when its Batch condition cannot be loaded', async () => {
@@ -303,7 +323,7 @@ test('a legacy capture says Unavailable when its Batch condition cannot be loade
   );
 });
 
-test("a capture with no local copy renders normally and explains itself", async () => {
+test('a capture with no local copy renders normally and explains itself', async () => {
   // Split deploy, review-before-bytes: a normal state, not an error (§12).
   mockApi([
     capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1, replica: null }),
@@ -729,7 +749,7 @@ test('a second decision taken while the save is in flight goes nowhere, visibly'
   const api = mockApi(
     [capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1 })],
     {
-    holdReviews: true,
+      holdReviews: true,
     },
   );
   renderWithClient(<ReviewScreen />);

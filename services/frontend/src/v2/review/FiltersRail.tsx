@@ -1,10 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-// Filters column. Only two controls really filter the list: the table's search
-// box and the Operator select here (Operator is the one dimension the /runs API
-// actually carries). The rest — Batch, Data quality, Task result, Date range —
-// have no backend model to filter by yet, so they render as clearly inert,
-// display-only rows (no dropdown affordance) rather than pretending to work.
+// Filters column for the server-owned Review search. Every control below maps
+// to a capture-search predicate or UTC date boundary; no inert filters.
 //
 // COLLAPSE (desktop-only): at ≥lg the rail can collapse to a slim strip so its
 // width goes to the evidence panes (1280 is tight with the full 216px column).
@@ -14,16 +11,9 @@
 // the fact that a filter is on (self-descriptiveness).
 
 import { forwardRef } from 'react';
+import type { Quality, TaskResult } from '../../api/types';
 import { Card, SectionLabel, cn } from '../../components/ui';
 import { ALL_OPERATORS } from './useReviewState';
-
-// Static rows with no real backing — shown so the filter rail matches the mock,
-// but visibly non-interactive (see the muted styling below).
-const DISPLAY_ONLY_FILTERS = [
-  { label: 'Data quality', value: 'All' },
-  { label: 'Task result', value: 'All' },
-  { label: 'Date range', value: 'All time' },
-];
 
 // The filters region the toggle's aria-controls points at.
 const REGION_ID = 'review-filters-region';
@@ -64,6 +54,17 @@ export const FiltersRail = forwardRef<
     operatorOptions: string[];
     operatorFilter: string;
     onOperatorChange: (v: string) => void;
+    qualityFilter: Quality | null;
+    onQualityChange: (v: Quality | null) => void;
+    resultFilter: TaskResult | null;
+    onResultChange: (v: TaskResult | null) => void;
+    conditionFilter: string;
+    conditionOptions: string[];
+    onConditionChange: (v: string) => void;
+    startedFrom: string | null;
+    startedTo: string | null;
+    onStartedFromChange: (v: string | null) => void;
+    onStartedToChange: (v: string | null) => void;
     /** Active batch filter's display label, or null (set by clicking a row's
      *  batch chip in the table — the rail shows and clears it). */
     batchFilterLabel: string | null;
@@ -78,6 +79,17 @@ export const FiltersRail = forwardRef<
     operatorOptions,
     operatorFilter,
     onOperatorChange,
+    qualityFilter,
+    onQualityChange,
+    resultFilter,
+    onResultChange,
+    conditionFilter,
+    conditionOptions,
+    onConditionChange,
+    startedFrom,
+    startedTo,
+    onStartedFromChange,
+    onStartedToChange,
     batchFilterLabel,
     onClearBatchFilter,
     onClearFilters,
@@ -87,7 +99,13 @@ export const FiltersRail = forwardRef<
   toggleRef,
 ) {
   const hasActiveFilters =
-    operatorFilter !== ALL_OPERATORS || batchFilterLabel !== null;
+    operatorFilter !== ALL_OPERATORS ||
+    batchFilterLabel !== null ||
+    qualityFilter !== null ||
+    resultFilter !== null ||
+    Boolean(conditionFilter) ||
+    startedFrom !== null ||
+    startedTo !== null;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-col">
@@ -97,11 +115,7 @@ export const FiltersRail = forwardRef<
           data-testid="review-filters-collapsed"
           className="hidden min-h-0 flex-1 flex-col items-center gap-1 rounded-card border border-gray-200 bg-white py-2 shadow-card lg:flex"
         >
-          <CollapseToggle
-            ref={toggleRef}
-            collapsed
-            onToggle={onToggleCollapsed}
-          />
+          <CollapseToggle ref={toggleRef} collapsed onToggle={onToggleCollapsed} />
           {hasActiveFilters && (
             <span
               data-testid="review-filters-active-dot"
@@ -184,17 +198,81 @@ export const FiltersRail = forwardRef<
           )}
         </div>
 
-        {DISPLAY_ONLY_FILTERS.map((f) => (
-          <div key={f.label} className="flex flex-col gap-1.5">
-            <span className="text-[11.5px] font-semibold text-gray-500">{f.label}</span>
-            <div
-              title="Not filterable yet"
-              className="flex items-center rounded-control border border-dashed border-gray-200 bg-gray-50 px-2.5 py-1.5 text-[13px] text-gray-500"
-            >
-              {f.value}
-            </div>
-          </div>
-        ))}
+        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-gray-500">
+          Data quality
+          <select
+            data-testid="review-quality-filter"
+            value={qualityFilter ?? ''}
+            onChange={(event) =>
+              onQualityChange((event.target.value || null) as Quality | null)
+            }
+            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] font-normal text-gray-700"
+          >
+            <option value="">All qualities</option>
+            <option value="good">Good</option>
+            <option value="needs_review">Needs review</option>
+            <option value="not_usable">Not usable</option>
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-gray-500">
+          Task result
+          <select
+            data-testid="review-result-filter"
+            value={resultFilter ?? ''}
+            onChange={(event) =>
+              onResultChange((event.target.value || null) as TaskResult | null)
+            }
+            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] font-normal text-gray-700"
+          >
+            <option value="">All results</option>
+            <option value="success">Success</option>
+            <option value="failure">Failure</option>
+          </select>
+        </label>
+
+        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-gray-500">
+          Condition
+          <select
+            data-testid="review-condition-filter"
+            value={conditionFilter}
+            onChange={(event) => onConditionChange(event.target.value)}
+            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] font-normal text-gray-700"
+          >
+            <option value="">All conditions</option>
+            {conditionOptions.map((condition) => (
+              <option key={condition} value={condition}>
+                {condition}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <div className="flex flex-col gap-1.5">
+          <span className="text-[11.5px] font-semibold text-gray-500">
+            UTC date range
+          </span>
+          <input
+            type="date"
+            aria-label="From UTC date"
+            data-testid="review-started-from-filter"
+            value={startedFrom?.slice(0, 10) ?? ''}
+            onChange={(event) => onStartedFromChange(event.target.value || null)}
+            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-700"
+          />
+          <input
+            type="date"
+            aria-label="To UTC date"
+            data-testid="review-started-to-filter"
+            value={
+              startedTo
+                ? new Date(Date.parse(startedTo) - 1).toISOString().slice(0, 10)
+                : ''
+            }
+            onChange={(event) => onStartedToChange(event.target.value || null)}
+            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-700"
+          />
+        </div>
 
         <button
           type="button"

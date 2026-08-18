@@ -19,6 +19,7 @@ Two response codes here are load-bearing rather than incidental:
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request
@@ -37,11 +38,16 @@ from api_orchestrator.models import (
     CaptureDeleteRequest,
     CaptureDetail,
     CaptureListResponse,
+    CaptureSearchRequest,
+    CaptureSearchResponse,
+    CaptureSelectionCreateRequest,
+    CaptureSelectionResponse,
     ReviewSaveRequest,
     ValidationOverrideRequest,
 )
 
 router = APIRouter(prefix="/api/v1/captures", tags=["captures"])
+selection_router = APIRouter(prefix="/api/v1/capture-selections", tags=["captures"])
 
 DEFAULT_LIMIT = 50
 # 1000, not 200: Datasets walks the whole store to build its tree, and at 200 a
@@ -88,6 +94,43 @@ async def list_captures(
         include_deleted=include_deleted,
     )
     return CaptureListResponse(items=items, next_cursor=next_cursor)
+
+
+@router.post("/search", response_model=CaptureSearchResponse)
+def search_captures(
+    body: CaptureSearchRequest,
+    service: CaptureService = Depends(get_capture_service),
+) -> CaptureSearchResponse:
+    """Page and facet captures server-side from one SQLite read snapshot."""
+    parsed = _parse_search_cursor(body.cursor)
+    items, next_seq, total, facets = service.search(
+        body.limit, parsed, query=body.query.model_dump(mode="json"), facets=body.facets
+    )
+    return CaptureSearchResponse(
+        items=items,
+        next_cursor=str(next_seq) if next_seq is not None else None,
+        total=total,
+        facets=facets,
+    )
+
+
+@selection_router.post("", response_model=CaptureSelectionResponse, status_code=201)
+def create_capture_selection(
+    body: CaptureSelectionCreateRequest,
+    service: CaptureService = Depends(get_capture_service),
+) -> CaptureSelectionResponse:
+    """Materialize ordered capture IDs for a later server-side bulk operation."""
+    expires_at = (
+        (datetime.now(UTC) + timedelta(minutes=30)).isoformat().replace("+00:00", "Z")
+    )
+    selection_id, matched = service.create_selection(
+        body.query.model_dump(mode="json"), expires_at=expires_at
+    )
+    return CaptureSelectionResponse(
+        selection_id=selection_id,
+        matched_count=matched,
+        expires_at=expires_at,
+    )
 
 
 @router.get("/{capture_id}", response_model=CaptureDetail)
@@ -252,3 +295,23 @@ async def capture_archive_progress(
 
 def _archive_roots(request: Request) -> list:
     return parse_archive_roots(getattr(request.app.state.settings, "archive_roots", ""))
+
+
+def _parse_search_cursor(cursor: str | None) -> int | None:
+    if cursor is None:
+        return None
+    try:
+        value = int(cursor)
+    except ValueError as exc:
+        raise ApiError(
+            status_code=400,
+            code="invalid_cursor",
+            message="cursor must be an opaque token from a prior page.",
+        ) from exc
+    if value < 1:
+        raise ApiError(
+            status_code=400,
+            code="invalid_cursor",
+            message="cursor must be an opaque token from a prior page.",
+        )
+    return value

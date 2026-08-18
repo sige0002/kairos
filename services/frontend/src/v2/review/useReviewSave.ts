@@ -94,7 +94,7 @@ export interface ReviewSaveState {
   invalidateList: () => Promise<void>;
 }
 
-export function useReviewSave(scope: string): ReviewSaveState {
+export function useReviewSave(): ReviewSaveState {
   const queryClient = useQueryClient();
   const [conflict, setConflict] = useState<ReviewConflict | null>(null);
   // Held together with the capture it is about. A banner belongs to ONE
@@ -123,11 +123,18 @@ export function useReviewSave(scope: string): ReviewSaveState {
     () => setSavingCaptureIds(new Set(inFlight.current)),
     [],
   );
-  const isSaving = useCallback((captureId: string) => inFlight.current.has(captureId), []);
+  const isSaving = useCallback(
+    (captureId: string) => inFlight.current.has(captureId),
+    [],
+  );
 
   const invalidateList = useCallback(
-    () => queryClient.invalidateQueries({ queryKey: queryKeys.captureList(scope) }),
-    [queryClient, scope],
+    // Review now consumes a server-search key rather than the retired
+    // cursor-following captureList key. Invalidate the capture subtree so a
+    // successful optimistic save is reconciled against the page the operator
+    // is viewing (and every other capture projection remains honest).
+    () => queryClient.invalidateQueries({ queryKey: queryKeys.captures }),
+    [queryClient],
   );
 
   const save = useCallback(

@@ -195,8 +195,26 @@ def create_dora_app(
             capture_id=body.capture_id,
             pipeline=body.pipeline,
             params=body.params,
+            idempotency_key=body.idempotency_key,
         )
         async with store.lock:
+            if body.idempotency_key is not None:
+                existing = store.get_job_by_idempotency_key(body.idempotency_key)
+                if existing is not None:
+                    if (
+                        existing.capture_id != body.capture_id
+                        or existing.pipeline != body.pipeline
+                        or existing.params != body.params
+                    ):
+                        raise ApiError(
+                            status_code=409,
+                            code="idempotency_conflict",
+                            message=(
+                                "idempotency_key was already used for a different job."
+                            ),
+                            details={"idempotency_key": body.idempotency_key},
+                        )
+                    return JobCreateResponse(job_id=existing.job_id)
             store.jobs[job.job_id] = job
             store.persist_job(job)
         job.task = asyncio.create_task(
@@ -415,7 +433,13 @@ async def _stop_timed_out_job(
         raise _JobTimedOut(stopped=False) from None
 
 
-def _release_slot_when_done(task: asyncio.Task[dict], slots: asyncio.Semaphore) -> None:
+def _release_slot_when_done(
+    task: asyncio.Task[dict],
+    slots: asyncio.Semaphore,
+    *,
+    job: JobRecord,
+    store: RunnerStore,
+) -> None:
     """Release a concurrency slot when *task* truly finishes — not when the
     awaiting coroutine is cancelled.
 
@@ -428,12 +452,19 @@ def _release_slot_when_done(task: asyncio.Task[dict], slots: asyncio.Semaphore) 
     to release from the worker thread itself, so a loop-side callback is the
     correct equivalent of a thread-side ``finally``.)
     """
+
+    def mark_execution_stopped() -> None:
+        job.execution_active = False
+        store.persist_job(job)
+
     if task.done():
         slots.release()
+        mark_execution_stopped()
         return
 
     def _release(t: asyncio.Task[dict]) -> None:
         slots.release()
+        mark_execution_stopped()
         # Consume any exception so an abandoned (timed-out/cancelled) runner that
         # later fails doesn't log "Task exception was never retrieved".
         if not t.cancelled():
@@ -489,6 +520,8 @@ async def _execute_job(
             # before spawning work that would have to be stopped again.
             slots.release()
             raise JobCanceled
+        job.execution_active = True
+        store.persist_job(job)
         runner_task: asyncio.Task[dict] = asyncio.ensure_future(
             pipeline.runner(job, store, data_dir)
         )
@@ -505,7 +538,7 @@ async def _execute_job(
                     job, store, runner_task, timeout_s=timeout_s
                 )
         finally:
-            _release_slot_when_done(runner_task, slots)
+            _release_slot_when_done(runner_task, slots, job=job, store=store)
         validated = JobResult.model_validate(result)
         async with store.lock:
             # Cancelled while the work ran in the threadpool (which can't be

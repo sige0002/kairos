@@ -82,7 +82,8 @@ function transferBadge(row: DecoratedEpisode): { tone: Tone; label: string } {
 // (Tailwind's arbitrary-value classes must appear as complete literal strings
 // in the source for its scanner to pick them up — hence two full strings
 // rather than building one via interpolation.)
-const GRID_COLS = 'grid-cols-[56px_48px_108px_96px_72px_80px_96px_minmax(96px,1fr)_28px]';
+const GRID_COLS =
+  'grid-cols-[56px_48px_108px_96px_72px_80px_96px_minmax(96px,1fr)_28px]';
 const GRID_COLS_SPLIT =
   'grid-cols-[56px_48px_108px_96px_72px_80px_96px_84px_minmax(96px,1fr)_28px]';
 
@@ -451,18 +452,16 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
               />
             ))
           )}
-          {/* The sweep stopped before the end of the catalog, so "no more
-            episodes" here means "no more that were fetched" — and the counts
-            above are of the same partial set. Said where the list ends,
-            because that is where an operator concludes it. */}
+          {/* The bounded server page has a successor. Said where this page
+            ends, because that is where an operator otherwise concludes that
+            the visible rows are the whole filtered result. */}
           {rv.catalogTruncated && (
             <p
               data-testid="catalog-truncated"
               className="m-[18px] rounded-control border border-amber-200 bg-amber-50 px-2.5 py-2 text-[11px] leading-relaxed text-amber-800"
             >
-              This is not the whole catalog — there are more recordings than one sweep
-              fetches, so the oldest are not listed here. Narrow the search to reach a
-              specific one.
+              This page is not the whole catalog; more recordings match this search. The
+              counts and bulk actions above cover this page only; use Next to continue.
             </p>
           )}
         </div>

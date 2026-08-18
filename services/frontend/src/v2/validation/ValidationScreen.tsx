@@ -13,25 +13,31 @@
 // `objects/<capture_id>` and writes to `report/<pipeline>/<capture_id>/`. A
 // dataset has no directory to aim a job at (§6), so there is no second kind of
 // target — a dataset's captures are validated as the captures they are.
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   useMutation,
   useQuery,
   useQueryClient,
   keepPreviousData,
 } from '@tanstack/react-query';
-import { apiGet, apiPost } from '../../api/client';
+import { ApiError, apiGet } from '../../api/client';
 import { getConfigOptions } from '../../api/config';
-import { getCapture, listAllCaptures } from '../../api/captures';
+import { createCaptureSelection, getCapture, searchCaptures } from '../../api/captures';
+import {
+  cancelValidationRun,
+  createValidationRun,
+  getValidationRun,
+  listValidationRuns,
+  retryValidationRun,
+} from '../../api/validationRuns';
 import { queryKeys } from '../../api/queryKeys';
 import { VALIDATION_PRESETS_POLL_MS } from '../pollingPolicy';
 import { fetchRuntimeConfig } from '../../config';
 import type { JSONSchema } from '../../schema/jsonSchema';
 import { initialValueFor } from '../../schema/jsonSchema';
 import type {
-  JobStatus,
-  JobSubmitRequest,
   PipelineInfo,
+  ValidationRun,
   ValidationOption,
   ValidationPreset,
 } from '../../api/types';
@@ -48,22 +54,11 @@ import {
   BATCH_VALUE_PREFIX,
   captureLabel,
 } from './ParamsPanel';
-import { listBatches } from '../../api/batches';
+import { lookupBatches } from '../../api/batches';
 import { ResultsPanel, type ActiveOutcome, type RunJobRow } from './ResultsPanel';
 import type { RequiredTopic } from './resultsMapping';
 import { Toast } from '../shared/Toast';
-import { useJobResult } from './useJobResult';
-import { isCancellable, useJobCancel } from './useJobCancel';
-import {
-  recordJobUpdate,
-  selectRunCapture,
-  startRun,
-  useValidationRun,
-  type ActiveRun,
-  type JobProbeUpdate,
-  type JobRef,
-  type SubmitFailure,
-} from './runStore';
+import { type ActiveRun, type JobProbeUpdate, type SubmitFailure } from './runStore';
 import { useToast } from '../shared/useToast';
 import { ScreenTitle } from '../shared/ScreenTitle';
 
@@ -75,37 +70,93 @@ const FALLBACK_SCHEMA: JSONSchema = {
 };
 const FAST_VALIDATION = 'fast_validation';
 
-/** Invisible per-job poller: reports status/result changes to the run store. */
-function JobProbe({
-  job,
-  onUpdate,
-}: {
-  job: JobRef;
-  onUpdate: (u: JobProbeUpdate) => void;
-}) {
-  const { statusQuery, terminal, resultQuery } = useJobResult(job.job_id);
-  useEffect(() => {
-    if (!statusQuery.data) return;
-    onUpdate({
-      jobId: job.job_id,
-      captureId: job.capture_id,
-      state: statusQuery.data.state,
-      progress: statusQuery.data.progress ?? 0,
-      terminal,
-      cancelRequested: statusQuery.data.cancel_requested === true,
-      summary: terminal ? resultQuery.data?.summary : undefined,
-      artifacts: terminal ? resultQuery.data?.artifacts : undefined,
-      resultErrored: terminal && resultQuery.isError,
-    });
-  }, [
-    statusQuery.data,
-    terminal,
-    resultQuery.data,
-    resultQuery.isError,
-    job.job_id,
-    job.capture_id,
-  ]);
-  return null;
+function routeValidationRunId(): string | null {
+  return new URLSearchParams(window.location.search).get('vrun');
+}
+
+function writeValidationRunId(runId: string | null): void {
+  const url = new URL(window.location.href);
+  if (runId) url.searchParams.set('vrun', runId);
+  else url.searchParams.delete('vrun');
+  window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+}
+
+function makeRequestId(): string {
+  return typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (token) => {
+        const value = Math.floor(Math.random() * 16);
+        return (token === 'x' ? value : (value & 0x3) | 0x8).toString(16);
+      });
+}
+
+const PENDING_VALIDATION_STORAGE_KEY = 'kairos:pending-validation-run:v1';
+
+interface PendingValidationRequest {
+  fingerprint: string;
+  requestId: string;
+  pipeline: string;
+  params: Record<string, unknown>;
+  captureIds?: string[];
+  selectionId?: string;
+  needsSelectionRefresh?: boolean;
+}
+
+function readPendingValidationRequest(): PendingValidationRequest | null {
+  try {
+    const raw = window.sessionStorage.getItem(PENDING_VALIDATION_STORAGE_KEY);
+    if (!raw) return null;
+    const value: unknown = JSON.parse(raw);
+    if (
+      !value ||
+      typeof value !== 'object' ||
+      typeof (value as PendingValidationRequest).fingerprint !== 'string' ||
+      typeof (value as PendingValidationRequest).requestId !== 'string' ||
+      typeof (value as PendingValidationRequest).pipeline !== 'string' ||
+      !(value as PendingValidationRequest).params
+    ) {
+      return null;
+    }
+    return value as PendingValidationRequest;
+  } catch {
+    return null;
+  }
+}
+
+function writePendingValidationRequest(request: PendingValidationRequest | null): void {
+  try {
+    if (request) {
+      window.sessionStorage.setItem(
+        PENDING_VALIDATION_STORAGE_KEY,
+        JSON.stringify(request),
+      );
+    } else {
+      window.sessionStorage.removeItem(PENDING_VALIDATION_STORAGE_KEY);
+    }
+  } catch {
+    // An unavailable session store must not make validation submission fail.
+  }
+}
+
+function clientRunState(job: ValidationRun['jobs'][number]): JobProbeUpdate {
+  const state =
+    job.job?.state ??
+    (job.dispatch_state === 'submission_failed'
+      ? 'failed'
+      : job.dispatch_state === 'canceled_before_submit'
+        ? 'canceled'
+        : 'queued');
+  return {
+    jobId: job.job?.job_id ?? job.run_job_id,
+    captureId: job.capture_id,
+    state,
+    progress: job.job?.progress ?? 0,
+    terminal: state === 'succeeded' || state === 'failed' || state === 'canceled',
+    cancelRequested: job.job?.cancel_requested === true,
+    summary: job.result?.summary,
+    artifacts: job.result?.artifacts,
+    resultErrored: false,
+  };
 }
 
 export function ValidationScreen() {
@@ -115,11 +166,93 @@ export function ValidationScreen() {
   const [chosenIndex, setChosenIndex] = useState<number | null>(null);
   const [overrides, setOverrides] = useState<Record<string, unknown>>({});
   const [targetId, setTargetId] = useState('');
-  // The run lives in a module store, so leaving the tab no longer erases a run
-  // that is still going on the server (see runStore.ts).
-  const { active, jobStates, selectedCaptureId } = useValidationRun();
-  const jobCancel = useJobCancel();
+  // The picker uses the API's one-way cursor. Retaining boundaries, not rows,
+  // makes Previous available without a browser-side catalog sweep.
+  const [captureCursorHistory, setCaptureCursorHistory] = useState<
+    Array<string | null>
+  >([null]);
+  const [selectedRunId, setSelectedRunId] = useState(routeValidationRunId);
+  const [selectedCaptureId, setSelectedCaptureId] = useState<string | null>(null);
+  const [selectionMessage, setSelectionMessage] = useState<string | null>(null);
+  const [pendingRequest, setPendingRequest] = useState<PendingValidationRequest | null>(
+    readPendingValidationRequest,
+  );
+  const submittedRequestIds = useRef(new Set<string>());
   const { toast, showToast } = useToast();
+
+  const setPersistedPendingRequest = useCallback(
+    (request: PendingValidationRequest | null) => {
+      // Persist before dispatching the request: a navigation or response-loss
+      // immediately after the click must still have the original request id.
+      writePendingValidationRequest(request);
+      setPendingRequest(request);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    writePendingValidationRequest(pendingRequest);
+  }, [pendingRequest]);
+
+  // The browser stores only the selected durable run id. Lifecycle and every
+  // child outcome are always re-read from the server, including after reload.
+  const activeRunsQuery = useQuery({
+    queryKey: [...queryKeys.validationRuns, 'active'],
+    queryFn: ({ signal }) => listValidationRuns(true, { signal }),
+    refetchInterval: 1_000,
+  });
+  useEffect(() => {
+    if (selectedRunId || activeRunsQuery.isPending) return;
+    const restored = activeRunsQuery.data?.items?.[0];
+    if (!restored) return;
+    setSelectedRunId(restored.run_id);
+    writeValidationRunId(restored.run_id);
+  }, [selectedRunId, activeRunsQuery.isPending, activeRunsQuery.data]);
+  const validationRunQuery = useQuery({
+    queryKey: queryKeys.validationRun(selectedRunId ?? ''),
+    queryFn: ({ signal }) => getValidationRun(selectedRunId!, { signal }),
+    enabled: selectedRunId !== null,
+    refetchInterval: (query) =>
+      query.state.data?.state === 'finished' ? false : 1_000,
+  });
+  const validationRun = validationRunQuery.data ?? null;
+  // Retry appends attempt history. The current outcome is the latest attempt
+  // per capture; an old failure must not turn a later success back into red.
+  const currentRunJobs = useMemo(() => {
+    const latest = new Map<string, ValidationRun['jobs'][number]>();
+    for (const job of validationRun?.jobs ?? []) {
+      const prior = latest.get(job.capture_id);
+      if (!prior || job.attempt >= prior.attempt) latest.set(job.capture_id, job);
+    }
+    return [...latest.values()];
+  }, [validationRun]);
+  const jobStates = useMemo(
+    () =>
+      Object.fromEntries(
+        currentRunJobs.map((job) => {
+          const current = clientRunState(job);
+          return [current.jobId, current];
+        }),
+      ),
+    [currentRunJobs],
+  );
+  const active = useMemo<ActiveRun | null>(() => {
+    if (!validationRun) return null;
+    const failures: SubmitFailure[] = currentRunJobs
+      .filter((job) => job.dispatch_state === 'submission_failed')
+      .map((job) => ({
+        captureId: job.capture_id,
+        reason: job.failure_message ?? 'The server could not submit this capture.',
+      }));
+    return {
+      pipeline: validationRun.pipeline,
+      jobs: currentRunJobs.map((job) => ({
+        capture_id: job.capture_id,
+        job_id: job.job?.job_id ?? job.run_job_id,
+      })),
+      failures,
+    };
+  }, [validationRun, currentRunJobs]);
 
   const pipelinesQuery = useQuery({
     queryKey: queryKeys.pipelines,
@@ -140,13 +273,16 @@ export function ValidationScreen() {
   const selectedIndex = chosenIndex ?? (runIndex >= 0 ? runIndex : 0);
   const selectedPipeline = pipelines[selectedIndex] ?? pipelines[0];
 
-  // The whole catalog, cursor followed to exhaustion. A single page would both
-  // hide older recordings from the picker and make "all captures on this host"
-  // count something narrower than the presets' own server-side total — two
-  // numbers on one screen disagreeing about the same set.
+  // The picker holds one server page. All and Batch targets are materialized on
+  // the server at submit time; they never mean merely the rows on this page.
+  const captureCursor = captureCursorHistory.at(-1) ?? null;
+  const captureQuery = useMemo(
+    () => ({ query: {}, cursor: captureCursor, limit: 100 }),
+    [captureCursor],
+  );
   const capturesQuery = useQuery({
-    queryKey: queryKeys.captureList('validation'),
-    queryFn: ({ signal }) => listAllCaptures({}, signal),
+    queryKey: queryKeys.captureSearch('validation', captureQuery),
+    queryFn: ({ signal }) => searchCaptures(captureQuery, signal),
     placeholderData: keepPreviousData,
   });
   // A pipeline reads a finished bag, so only a capture that reached an end is a
@@ -159,13 +295,29 @@ export function ValidationScreen() {
     [capturesQuery.data],
   );
   const presentCaptures = useMemo(() => captures.filter(isCapturePresent), [captures]);
-  // `listAllCaptures` follows the cursor for at most MAX_PAGES and then stops,
-  // returning what it has WITH the unfinished cursor — so a non-null cursor
-  // means the sweep did not reach the end of the catalog, and every count on
-  // this screen ("all captures on this host", a batch's members) is a count of
-  // what was fetched. The signal was already in the response and thrown away
-  // (E-27).
+  // A non-null cursor names the picker boundary only, not an All/Batch run.
   const catalogTruncated = capturesQuery.data?.next_cursor != null;
+  const changeCapturePage = useCallback(
+    (direction: 'previous' | 'next') => {
+      if (direction === 'previous') {
+        setCaptureCursorHistory((history) =>
+          history.length > 1 ? history.slice(0, -1) : history,
+        );
+      } else {
+        const next = capturesQuery.data?.next_cursor;
+        if (!next) return;
+        setCaptureCursorHistory((history) =>
+          history.at(-1) === next ? history : [...history, next],
+        );
+      }
+      // A single capture or Batch option belongs to the page it was chosen
+      // from. Clear it when browsing another page instead of submitting an
+      // invisible, stale target.
+      setTargetId('');
+      setSelectionMessage(null);
+    },
+    [capturesQuery.data?.next_cursor],
+  );
   // Default target = the newest capture whose bytes are readable HERE (the list
   // is newest-first). Defaulting to one that is merely catalogued would put a
   // job that can only fail one click away.
@@ -175,38 +327,25 @@ export function ValidationScreen() {
     }
   }, [presentCaptures, targetId]);
 
-  // Batches as bulk targets (blast-radius check): validate every capture of one
-  // batch in one click. A batch's members are simply the captures carrying its
-  // batch_id, and only the ones whose bytes are on this host can be validated.
+  // Batch choices are discovered from this page for now. Execution materializes
+  // by batch_id on the server, so the page cannot narrow a Batch run.
+  const pageBatchIds = useMemo(
+    () => [
+      ...new Set(
+        captures.flatMap((capture) => (capture.batch_id ? [capture.batch_id] : [])),
+      ),
+    ],
+    [captures],
+  );
   const batchesQuery = useQuery({
-    queryKey: ['batches', 'validation'],
-    queryFn: () => listBatches(),
+    queryKey: ['batches', 'lookup', pageBatchIds],
+    queryFn: ({ signal }) => lookupBatches(pageBatchIds, signal),
+    enabled: pageBatchIds.length > 0,
     staleTime: 15_000,
   });
-  // `episode_count` is the server's own count of the batch's live captures; the
-  // list carries no row per capture (E-27) and this screen needs none — it is
-  // already holding the catalog those rows would have summarised.
-  const batches = useMemo(
-    () => (batchesQuery.data?.items ?? []).filter((b) => b.episode_count > 0),
-    [batchesQuery.data],
-  );
-  // Members, grouped once rather than scanned per batch: a batch's members ARE
-  // the captures carrying its batch_id (§4.1), and only the ones whose bytes are
-  // here can be validated.
-  const presentIdsByBatch = useMemo(() => {
-    const byBatch = new Map<string, string[]>();
-    for (const c of presentCaptures) {
-      if (!c.batch_id) continue;
-      const ids = byBatch.get(c.batch_id);
-      if (ids) ids.push(c.capture_id);
-      else byBatch.set(c.batch_id, [c.capture_id]);
-    }
-    return byBatch;
-  }, [presentCaptures]);
-  const batchCaptureIds = useCallback(
-    (b: (typeof batches)[number]) => presentIdsByBatch.get(b.batch_id) ?? [],
-    [presentIdsByBatch],
-  );
+  // Each id came from a capture on this page, so a resolved Batch is non-empty;
+  // lookup intentionally omits the list-only episode_count field.
+  const batches = useMemo(() => batchesQuery.data?.items ?? [], [batchesQuery.data]);
   const selectedBatch = targetId.startsWith(BATCH_VALUE_PREFIX)
     ? (batches.find((b) => `${BATCH_VALUE_PREFIX}${b.batch_id}` === targetId) ?? null)
     : null;
@@ -224,13 +363,15 @@ export function ValidationScreen() {
           : 'capture';
 
   const targetCaptureIds = useMemo(() => {
-    if (targetKind === 'all') return presentCaptures.map((c) => c.capture_id);
-    if (targetKind === 'batch') return selectedBatch ? batchCaptureIds(selectedBatch) : [];
-    if (targetKind === 'capture' && selectedCapture && isCapturePresent(selectedCapture)) {
+    if (
+      targetKind === 'capture' &&
+      selectedCapture &&
+      isCapturePresent(selectedCapture)
+    ) {
       return [selectedCapture.capture_id];
     }
     return [];
-  }, [targetKind, presentCaptures, selectedBatch, batchCaptureIds, selectedCapture]);
+  }, [targetKind, selectedCapture]);
 
   // A job resolves its source as objects/<capture_id> on THIS host (§10.5), so
   // with the bytes absent it can only fail server-side. Refuse it here instead,
@@ -314,22 +455,24 @@ export function ValidationScreen() {
     const options = suggestions[kind as keyof typeof suggestions] ?? [];
     const current = params[key];
     const stale =
-      typeof current === 'string' && current !== '' && options.length > 0 &&
+      typeof current === 'string' &&
+      current !== '' &&
+      options.length > 0 &&
       !options.includes(current);
     if (params[key] && !stale) continue;
     const first = options[0];
     if (first) params[key] = first;
   }
 
-  const allSettled = !active || active.jobs.every((j) => jobStates[j.job_id]?.terminal);
+  const allSettled = validationRun?.state === 'finished';
   // On batch settle, refresh the capture catalog and the presets' pending counts
   // (a preset run just validated some of its pending recordings).
   useEffect(() => {
-    if (active && allSettled) {
+    if (validationRun && allSettled) {
       queryClient.invalidateQueries({ queryKey: queryKeys.captures });
       queryClient.invalidateQueries({ queryKey: queryKeys.validationPresets });
     }
-  }, [active, allSettled, queryClient]);
+  }, [validationRun, allSettled, queryClient]);
 
   // Real one-click presets (GET /validation/presets): config-defined bundles,
   // each with the captures its pipeline hasn't validated yet. Poll their pending
@@ -338,7 +481,7 @@ export function ValidationScreen() {
     queryKey: queryKeys.validationPresets,
     queryFn: ({ signal }) =>
       apiGet<{ items: ValidationPreset[] }>('/validation/presets', { signal }),
-    refetchInterval: active && !allSettled ? VALIDATION_PRESETS_POLL_MS : false,
+    refetchInterval: validationRun && !allSettled ? VALIDATION_PRESETS_POLL_MS : false,
   });
   const presets = presetsQuery.data?.items ?? [];
 
@@ -366,49 +509,100 @@ export function ValidationScreen() {
   );
 
   const submitMutation = useMutation({
-    mutationFn: async (arg: {
+    mutationFn: (arg: {
       pipeline: string;
       params: Record<string, unknown>;
-      captureIds: string[];
-      requiredTopics?: RequiredTopic[];
-    }): Promise<ActiveRun> => {
-      const jobs: JobRef[] = [];
-      const failures: SubmitFailure[] = [];
-      for (const captureId of arg.captureIds) {
-        const body: JobSubmitRequest = {
-          pipeline: arg.pipeline,
-          capture_id: captureId,
-          params: arg.params,
-        };
-        try {
-          const job = await apiPost<JobStatus>('/jobs', body);
-          queryClient.setQueryData(queryKeys.job(job.job_id), job);
-          jobs.push({ capture_id: captureId, job_id: job.job_id });
-        } catch (e) {
-          // One refused capture must not abandon the whole run. Rejecting here
-          // threw away the jobs already created — they kept running on the
-          // server with nothing watching them — and left the operator with a
-          // single error that never said which capture it was about. The most
-          // common cause is a capture discarded since the preset's pending list
-          // was computed, which the server answers with capture_deleting /
-          // capture_deleted.
-          failures.push({ captureId, reason: captureErrorText(e, 'job') });
-        }
-      }
-      return { pipeline: arg.pipeline, jobs, failures, requiredTopics: arg.requiredTopics };
+      captureIds?: string[];
+      selectionId?: string;
+      requestId: string;
+    }) => {
+      const body = {
+        pipeline: arg.pipeline,
+        params: arg.params,
+        request_id: arg.requestId,
+        ...(arg.selectionId
+          ? { selection_id: arg.selectionId }
+          : { capture_ids: arg.captureIds ?? [] }),
+      };
+      return createValidationRun(body);
     },
-    onSuccess: (run) => {
-      startRun(run, queryClient);
-      if (run.failures.length > 0) {
-        const names = run.failures.map((f) => labelFor(f.captureId)).join(', ');
-        showToast(
-          run.jobs.length === 0
-            ? `Nothing ran — ${run.failures[0]!.reason}`
-            : `Started ${run.jobs.length}; skipped ${names}`,
-        );
+    onSuccess: (run, arg) => {
+      submittedRequestIds.current.delete(arg.requestId);
+      setPersistedPendingRequest(null);
+      setSelectedRunId(run.run_id);
+      setSelectedCaptureId(run.jobs[0]?.capture_id ?? null);
+      writeValidationRunId(run.run_id);
+      queryClient.setQueryData(queryKeys.validationRun(run.run_id), run);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.validationRuns });
+    },
+    onError: (error, arg) => {
+      if (
+        error instanceof ApiError &&
+        error.code === 'capture_selection_expired' &&
+        arg.selectionId
+      ) {
+        setPendingRequest((current) => {
+          const next =
+            current?.requestId === arg.requestId
+              ? {
+                  ...current,
+                  captureIds: undefined,
+                  selectionId: undefined,
+                  needsSelectionRefresh: true,
+                }
+              : current;
+          writePendingValidationRequest(next);
+          return next;
+        });
       }
     },
   });
+
+  const cancelRunMutation = useMutation({
+    mutationFn: (runId: string) => cancelValidationRun(runId),
+    onSuccess: (run) => {
+      queryClient.setQueryData(queryKeys.validationRun(run.run_id), run);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.validationRuns });
+    },
+  });
+  const retryRunMutation = useMutation({
+    mutationFn: (runId: string) => retryValidationRun(runId),
+    onSuccess: (run) => {
+      queryClient.setQueryData(queryKeys.validationRun(run.run_id), run);
+      void queryClient.invalidateQueries({ queryKey: queryKeys.validationRuns });
+    },
+  });
+  const selectionMutation = useMutation({
+    mutationFn: (query: Parameters<typeof createCaptureSelection>[0]['query']) =>
+      createCaptureSelection({ query }),
+    onError: (error) => {
+      setSelectionMessage(
+        `Could not freeze the server selection: ${captureErrorText(error)}. Check the connection and try Run again.`,
+      );
+    },
+  });
+
+  const submitPendingRequest = useCallback(
+    (request: PendingValidationRequest) => {
+      submittedRequestIds.current.add(request.requestId);
+      setPersistedPendingRequest(request);
+      submitMutation.mutate(request);
+    },
+    [setPersistedPendingRequest, submitMutation],
+  );
+
+  useEffect(() => {
+    if (
+      !pendingRequest ||
+      pendingRequest.needsSelectionRefresh ||
+      submitMutation.isPending ||
+      submittedRequestIds.current.has(pendingRequest.requestId)
+    ) {
+      return;
+    }
+    submittedRequestIds.current.add(pendingRequest.requestId);
+    submitMutation.mutate(pendingRequest);
+  }, [pendingRequest, submitMutation]);
 
   const selectPipeline = (i: number) => {
     setChosenIndex(i);
@@ -416,35 +610,105 @@ export function ValidationScreen() {
   };
 
   const runOnSelection = () => {
-    if (!selectedPipeline || targetCaptureIds.length === 0) return;
-    submitMutation.mutate({
+    if (!selectedPipeline || targetKind === 'none') return;
+    const fingerprint = JSON.stringify({
       pipeline: selectedPipeline.id,
       params,
-      captureIds: targetCaptureIds,
-      requiredTopics: isFastValidation
-        ? requiredTopicsFor(String(params.template ?? ''))
-        : undefined,
+      targetKind,
+      targetId,
     });
+    const requestId =
+      pendingRequest?.fingerprint === fingerprint
+        ? pendingRequest.requestId
+        : makeRequestId();
+    const submit = (selectionId?: string) =>
+      submitPendingRequest({
+        pipeline: selectedPipeline.id,
+        params,
+        captureIds: targetCaptureIds,
+        selectionId,
+        requestId,
+        fingerprint,
+      });
+    if (targetKind === 'capture') {
+      submit();
+      return;
+    }
+    if (pendingRequest?.fingerprint === fingerprint && pendingRequest.selectionId) {
+      submit(pendingRequest.selectionId);
+      return;
+    }
+    selectionMutation.reset();
+    selectionMutation.mutate(
+      {
+        join: 'and',
+        predicates:
+          targetKind === 'batch' && selectedBatch
+            ? [{ field: 'batch_id', operator: 'equals', value: selectedBatch.batch_id }]
+            : [],
+        states: ['completed', 'failed', 'interrupted'],
+        present_on_instance: true,
+      },
+      {
+        onSuccess: (selection) => {
+          if (selection.matched_count === 0) {
+            setSelectionMessage(
+              'Nothing matched this server selection; no validation run was started.',
+            );
+            return;
+          }
+          if (selection.matched_count > 1000) {
+            setSelectionMessage(
+              `${selection.matched_count} matched; narrow filters before validation (maximum 1000).`,
+            );
+            return;
+          }
+          setSelectionMessage(null);
+          submit(selection.selection_id);
+        },
+      },
+    );
   };
 
   // One-click preset: run its pipeline over exactly the captures it hasn't
   // validated yet. A preset with nothing pending is disabled in the UI.
   const runPreset = (preset: ValidationPreset) => {
     if (preset.pending_capture_ids.length === 0) return;
-    submitMutation.mutate({
+    if (preset.pending_capture_ids.length > 1000) {
+      setSelectionMessage(
+        `${preset.pending_capture_ids.length} preset targets are pending; narrow the preset before validation (maximum 1000).`,
+      );
+      return;
+    }
+    const params = preset.params ?? {};
+    const fingerprint = JSON.stringify({
       pipeline: preset.pipeline,
-      params: preset.params ?? {},
+      params,
       captureIds: preset.pending_capture_ids,
-      requiredTopics:
-        preset.pipeline === FAST_VALIDATION
-          ? requiredTopicsFor(String(preset.params?.template ?? ''))
-          : undefined,
+    });
+    const requestId =
+      pendingRequest?.fingerprint === fingerprint
+        ? pendingRequest.requestId
+        : makeRequestId();
+    submitPendingRequest({
+      pipeline: preset.pipeline,
+      params,
+      captureIds: preset.pending_capture_ids,
+      requestId,
+      fingerprint,
     });
   };
 
   const canRun =
-    !!selectedPipeline && targetCaptureIds.length > 0 && !submitMutation.isPending;
-  const running = (!!active && !allSettled) || submitMutation.isPending;
+    !!selectedPipeline &&
+    targetKind !== 'none' &&
+    (targetKind !== 'capture' || targetCaptureIds.length > 0) &&
+    !submitMutation.isPending &&
+    !selectionMutation.isPending;
+  const running =
+    (!!validationRun && !allSettled) ||
+    submitMutation.isPending ||
+    selectionMutation.isPending;
 
   // A run can legitimately have NO jobs: every capture it targeted was refused
   // (all discarded, say), and `active` still exists to carry the per-capture
@@ -461,22 +725,14 @@ export function ValidationScreen() {
             100,
         )
       : 0;
-  const progressLabel = submitMutation.isPending
-    ? 'Starting…'
-    : active && active.jobs.length > 1
-      ? `Running on ${active.jobs.length} captures…`
-      : `Running on ${active?.jobs[0] ? labelFor(active.jobs[0].capture_id) : ''}…`;
-
-  // Every job of this run that has not reached an end — what "Cancel run"
-  // stops. A job that already finished is not asked about: there is nothing
-  // left to stop, and asking would invite a pointless refusal.
-  const cancellableJobIds = useMemo(
-    () =>
-      (active?.jobs ?? [])
-        .filter((j) => isCancellable(jobStates[j.job_id]?.state ?? 'queued'))
-        .map((j) => j.job_id),
-    [active, jobStates],
-  );
+  const progressLabel =
+    selectionMutation.isPending || submitMutation.isPending
+      ? 'Starting…'
+      : validationRun?.cancel_requested
+        ? 'Cancel requested…'
+        : active && active.jobs.length > 1
+          ? `Running on ${active.jobs.length} captures…`
+          : `Running on ${active?.jobs[0] ? labelFor(active.jobs[0].capture_id) : ''}…`;
 
   // The per-job rows the results panel shows while the run is in flight. A job
   // with no reading yet is `queued`, which is what the server just created.
@@ -493,41 +749,46 @@ export function ValidationScreen() {
   );
 
   const cancelRun = useCallback(() => {
-    void jobCancel.cancel(cancellableJobIds);
-  }, [jobCancel, cancellableJobIds]);
-  const cancelOneJob = useCallback(
-    (jobId: string) => {
-      void jobCancel.cancel([jobId]);
-    },
-    [jobCancel],
+    if (validationRun && !validationRun.cancel_requested && !allSettled) {
+      cancelRunMutation.mutate(validationRun.run_id);
+    }
+  }, [validationRun, allSettled, cancelRunMutation]);
+  const canRetryValidationRun = Boolean(
+    currentRunJobs.some(
+      (job) =>
+        job.dispatch_state === 'submission_failed' || job.job?.state === 'failed',
+    ),
   );
 
   // Only surface the last run when it belongs to the pipeline being viewed —
   // rendering fast_validation's PASS under loss_report's heading read as a
   // verdict for the wrong pipeline (audit P1). Switching back re-shows it.
-  const activeOutcome: ActiveOutcome | null = active &&
-    active.pipeline === selectedPipeline?.id
-    ? {
-        pipeline: active.pipeline,
-        allSettled,
-        outcomes: active.jobs.map((j) => ({
-          captureId: j.capture_id,
-          label: labelFor(j.capture_id),
-          // A cancelled job also errors when its result is fetched, so this has
-          // to be carried separately or the cancellation reads as a fault.
-          canceled: jobStates[j.job_id]?.state === 'canceled',
-          orchestrationFailed:
-            jobStates[j.job_id]?.state === 'failed' ||
-            jobStates[j.job_id]?.resultErrored,
-          summary: jobStates[j.job_id]?.summary,
-        })),
-        artifacts:
-          active.jobs.length === 1
-            ? (jobStates[active.jobs[0]!.job_id]?.artifacts ?? [])
-            : [],
-        requiredTopics: active.requiredTopics,
-      }
-    : null;
+  const activeOutcome: ActiveOutcome | null =
+    active && active.pipeline === selectedPipeline?.id
+      ? {
+          pipeline: active.pipeline,
+          allSettled,
+          outcomes: active.jobs.map((j) => ({
+            captureId: j.capture_id,
+            label: labelFor(j.capture_id),
+            // A cancelled job also errors when its result is fetched, so this has
+            // to be carried separately or the cancellation reads as a fault.
+            canceled: jobStates[j.job_id]?.state === 'canceled',
+            orchestrationFailed:
+              jobStates[j.job_id]?.state === 'failed' ||
+              jobStates[j.job_id]?.resultErrored,
+            summary: jobStates[j.job_id]?.summary,
+          })),
+          artifacts:
+            active.jobs.length === 1
+              ? (jobStates[active.jobs[0]!.job_id]?.artifacts ?? [])
+              : [],
+          requiredTopics:
+            active.pipeline === FAST_VALIDATION
+              ? requiredTopicsFor(String(validationRun?.params.template ?? ''))
+              : undefined,
+        }
+      : null;
 
   if (!selectedPipeline) {
     return (
@@ -549,10 +810,6 @@ export function ValidationScreen() {
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[290px_1fr]">
       <ScreenTitle>Validation</ScreenTitle>
-      {active?.jobs.map((job) => (
-        <JobProbe key={job.job_id} job={job} onUpdate={recordJobUpdate} />
-      ))}
-
       <PipelineRail
         pipelines={pipelines}
         selectedIndex={selectedIndex}
@@ -580,36 +837,81 @@ export function ValidationScreen() {
             captures={captures}
             capturesLoading={capturesQuery.isPending}
             catalogTruncated={catalogTruncated}
+            capturePage={captureCursorHistory.length}
+            canPreviousCapturePage={captureCursorHistory.length > 1}
+            canNextCapturePage={catalogTruncated}
+            onCapturePageChange={changeCapturePage}
             batches={batches}
-            batchCaptureCount={(b) => batchCaptureIds(b).length}
             targetId={targetId}
             onTargetChange={setTargetId}
             selectedCapture={selectedCapture}
             targetNote={targetNote}
+            selectionMessage={selectionMessage}
             onRun={runOnSelection}
             canRun={canRun}
             running={running}
             progressPct={progressPct}
             progressLabel={progressLabel}
-            onCancelRun={cancellableJobIds.length > 0 ? cancelRun : undefined}
-            cancelBusy={jobCancel.busy}
-            cancelError={jobCancel.error}
-            onDismissCancelError={jobCancel.dismissError}
+            onCancelRun={
+              validationRun && !allSettled && !validationRun.cancel_requested
+                ? cancelRun
+                : undefined
+            }
+            cancelBusy={cancelRunMutation.isPending}
+            cancelError={
+              cancelRunMutation.isError
+                ? captureErrorText(cancelRunMutation.error, 'job')
+                : null
+            }
+            onDismissCancelError={cancelRunMutation.reset}
             presets={presets}
             presetsLoading={presetsQuery.isPending}
             onRunPreset={runPreset}
             submitError={submitMutation.isError ? submitMutation.error : undefined}
             submitFailures={active?.failures ?? []}
             captureLabel={labelFor}
+            onRetryFailures={
+              validationRun && allSettled && canRetryValidationRun
+                ? () => retryRunMutation.mutate(validationRun.run_id)
+                : undefined
+            }
+            retryBusy={retryRunMutation.isPending}
           />
-          <ResultsPanel
-            active={activeOutcome}
-            selectedCaptureId={selectedCaptureId}
-            onSelectCapture={selectRunCapture}
-            runJobs={runJobRows}
-            onCancelJob={cancelOneJob}
-            cancelPending={jobCancel.pending}
-          />
+          {validationRunQuery.isError ? (
+            <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
+              <Card
+                role="alert"
+                data-testid="validation-run-unavailable"
+                className="flex flex-col gap-2 border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+              >
+                <span className="font-semibold">Run not available</span>
+                <span>
+                  Jobs were not assumed. Select an active run or start a new one.
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedRunId(null);
+                    setSelectedCaptureId(null);
+                    writeValidationRunId(null);
+                    void queryClient.invalidateQueries({
+                      queryKey: queryKeys.validationRuns,
+                    });
+                  }}
+                  className="self-start text-xs font-semibold underline"
+                >
+                  Clear unavailable run
+                </button>
+              </Card>
+            </div>
+          ) : (
+            <ResultsPanel
+              active={activeOutcome}
+              selectedCaptureId={selectedCaptureId}
+              onSelectCapture={setSelectedCaptureId}
+              runJobs={runJobRows}
+            />
+          )}
         </div>
       </Card>
 

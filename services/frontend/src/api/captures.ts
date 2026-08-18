@@ -25,6 +25,10 @@ import type {
   CaptureDeleteRequest,
   CaptureDetail,
   CaptureListParams,
+  CaptureSearchRequest,
+  CaptureSearchResponse,
+  CaptureSelectionCreateRequest,
+  CaptureSelectionResponse,
   Dataset,
   DatasetArchiveProgress,
   DatasetArchiveRequest,
@@ -33,6 +37,8 @@ import type {
   DatasetUpdateRequest,
   DatasetListResponse,
   DatasetMember,
+  DatasetMembershipBulkRun,
+  DatasetMembershipBulkRunCreateRequest,
   DatasetSelectionRecipe,
   DatasetSelectionRecipeCreateRequest,
   Page,
@@ -86,6 +92,21 @@ export function listCaptures(
   });
 }
 
+/** One server-side filtered capture page plus the requested facets. */
+export function searchCaptures(
+  body: CaptureSearchRequest,
+  signal?: AbortSignal,
+): Promise<CaptureSearchResponse> {
+  return apiPost<CaptureSearchResponse>('/captures/search', body, { signal });
+}
+
+/** Freeze the server's ordered match set for one later bulk membership run. */
+export function createCaptureSelection(
+  body: CaptureSelectionCreateRequest,
+): Promise<CaptureSelectionResponse> {
+  return apiPost<CaptureSelectionResponse>('/capture-selections', body);
+}
+
 /**
  * Every capture matching *params*, following the cursor to exhaustion.
  *
@@ -118,7 +139,9 @@ export function getCapture(
   captureId: string,
   signal?: AbortSignal,
 ): Promise<CaptureDetail> {
-  return apiGet<CaptureDetail>(`/captures/${encodeURIComponent(captureId)}`, { signal });
+  return apiGet<CaptureDetail>(`/captures/${encodeURIComponent(captureId)}`, {
+    signal,
+  });
 }
 
 /**
@@ -192,7 +215,9 @@ export function getDataset(
   datasetId: string,
   signal?: AbortSignal,
 ): Promise<DatasetDetail> {
-  return apiGet<DatasetDetail>(`/datasets/${encodeURIComponent(datasetId)}`, { signal });
+  return apiGet<DatasetDetail>(`/datasets/${encodeURIComponent(datasetId)}`, {
+    signal,
+  });
 }
 
 export function createDataset(body: DatasetCreateRequest): Promise<Dataset> {
@@ -217,9 +242,41 @@ export function addDatasetMember(
   datasetId: string,
   captureId: string,
 ): Promise<DatasetMember> {
-  return apiPost<DatasetMember>(
-    `/datasets/${encodeURIComponent(datasetId)}/members`,
-    { capture_id: captureId },
+  return apiPost<DatasetMember>(`/datasets/${encodeURIComponent(datasetId)}/members`, {
+    capture_id: captureId,
+  });
+}
+
+/** Start or recover one server-owned membership bulk run from a frozen set. */
+export function createDatasetMembershipBulkRun(
+  datasetId: string,
+  body: DatasetMembershipBulkRunCreateRequest,
+): Promise<DatasetMembershipBulkRun> {
+  return apiPost<DatasetMembershipBulkRun>(
+    `/datasets/${encodeURIComponent(datasetId)}/membership-bulk-runs`,
+    body,
+  );
+}
+
+export function getDatasetMembershipBulkRun(
+  datasetId: string,
+  runId: string,
+  signal?: AbortSignal,
+): Promise<DatasetMembershipBulkRun> {
+  return apiGet<DatasetMembershipBulkRun>(
+    `/datasets/${encodeURIComponent(datasetId)}/membership-bulk-runs/${encodeURIComponent(runId)}`,
+    { signal },
+  );
+}
+
+/** Retry only the server-recorded failed members as a new durable run. */
+export function retryDatasetMembershipBulkRun(
+  datasetId: string,
+  runId: string,
+): Promise<DatasetMembershipBulkRun> {
+  return apiPost<DatasetMembershipBulkRun>(
+    `/datasets/${encodeURIComponent(datasetId)}/membership-bulk-runs/${encodeURIComponent(runId)}/retry`,
+    {},
   );
 }
 

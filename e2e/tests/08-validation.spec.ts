@@ -18,16 +18,16 @@
 // The recording is SETUP, not the claim (§13-1 owns the Collect flow), so it is
 // made through the API like §13-5's and §6.1's arrangements.
 
-import { expect, test } from '@playwright/test';
-import { api, recordCaptureViaApi, until } from '../fixtures/api';
-import { store } from '../fixtures/store';
-import { openTab } from '../fixtures/ui';
+import { expect, test } from "@playwright/test";
+import { api, recordCaptureViaApi, until } from "../fixtures/api";
+import { store } from "../fixtures/store";
+import { openTab } from "../fixtures/ui";
 
-const PIPELINE = 'fast_validation';
+const PIPELINE = "fast_validation";
 
-test.describe.configure({ mode: 'serial' });
+test.describe.configure({ mode: "serial" });
 
-test('Validation: fast_validation runs from the screen and reports every required topic', async ({
+test("Validation: fast_validation runs from the screen and reports every required topic", async ({
   page,
 }) => {
   test.setTimeout(8 * 60_000);
@@ -44,53 +44,82 @@ test('Validation: fast_validation runs from the screen and reports every require
   expect(
     template,
     `no active validation template in the config catalog (active=${activeId}) — ` +
-      'fast_validation would fall back to an empty required list and pass vacuously',
+      "fast_validation would fall back to an empty required list and pass vacuously",
   ).toBeDefined();
   const required = template!.meta.required_topics ?? [];
-  expect(required.length, 'the active template declares no required topics').toBeGreaterThan(0);
+  expect(
+    required.length,
+    "the active template declares no required topics",
+  ).toBeGreaterThan(0);
 
   // ---- arrange: one healthy recording to validate --------------------------
   // Settled = terminal AND digest complete: a pipeline reads objects/<id>, and
   // starting one while the digest still holds its lease is a race this scenario
   // is not about.
-  const captureId = await recordCaptureViaApi({ operator: 'e2e', task: 'validation', seconds: 4 });
+  const captureId = await recordCaptureViaApi({
+    operator: "e2e",
+    task: "validation",
+    seconds: 4,
+  });
   await until(
     `capture ${captureId} to settle before validating it`,
     () => api.getCapture(captureId),
-    (c) => c.state === 'completed' && c.digest_state === 'complete',
+    (c) => c.state === "completed" && c.digest_state === "complete",
     180_000,
   );
-  expect(store.reportSummary(PIPELINE, captureId), 'this capture was already validated').toBeNull();
+  expect(
+    store.reportSummary(PIPELINE, captureId),
+    "this capture was already validated",
+  ).toBeNull();
 
   // ---- the operator sets up the run ---------------------------------------
-  await openTab(page, 'validation');
+  await openTab(page, "validation");
   await page.getByTestId(`pipeline-card-${PIPELINE}`).click();
-  await expect(page.getByTestId('detail-header')).toContainText(PIPELINE, { timeout: 30_000 });
+  await expect(page.getByTestId("detail-header")).toContainText(PIPELINE, {
+    timeout: 30_000,
+  });
 
   // The target select carries every capture whose bytes are readable HERE; the
   // one just recorded has to be among them, and choosing it explicitly is what
   // makes the verdict below attributable to a known recording.
-  const target = page.getByLabel('target', { exact: true });
+  const target = page.getByLabel("target", { exact: true });
   await target.selectOption(captureId);
   await expect(target).toHaveValue(captureId);
 
   // The template param is seeded from the catalog's active selection, so the
   // screen must already be pointing at the template whose topics were read
   // above — otherwise the checklist would be measured against the wrong list.
-  await expect(page.getByLabel('template', { exact: true })).toHaveValue(activeId!);
+  await expect(page.getByLabel("template", { exact: true })).toHaveValue(
+    activeId!,
+  );
 
   // A capture whose files are here must not be flagged as unreachable.
-  await expect(page.getByTestId('target-availability')).toHaveAttribute(
-    'data-availability',
+  await expect(page.getByTestId("target-availability")).toHaveAttribute(
+    "data-availability",
     /verified|present/,
   );
 
   // ---- PRIMARY: run it, and get a verdict on screen ------------------------
-  await page.getByRole('button', { name: 'Run on selection' }).click();
+  await page.getByRole("button", { name: "Run on selection" }).click();
 
-  const checklist = page.getByTestId('fast-validation-checklist');
-  const submitError = page.getByTestId('validation-submit-error');
-  // Two ways this ends and they need different words. A refused POST /jobs
+  // The run is server-owned. Once its stable id reaches the URL, a browser
+  // reload must reconnect to that same run instead of losing its job ids or
+  // submitting a second run.
+  await expect
+    .poll(() => new URL(page.url()).searchParams.get("vrun"), {
+      message: "the durable validation run id never reached the URL",
+      timeout: 30_000,
+    })
+    .toMatch(/^validation_run_/);
+  const durableRunId = new URL(page.url()).searchParams.get("vrun");
+  await page.reload();
+  await expect
+    .poll(() => new URL(page.url()).searchParams.get("vrun"))
+    .toBe(durableRunId);
+
+  const checklist = page.getByTestId("fast-validation-checklist");
+  const submitError = page.getByTestId("validation-submit-error");
+  // Two ways this ends and they need different words. A refused Validation Run
   // (`pipeline_unavailable` when the image carries no dora, a deleted capture)
   // renders an error note and NO checklist — reporting that as "the checklist
   // never appeared" would send the reader looking at the wrong half.
@@ -100,38 +129,41 @@ test('Validation: fast_validation runs from the screen and reports every require
         if ((await submitError.count()) > 0) {
           return `the run was refused: ${(await submitError.textContent())?.trim()}`;
         }
-        return (await checklist.count()) > 0 ? 'checklist' : 'still running';
+        return (await checklist.count()) > 0 ? "checklist" : "still running";
       },
       {
-        message: 'fast_validation never produced a result on screen',
+        message: "fast_validation never produced a result on screen",
         timeout: 5 * 60_000,
         intervals: [1_000],
       },
     )
-    .toBe('checklist');
+    .toBe("checklist");
 
   // Every topic the template demanded is named on screen, with the message type
   // it was declared with — an operator reading a FAIL has to be able to see
   // WHICH topic, not just that something was missing.
   for (const topic of required) {
-    await expect(checklist, `the checklist does not mention ${topic.name}`).toContainText(
-      topic.name,
-    );
+    await expect(
+      checklist,
+      `the checklist does not mention ${topic.name}`,
+    ).toContainText(topic.name);
     if (topic.type) await expect(checklist).toContainText(topic.type);
   }
 
   // The count line and the badge are the two things read at a glance, and they
   // have to agree with each other and with the rows.
-  await expect(checklist).toContainText(`${required.length}/${required.length} required`);
-  await expect(checklist).toContainText('PASS');
+  await expect(checklist).toContainText(
+    `${required.length}/${required.length} required`,
+  );
+  await expect(checklist).toContainText("PASS");
 
   // The sample bag carries every required topic, so a ✕ here is a real defect
   // rather than a strict assertion: something the template demanded did not
   // reach the recording.
-  const marks = (await checklist.textContent()) ?? '';
+  const marks = (await checklist.textContent()) ?? "";
   expect(
     (marks.match(/✕/g) ?? []).length,
-    'a required topic is marked missing — the replayed bag publishes all of them',
+    "a required topic is marked missing — the replayed bag publishes all of them",
   ).toBe(0);
   expect((marks.match(/✓/g) ?? []).length).toBe(required.length);
 
@@ -146,13 +178,16 @@ test('Validation: fast_validation runs from the screen and reports every require
     60_000,
   );
   expect(summary!.pipeline).toBe(PIPELINE);
-  expect(summary!.result, `the report disagrees with the PASS on screen: ${summary!.message}`).toBe(
-    'pass',
-  );
+  expect(
+    summary!.result,
+    `the report disagrees with the PASS on screen: ${summary!.message}`,
+  ).toBe("pass");
   expect(summary!.capture_id).toBe(captureId);
   expect(summary!.missing).toEqual([]);
   // The verdict came from the bundled bagflow flow on dora, not from some
   // in-process fallback — which is the whole point of the pipeline moving there.
-  expect(summary!.engine).toBe('bagflow');
-  expect((summary!.template as { name?: string }).name).toBe(template!.meta.name);
+  expect(summary!.engine).toBe("bagflow");
+  expect((summary!.template as { name?: string }).name).toBe(
+    template!.meta.name,
+  );
 });

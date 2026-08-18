@@ -19,7 +19,7 @@ from __future__ import annotations
 # found in the field, not by tests, because tests only ever see fresh schemas.
 # The rebuild is the designed absorption path; refusing to bump is how it is
 # bypassed by accident.
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 13
 
 SCHEMA = """
 -- One recording, merged with the operator's review of it. Replaces v1's
@@ -92,6 +92,11 @@ CREATE TABLE IF NOT EXISTS captures (
 DROP INDEX IF EXISTS idx_captures_seq;
 CREATE INDEX IF NOT EXISTS idx_captures_state ON captures (state);
 CREATE INDEX IF NOT EXISTS idx_captures_batch ON captures (batch_id);
+CREATE INDEX IF NOT EXISTS idx_captures_review_state_seq
+    ON captures (review_status, state, seq DESC);
+CREATE INDEX IF NOT EXISTS idx_captures_operator_seq ON captures (operator, seq DESC);
+CREATE INDEX IF NOT EXISTS idx_captures_task_seq ON captures (task, seq DESC);
+CREATE INDEX IF NOT EXISTS idx_captures_robot_seq ON captures (robot, seq DESC);
 
 -- §7.1 leases: who is touching objects/<capture_id> right now. SHARED — any
 -- number of readers may hold one capture at once, which is what lets the N
@@ -151,6 +156,8 @@ CREATE TABLE IF NOT EXISTS replicas (
     PRIMARY KEY (capture_id, instance_id)
 );
 CREATE INDEX IF NOT EXISTS idx_replicas_state ON replicas (instance_id, state);
+CREATE INDEX IF NOT EXISTS idx_replicas_search
+    ON replicas (instance_id, state, capture_id);
 
 -- A dataset is rows plus ledger events (§6). No directory tree, no move, no
 -- dataset.json: the physical <operator>/<task>/<NNN> hierarchy is retired.
@@ -188,6 +195,51 @@ CREATE TABLE IF NOT EXISTS dataset_members (
     UNIQUE (dataset_id, capture_id)
 );
 CREATE INDEX IF NOT EXISTS idx_members_capture ON dataset_members (capture_id);
+
+-- Materialized selection IDs are short-lived query results, not durable
+-- capture truth. Membership rows and their ledger events remain rebuildable.
+CREATE TABLE IF NOT EXISTS capture_selections (
+    selection_id TEXT PRIMARY KEY,
+    query_json TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    matched_count INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_capture_selections_expiry
+    ON capture_selections (expires_at);
+CREATE TABLE IF NOT EXISTS capture_selection_items (
+    selection_id TEXT NOT NULL,
+    ordinal INTEGER NOT NULL,
+    capture_id TEXT NOT NULL,
+    PRIMARY KEY (selection_id, capture_id),
+    UNIQUE (selection_id, ordinal)
+);
+
+CREATE TABLE IF NOT EXISTS dataset_membership_bulk_runs (
+    run_id TEXT PRIMARY KEY,
+    dataset_id TEXT NOT NULL,
+    selection_id TEXT NOT NULL,
+    query_json TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    matched_count INTEGER NOT NULL,
+    attempted INTEGER NOT NULL DEFAULT 0,
+    succeeded INTEGER NOT NULL DEFAULT 0,
+    failed INTEGER NOT NULL DEFAULT 0,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    receipt_state TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (dataset_id, request_id)
+);
+CREATE TABLE IF NOT EXISTS dataset_membership_bulk_items (
+    run_id TEXT NOT NULL,
+    capture_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'pending',
+    error_code TEXT,
+    error_message TEXT,
+    PRIMARY KEY (run_id, capture_id)
+);
 
 CREATE TABLE IF NOT EXISTS jobs (
     seq        INTEGER PRIMARY KEY AUTOINCREMENT,

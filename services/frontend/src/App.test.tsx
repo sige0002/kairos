@@ -10,6 +10,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { App } from './App';
 import { ErrorBoundary, PanelBoundary } from './components/ErrorBoundary';
 import type { RuntimeConfig } from './config';
+import type { StoreHealth } from './api/types';
 import { useUiStore } from './store/uiStore';
 import { jsonResponse, renderWithClient } from './test/renderWithClient';
 import { HIT_AREA_CHIP, HIT_AREA_TAB } from './v2/shared/hitArea';
@@ -26,6 +27,15 @@ const STUB_CONFIG: RuntimeConfig = {
   defaults: { ros_domain_id: 42 },
   schemas: {},
 };
+
+const HEALTHY_STORE: StoreHealth = {
+  instance_id: 'pc-01',
+  state: 'ok',
+  delete_available: true,
+  corrupt: [],
+  warnings: [],
+};
+let storeHealth: StoreHealth = HEALTHY_STORE;
 
 // Minimal EventSource stub so useEventStream can mount without a real network.
 class FakeEventSource {
@@ -49,6 +59,7 @@ function routedFetch(url: string): Response {
     // is no `idle` on the wire.
     return jsonResponse({ run_id: null, state: 'created', live_capture_ids: [] });
   if (url.includes('/topics')) return jsonResponse([]);
+  if (url.includes('/store/health')) return jsonResponse(storeHealth);
   if (url.includes('/captures')) return jsonResponse({ items: [], next_cursor: null });
   return jsonResponse({});
 }
@@ -56,6 +67,7 @@ function routedFetch(url: string): Response {
 beforeEach(() => {
   window.localStorage.removeItem('kairos.operator');
   vi.stubGlobal('EventSource', FakeEventSource);
+  storeHealth = HEALTHY_STORE;
   vi.spyOn(globalThis, 'fetch').mockImplementation(
     (input: RequestInfo | URL) =>
       Promise.resolve(routedFetch(String(input))) as Promise<Response>,
@@ -98,6 +110,43 @@ test('defaults to Collect and shows all six v2 tabs', async () => {
   // Header context chips: ROS domain (from config.defaults) + SSE status.
   expect(screen.getByTestId('ros-domain')).toHaveTextContent('42');
   expect(screen.getByTestId('connection-status')).toBeInTheDocument();
+});
+
+test('main banner opens the shared Store Health query in Monitor Store', async () => {
+  storeHealth = {
+    ...HEALTHY_STORE,
+    state: 'suspect',
+    suspect_reason: 'Replica loss needs acknowledgement.',
+  };
+  const fetchSpy = vi.mocked(globalThis.fetch);
+  renderWithClient(<App />);
+
+  fireEvent.click(await screen.findByTestId('store-health-banner-monitor'));
+  expect(await screen.findByTestId('store-health-panel')).toBeInTheDocument();
+  expect(screen.getByTestId('mon-nav-Store')).toHaveAttribute('aria-pressed', 'true');
+  expect(new URLSearchParams(window.location.search).get('view')).toBe('store');
+  // The Monitor card reuses the already-resolved global query rather than
+  // independently asking a second time for the same evidence.
+  expect(
+    fetchSpy.mock.calls.filter(([input]) => String(input).includes('/store/health')),
+  ).toHaveLength(1);
+});
+
+test('solo banner preserves solo routing while opening Monitor Store', async () => {
+  storeHealth = {
+    ...HEALTHY_STORE,
+    warnings: ['The latest scan had a warning.'],
+  };
+  window.history.replaceState(null, '', '/?tab=collect&solo=1');
+  renderWithClient(<App />);
+
+  fireEvent.click(await screen.findByTestId('store-health-banner-monitor'));
+  expect(await screen.findByTestId('store-health-panel')).toBeInTheDocument();
+  expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+  const route = new URLSearchParams(window.location.search);
+  expect(route.get('tab')).toBe('monitor');
+  expect(route.get('solo')).toBe('1');
+  expect(route.get('view')).toBe('store');
 });
 
 test('clicking a tab switches the active panel', async () => {

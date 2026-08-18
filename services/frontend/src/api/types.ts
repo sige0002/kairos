@@ -424,6 +424,81 @@ export interface CaptureListParams {
   include_deleted?: boolean;
 }
 
+/** Portable server-side capture search and selection language. The values are
+ * deliberately closed to the orchestrator contract so a UI typo cannot turn
+ * a filtered Bulk Add into a broader query. */
+export type CaptureSearchField =
+  | 'any'
+  | 'operator'
+  | 'task'
+  | 'condition'
+  | 'run_id'
+  | 'capture_id'
+  | 'task_result'
+  | 'failure_reason'
+  | 'quality'
+  | 'review_status'
+  | 'robot'
+  | 'batch_id';
+/** Fields that the server can aggregate into categorical facet buckets. */
+export type CaptureFacetField = Exclude<
+  CaptureSearchField,
+  'any' | 'run_id' | 'capture_id'
+>;
+export type CaptureSearchOperator = 'contains' | 'equals';
+
+export interface CaptureSearchPredicate {
+  field: CaptureSearchField;
+  operator: CaptureSearchOperator;
+  value: string;
+}
+
+export interface CaptureSearchQuery {
+  join?: 'and' | 'or';
+  predicates?: CaptureSearchPredicate[];
+  states?: CaptureState[];
+  review_statuses?: ReviewStatus[];
+  present_on_instance?: boolean | null;
+  exclude_dataset_id?: string | null;
+  /** Inclusive RFC3339 creation/recording bounds interpreted by the server. */
+  started_from?: string | null;
+  started_to?: string | null;
+}
+
+export interface CaptureFacetValue {
+  value: string | null;
+  count: number;
+}
+
+export interface CaptureFacet {
+  values: CaptureFacetValue[];
+  truncated: boolean;
+  other_count: number;
+}
+
+export interface CaptureSearchRequest {
+  query: CaptureSearchQuery;
+  cursor?: string | null;
+  limit?: number;
+  facets?: CaptureFacetField[];
+}
+
+export interface CaptureSearchResponse extends Page<CaptureListItem> {
+  total: number;
+  facets: Partial<Record<CaptureFacetField, CaptureFacet>>;
+}
+
+/** A short-lived, materialized set consumed by a server-owned bulk run. */
+export interface CaptureSelectionCreateRequest {
+  query: CaptureSearchQuery;
+}
+
+export interface CaptureSelectionResponse {
+  selection_id: string;
+  matched_count: number;
+  expires_at: string;
+}
+
 /** Body of `PATCH /api/v1/captures/{id}/review` (§4.1).
  *
  *  `base_revision` is REQUIRED and is the whole point: the save is a
@@ -570,7 +645,14 @@ export interface Dataset {
 }
 
 export interface DatasetSelectionCondition {
-  field: 'any' | 'operator' | 'task' | 'condition' | 'run_id' | 'capture_id' | 'task_result';
+  field:
+    | 'any'
+    | 'operator'
+    | 'task'
+    | 'condition'
+    | 'run_id'
+    | 'capture_id'
+    | 'task_result';
   operator: 'contains' | 'equals';
   value: string;
 }
@@ -581,11 +663,18 @@ export interface DatasetSelectionRecipe {
   kind: 'filtered_bulk';
   join: 'and' | 'or';
   conditions: DatasetSelectionCondition[];
+  /** Full server query for a bulk receipt; null on legacy recipes. */
+  selection_query?: CaptureSearchQuery | null;
   matched: number;
   attempted: number;
   succeeded: number;
   failed: number;
   catalog_truncated: boolean;
+  /** Server bulk receipts identify the durable run and retry attempt. */
+  bulk_run_id?: string | null;
+  attempt?: number | null;
+  /** Later attempts report a cumulative receipt, not a second member add. */
+  cumulative: boolean;
 }
 
 export interface DatasetSelectionRecipeCreateRequest {
@@ -608,6 +697,32 @@ export interface DatasetMember {
   capture_id: string;
   display_index: number;
   created_at?: string | null;
+}
+
+export interface DatasetMembershipBulkRunCreateRequest {
+  selection_id: string;
+  /** Caller-generated idempotency key for a click/reload retry. */
+  request_id: string;
+}
+
+export interface DatasetMembershipBulkFailure {
+  capture_id: string;
+  code: string;
+  message: string;
+}
+
+/** Server progress is authoritative: `partial` is an outcome, not success. */
+export interface DatasetMembershipBulkRun {
+  run_id: string;
+  dataset_id: string;
+  selection_id: string;
+  state: 'pending' | 'running' | 'completed' | 'partial' | 'failed_receipt';
+  matched_count: number;
+  attempted: number;
+  succeeded: number;
+  failed: number;
+  pending: number;
+  failures: DatasetMembershipBulkFailure[];
 }
 
 export interface DatasetDetail extends Dataset {
@@ -1290,6 +1405,7 @@ export interface JobSubmitRequest {
   pipeline: string;
   capture_id: string;
   params?: Record<string, unknown>;
+  idempotency_key?: string;
 }
 
 /**
@@ -1338,6 +1454,58 @@ export interface JobStatus {
    *  running job is cooperative, so `state` stays `running` until the worker
    *  is actually dead and only then turns `canceled`. Keep polling. */
   cancel_requested?: boolean;
+  /** A timed-out outcome can be terminal while its worker still owns bytes. */
+  execution_active?: boolean | null;
+}
+
+export type ValidationRunState =
+  | 'creating'
+  | 'running'
+  | 'cancel_requested'
+  | 'finished';
+export type ValidationRunDispatchState =
+  | 'pending_lease'
+  | 'submitting'
+  | 'accepted'
+  | 'submission_failed'
+  | 'canceled_before_submit';
+
+export interface ValidationRunCreateRequest {
+  pipeline: string;
+  /** Explicit targets. Omit when execution consumes a server selection. */
+  capture_ids?: string[];
+  /** Frozen All/Batch target set created by POST /capture-selections. */
+  selection_id?: string;
+  params?: Record<string, unknown>;
+  /** Caller-generated UUID; reusing it safely recovers a lost POST response. */
+  request_id: string;
+}
+
+export interface ValidationRunJob {
+  run_job_id: string;
+  capture_id: string;
+  attempt: number;
+  dispatch_state: ValidationRunDispatchState;
+  job?: JobStatus | null;
+  failure_code?: string | null;
+  failure_message?: string | null;
+  result?: JobResult | null;
+}
+
+export interface ValidationRun {
+  run_id: string;
+  pipeline: string;
+  params: Record<string, unknown>;
+  state: ValidationRunState;
+  cancel_requested: boolean;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+  jobs: ValidationRunJob[];
+}
+
+export interface ValidationRunListResponse {
+  items: ValidationRun[];
 }
 
 // ---- Cursor pagination --------------------------------------------------
@@ -1458,6 +1626,11 @@ export interface BatchDetail extends Batch {
 
 export interface BatchListResponse {
   items: BatchSummary[];
+}
+
+/** Ordered metadata resolution for only the batch ids in a capture page. */
+export interface BatchLookupResponse {
+  items: Batch[];
 }
 
 /** One condition's recorded total for a task (`GET /api/v1/batches/coverage`). */
