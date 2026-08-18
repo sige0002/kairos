@@ -81,6 +81,7 @@ interface Backend {
     destination: string | null;
     mode: string | null;
   }[];
+  datasetArchiveCancelCalls: string[];
   calls: string[];
 }
 
@@ -190,6 +191,7 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     archiveClaimedBy: seed.archiveClaimedBy ?? null,
     jobsUnreachable: seed.jobsUnreachable ?? false,
     datasetArchiveCalls: [],
+    datasetArchiveCancelCalls: [],
     calls: [],
   };
   let nextId = 1;
@@ -233,6 +235,39 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     }
 
     // ---- the dataset archive run (§6.x) ----------------------------------
+    const datasetArchiveCancelMatch = path.match(
+      /^\/datasets\/([^/]+)\/archive\/cancel$/,
+    );
+    if (datasetArchiveCancelMatch && method === 'POST') {
+      const datasetId = decodeURIComponent(datasetArchiveCancelMatch[1]!);
+      const dataset = backend.datasets.find((d) => d.dataset_id === datasetId);
+      if (!dataset) {
+        return jsonResponse(
+          { error: { code: 'dataset_not_found', message: 'gone' } },
+          404,
+        );
+      }
+      backend.datasetArchiveCancelCalls.push(datasetId);
+      dataset.status = 'active';
+      dataset.archive_destination = null;
+      dataset.archive_started_at = null;
+      dataset.archive_mode = null;
+      backend.archiveRun = {
+        dataset_id: datasetId,
+        status: 'active',
+        destination: null,
+        mode: null,
+        member_total: backend.members.filter((m) => m.dataset_id === datasetId)
+          .length,
+        members_done: 0,
+        running: false,
+        error: null,
+        cancelable: false,
+        cancel_blocker: 'not_archiving',
+      };
+      return jsonResponse(backend.archiveRun);
+    }
+
     const datasetArchiveMatch = path.match(/^\/datasets\/([^/]+)\/archive$/);
     if (datasetArchiveMatch) {
       const datasetId = decodeURIComponent(datasetArchiveMatch[1]!);
@@ -264,6 +299,8 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
           members_done: memberIds.length,
           running: false,
           error: null,
+          cancelable: false,
+          cancel_blocker: 'not_archiving',
           archived_at: dataset.archived_at,
         };
       };
@@ -321,6 +358,8 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
           members_done: 0,
           running: true,
           error: null,
+          cancelable: false,
+          cancel_blocker: 'archive_in_progress',
         };
         return jsonResponse(backend.archiveRun, 202);
       }
@@ -334,6 +373,8 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
           members_done: 0,
           running: false,
           error: null,
+          cancelable: false,
+          cancel_blocker: dataset.status === 'archiving' ? 'members_completed' : 'not_archiving',
         },
       );
     }
@@ -1450,6 +1491,7 @@ test('a halted run reports why, stays archiving, and Resume continues it without
   });
   expect(halt).toHaveTextContent('A job holds this capture.');
   expect(screen.getByTestId('dataset-archive-progress-count')).toHaveTextContent('1 / 2');
+  expect(screen.queryByTestId('dataset-archive-cancel-run')).not.toBeInTheDocument();
 
   fireEvent.click(screen.getByTestId('dataset-archive-resume'));
 
@@ -1465,6 +1507,109 @@ test('a halted run reports why, stays archiving, and Resume continues it without
   });
   const toast = await screen.findByTestId('toast', undefined, { timeout: 5000 });
   expect(toast).toHaveTextContent(/verified, then removed/);
+});
+
+test('a zero-progress halted run can be canceled and returns the dataset to Active', async () => {
+  const backend = mockApi({
+    datasets: [
+      {
+        ...DS_KITCHEN,
+        status: 'archiving',
+        archive_destination: '/wrong-mount/op_a/pick_place/kitchen picks',
+        archive_started_at: '2026-08-18T08:30:00Z',
+      },
+    ],
+    captures: [CAP_A],
+    members: [
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
+    ],
+    archiveRoots: ['/mnt/archive'],
+    archiveRun: {
+      dataset_id: 'ds-kitchen',
+      status: 'archiving',
+      destination: '/wrong-mount/op_a/pick_place/kitchen picks',
+      member_total: 1,
+      members_done: 0,
+      running: false,
+      error: {
+        code: 'internal_error',
+        message: 'The archive destination is unavailable.',
+      },
+      cancelable: true,
+      cancel_blocker: null,
+    },
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  fireEvent.click(await screen.findByTestId('archive-dataset-btn'));
+
+  const consequence = await screen.findByTestId(
+    'dataset-archive-cancel-available',
+  );
+  expect(consequence).toHaveTextContent(/returns the dataset to Active/i);
+  expect(consequence).toHaveTextContent(/does not delete/i);
+  fireEvent.click(screen.getByTestId('dataset-archive-cancel-run'));
+
+  await waitFor(() => {
+    expect(backend.datasetArchiveCancelCalls).toEqual(['ds-kitchen']);
+  });
+  expect(await screen.findByTestId('toast')).toHaveTextContent(
+    /dataset is active again.*destination claim was released/i,
+  );
+  expect(screen.queryByTestId('dataset-archive-dialog')).not.toBeInTheDocument();
+  expect(backend.datasets[0]!.status).toBe('active');
+  expect(await screen.findByTestId('archive-dataset-btn')).toHaveTextContent(
+    'Archive dataset',
+  );
+});
+
+test('a durably canceled attempt never offers Resume while the catalog is stale', async () => {
+  mockApi({
+    datasets: [
+      {
+        ...DS_KITCHEN,
+        status: 'archiving',
+        archive_destination: '/mnt/archive/op_a/pick_place/kitchen picks',
+        archive_started_at: '2026-08-18T08:30:00Z',
+      },
+    ],
+    captures: [CAP_A],
+    members: [
+      {
+        membership_id: 'm-1',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-a',
+        display_index: 1,
+      },
+    ],
+    archiveRun: {
+      dataset_id: 'ds-kitchen',
+      status: 'archiving',
+      destination: '/mnt/archive/op_a/pick_place/kitchen picks',
+      member_total: 1,
+      members_done: 0,
+      running: false,
+      error: null,
+      cancelable: false,
+      cancel_blocker: 'archive_canceled',
+    },
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  fireEvent.click(await screen.findByTestId('archive-dataset-btn'));
+
+  expect(await screen.findByTestId('dataset-archive-halt')).toHaveTextContent(
+    /cancellation is recorded durably/i,
+  );
+  expect(screen.queryByTestId('dataset-archive-resume')).not.toBeInTheDocument();
+  expect(screen.queryByTestId('dataset-archive-cancel-run')).not.toBeInTheDocument();
 });
 
 // ---- label edits (identity is dataset_id; names move) ----------------------

@@ -572,7 +572,9 @@ class CaptureArchiveProgress(BaseModel):
 class Dataset(BaseModel):
     """A logical dataset: a named set of captures, with no physical tree.
 
-    ``status`` walks ``active → archiving → archived`` and never back (§6.x).
+    ``status`` normally walks ``active → archiving → archived`` (§6.x). A
+    durably canceled, zero-progress attempt is the sole ``archiving → active``
+    edge; ``archived`` never returns.
     The three ``archive*`` fields are the durable face of the archive run —
     they come from database columns replayed out of the ledger, so they
     survive a rebuild, unlike the in-flight progress served by
@@ -661,6 +663,11 @@ class DatasetArchiveProgress(BaseModel):
     current_capture_id: str | None = None
     current_bytes: int | None = None
     error: dict[str, Any] | None = None
+    # Server-authoritative: true only when a halted attempt has no durable
+    # completed member and can therefore be abandoned without claiming that
+    # copied/removed bytes were rolled back.
+    cancelable: bool = False
+    cancel_blocker: str | None = None
     archive_started_at: str | None = None
     archived_at: str | None = None
 

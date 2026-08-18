@@ -626,6 +626,10 @@ export interface DatasetArchiveProgress {
   current_capture_id?: string | null;
   current_bytes?: number | null;
   error?: { capture_id?: string; code?: string; message?: string } | null;
+  /** True only when the halted attempt has no completed member. */
+  cancelable?: boolean;
+  /** Machine-readable reason cancellation is unavailable. */
+  cancel_blocker?: string | null;
   archive_started_at?: string | null;
   archived_at?: string | null;
 }

@@ -461,6 +461,7 @@ class DatasetService:
             "removed": 0,
             "deleted": 0,
             "archiving": 0,
+            "archive_canceled": 0,
             "archived": 0,
         }
         # Per-dataset evidence for the watermark, accumulated as the replay
@@ -524,6 +525,10 @@ class DatasetService:
                 counts["archiving"] += self._replay_archive_started(
                     dataset_id, event, floors
                 )
+            elif kind == "dataset_archive_canceled":
+                self._ensure_dataset_row(dataset_id, event)
+                self._store.mark_dataset_archive_canceled(dataset_id)
+                counts["archive_canceled"] += 1
             elif kind == "dataset_archived":
                 self._ensure_dataset_row(dataset_id, event)
                 self._store.mark_dataset_archived(

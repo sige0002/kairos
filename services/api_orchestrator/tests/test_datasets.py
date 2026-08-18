@@ -522,6 +522,46 @@ class TestArchiveReplay:
             assert detail["status"] == "archiving"
             assert detail["archive_destination"] == "/mnt/nas/alice/pick/ds"
 
+    def test_a_canceled_run_comes_back_active_with_its_members(
+        self, client: TestClient, layout: DataLayout, settings, fake_recorder
+    ) -> None:
+        instance_id = client.app.state.instance_id
+        capture_id = new_capture_id()
+        started = ledger_v2.append(
+            layout.data_dir,
+            "dataset_archive_started",
+            instance_id=instance_id,
+            payload={
+                "dataset_id": "d1",
+                "destination": "/mnt/nas/alice/pick/ds",
+                "dataset_name": "ds",
+                "members": [
+                    {
+                        "membership_id": "m1",
+                        "capture_id": capture_id,
+                        "display_index": 1,
+                    }
+                ],
+            },
+        )
+        ledger_v2.append(
+            layout.data_dir,
+            "dataset_archive_canceled",
+            instance_id=instance_id,
+            payload={
+                "dataset_id": "d1",
+                "destination": "/mnt/nas/alice/pick/ds",
+                "started_event_id": started["event_id"],
+                "reason": "operator_requested",
+            },
+        )
+
+        with self._rebuild(client, layout, settings, fake_recorder) as restarted:
+            detail = restarted.get("/api/v1/datasets/d1").json()
+            assert detail["status"] == "active"
+            assert detail["archive_destination"] is None
+            assert [m["capture_id"] for m in detail["members"]] == [capture_id]
+
 
 class TestViews:
     def test_refresh_builds_a_browsable_tree_of_symlinks(

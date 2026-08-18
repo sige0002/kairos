@@ -31,6 +31,7 @@ import {
   addDatasetMember,
   archiveCapture,
   archiveDataset,
+  cancelDatasetArchiveAttempt,
   createDataset,
   deleteDataset,
   getArchiveConfig,
@@ -335,8 +336,8 @@ export interface DatasetsState {
 
   // ---- dataset archive (§6.x: the terminal transition) --------------------
   // Copy the WHOLE dataset out — views shape plus a manifest — verify every
-  // file, then remove the members from this machine. Terminal: the dataset's
-  // member set freezes at the start and its status never returns to active.
+  // file, then remove the members from this machine. A halted attempt with no
+  // completed member may be canceled; otherwise the frozen set goes forward.
   /** status ≠ 'active' — the dataset's member set is frozen (§6.x). */
   isDatasetFrozen: (datasetId: string) => boolean;
   /** The selected dataset may start an archive run right now. */
@@ -366,8 +367,12 @@ export interface DatasetsState {
   confirmDatasetArchive: () => void;
   /** Re-POST with no destination: continue a halted run where it stood. */
   resumeDatasetArchive: () => void;
+  /** Release a halted attempt only when the server proves zero progress. */
+  cancelDatasetArchiveRun: () => void;
   datasetArchiveStarting: boolean;
   datasetArchiveStartError: unknown;
+  datasetArchiveCanceling: boolean;
+  datasetArchiveCancelError: unknown;
   /** Live progress while the selected dataset is archiving (1 s poll). */
   datasetArchiveProgress: DatasetArchiveProgress | null;
 
@@ -1182,6 +1187,20 @@ export function useDatasetsState(): DatasetsState {
     onError: () => void invalidateDatasets(selectedDatasetId),
   });
 
+  const datasetArchiveCancelMutation = useMutation({
+    mutationFn: (datasetId: string) => cancelDatasetArchiveAttempt(datasetId),
+    onSuccess: async (progress) => {
+      queryClient.setQueryData(queryKeys.datasetArchive(progress.dataset_id), progress);
+      setDatasetArchiveOpen(false);
+      await invalidateDatasets(progress.dataset_id);
+      showToast(
+        'Archive run canceled — the dataset is active again and the destination ' +
+          'claim was released. Destination files were not deleted',
+      );
+    },
+    onError: () => void invalidateDatasets(selectedDatasetId),
+  });
+
   // Completion is observed, not returned: the 202 started the run, and the
   // poll is what eventually reports `archived`. The toast fires on that edge —
   // whether or not the dialog is still open, because the run kept going either
@@ -1235,6 +1254,7 @@ export function useDatasetsState(): DatasetsState {
     setDatasetArchiveReason('');
     setDatasetArchiveMode(datasetArchiveSharedCount > 0 ? 'copy' : 'move');
     datasetArchiveMutation.reset();
+    datasetArchiveCancelMutation.reset();
   };
   const cancelDatasetArchive = useCallback(() => setDatasetArchiveOpen(false), []);
 
@@ -1482,9 +1502,16 @@ export function useDatasetsState(): DatasetsState {
     resumeDatasetArchive: () => {
       if (selectedDatasetId) datasetArchiveMutation.mutate({ resume: true });
     },
+    cancelDatasetArchiveRun: () => {
+      if (selectedDatasetId) datasetArchiveCancelMutation.mutate(selectedDatasetId);
+    },
     datasetArchiveStarting: datasetArchiveMutation.isPending,
     datasetArchiveStartError: datasetArchiveMutation.isError
       ? datasetArchiveMutation.error
+      : null,
+    datasetArchiveCanceling: datasetArchiveCancelMutation.isPending,
+    datasetArchiveCancelError: datasetArchiveCancelMutation.isError
+      ? datasetArchiveCancelMutation.error
       : null,
     datasetArchiveProgress,
 

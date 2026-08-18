@@ -347,7 +347,7 @@ def test_dataset_events_come_back_in_order(tmp_path: Path) -> None:
     ]
 
 
-# -- the dataset archive pair (§6.x) ------------------------------------------
+# -- the dataset archive lifecycle (§6.x) -------------------------------------
 
 
 def _started_payload(**overrides):
@@ -410,6 +410,45 @@ def test_a_dataset_archive_run_reads_back_start_to_seal(tmp_path: Path) -> None:
 
     # Not tombstones: the recordings still exist, just not here.
     assert ledger.tombstones(tmp_path) == {}
+
+
+def test_a_dataset_archive_cancellation_reads_back_and_validates(
+    tmp_path: Path,
+) -> None:
+    started = _append(
+        tmp_path,
+        "dataset_archive_started",
+        payload=_started_payload(),
+    )
+    _append(
+        tmp_path,
+        "dataset_archive_canceled",
+        payload={
+            "dataset_id": "d1",
+            "destination": "/mnt/nas/exports/yuki/pick/ds1",
+            "started_event_id": started["event_id"],
+            "reason": "operator_requested",
+        },
+    )
+
+    assert [event["kind"] for event in ledger.dataset_events(tmp_path)] == [
+        "dataset_archive_started",
+        "dataset_archive_canceled",
+    ]
+    assert ledger.tombstones(tmp_path) == {}
+
+    for key in ("dataset_id", "destination", "started_event_id"):
+        with pytest.raises(ValueError, match=key):
+            _append(
+                tmp_path,
+                "dataset_archive_canceled",
+                payload={
+                    "dataset_id": "d1",
+                    "destination": "/mnt/nas/exports/yuki/pick/ds1",
+                    "started_event_id": started["event_id"],
+                    key: "",
+                },
+            )
 
 
 def test_a_dataset_archive_start_must_freeze_its_members(tmp_path: Path) -> None:

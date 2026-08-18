@@ -108,6 +108,29 @@ def _dataset_dir(roots: Path) -> Path:
 class TestPreflight:
     """Everything that must refuse before a single byte moves."""
 
+    def test_an_unavailable_archive_root_is_refused_before_the_run_is_frozen(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "missing-mount"
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            dataset = _dataset(client, layout, members=1)
+            dataset_id = dataset["dataset_id"]
+
+            response = client.post(
+                f"/api/v1/datasets/{dataset_id}/archive",
+                json={"destination": str(roots / "exports")},
+            )
+
+            assert response.status_code == 503
+            assert response.json()["error"]["code"] == (
+                "archive_destination_unavailable"
+            )
+            detail = client.get(f"/api/v1/datasets/{dataset_id}").json()
+            assert detail["status"] == "active"
+            assert detail["archive_destination"] is None
+            assert _events(layout, "dataset_archive_started") == []
+
     def test_a_shared_member_blocks_the_start(
         self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
     ) -> None:
@@ -586,6 +609,160 @@ class TestResume:
             assert progress["status"] == "archiving"
             assert progress["error"]["code"] == "capture_in_dataset"
             assert layout.capture_dir(members[0]["capture_id"]).is_dir()
+
+
+class TestCancel:
+    """A halted zero-progress attempt may be abandoned, never rolled back."""
+
+    def _frozen_run(
+        self, client: TestClient, layout: DataLayout, roots: Path, *, members: int = 2
+    ) -> tuple[str, list[dict], Path]:
+        return TestResume()._frozen_run(client, layout, roots, members=members)
+
+    def test_a_halted_zero_progress_run_can_be_canceled_and_started_again(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            dataset_id, _, target = self._frozen_run(client, layout, roots)
+
+            before = client.get(f"/api/v1/datasets/{dataset_id}/archive").json()
+            assert before["status"] == "archiving"
+            assert before["running"] is False
+            assert before["cancelable"] is True
+            assert before["cancel_blocker"] is None
+
+            canceled = client.post(f"/api/v1/datasets/{dataset_id}/archive/cancel")
+
+            assert canceled.status_code == 200
+            progress = canceled.json()
+            assert progress["status"] == "active"
+            assert progress["destination"] is None
+            assert progress["cancelable"] is False
+            assert progress["cancel_blocker"] == "not_archiving"
+            detail = client.get(f"/api/v1/datasets/{dataset_id}").json()
+            assert detail["status"] == "active"
+            assert detail["archive_destination"] is None
+            events = _events(layout, "dataset_archive_canceled")
+            assert len(events) == 1
+            assert events[0]["destination"] == str(target)
+            assert (
+                events[0]["started_event_id"]
+                == _events(layout, "dataset_archive_started")[0]["event_id"]
+            )
+
+            restarted = client.post(
+                f"/api/v1/datasets/{dataset_id}/archive",
+                json={"destination": str(roots / "retry")},
+            )
+            assert restarted.status_code == 202
+            _settle(client, dataset_id)
+            assert (
+                client.get(f"/api/v1/datasets/{dataset_id}").json()["status"]
+                == "archived"
+            )
+            assert len(_events(layout, "dataset_archive_started")) == 2
+
+    def test_a_run_with_a_completed_member_cannot_be_canceled(
+        self, data_dir: Path, tmp_path: Path, fake_recorder: FakeRecorder
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            service = client.app.state.capture_service
+            dataset_id, members, target = self._frozen_run(client, layout, roots)
+            asyncio.run(
+                service.archive_member(
+                    members[0]["capture_id"],
+                    dataset_id=dataset_id,
+                    membership_id=members[0]["membership_id"],
+                    display_index=members[0]["display_index"],
+                    target=target / "001",
+                )
+            )
+
+            progress = client.get(f"/api/v1/datasets/{dataset_id}/archive").json()
+            assert progress["members_done"] == 1
+            assert progress["cancelable"] is False
+            assert progress["cancel_blocker"] == "members_completed"
+
+            refused = client.post(f"/api/v1/datasets/{dataset_id}/archive/cancel")
+
+            assert refused.status_code == 409
+            error = refused.json()["error"]
+            assert error["code"] == "archive_cancel_unsafe"
+            assert error["details"]["members_done"] == 1
+            assert (
+                client.get(f"/api/v1/datasets/{dataset_id}").json()["status"]
+                == "archiving"
+            )
+            assert _events(layout, "dataset_archive_canceled") == []
+
+    def test_a_durable_cancel_blocks_resume_when_the_catalog_reset_fails(
+        self,
+        data_dir: Path,
+        tmp_path: Path,
+        fake_recorder: FakeRecorder,
+        monkeypatch,
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            store = client.app.state.capture_store
+            dataset_id, members, _ = self._frozen_run(client, layout, roots)
+            monkeypatch.setattr(store, "cancel_dataset_archive", lambda _id: False)
+
+            canceled = client.post(f"/api/v1/datasets/{dataset_id}/archive/cancel")
+
+            assert canceled.status_code == 503
+            assert canceled.json()["error"]["code"] == (
+                "archive_cancel_catalog_pending"
+            )
+            assert len(_events(layout, "dataset_archive_canceled")) == 1
+            progress = client.get(f"/api/v1/datasets/{dataset_id}/archive").json()
+            assert progress["status"] == "archiving"
+            assert progress["cancelable"] is False
+            assert progress["cancel_blocker"] == "archive_canceled"
+
+            resumed = client.post(f"/api/v1/datasets/{dataset_id}/archive", json={})
+
+            assert resumed.status_code == 409
+            assert resumed.json()["error"]["code"] == "archive_attempt_canceled"
+            assert all(
+                layout.capture_dir(member["capture_id"]).is_dir() for member in members
+            )
+            assert _events(layout, "capture_archived") == []
+
+    def test_progress_reads_the_lifecycle_ledger_once(
+        self,
+        data_dir: Path,
+        tmp_path: Path,
+        fake_recorder: FakeRecorder,
+        monkeypatch,
+    ) -> None:
+        roots = tmp_path / "nas"
+        roots.mkdir()
+        with _archive_client(data_dir, roots, fake_recorder) as client:
+            layout = client.app.state.data_layout
+            dataset_id, _, _ = self._frozen_run(client, layout, roots)
+            original = ledger_v2.read_all
+            calls = 0
+
+            def counted_read_all(path, *, strict=True):
+                nonlocal calls
+                calls += 1
+                return original(path, strict=strict)
+
+            monkeypatch.setattr(ledger_v2, "read_all", counted_read_all)
+
+            response = client.get(f"/api/v1/datasets/{dataset_id}/archive")
+
+            assert response.status_code == 200
+            assert calls == 1
 
 
 class TestResumeRefusals:

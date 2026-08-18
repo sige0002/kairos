@@ -208,6 +208,7 @@ review が書ける列は **measurement と label の区別**で決まる。
 | `dataset_member_removed` | `dataset_id` / `membership_id` |
 | `dataset_deleted` | `dataset_id` |
 | `dataset_archive_started` | `dataset_id` / `destination` / `dataset_name` / `mode?`（`copy`\|`move`、欠落 = `move`） / `operator?` / `task?` / `members: [{membership_id, capture_id, display_index}]` / `reason?`。**凍結された member 集合そのもの**（§6.1） |
+| `dataset_archive_canceled` | `dataset_id` / `destination` / `started_event_id` / `reason?`。完了 member 0 件の halted attempt を明示的に放棄した記録（§6.1） |
 | `dataset_archived` | `dataset_id` / `destination` / `dataset_name` / `mode?` / `member_total` / `bytes_total` / `manifest_sha256?`。run の封印（§6.1） |
 | `batch_created` | `batch_id` / `batch_seq` / `project` / `task` / `target_episodes` / `created_at` / `robot?` / `condition?` / `operator?`。**`status` は載せない** — 作成時点は常に `active` なので情報が無く、replay がそれを信じると終了済みバッチを「開いたまま」に復元してしまう（→ `batch_ended`） |
 | `batch_updated` | `batch_id` / `project` / `task` / `condition` / `target_episodes`。`dataset_updated` と同じく**差分ではなく変更後の完全な集合** |
@@ -215,7 +216,7 @@ review が書ける列は **measurement と label の区別**で決まる。
 
 - `capture_id` はイベントの **envelope** で運ぶ。`event_id` / `at` / `source_instance_id` も envelope 側が所有し、payload からは設定できない（呼び出し側が冪等キーや時刻を偽造できないようにするため）。
 - append は flush → fsync → 親 dir fsync。**全 kind で fatal** — 書けなければその操作を中止する。
-- `capture_archived` を**墓標に含めない**のが要点。バイトは operator が選んだ場所へ移っただけで capture は実在するので、「存在しなかったこと」に正規化してはならない。`dataset_archive_started` / `dataset_archived` も同様に墓標ではない。
+- `capture_archived` を**墓標に含めない**のが要点。バイトは operator が選んだ場所へ移っただけで capture は実在するので、「存在しなかったこと」に正規化してはならない。`dataset_archive_started` / `dataset_archive_canceled` / `dataset_archived` も同様に墓標ではない。
 - **録画系イベントの kind は追加しない**（安全原則 5 の不変条件。録画 start/stop が ledger の書き込み可能性に依存してはならない）。
 - **ENOSPC 対策**: 起動時に `.ledger-slack`（1MB）を確保する。append が `ENOSPC` になったとき、discard / delete の経路は slack を解放して append を再試行する（ディスクが埋まった状態から抜け出す唯一の経路が、ディスクを要求するせいで塞がる、を防ぐ）。
 - Review 編集は ledger に書かない（`record.json` が正）。
@@ -244,20 +245,21 @@ review が書ける列は **measurement と label の区別**で決まる。
 
 dataset の終端。capture archive の語彙（copy → verify → remove）を dataset に持ち上げたもので、**v1 の「export = store 内の move」の復活ではない**: 出て行ったものはこの store から消え、**どこへ行ったかの記録が残ること**が目的そのもの。
 
-- **状態機械**: `datasets.status` は `active → archiving → archived` を一方向に歩く。`active → archiving` は DB の CAS（`UPDATE … WHERE status='active'`）で直列化し、二重開始を構造的に排除する。`archived` は終端。
+- **状態機械**: 通常は `datasets.status` が `active → archiving → archived` を一方向に歩く。`active → archiving` は DB の CAS（`UPDATE … WHERE status='active'`）で直列化し、二重開始を構造的に排除する。唯一の逆辺は、完了 member が 0 件の halted attempt を ledger に明記して放棄する `archiving → active`（下記 cancel）。`archived` は終端。
 - **2 つの mode**（`archive_mode` として行と ledger の両方に凍結される。resume で変更不可 — 409 `archive_mode_mismatch`）:
   - **`move`（既定）**: 検証済みの member から順に**源を削除**する。ディスクが空く。member は専有必須（他の active dataset と共有していれば 409）。
   - **`copy`**: 同じフォルダ・同じ manifest・同じ封印を作るが、**capture の行にもバイトにも一切触れない**。共有 member でも合法 — 合成で作った集合の標準の書き出し方。member ごとの `capture_archived` イベントは**書かない**（何も起きていない capture に「出て行った」と記録するのは嘘になる）— 完了 member の耐久記録は destination の manifest 自身で、resume はそれを読んで再開する。`delete_unavailable` の環境でも実行可能。
 - **copy で封印された dataset（archived × copy）の membership は、capture のローカルバイトへの主張ではない**: per-capture の delete / archive を**ブロックせず**、新しい dataset への追加も妨げない。これが無いと「copy 封印された dataset にしか属さない capture が、凍結された member 集合のせいで永久に消せない」罠になる。move の場合は従来どおり（§7 の guard は active な dataset と、bytes を主張する非 active = move 系のみを数える）。
-- **開始（`POST /api/v1/datasets/{id}/archive` → 202）**: 行き先は capture archive と同じ `KAIROS_ARCHIVE_ROOTS` 許可リスト＋重なり検査（§6 の 2 つの独立した問い。検査対象は解決後の dataset_dir）。**フォルダ名は operator のもの**: `path`（root 配下の相対パス。最終要素が dataset のフォルダ）を UI が views 形状 `<operator>/<task>/<name>` で先埋めし、自由に書き換えられる。省略時はサーバが同じ既定を sanitize して合成。エスケープ（`..` 等）は文字検査ではなく最終ディレクトリの realpath 再検証（許可リスト包含）で閉じ、**既存エクスポートとの衝突は `409 destination_not_empty` または `409 destination_claimed`**（この 2 つが重複チェックの実体）。後者は行き先を既に別の dataset が保持している場合で、空だが専有済みの窓 — 走者がまだ何も書いていない開始直後や、operator が中断した run の残骸を消した後 — を閉じる。member 0 件・共有 member（他 dataset にも属す capture、409 で全件列挙）・busy な member（各自の理由付きで全件列挙）・非空の行き先は開始前に拒否する。CAS 成功 → `dataset_archive_started` を append（**凍結された member 集合を運ぶ**。失敗したら CAS を戻す — バイトが動く前だけに許される唯一の rollback）。
+- **開始（`POST /api/v1/datasets/{id}/archive` → 202）**: 行き先は capture archive と同じ `KAIROS_ARCHIVE_ROOTS` 許可リスト＋重なり検査（§6 の 2 つの独立した問い。検査対象は解決後の dataset_dir）。**フォルダ名は operator のもの**: `path`（root 配下の相対パス。最終要素が dataset のフォルダ）を UI が views 形状 `<operator>/<task>/<name>` で先埋めし、自由に書き換えられる。省略時はサーバが同じ既定を sanitize して合成。エスケープ（`..` 等）は文字検査ではなく最終ディレクトリの realpath 再検証（許可リスト包含）で閉じ、**既存エクスポートとの衝突は `409 destination_not_empty` または `409 destination_claimed`**（この 2 つが重複チェックの実体）。後者は行き先を既に別の dataset が保持している場合で、空だが専有済みの窓 — 走者がまだ何も書いていない開始直後や、operator が中断した run の残骸を消した後 — を閉じる。member 0 件・共有 member（他 dataset にも属す capture、409 で全件列挙）・busy な member（各自の理由付きで全件列挙）・非空の行き先は開始前に拒否する。さらに選択 root 自身で probe file を作成・fsync・削除し、未 mount / 非 directory / 書き込み不可なら `503 archive_destination_unavailable` を返す。これらはすべて CAS より前なので、誤設定は dataset を凍結しない。CAS 成功 → `dataset_archive_started` を append（**凍結された member 集合を運ぶ**。失敗したら CAS を戻す — バイトが動く前だけに許される唯一の rollback）。
 - **run（orchestrator 内の in-process ランナー。dora_runner ではない — ファイルを動かす仕事はそこに無い）**: member を `display_index` 順に、per-capture archive と同一の §9-1 順序（copy → sha256 verify → `capture_archived`（dataset 注釈付き）→ 行更新 → trash 経由の source 削除・replica を同一クリティカルセクションで `trashed` へ）で搬出する。書き込み先は `<dataset_dir>/<NNN>/`。
 - **member guard の唯一の緩和**: §7 の「dataset member は archive 拒否」は、**当該 run 自身の dataset の membership に限って**免除される（他の dataset の membership は引き続き拒否）。HTTP 経路の per-capture archive の挙動は不変。
 - **`dataset_manifest.json`**: 最初の書き込みから dataset_dir に置き、member 完了ごとに atomic に書き直す — 途中で死んだフォルダが「dataset X の書き出し途中、001–002 は封印済み」と**自己申告する**ため。全 member 完了で `status: complete` に確定し、その bytes の sha256 を `dataset_archived`（封印イベント）が記録する。依存は manifest → ledger の一方向で、封印後に manifest を書き換えれば ledger 単独で検出できる。
 - **halt と resume**: 進めない member（lease 出現・append 失敗・行き先に未記録のバイト etc.）で run は**その場で止まり、`archiving` のまま**理由を報告する。何も rollback しない。再 POST（destination 省略、指定するなら記録と一致必須 — 違えば 409）が**耐久状態だけから**冪等に再開する: 行が言う完了 member はスキップ、ledger だけが言う member は行更新以降のみ、未記録の debris は**原本が健在なときに限り**作り直し、原本まで消えていれば人間を呼ぶ（唯一触ってはならない状態）。**起動時の自動 resume はしない** — operator が選んだ外部ストレージへの書き込みを再起動の副作用で続けない。UI は `archiving`＋`running: false` を Resume として提示する。
+- **halted attempt の cancel（`POST …/archive/cancel`）**: 走行中の stop や rollback ではない。`archiving`＋`running: false`、封印無し、DB / ledger / manifest の完了 member が 0 件、行き先が不存在または pending-only manifest だけ、とサーバが確認できる場合に限る。`dataset_archive_canceled` を先に append（`started_event_id` で対象 attempt を結ぶ）してから行を `active` に戻し、destination / mode / started_at の claim を解放する。destination の file は削除しない。1 件でも完了している、ledger / manifest を読めない、未知の file がある場合は `409 archive_cancel_unsafe` とし Resume だけを許す。append 後の DB reset が失敗して行が一時的に `archiving` のままでも、ledger の cancel が正本なので runner / Resume は同じ attempt を拒否する（API は `503 archive_cancel_catalog_pending`。再起動時の rebuild で `active` へ収束）。
 - **凍結**: `status != 'active'` の dataset は member の増減・削除を全て 409 で拒否する（resume は started イベントの凍結集合を再生するので、途中の増減は静かな乖離になる）。**archived の行は消させない** — 行は ledger の移行ログの照会キャッシュであり、「この dataset はどこへ行ったか」への答えそのもの（capture の墓標と同じ「行は消さない」原則）。逆向きの guard: archive 済み capture（bytes が無い）と、非 active な dataset の member（bytes が出て行く途中）は、新たな dataset に追加できない。
 - **views/**: `list_view_entries` が `status='active'` に限定する。archive 開始で dataset は views/ から**宣言として**消える — regenerate の「原本が無いから skip」経路に落とさない。
-- **rebuild**: `dataset_archive_started` は dataset 行と member 行を単独で再建し（truncated ledger 対策の自己完結 payload）、封印が無ければ **`archiving` のまま復元**する — resume 可能性は DB 全損を生き延びる。member の capture 行は既存の `capture_archived` 再構築がそのまま引き受ける。
-- **進捗**: 揮発（`GET /api/v1/datasets/{id}/archive`）。member 単位の完了数は行から導出し、コピー中のバイト数・halt 理由はプロセスメモリ — 再起動で正直にリセットされる。jobs テーブルには置かない（揮発・非 rebuild 契約）。
+- **rebuild**: `dataset_archive_started` は dataset 行と member 行を単独で再建し（truncated ledger 対策の自己完結 payload）、封印も cancel も無ければ **`archiving` のまま復元**する — resume 可能性は DB 全損を生き延びる。後続の `dataset_archive_canceled` は同じ行を `active` に戻して claim を消す。member の capture 行は既存の `capture_archived` 再構築がそのまま引き受ける。
+- **進捗**: 揮発（`GET /api/v1/datasets/{id}/archive`）。member 単位の完了数は行から導出し、コピー中のバイト数・halt 理由はプロセスメモリ — 再起動で正直にリセットされる。`cancelable` / `cancel_blocker` は耐久状態と行き先から毎回再判定する。started / canceled / sealed / capture_archived は poll ごとに 1 回だけ lifecycle ledger を読み、その snapshot からまとめて導出する。jobs テーブルには置かない（揮発・非 rebuild 契約）。
 
 ### 6.2 dataset の LeRobot export（派生物の生成・非終端）
 

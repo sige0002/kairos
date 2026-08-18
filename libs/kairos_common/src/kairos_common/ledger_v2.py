@@ -109,6 +109,10 @@ DATASET_KINDS: frozenset[str] = frozenset(
         # ``dataset_archived`` seals the run. Neither is a tombstone — like
         # ``capture_archived``, the data still exists, just not here.
         "dataset_archive_started",
+        # A halted start may be abandoned only before any member completed.
+        # This terminal-for-the-attempt fact lets replay release the frozen
+        # destination without pretending a partially moved archive rolled back.
+        "dataset_archive_canceled",
         "dataset_archived",
         # A LeRobot export completed (§6.2). NON-terminal and not a tombstone:
         # the dataset is untouched and the artifact is a derivative. Recorded
@@ -223,6 +227,8 @@ def build_event(
         _validate_dataset_updated_payload(payload)
     elif kind == "dataset_archive_started":
         _validate_dataset_archive_started_payload(payload)
+    elif kind == "dataset_archive_canceled":
+        _validate_dataset_archive_canceled_payload(payload)
     elif kind == "dataset_archived":
         _validate_dataset_archived_payload(payload)
     elif kind == "dataset_exported":
@@ -419,6 +425,21 @@ def _validate_dataset_archive_started_payload(payload: dict[str, Any]) -> None:
                 f"dataset_archive_started members[].display_index must be a "
                 f"positive int: {entry!r}"
             )
+
+
+def _validate_dataset_archive_canceled_payload(payload: dict[str, Any]) -> None:
+    """Check a zero-progress archive attempt's durable cancellation."""
+    for key in ("dataset_id", "destination", "started_event_id"):
+        value = payload.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(
+                f"dataset_archive_canceled requires a non-empty {key}: {value!r}"
+            )
+    reason = payload.get("reason")
+    if reason is not None and not isinstance(reason, str):
+        raise ValueError(
+            f"dataset_archive_canceled reason must be str or absent: {reason!r}"
+        )
 
 
 def _validate_dataset_archived_payload(payload: dict[str, Any]) -> None:

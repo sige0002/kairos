@@ -255,6 +255,16 @@ export function getDatasetArchive(
   );
 }
 
+/** Abandon a halted dataset archive attempt with zero completed members. */
+export function cancelDatasetArchiveAttempt(
+  datasetId: string,
+): Promise<DatasetArchiveProgress> {
+  return apiPost<DatasetArchiveProgress>(
+    `/datasets/${encodeURIComponent(datasetId)}/archive/cancel`,
+    {},
+  );
+}
+
 // ---- store health (§8 / §9-3) ---------------------------------------------
 
 export function getStoreHealth(signal?: AbortSignal): Promise<StoreHealth> {

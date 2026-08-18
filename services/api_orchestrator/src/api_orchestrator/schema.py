@@ -162,11 +162,11 @@ CREATE TABLE IF NOT EXISTS datasets (
     -- the next one is always this + 1 — MAX() over live members would hand a
     -- retired number to a different recording.
     index_high_water INTEGER NOT NULL DEFAULT 0,
-    -- The terminal transition (§6.1). These cache what the ledger's
-    -- dataset_archive_started / dataset_archived events hold durably: the
-    -- resolved directory the bytes went to, when, and HOW — mode 'copy'
-    -- sealed the set and kept the recordings here, 'move' removed them.
-    -- status walks active → archiving → archived and never back.
+    -- The terminal transition (§6.1). These cache what the ledger's archive
+    -- events hold durably: the resolved directory the bytes went to, when,
+    -- and HOW — mode 'copy' sealed the set and kept the recordings here,
+    -- 'move' removed them. A zero-progress canceled attempt is the sole
+    -- archiving → active edge; archived never returns.
     archive_destination TEXT,
     archive_mode        TEXT,
     archive_started_at  TEXT,

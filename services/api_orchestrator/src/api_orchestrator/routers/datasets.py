@@ -18,7 +18,9 @@ export was a *move inside the store* that the catalog then forgot; the archive
 is the capture archive's vocabulary — copy, verify, then remove — lifted to a
 dataset, terminal by design, and recorded as ledger events that outlive the
 database. What leaves is gone from here and the record of WHERE it went is
-the point.
+the point. A zero-progress halted attempt is the one non-terminal exception:
+``POST /{dataset_id}/archive/cancel`` records that attempt's cancellation and
+returns the dataset to ``active`` without deleting destination files.
 """
 
 from __future__ import annotations
@@ -137,7 +139,8 @@ async def archive_dataset(
     202, not 200: a dataset is N captures and the copy runs in the
     background. By the time this returns, the member set is frozen in the
     ledger and the status is ``archiving``; poll the GET below for the rest.
-    Destinations pass the same allow-list as a capture archive.
+    Destinations pass the same allow-list as a capture archive, then the chosen
+    root is probed before the status and destination are frozen.
     """
     return await archiver.start(
         dataset_id,
@@ -160,6 +163,21 @@ async def dataset_archive_progress(
 
     The durable fields survive a restart; ``running``/``current_*``/``error``
     are this process's memory and honestly reset. ``archiving`` with
-    ``running: false`` means "resumable" — the UI's Resume button.
+    ``running: false`` means "resumable" — the UI's Resume button. ``cancelable``
+    additionally says whether zero durable progress makes abandoning this
+    attempt safe.
     """
     return archiver.progress_for(dataset_id)
+
+
+@router.post("/{dataset_id}/archive/cancel", response_model=DatasetArchiveProgress)
+async def cancel_dataset_archive(
+    dataset_id: str,
+    archiver: DatasetArchiver = Depends(get_dataset_archiver),
+) -> DatasetArchiveProgress:
+    """Abandon a halted archive attempt before any member completed.
+
+    This is deliberately narrower than stopping a running copy and is not a
+    rollback: once a member completed, Resume is the only safe forward path.
+    """
+    return await archiver.cancel(dataset_id)

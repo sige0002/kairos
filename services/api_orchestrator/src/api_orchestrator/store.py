@@ -1122,8 +1122,8 @@ class CaptureStore:
 
     def abort_dataset_archive(self, dataset_id: str) -> None:
         """Roll archiving back to active — only for a start whose ledger append
-        failed, i.e. before any byte moved. Once a member has been copied the
-        run must go forward (resume), never back."""
+        failed, i.e. before a durable run exists. Operator cancellation uses a
+        separate ledger-first method and is never routed through this helper."""
         with self._conn() as conn:
             conn.execute(
                 "UPDATE datasets SET status = 'active', "
@@ -1132,6 +1132,18 @@ class CaptureStore:
                 "WHERE dataset_id = ? AND status = 'archiving'",
                 (dataset_id,),
             )
+
+    def cancel_dataset_archive(self, dataset_id: str) -> bool:
+        """Release a durably canceled, zero-progress archive attempt."""
+        with self._conn() as conn:
+            cur = conn.execute(
+                "UPDATE datasets SET status = 'active', "
+                "archive_destination = NULL, archive_mode = NULL, "
+                "archive_started_at = NULL "
+                "WHERE dataset_id = ? AND status = 'archiving'",
+                (dataset_id,),
+            )
+        return cur.rowcount > 0
 
     def finish_dataset_archive(self, dataset_id: str, *, at: str | None = None) -> bool:
         """archiving → archived (terminal). ``False`` = it was not archiving."""
@@ -1168,6 +1180,17 @@ class CaptureStore:
                 "UPDATE datasets SET status = 'archived', archived_at = ? "
                 "WHERE dataset_id = ?",
                 (at, dataset_id),
+            )
+
+    def mark_dataset_archive_canceled(self, dataset_id: str) -> None:
+        """Replay form of :meth:`cancel_dataset_archive` — idempotent."""
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE datasets SET status = 'active', "
+                "archive_destination = NULL, archive_mode = NULL, "
+                "archive_started_at = NULL, archived_at = NULL "
+                "WHERE dataset_id = ? AND status != 'archived'",
+                (dataset_id,),
             )
 
     def count_archived_members(self, dataset_id: str) -> tuple[int, int]:
