@@ -155,6 +155,10 @@ export interface BulkAddFailure {
   message: string;
 }
 
+export type CaptureConditionView =
+  | { status: 'ready'; value: string }
+  | { status: 'loading' | 'unavailable' | 'not-recorded'; value: null };
+
 export interface DatasetsState {
   /** The dataset rows the left column renders (search-filtered, sorted). */
   rows: DatasetRow[];
@@ -318,6 +322,9 @@ export interface DatasetsState {
   removeCandidateCondition: (id: number) => void;
   clearCandidateConditions: () => void;
   conditionFilterStatus: "loading" | "ready" | "error";
+  /** Batch-owned condition for a capture. Loading, unavailable, and genuinely
+   *  absent stay distinct so the UI never presents a failed read as no label. */
+  conditionForCapture: (capture: CaptureListItem) => CaptureConditionView;
   addMember: (capture: CaptureListItem) => void;
   addingCaptureId: string | null;
   /** Candidates that cannot join today (not adopted / bytes elsewhere) are
@@ -615,6 +622,20 @@ export function useDatasetsState(): DatasetsState {
     }
     return byId;
   }, [batchesQuery.data]);
+  const conditionForCapture = useCallback(
+    (capture: CaptureListItem): CaptureConditionView => {
+      if (!capture.batch_id) return { status: 'not-recorded', value: null };
+      if (batchesQuery.isPending) return { status: 'loading', value: null };
+      if (batchesQuery.isError || !conditionByBatchId.has(capture.batch_id)) {
+        return { status: 'unavailable', value: null };
+      }
+      const value = conditionByBatchId.get(capture.batch_id)?.trim();
+      return value
+        ? { status: 'ready', value }
+        : { status: 'not-recorded', value: null };
+    },
+    [batchesQuery.isError, batchesQuery.isPending, conditionByBatchId],
+  );
 
   // The selected dataset's members come from its own endpoint rather than from
   // the memberships on the captures: it is the authority on what belongs to it,
@@ -1620,6 +1641,7 @@ export function useDatasetsState(): DatasetsState {
       : batchesQuery.isError
         ? "error"
         : "ready",
+    conditionForCapture,
     addMember: (capture) => addMutation.mutate(capture),
     addingCaptureId: addMutation.isPending ? addMutation.variables.capture_id : null,
     showBlockedCandidates,

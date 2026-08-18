@@ -840,6 +840,66 @@ test("candidate filter chips combine Operator and Condition with AND or OR", asy
   });
 });
 
+test('batch condition is visible on candidate, member row, and member detail', async () => {
+  const candidate = { ...CAP_A, batch_id: 'batch-left' };
+  const member = { ...CAP_B, batch_id: 'batch-right' };
+  const batch = (batchId: string, condition: string): BatchSummary => ({
+    batch_id: batchId,
+    project: 'Manipulation',
+    task: 'Pick and Place',
+    condition,
+    operator: null,
+    target_episodes: 30,
+    status: 'completed',
+    episode_count: 1,
+  });
+  mockApi({
+    datasets: [DS_KITCHEN],
+    captures: [candidate, member],
+    members: [
+      {
+        membership_id: 'm-condition',
+        dataset_id: 'ds-kitchen',
+        capture_id: 'cap-b',
+        display_index: 1,
+      },
+    ],
+    batches: [
+      batch('batch-left', 'Object: left bin'),
+      batch('batch-right', 'Object: right bin'),
+    ],
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  expect(
+    await screen.findByTestId('dataset-candidate-condition-cap-a'),
+  ).toHaveTextContent('Condition: Object: left bin');
+
+  const memberRow = memberRowFor('cap-b');
+  expect(
+    within(memberRow).getByTestId('dataset-member-condition-m-condition'),
+  ).toHaveTextContent('Condition: Object: right bin');
+
+  fireEvent.click(memberRow);
+  expect(await screen.findByTestId('dataset-detail-condition')).toHaveTextContent(
+    'Condition: Object: right bin',
+  );
+});
+
+test('a capture whose batch metadata is unavailable says so', async () => {
+  mockApi({
+    datasets: [DS_KITCHEN],
+    captures: [{ ...CAP_A, batch_id: 'batch-not-returned' }],
+  });
+  renderWithClient(<DatasetsScreen />);
+
+  fireEvent.click(await screen.findByTestId(datasetTestId('ds-kitchen')));
+  expect(
+    await screen.findByTestId('dataset-candidate-condition-cap-a'),
+  ).toHaveTextContent('Condition: unavailable');
+});
+
 test("bulk add snapshots and adds every match beyond the 50-row render cap", async () => {
   const captures = Array.from({ length: 52 }, (_, index) =>
     capture({

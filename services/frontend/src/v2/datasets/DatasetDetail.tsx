@@ -17,6 +17,7 @@ import { Badge } from '../../components/ui';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { availabilityOf } from '../captures/availability';
 import { CaptureLabelChips } from '../episodeChips';
+import { CaptureConditionLabel } from './CaptureConditionLabel';
 import { DatasetInspection } from './DatasetInspection';
 import { formatBytes, formatCount, formatWhen, type MemberRow } from './data';
 import type { DatasetsState } from './useDatasetsState';
@@ -124,6 +125,11 @@ export function DatasetDetail({
             recording that is gone.
           </p>
           <CaptureLabelChips capture={capture} testId="dataset-member-labels" />
+          <CaptureConditionLabel
+            capture={capture}
+            state={state}
+            testId="dataset-detail-condition"
+          />
         </>
       )}
 

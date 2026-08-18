@@ -21,6 +21,7 @@ import { ErrorMessage } from '../../components/ErrorMessage';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { CaptureLabelChips } from '../episodeChips';
 import { DatasetArchiveDialog } from './DatasetArchiveDialog';
+import { CaptureConditionLabel } from './CaptureConditionLabel';
 import { DatasetDetail } from './DatasetDetail';
 import { EditDatasetDialog } from './EditDatasetDialog';
 import { LeRobotExportButton } from './LeRobotExportButton';
@@ -284,6 +285,13 @@ function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }
           />
         ) : (
           <span className="text-[11px] italic text-gray-500">—</span>
+        )}
+        {capture && (
+          <CaptureConditionLabel
+            capture={capture}
+            state={state}
+            testId={`dataset-member-condition-${row.membershipId}`}
+          />
         )}
       </div>
       <span className="justify-self-end font-mono text-xs text-gray-500">

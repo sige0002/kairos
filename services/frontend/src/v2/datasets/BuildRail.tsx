@@ -26,6 +26,7 @@ import { CaptureLabelChips } from '../episodeChips';
 import { ArchiveDialog } from './ArchiveDialog';
 import { BulkAddDialog } from './BulkAddDialog';
 import { CandidateFilterBuilder } from './CandidateFilterBuilder';
+import { CaptureConditionLabel } from './CaptureConditionLabel';
 import {
   addBlockedReason,
   captureFacts,
@@ -79,6 +80,11 @@ function CandidateRow({ capture, state }: { capture: CaptureListItem; state: Dat
         {capture.run_id ?? shortCaptureId(capture.capture_id)}
       </span>
       <CaptureLabelChips capture={capture} />
+      <CaptureConditionLabel
+        capture={capture}
+        state={state}
+        testId={`dataset-candidate-condition-${capture.capture_id}`}
+      />
       {memberships.length > 0 && (
         <span className="text-[10.5px] text-gray-500">
           already in {memberships.map((m) => m.dataset_name ?? m.dataset_id).join(', ')}
