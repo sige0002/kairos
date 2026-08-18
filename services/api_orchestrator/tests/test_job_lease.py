@@ -63,6 +63,7 @@ class FakeDora:
         self.status_fails = False
         self.result_fails = False
         self.execution_active = False
+        self.artifacts: list[str] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         path = request.url.path
@@ -96,7 +97,11 @@ class FakeDora:
                         json={"error": {"code": "result_late", "message": "not yet"}},
                     )
                 return httpx.Response(
-                    200, json={"summary": {"result": "pass"}, "artifacts": []}
+                    200,
+                    json={
+                        "summary": {"result": "pass"},
+                        "artifacts": self.artifacts,
+                    },
                 )
         return httpx.Response(404, json={"error": {"code": "nf", "message": path}})
 
@@ -161,6 +166,36 @@ def seed_capture(client: TestClient) -> str:
     capture_dir.mkdir(parents=True, exist_ok=True)
     (capture_dir / "metadata.yaml").write_text("x: 1\n", encoding="utf-8")
     return capture_id
+
+
+def test_job_result_omits_a_generated_artifact_after_cleanup(
+    lease_client: TestClient, dora: FakeDora
+) -> None:
+    capture_id = seed_capture(lease_client)
+    created = lease_client.post(
+        "/api/v1/jobs", json={"capture_id": capture_id, "pipeline": PIPELINE}
+    ).json()
+    dora.state = "succeeded"
+    artifact = (
+        lease_client.app.state.data_layout.report
+        / PIPELINE
+        / capture_id
+        / "summary.json"
+    )
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("{}", encoding="utf-8")
+    dora.artifacts = [str(artifact)]
+
+    present = lease_client.get(f"/api/v1/jobs/{created['job_id']}/result")
+    assert present.status_code == 200
+    assert present.json()["artifacts"] == [
+        f"report/{PIPELINE}/{capture_id}/summary.json"
+    ]
+
+    artifact.unlink()
+    removed = lease_client.get(f"/api/v1/jobs/{created['job_id']}/result")
+    assert removed.status_code == 200
+    assert removed.json()["artifacts"] == []
 
 
 def submit(client: TestClient, capture_id: str) -> httpx.Response:

@@ -46,7 +46,7 @@ from __future__ import annotations
 import logging
 import os
 import uuid
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 
 from fastapi import APIRouter, Request, status
 from kairos_common import ApiError, JobState
@@ -314,12 +314,40 @@ def _data_relative_artifacts(artifacts: list[str], data_dir: str) -> list[str]:
     return out
 
 
+def _available_report_artifacts(artifacts: list[str], data_dir: str) -> list[str]:
+    """Drop cleaned report links while preserving non-report artifact semantics.
+
+    Generated-report cleanup intentionally leaves volatile job history in place.
+    A succeeded job therefore remains succeeded, but a report-relative link it
+    used to expose must not remain a clickable guaranteed-404. Paths outside the
+    managed ``report/`` namespace retain the existing pass-through behaviour.
+    """
+    root = Path(data_dir).resolve()
+    available: list[str] = []
+    for artifact in artifacts:
+        path = PurePosixPath(artifact)
+        if path.is_absolute() or not path.parts or path.parts[0] != "report":
+            available.append(artifact)
+            continue
+        candidate = (root / Path(*path.parts)).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            continue
+        if candidate.is_file():
+            available.append(artifact)
+    return available
+
+
 @router.get("/{job_id}/result", response_model=JobResult)
 async def job_result(request: Request, job_id: str) -> JobResult:
     """Return a terminal job result (artifacts normalised to data-relative)."""
     body = await request.app.state.dora_runner_client.job_result(job_id)
     result = JobResult.model_validate(body)
     result.artifacts = _data_relative_artifacts(
+        result.artifacts, request.app.state.settings.data_dir
+    )
+    result.artifacts = _available_report_artifacts(
         result.artifacts, request.app.state.settings.data_dir
     )
     status_body = await request.app.state.dora_runner_client.job_status(job_id)

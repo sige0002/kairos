@@ -66,6 +66,7 @@ from api_orchestrator.monitor_client import MonitorClient
 from api_orchestrator.reconciler import Reconciler
 from api_orchestrator.record_service import RecordService
 from api_orchestrator.recorder_client import RecorderClient
+from api_orchestrator.report_storage import ReportStorageService
 from api_orchestrator.routers import batches as batches_router
 from api_orchestrator.routers import captures as captures_router
 from api_orchestrator.routers import config as config_router
@@ -78,6 +79,7 @@ from api_orchestrator.routers import jobs as jobs_router
 from api_orchestrator.routers import pipelines as pipelines_router
 from api_orchestrator.routers import plans as plans_router
 from api_orchestrator.routers import record as record_router
+from api_orchestrator.routers import report_storage as report_storage_router
 from api_orchestrator.routers import retention as retention_router
 from api_orchestrator.routers import store as store_router
 from api_orchestrator.routers import system as system_router
@@ -415,6 +417,7 @@ def create_orchestrator_app(
     app.state.views_refresher = views_refresh
     app.state.store_health = health
     app.state.data_layout = layout
+    app.state.report_storage_service = ReportStorageService(layout, capture_store)
     app.state.instance_id = instance_id
     app.state.recorder_client = recorder
     app.state.monitor_client = monitor
@@ -476,6 +479,7 @@ def create_orchestrator_app(
     app.include_router(store_router.router)
     app.include_router(store_router.views_router)
     app.include_router(retention_router.router)
+    app.include_router(report_storage_router.router)
     app.include_router(transfer_router.router)
     app.include_router(imports_router.router)
 

@@ -66,6 +66,7 @@
 - 取り込み（外部 bag）: **`GET /api/v1/imports/scan?path=<dir>`（2026-08-05）** — フォルダを**1 階層だけ走査**（そのパス自身が bag ならそれ、でなければ直下のディレクトリ。**深さ 1 は裁定** — 操作者が与えたパスの再帰走査は home や NAS ルートへ踏み込みうるため）し、bag でも bag 候補（`.mcap` はあるが `metadata.yaml` が無い等）でもないフォルダは列挙せず（ただしその直下に bag があるものは `nested: [{path, name, bags}]` としてヒント返却する）、各候補に `importable` と、不可なら理由（`already_imported` / `import_no_metadata` …）＋ remedy を付けて返す。**1 バイトもコピーせずに「何が入って何が入らないか」を先に見せる**ための API（操作者が与えたパスの再帰走査は無制限のクロールになるので浅い走査に固定）。`POST /api/v1/imports`（body `{ source_path, move?, operator?, task?, robot? }` → `202 { import_id }`。source は**サーバ上のパス**（コンテナから見えるパス）〔bag は数 GB でブラウザアップロードの対象ではない〕。検証は同期・コピーは非同期）、`GET /api/v1/imports`、`GET /api/v1/imports/{id}`
 - 転送（split 構成）: `GET /api/v1/transfer/status`、`POST /api/v1/transfer/pull`（下記「転送（split 構成）」）
 - 保持期間: `GET /api/v1/retention` — `RETENTION_DAYS` による**削除候補**を返す（`{ days, candidates: [{ capture_id, run_id, started_at, bytes, state, review_status }], total_bytes }`。都度計算、best-effort サイズ）。**助言のみで自動削除しない**。削除は確認付きの `POST /api/v1/captures/{id}/delete` のみ。`RETENTION_DAYS<=0` で候補は空。**v2 で候補の定義を変更**: 「行が存在する＝未エクスポート」という旧定義は、行が消えなくなった以上意味を成さないので全廃した。新しい候補は「**どの dataset からも参照されておらず、`review_status` が `pending` か `excluded` のまま N 日以上経過した capture**」（詳細は [config.md](config.md) の「運用」）
+- 生成ファイル整理: `POST /api/v1/report-storage/preview` / `POST /api/v1/report-storage/cleanup` — Settings から `report/<pipeline>/<capture_id>/` の派生物を条件付きで分析・削除する（下記「生成ファイルの整理」）。任意パスは受け取らず、`RETENTION_DAYS` とも独立。
 - `GET /healthz` / `GET /readyz`（`components: { recorder, monitor, streamer }` の疎通も返す）
 - `GET /openapi.json`（OpenAPI を自動公開。クライアント自動生成に使える — 現状の frontend は手書きの型付きクライアント）
 
@@ -315,6 +316,19 @@ Settings > Data quality から、選択式カタログ（recording / stream / va
 - 対象 capture が未知なら **`404`**、まだ記録中 / 停止中なら **`409`**（書き込み途中の bag を読ませない）。
 - **バイトがこの設置に無い capture への投入は `409 capture_not_local`**（2026-08-11, sweep S1-5 併記）: replica 行（§8）が `present_*` 以外（転送待ち・archive 済み・missing 観測済み）を言っているときは、dora_runner の中で数分後に裸の "no capture found" で死なせず、operator が行動できる状態名（`replica_state`）を挙げて投入時に断る。判断は**カタログの replica 行**であってファイルシステムの stat ではない（`rm -rf` 直後の未検出は従来どおり遅い失敗のまま — 投入毎の stat は明瞭さと引き換えにレースを持ち込むだけ）。replica 行が**無い** capture は通す（replica 導入前の古いカタログを検証から締め出さない）。
 - `GET /jobs/{id}/result` の **`artifacts` はデータルート相対に正規化**して返す: dora_runner はコンテナ絶対パス（例 `/data/report/<pipeline>/<capture_id>/plot.png`）を報告するが、orchestrator が `data_dir` 配下のものを相対化するので、各 artifact はそのまま `GET /api/v1/files/{path}` で取得できる。これが**プラグインが UI 無改修で画像（プロット等）を表示させる可視化チャネル**（[dora_plugins.md §2.5](dora_plugins.md)）。`data_dir` 外の絶対パス・元から相対のパスは無変換。
+
+## 生成ファイルの整理（`POST /api/v1/report-storage/*`）
+
+capture を保持する運用でも増え続ける `report/<pipeline>/<capture_id>/` を、Settings > System から分析・手動削除する。`GET /api/v1/system` の定期ポーリングへ再帰走査を混ぜず、ユーザー操作時だけ専用 API を呼ぶ。自動 GC は行わない。
+
+- リクエストは `{ categories, older_than_days, pipeline, capture_scope }`。`categories` は `preview`（`video_check`）/ `analysis`（それ以外の非 validation pipeline）/ `validation`（`fast_validation` / `full_validation`）、`older_than_days: 0` は全期間、`pipeline` は `null` または単一 pipeline id、`capture_scope` は `source_available` / `orphaned` / `all`。**パスは一切受け取らない**。サーバが設定済み `data_dir` 以下を走査し、削除単位も `report/<pipeline>/<capture_id>/` に固定する。symlink は走査・削除対象外。
+- `preview` は report 全体量、選択容量・ファイル数・report set 数・capture 数、pipeline 別内訳、gating validation を消して `unknown` に戻る capture 数、orphan / source 不在数、実行中のため保護した数、走査エラー数を返す。条件変更後は再 preview しない限り UI の削除ボタンを有効にしない。
+- `cleanup` は同じ条件を**実行直前に再走査**して削除し、実削除容量・件数、保護数、失敗した `(pipeline, capture_id, message)`、残量を返す。部分失敗を成功に見せない。
+- live lease のある capture は preview / cleanup とも対象外。cleanup は削除単位ごとに capture の排他 Writer Lease を取得し、通常 job の開始前 Lease と永続 Validation Run の監督 Leaseを同じ DB transaction で仲裁する。これにより、preview 後に job が始まる競合でも、job または cleanup のどちらか一方だけが先へ進む。ファイル走査・削除自体は thread pool で行い API event loop を塞がない。
+- `source_available` は元 capture がこの端末にあり再生成できるもの、`orphaned` は現行 capture が無い（墓標を含む）もの。capture 行はあるが元バイトが端末に無い report は `all` でのみ選択でき、UI が再生成不能の可能性を警告する。
+- validation report は単なる cache ではない。gating pipeline の `summary.json` を消すと verdict は `unknown` へ戻るため、UI の既定対象から外し、影響件数の表示と追加確認を必須にする。capture 本体・ledger・dataset membership は変更しない。
+- 完了 job の履歴は揮発データとして残すが、`GET /jobs/{id}/result` は cleanup 済みで存在しない `report/` artifact を一覧から除外し、成功済み job に 404 リンクを残さない。
+- `RETENTION_DAYS` は capture 本体の削除候補を示す既存ポリシーであり、この API の生成物条件には流用しない。
 - `fast_validation`: `params.template` の **id（カタログのファイル stem。例 `airoa_hsr`）を Config カタログでフル template に解決**してから `dora_runner` へ転送する（dora_runner の template ストアは空起動のため、bare id は 404 になる）。id が空 / 不在なら現在の選択（active）にフォールバック。既に dict（フル template）ならそのまま通す。
 - dora_runner への `POST /jobs` は任意の `idempotency_key` を受ける。同じ key と同じ `capture_id` / pipeline / params は同じ job を返し、異なる payload は `409 idempotency_conflict`。status の `execution_active` は worker が実際に bytes へ触れ得るかを示す加算フィールドで、`false` が明示されるまで（旧 runner の欠落 `null` を含む）終端ラベルだけで lease を解放しない。
 
