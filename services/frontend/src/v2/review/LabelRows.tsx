@@ -18,7 +18,7 @@
 // reads as a value someone chose, and it hides the one fact this screen needs
 // to convey about an imported bag: that the blank is yours to fill in.
 
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { cn } from '../../components/ui';
 
 export interface CaptureLabels {
@@ -52,9 +52,12 @@ function trimOrNull(value: string): string | null {
 
 export function LabelRows({
   values,
+  condition,
   editing,
 }: {
   values: CaptureLabels;
+  /** Read-only because Condition belongs to the batch, not this capture. */
+  condition: string | null;
   editing: LabelEditing;
 }) {
   const [open, setOpen] = useState(false);
@@ -99,25 +102,35 @@ export function LabelRows({
         {FIELDS.map((field) => {
           const value = values[field.key];
           return (
-            <RowFrame key={field.key} label={field.label}>
-              <button
-                type="button"
-                data-testid={`label-edit-${field.key}`}
-                onClick={startEditing}
-                title="Edit operator, task and robot"
-                className={cn(
-                  'group inline-flex items-center gap-1.5 rounded-[5px] px-1 py-0.5 text-left hover:bg-gray-50',
-                  value ? 'text-gray-700' : 'text-gray-500',
-                )}
-              >
-                <span className={cn(!value && 'italic')}>
-                  {value || field.placeholder}
-                </span>
-                <span aria-hidden="true" className="text-[11px] text-gray-500 group-hover:text-teal-600">
-                  ✎
-                </span>
-              </button>
-            </RowFrame>
+            <Fragment key={field.key}>
+              <RowFrame label={field.label}>
+                <button
+                  type="button"
+                  data-testid={`label-edit-${field.key}`}
+                  onClick={startEditing}
+                  title="Edit operator, task and robot"
+                  className={cn(
+                    'group inline-flex items-center gap-1.5 rounded-[5px] px-1 py-0.5 text-left hover:bg-gray-50',
+                    value ? 'text-gray-700' : 'text-gray-500',
+                  )}
+                >
+                  <span className={cn(!value && 'italic')}>
+                    {value || field.placeholder}
+                  </span>
+                  <span
+                    aria-hidden="true"
+                    className="text-[11px] text-gray-500 group-hover:text-teal-600"
+                  >
+                    ✎
+                  </span>
+                </button>
+              </RowFrame>
+              {field.key === 'task' && (
+                <RowFrame label="Condition">
+                  <span data-testid="review-condition">{condition || '—'}</span>
+                </RowFrame>
+              )}
+            </Fragment>
           );
         })}
       </>
@@ -127,20 +140,27 @@ export function LabelRows({
   return (
     <>
       {FIELDS.map((field) => (
-        <RowFrame key={field.key} label={field.label}>
-          <input
-            type="text"
-            data-testid={`label-input-${field.key}`}
-            aria-label={field.label}
-            value={draft[field.key]}
-            placeholder={field.placeholder}
-            disabled={editing.saving}
-            onChange={(e) =>
-              setDraft((cur) => ({ ...cur, [field.key]: e.target.value }))
-            }
-            className="w-full rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-600 focus:outline-none disabled:bg-gray-50"
-          />
-        </RowFrame>
+        <Fragment key={field.key}>
+          <RowFrame label={field.label}>
+            <input
+              type="text"
+              data-testid={`label-input-${field.key}`}
+              aria-label={field.label}
+              value={draft[field.key]}
+              placeholder={field.placeholder}
+              disabled={editing.saving}
+              onChange={(e) =>
+                setDraft((cur) => ({ ...cur, [field.key]: e.target.value }))
+              }
+              className="w-full rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-600 focus:outline-none disabled:bg-gray-50"
+            />
+          </RowFrame>
+          {field.key === 'task' && (
+            <RowFrame label="Condition">
+              <span data-testid="review-condition">{condition || '—'}</span>
+            </RowFrame>
+          )}
+        </Fragment>
       ))}
       <dt />
       <dd className="flex flex-col gap-1.5 pt-1">

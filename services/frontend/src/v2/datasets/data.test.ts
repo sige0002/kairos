@@ -10,6 +10,7 @@ import {
   captureFacts,
   captureWhen,
   datasetMatchesSearch,
+  candidateMatchesConditions,
   datasetSummarySegments,
   distinctOperators,
   filterMembers,
@@ -308,7 +309,83 @@ describe('search + facets', () => {
     expect(datasetMatchesSearch(built, '   ')).toBe(true); // blank matches all
   });
 
-  test('a member matches on #N, N, capture id, run id, operator and failure reason', () => {
+  test("candidate conditions support fielded AND and OR matching", () => {
+    const candidate = capture({
+      capture_id: "cap-abc",
+      run_id: "run_20260721_090000",
+      operator: "Alice",
+      task: "Pick and Place",
+      task_result: "success",
+    });
+    const operator = {
+      id: 1,
+      field: "operator" as const,
+      operator: "equals" as const,
+      value: "alice",
+    };
+    const task = {
+      id: 2,
+      field: "task" as const,
+      operator: "contains" as const,
+      value: "place",
+    };
+    const failure = {
+      id: 3,
+      field: "task_result" as const,
+      operator: "equals" as const,
+      value: "failure",
+    };
+
+    expect(candidateMatchesConditions(candidate, [operator, task], "and")).toBe(
+      true,
+    );
+    expect(
+      candidateMatchesConditions(candidate, [operator, failure], "and"),
+    ).toBe(false);
+    expect(candidateMatchesConditions(candidate, [failure, task], "or")).toBe(
+      true,
+    );
+    expect(candidateMatchesConditions(candidate, [], "and")).toBe(true);
+    expect(
+      candidateMatchesConditions(
+        candidate,
+        [
+          {
+            id: 4,
+            field: "condition",
+            operator: "contains",
+            value: "left bin",
+          },
+        ],
+        "and",
+        "Object: left bin",
+      ),
+    ).toBe(true);
+  });
+
+  test("the any-field condition checks identifiers and labels without joining fields", () => {
+    const candidate = capture({
+      capture_id: "cap-abc",
+      operator: "op_a",
+      task: "pick_place",
+    });
+    expect(
+      candidateMatchesConditions(
+        candidate,
+        [{ id: 1, field: "any", operator: "contains", value: "cap-ab" }],
+        "and",
+      ),
+    ).toBe(true);
+    expect(
+      candidateMatchesConditions(
+        candidate,
+        [{ id: 1, field: "any", operator: "contains", value: "op_a pick" }],
+        "and",
+      ),
+    ).toBe(false);
+  });
+
+  test("a member matches on #N, N, capture id, run id, operator and failure reason", () => {
     const r = row(
       12,
       capture({

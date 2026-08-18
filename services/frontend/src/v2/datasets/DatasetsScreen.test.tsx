@@ -4,6 +4,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import type {
+  BatchSummary,
   CaptureListItem,
   Dataset,
   DatasetArchiveProgress,
@@ -34,6 +35,9 @@ interface Backend {
   datasets: Dataset[];
   members: DatasetMember[];
   captures: CaptureListItem[];
+  batches: BatchSummary[];
+  /** Number of add-member refusals still to inject per capture. */
+  memberAddFailures: Record<string, number>;
   /** Per-dataset next display_index; only ever increases. */
   highWater: Record<string, number>;
   /** What `GET /transfer/status` answers — true only on a split deploy. */
@@ -173,6 +177,8 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     datasets: (seed.datasets ?? []).map((d) => ({ ...d })),
     members: (seed.members ?? []).map((m) => ({ ...m })),
     captures: seed.captures ?? [],
+    batches: (seed.batches ?? []).map((batch) => ({ ...batch })),
+    memberAddFailures: { ...(seed.memberAddFailures ?? {}) },
     highWater: seed.highWater ?? {},
     transferAvailable: seed.transferAvailable ?? false,
     archiveRoots: seed.archiveRoots ?? [],
@@ -217,12 +223,26 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
     if (memberMatch) {
       const datasetId = decodeURIComponent(memberMatch[1]!);
       if (method === 'POST') {
+        const captureId = String(body.capture_id);
+        const failuresLeft = backend.memberAddFailures[captureId] ?? 0;
+        if (failuresLeft > 0) {
+          backend.memberAddFailures[captureId] = failuresLeft - 1;
+          return jsonResponse(
+            {
+              error: {
+                code: 'capture_busy',
+                message: `${captureId} is busy; try again.`,
+              },
+            },
+            409,
+          );
+        }
         const index = backend.highWater[datasetId] ?? 1;
         backend.highWater[datasetId] = index + 1;
         const created: DatasetMember = {
           membership_id: `m-${nextId++}`,
           dataset_id: datasetId,
-          capture_id: String(body.capture_id),
+          capture_id: captureId,
           display_index: index,
         };
         backend.members.push(created);
@@ -446,6 +466,13 @@ function mockApi(seed: Partial<Backend> = {}): Backend {
 
     if (path === '/transfer/status') {
       return jsonResponse({ available: backend.transferAvailable });
+    }
+
+    if (path === "/batches") {
+      return jsonResponse({
+        items: backend.batches,
+        total: backend.batches.length,
+      });
     }
 
     // ---- captures --------------------------------------------------------
@@ -726,6 +753,166 @@ test('adding a capture creates a membership and moves nothing on disk', async ()
   expect(screen.getByTestId('build-target').textContent).toMatch(/\b1 member\b/);
 });
 
+test("candidate filter chips combine Operator and Condition with AND or OR", async () => {
+  const candidates = [
+    { ...CAP_A, batch_id: "batch-left-a" },
+    capture({
+      ...CAP_A,
+      capture_id: "cap-c",
+      run_id: "run_c",
+      operator: "op_a",
+      task: "place",
+      batch_id: "batch-right-a",
+    }),
+    capture({
+      ...CAP_A,
+      capture_id: "cap-d",
+      run_id: "run_d",
+      operator: "op_b",
+      task: "pick",
+      batch_id: "batch-left-b",
+    }),
+  ];
+  const batch = (batchId: string, condition: string): BatchSummary => ({
+    batch_id: batchId,
+    project: "Manipulation",
+    task: "Pick and Place",
+    condition,
+    operator: null,
+    target_episodes: 30,
+    status: "completed",
+    episode_count: 1,
+  });
+  const backend = mockApi({
+    datasets: [DS_KITCHEN],
+    captures: candidates,
+    batches: [
+      batch("batch-left-a", "Object: left bin"),
+      batch("batch-right-a", "Object: right bin"),
+      batch("batch-left-b", "Object: left bin"),
+    ],
+  });
+  renderWithClient(<DatasetsScreen />);
+  fireEvent.click(await screen.findByTestId(datasetTestId("ds-kitchen")));
+
+  const field = screen.getByTestId("dataset-candidate-filter-field");
+  const comparison = screen.getByTestId("dataset-candidate-filter-operator");
+  const value = screen.getByTestId("dataset-candidate-search");
+  fireEvent.change(field, { target: { value: "operator" } });
+  fireEvent.change(comparison, { target: { value: "equals" } });
+  fireEvent.change(value, { target: { value: "op_a" } });
+  fireEvent.click(screen.getByTestId("dataset-candidate-filter-add"));
+
+  fireEvent.change(field, { target: { value: "condition" } });
+  fireEvent.change(comparison, { target: { value: "contains" } });
+  fireEvent.change(value, { target: { value: "left bin" } });
+  await waitFor(() =>
+    expect(screen.getByTestId("dataset-candidate-filter-add")).toBeEnabled(),
+  );
+  fireEvent.click(screen.getByTestId("dataset-candidate-filter-add"));
+
+  expect(
+    screen.getByTestId("dataset-candidate-filter-chips"),
+  ).toHaveTextContent("Operator equals “op_a”");
+  expect(
+    screen.getByTestId("dataset-candidate-filter-chips"),
+  ).toHaveTextContent("Condition contains “left bin”");
+  expect(backend.calls).toContain("GET /batches");
+
+  await waitFor(() => {
+    expect(screen.getByTestId("dataset-candidate-cap-a")).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("dataset-candidate-cap-c"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId("dataset-candidate-cap-d"),
+    ).not.toBeInTheDocument();
+  });
+  expect(
+    screen.getByTestId("dataset-candidate-filter-chips"),
+  ).toHaveTextContent("Condition contains “left bin”");
+
+  fireEvent.click(screen.getByRole("button", { name: "OR" }));
+  await waitFor(() => {
+    expect(screen.getByTestId("dataset-candidate-cap-a")).toBeInTheDocument();
+    expect(screen.getByTestId("dataset-candidate-cap-c")).toBeInTheDocument();
+    expect(screen.getByTestId("dataset-candidate-cap-d")).toBeInTheDocument();
+  });
+});
+
+test("bulk add snapshots and adds every match beyond the 50-row render cap", async () => {
+  const captures = Array.from({ length: 52 }, (_, index) =>
+    capture({
+      ...CAP_A,
+      capture_id: `cap-bulk-${index + 1}`,
+      run_id: `run_bulk_${index + 1}`,
+    }),
+  );
+  const backend = mockApi({ datasets: [DS_KITCHEN], captures });
+  renderWithClient(<DatasetsScreen />);
+  fireEvent.click(await screen.findByTestId(datasetTestId("ds-kitchen")));
+
+  const open = await screen.findByTestId("dataset-bulk-add-open");
+  expect(open).toHaveTextContent("Add all 52 available");
+  expect(screen.getAllByTestId(/^dataset-candidate-cap-bulk-/)).toHaveLength(
+    50,
+  );
+  fireEvent.click(open);
+
+  const dialog = await screen.findByTestId("dataset-bulk-add-dialog");
+  expect(dialog).toHaveTextContent("52 matching recordings");
+  fireEvent.click(screen.getByTestId("dataset-bulk-add-confirm"));
+
+  await waitFor(() => expect(backend.members).toHaveLength(52));
+  await waitFor(() =>
+    expect(
+      screen.queryByTestId("dataset-bulk-add-dialog"),
+    ).not.toBeInTheDocument(),
+  );
+  expect(screen.getByTestId("toast")).toHaveTextContent(
+    "Added 52 recordings to “kitchen picks”",
+  );
+  expect(
+    backend.calls.filter((call) => call.endsWith("/members")),
+  ).toHaveLength(52);
+});
+
+test("a partial bulk add names failures and retries only those captures", async () => {
+  const captures = [
+    { ...CAP_A },
+    capture({ ...CAP_A, capture_id: "cap-c", run_id: "run_c" }),
+    capture({ ...CAP_A, capture_id: "cap-d", run_id: "run_d" }),
+  ];
+  const backend = mockApi({
+    datasets: [DS_KITCHEN],
+    captures,
+    memberAddFailures: { "cap-c": 1 },
+  });
+  renderWithClient(<DatasetsScreen />);
+  fireEvent.click(await screen.findByTestId(datasetTestId("ds-kitchen")));
+  fireEvent.click(await screen.findByTestId("dataset-bulk-add-open"));
+  fireEvent.click(screen.getByTestId("dataset-bulk-add-confirm"));
+
+  const failures = await screen.findByTestId("dataset-bulk-add-failures");
+  expect(failures).toHaveTextContent("2 of 3 joined; 1 did not");
+  expect(failures).toHaveTextContent("cap-c");
+  expect(backend.members.map((member) => member.capture_id).sort()).toEqual([
+    "cap-a",
+    "cap-d",
+  ]);
+
+  fireEvent.click(screen.getByTestId("dataset-bulk-add-retry"));
+  await waitFor(() => expect(backend.members).toHaveLength(3));
+  expect(
+    backend.calls.filter((call) => call.endsWith("/members")),
+  ).toHaveLength(4);
+  await waitFor(() =>
+    expect(
+      screen.queryByTestId("dataset-bulk-add-dialog"),
+    ).not.toBeInTheDocument(),
+  );
+});
+
 test('a capture that cannot legitimately join a dataset is listed with a dead "+ Add" and the reason', async () => {
   // Two independent preconditions, and the control has to say WHICH one failed:
   // "unavailable" sends the operator looking in the wrong place. Nothing is
@@ -1003,8 +1190,10 @@ test('a catalog too large to sweep says so instead of ending quietly', { timeout
 
   const note = await screen.findByTestId('catalog-truncated', undefined, { timeout: 10000 });
   expect(note).toHaveTextContent(/not the whole catalog|more recordings than/i);
-  // It says what to do about it rather than only that something is wrong.
-  expect(note).toHaveTextContent(/search/i);
+  // A client-side predicate cannot retrieve captures beyond the completed
+  // sweep, so the boundary names its material effect instead of offering a
+  // search action that cannot reach the missing rows.
+  expect(note).toHaveTextContent(/not included in bulk add/i);
 });
 
 test('a catalog that fits reports nothing — the note is not decoration', async () => {

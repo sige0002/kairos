@@ -152,6 +152,17 @@ test('the batch label needs a loaded batch; without one it says "—"', () => {
     () => ({ seq: 3, createdAt: '2026-07-13T09:00:00Z' }),
   );
   expect(labelled[0]!.batch).toBe('07/13 · #3');
+  expect(labelled[0]!.condition).toBeNull();
+
+  const withCondition = mapCapturesToEpisodes(
+    [capture({ capture_id: "c1", batch_id: "batch_1" })],
+    () => ({
+      seq: 3,
+      createdAt: "2026-07-13T09:00:00Z",
+      condition: "Object: left bin",
+    }),
+  );
+  expect(withCondition[0]!.condition).toBe("Object: left bin");
 });
 
 test('run_id is carried for display and is never required', () => {

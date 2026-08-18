@@ -24,6 +24,8 @@
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { CaptureLabelChips } from '../episodeChips';
 import { ArchiveDialog } from './ArchiveDialog';
+import { BulkAddDialog } from './BulkAddDialog';
+import { CandidateFilterBuilder } from './CandidateFilterBuilder';
 import {
   addBlockedReason,
   captureFacts,
@@ -87,7 +89,7 @@ function CandidateRow({ capture, state }: { capture: CaptureListItem; state: Dat
           type="button"
           data-testid={`dataset-add-${capture.capture_id}`}
           onClick={() => state.addMember(capture)}
-          disabled={noTarget || blocked !== null || adding}
+          disabled={noTarget || blocked !== null || adding || state.bulkAddBusy}
           // The row's own reason outranks "pick a dataset": choosing one would
           // not make this capture addable, and sending the operator to do it
           // would be sending them nowhere.
@@ -154,25 +156,52 @@ export function BuildRail({ state }: { state: DatasetsState }) {
         <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Recordings
         </h3>
-        <input
-          type="search"
-          data-testid="dataset-candidate-search"
-          value={state.candidateSearch}
-          onChange={(e) => state.setCandidateSearch(e.target.value)}
-          aria-label="Search recordings to add"
-          placeholder="Find run, capture, operator, task…"
-          className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-500"
-        />
+        <CandidateFilterBuilder state={state} />
+        <button
+          type="button"
+          data-testid="dataset-bulk-add-open"
+          onClick={state.openBulkAdd}
+          disabled={
+            !target ||
+            state.isDatasetFrozen(target.dataset.dataset_id) ||
+            state.bulkAddAvailableCount === 0 ||
+            state.addingCaptureId !== null ||
+            state.bulkAddBusy ||
+            (state.candidateConditions.some(
+              (condition) =>
+                condition.field === 'condition' || condition.field === 'any',
+            ) &&
+              state.conditionFilterStatus !== 'ready')
+          }
+          className="w-full cursor-pointer rounded-control bg-teal-700 px-3 py-2 text-[12px] font-bold text-white shadow-btn transition-colors hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {state.bulkAddAvailableCount === 0
+            ? 'No available matches'
+            : state.candidateConditions.length > 0
+              ? `Add ${state.bulkAddAvailableCount} match${state.bulkAddAvailableCount === 1 ? '' : 'es'}`
+              : `Add all ${state.bulkAddAvailableCount} available`}
+        </button>
       </div>
 
       <div data-testid="dataset-candidates" className="min-h-0 flex-1 overflow-y-auto px-[14px] py-2.5">
         {state.candidates.length === 0 ? (
           <p data-testid="dataset-candidates-empty" className="px-1 py-3 text-[12.5px] text-gray-500">
-            {state.candidateSearch.trim() !== ''
-              ? 'No recording matches that search.'
-              : target
-                ? 'Every finished recording is already in this dataset.'
-                : 'Every finished recording already belongs to a dataset.'}
+            {state.candidateConditions.some(
+              (condition) =>
+                condition.field === 'condition' || condition.field === 'any',
+            ) && state.conditionFilterStatus === 'loading'
+              ? 'Loading batch conditions…'
+              : state.candidateConditions.some(
+                    (condition) =>
+                      condition.field === 'condition' ||
+                      condition.field === 'any',
+                  ) && state.conditionFilterStatus === 'error'
+                ? 'Batch conditions could not be loaded. Reload this screen to retry.'
+                : state.candidateConditions.length > 0
+                  ? 'No recording matches those filters.'
+                  : target
+                    ? 'Every finished recording is already in this dataset.'
+                    : 'Every finished recording already belongs to a dataset.'}
           </p>
         ) : (
           <div className="flex flex-col gap-1.5">
@@ -195,8 +224,8 @@ export function BuildRail({ state }: { state: DatasetsState }) {
             className="mt-1.5 rounded-control border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-800"
           >
             This is not the whole catalog — there are more recordings than one
-            sweep fetches, so the oldest are not listed here. Narrow the search
-            to reach a specific one.
+            sweep fetches, so the oldest are not listed here and are not
+            included in bulk add.
           </p>
         )}
         {state.blockedCandidateCount > 0 && (
@@ -223,6 +252,7 @@ export function BuildRail({ state }: { state: DatasetsState }) {
       </p>
 
       <ArchiveDialog state={state} />
+      <BulkAddDialog state={state} />
     </div>
   );
 }

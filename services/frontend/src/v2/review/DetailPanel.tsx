@@ -243,7 +243,12 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           // against — and none of it survives the change honestly: a failed
           // validation on one episode carried its note onto the next, where it
           // described an attempt that never touched that recording.
-          <CaptureInspection key={sel.captureId} captureId={sel.captureId} labels={labels} />
+          <CaptureInspection
+            key={sel.captureId}
+            captureId={sel.captureId}
+            condition={sel.condition}
+            labels={labels}
+          />
         ) : (
           <div
             data-testid="review-no-local-copy"

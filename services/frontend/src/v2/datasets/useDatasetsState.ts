@@ -44,6 +44,7 @@ import {
   removeDatasetMember,
   updateDataset,
 } from '../../api/captures';
+import { listBatches } from '../../api/batches';
 import { ApiError } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import {
@@ -57,6 +58,7 @@ import type {
   CaptureArchiveProgress,
   CaptureDetail,
   CaptureListItem,
+  BatchListResponse,
   Dataset,
   DatasetArchiveProgress,
 } from '../../api/types';
@@ -74,6 +76,7 @@ import {
   addBlockedReason,
   aggregate,
   buildDatasetRows,
+  candidateMatchesConditions,
   datasetMatchesSearch,
   distinctOperators,
   filterMembers,
@@ -82,6 +85,10 @@ import {
   joinMembers,
   membersByDataset,
   type DatasetAggregate,
+  type CandidateFilterCondition,
+  type CandidateFilterField,
+  type CandidateFilterJoin,
+  type CandidateFilterOperator,
   type DatasetRow,
   type MemberRow,
   type SortMode,
@@ -109,6 +116,12 @@ function getCaptureArchivePollMs(): number {
 import { useToast } from '../shared/useToast';
 
 export type { TaskResultFilter } from './data';
+export type {
+  CandidateFilterCondition,
+  CandidateFilterField,
+  CandidateFilterJoin,
+  CandidateFilterOperator,
+} from './data';
 
 /** This screen's own capture sweep: the whole catalog, because a dataset may
  *  cite any capture in it and the "add a capture" picker offers from all of it.
@@ -135,6 +148,11 @@ export interface ScopeSummary {
   aggregate: DatasetAggregate;
   /** Members the aggregate could say nothing about (§ see DatasetRow). */
   unresolved: number;
+}
+
+export interface BulkAddFailure {
+  captureId: string;
+  message: string;
 }
 
 export interface DatasetsState {
@@ -289,8 +307,17 @@ export interface DatasetsState {
   /** How many matched before the cap, so the rail can say what it is not
    *  showing. */
   candidateMatchCount: number;
-  candidateSearch: string;
-  setCandidateSearch: (s: string) => void;
+  candidateConditions: CandidateFilterCondition[];
+  candidateJoin: CandidateFilterJoin;
+  setCandidateJoin: (join: CandidateFilterJoin) => void;
+  addCandidateCondition: (
+    field: CandidateFilterField,
+    operator: CandidateFilterOperator,
+    value: string,
+  ) => void;
+  removeCandidateCondition: (id: number) => void;
+  clearCandidateConditions: () => void;
+  conditionFilterStatus: "loading" | "ready" | "error";
   addMember: (capture: CaptureListItem) => void;
   addingCaptureId: string | null;
   /** Candidates that cannot join today (not adopted / bytes elsewhere) are
@@ -298,6 +325,22 @@ export interface DatasetsState {
   showBlockedCandidates: boolean;
   toggleBlockedCandidates: () => void;
   blockedCandidateCount: number;
+
+  // ---- adding every matched capture ------------------------------------
+  bulkAddAvailableCount: number;
+  bulkAddOpen: boolean;
+  bulkAddTargetDatasetName: string | null;
+  bulkAddTargetCount: number;
+  bulkAddCatalogTruncated: boolean;
+  openBulkAdd: () => void;
+  cancelBulkAdd: () => void;
+  confirmBulkAdd: () => void;
+  retryBulkAddFailures: () => void;
+  bulkAddBusy: boolean;
+  bulkAddDone: number;
+  bulkAddTotal: number;
+  bulkAddFailures: BulkAddFailure[];
+  bulkAddError: unknown;
 
   // ---- removing the bytes (§7, via the shared dialogs) -------------------
   deletion: CaptureDeletionState;
@@ -422,16 +465,6 @@ function terminated(text: string): string {
   return /[.!?…—:]$/.test(trimmed) ? trimmed : `${trimmed}.`;
 }
 
-/** Case-insensitive substring match over a capture's own identifying fields —
- *  the candidate picker's find. */
-function captureMatches(capture: CaptureListItem, query: string): boolean {
-  const q = query.trim().toLowerCase();
-  if (!q) return true;
-  return [capture.capture_id, capture.run_id, capture.operator, capture.task]
-    .filter((v): v is string => typeof v === 'string' && v !== '')
-    .some((v) => v.toLowerCase().includes(q));
-}
-
 export function useDatasetsState(): DatasetsState {
   const queryClient = useQueryClient();
   // Seed every addressable field from the query string ONCE — this is what a
@@ -487,8 +520,20 @@ export function useDatasetsState(): DatasetsState {
   const [combineTask, setCombineTask] = useState('');
   const [combineSources, setCombineSources] = useState<string[]>([]);
   const combine = useBulkRun<{ captureId: string; message: string }>();
-  const [candidateSearch, setCandidateSearch] = useState('');
+  const nextCandidateConditionId = useRef(1);
+  const [candidateConditions, setCandidateConditions] = useState<
+    CandidateFilterCondition[]
+  >([]);
+  const [candidateJoin, setCandidateJoin] = useState<CandidateFilterJoin>('and');
   const [showBlockedCandidates, setShowBlockedCandidates] = useState(false);
+  const bulkAdd = useBulkRun<BulkAddFailure>();
+  const [bulkAddOpen, setBulkAddOpen] = useState(false);
+  const [bulkAddSnapshot, setBulkAddSnapshot] = useState<{
+    datasetId: string;
+    datasetName: string;
+    captures: CaptureListItem[];
+    catalogTruncated: boolean;
+  } | null>(null);
   const [archiveTarget, setArchiveTarget] = useState<CaptureListItem | null>(null);
   const [archiveProgress, setArchiveProgress] = useState<{
     done: number;
@@ -555,6 +600,22 @@ export function useDatasetsState(): DatasetsState {
   const catalogTruncated = capturesQuery.data?.next_cursor != null;
   const capturesById = useMemo(() => indexCaptures(captures), [captures]);
 
+  // Condition belongs to the batch, not the capture. Load the batch summaries
+  // once and join by batch_id so the filter uses the same durable label Collect
+  // and Review show instead of inventing a capture-level copy.
+  const batchesQuery = useQuery({
+    queryKey: queryKeys.batches,
+    queryFn: ({ signal }) => listBatches({}, signal),
+  });
+  const conditionByBatchId = useMemo(() => {
+    const byId = new Map<string, string | null>();
+    for (const batch of (batchesQuery.data as BatchListResponse | undefined)
+      ?.items ?? []) {
+      byId.set(batch.batch_id, batch.condition ?? null);
+    }
+    return byId;
+  }, [batchesQuery.data]);
+
   // The selected dataset's members come from its own endpoint rather than from
   // the memberships on the captures: it is the authority on what belongs to it,
   // and it still lists a member whose capture never reached this host — which
@@ -569,7 +630,6 @@ export function useDatasetsState(): DatasetsState {
 
   const debouncedSearch = useDebounced(search, SEARCH_DEBOUNCE_MS);
   const debouncedMemberSearch = useDebounced(memberSearch, SEARCH_DEBOUNCE_MS);
-  const debouncedCandidateSearch = useDebounced(candidateSearch, SEARCH_DEBOUNCE_MS);
 
   const membersByDatasetId = useMemo(() => membersByDataset(captures), [captures]);
   // The list shows one shelf at a time: the working sets by default, the
@@ -1279,9 +1339,20 @@ export function useDatasetsState(): DatasetsState {
         (capture) =>
           ADDABLE_STATES.has(capture.state) &&
           !memberCaptureIds.has(capture.capture_id) &&
-          captureMatches(capture, debouncedCandidateSearch),
+          candidateMatchesConditions(
+            capture,
+            candidateConditions,
+            candidateJoin,
+            capture.batch_id ? conditionByBatchId.get(capture.batch_id) : null,
+          ),
       ),
-    [captures, memberCaptureIds, debouncedCandidateSearch],
+    [
+      captures,
+      memberCaptureIds,
+      candidateConditions,
+      candidateJoin,
+      conditionByBatchId,
+    ],
   );
   // Blocked candidates (not adopted, bytes elsewhere) clutter the building
   // flow, so the rail leads with what can actually join — but the blocked
@@ -1291,6 +1362,95 @@ export function useDatasetsState(): DatasetsState {
     [matchedCandidates],
   );
   const visibleCandidates = showBlockedCandidates ? matchedCandidates : addableCandidates;
+
+  const addCandidateCondition = (
+    field: CandidateFilterField,
+    operator: CandidateFilterOperator,
+    rawValue: string,
+  ) => {
+    const value = rawValue.trim();
+    if (value === "") return;
+    const effectiveOperator = field === "task_result" ? "equals" : operator;
+    setCandidateConditions((current) => {
+      const duplicate = current.some(
+        (condition) =>
+          condition.field === field &&
+          condition.operator === effectiveOperator &&
+          condition.value.toLowerCase() === value.toLowerCase(),
+      );
+      if (duplicate) return current;
+      return [
+        ...current,
+        {
+          id: nextCandidateConditionId.current++,
+          field,
+          operator: effectiveOperator,
+          value,
+        },
+      ];
+    });
+  };
+
+  const openBulkAdd = () => {
+    if (
+      !selectedDatasetRecord ||
+      selectedDatasetRecord.status !== "active" ||
+      addableCandidates.length === 0
+    ) {
+      return;
+    }
+    bulkAdd.reset();
+    setBulkAddSnapshot({
+      datasetId: selectedDatasetRecord.dataset_id,
+      datasetName: selectedDatasetRecord.name,
+      captures: [...addableCandidates],
+      catalogTruncated,
+    });
+    setBulkAddOpen(true);
+  };
+
+  const runBulkAdd = async (items: CaptureListItem[]) => {
+    const snapshot = bulkAddSnapshot;
+    if (!snapshot || bulkAdd.running || items.length === 0) return;
+    await bulkAdd.run<CaptureListItem>({
+      items,
+      attempt: async (capture) => {
+        try {
+          await addDatasetMember(snapshot.datasetId, capture.capture_id);
+          return null;
+        } catch (error) {
+          return {
+            captureId: capture.capture_id,
+            message: captureErrorText(error),
+          };
+        }
+      },
+      afterAll: async ({ succeeded, failures }) => {
+        await invalidateDatasets(snapshot.datasetId);
+        if (failures.length === 0) {
+          setBulkAddOpen(false);
+          setBulkAddSnapshot(null);
+          showToast(
+            `Added ${succeeded} recording${succeeded === 1 ? "" : "s"} to ` +
+              `“${snapshot.datasetName}” — nothing moved on disk`,
+          );
+        }
+        // A partial run stays open: its per-capture refusal list is the result,
+        // and the successful memberships are deliberately not rolled back.
+      },
+    });
+  };
+
+  const retryBulkAddFailures = () => {
+    const snapshot = bulkAddSnapshot;
+    if (!snapshot) return;
+    const failedIds = new Set(
+      bulkAdd.failures.map((failure) => failure.captureId),
+    );
+    void runBulkAdd(
+      snapshot.captures.filter((capture) => failedIds.has(capture.capture_id)),
+    );
+  };
 
   return {
     rows,
@@ -1446,13 +1606,47 @@ export function useDatasetsState(): DatasetsState {
 
     candidates: visibleCandidates.slice(0, CANDIDATE_LIMIT),
     candidateMatchCount: visibleCandidates.length,
-    candidateSearch,
-    setCandidateSearch,
+    candidateConditions,
+    candidateJoin,
+    setCandidateJoin,
+    addCandidateCondition,
+    removeCandidateCondition: (id) =>
+      setCandidateConditions((current) =>
+        current.filter((condition) => condition.id !== id),
+      ),
+    clearCandidateConditions: () => setCandidateConditions([]),
+    conditionFilterStatus: batchesQuery.isPending
+      ? "loading"
+      : batchesQuery.isError
+        ? "error"
+        : "ready",
     addMember: (capture) => addMutation.mutate(capture),
     addingCaptureId: addMutation.isPending ? addMutation.variables.capture_id : null,
     showBlockedCandidates,
     toggleBlockedCandidates: () => setShowBlockedCandidates((v) => !v),
     blockedCandidateCount: matchedCandidates.length - addableCandidates.length,
+
+    bulkAddAvailableCount: addableCandidates.length,
+    bulkAddOpen,
+    bulkAddTargetDatasetName: bulkAddSnapshot?.datasetName ?? null,
+    bulkAddTargetCount: bulkAddSnapshot?.captures.length ?? 0,
+    bulkAddCatalogTruncated: bulkAddSnapshot?.catalogTruncated ?? false,
+    openBulkAdd,
+    cancelBulkAdd: () => {
+      if (bulkAdd.running) return;
+      setBulkAddOpen(false);
+      setBulkAddSnapshot(null);
+      bulkAdd.reset();
+    },
+    confirmBulkAdd: () => {
+      if (bulkAddSnapshot) void runBulkAdd(bulkAddSnapshot.captures);
+    },
+    retryBulkAddFailures,
+    bulkAddBusy: bulkAdd.running,
+    bulkAddDone: bulkAdd.done,
+    bulkAddTotal: bulkAdd.total,
+    bulkAddFailures: bulkAdd.failures,
+    bulkAddError: bulkAdd.error,
 
     deletion,
     splitDeploy,

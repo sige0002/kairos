@@ -62,6 +62,9 @@ export interface EpisodeRow {
   /** "MM/DD · #N" when the capture's batch number is known, else "—". */
   batch: string;
   batchId: string | null;
+  /** Batch-owned recording condition. Null when the capture has no batch or
+   * the batch catalog could not describe it; never guessed from task text. */
+  condition: string | null;
   operator: string | null;
   /** The backend's own verdict wins: a capture that ended `failed` or
    *  `interrupted` is "Not usable" whatever the review says, because no review

@@ -289,9 +289,17 @@ export function useReviewState(): ReviewState {
     queryFn: ({ signal }) => listBatches({}, signal),
   });
   const batchSeq: BatchSeqLookup = useMemo(() => {
-    const byId = new Map<string, { seq: number | null; createdAt: string | null }>();
-    for (const b of (batchesQuery.data as BatchListResponse | undefined)?.items ?? []) {
-      byId.set(b.batch_id, { seq: b.batch_seq ?? null, createdAt: b.created_at ?? null });
+    const byId = new Map<
+      string,
+      { seq: number | null; createdAt: string | null; condition: string | null }
+    >();
+    for (const b of (batchesQuery.data as BatchListResponse | undefined)
+      ?.items ?? []) {
+      byId.set(b.batch_id, {
+        seq: b.batch_seq ?? null,
+        createdAt: b.created_at ?? null,
+        condition: b.condition ?? null,
+      });
     }
     return (batchId) => (batchId ? (byId.get(batchId) ?? null) : null);
   }, [batchesQuery.data]);

@@ -8,7 +8,7 @@ import { useUiStore } from '../../store/uiStore';
 import { setSplitMode } from '../captures/splitMode';
 import { setFiltersCollapsed } from './filtersRail';
 import { ReviewScreen } from './ReviewScreen';
-import type { Capture } from '../../api/types';
+import type { BatchSummary, Capture } from '../../api/types';
 import { expectScreenHeadingOutline } from '../../test/headingOutline';
 
 const FILTERS_KEY = 'kairos.v2.review.filtersCollapsed.v1';
@@ -56,6 +56,7 @@ interface ApiOptions {
   /** Every POST /jobs is lost on the way out, as a dead connection loses it —
    *  a rejected fetch, not an error response. */
   jobsUnreachable?: boolean;
+  batches?: BatchSummary[];
 }
 
 /** Everything the Review screen touches: the capture list, the per-capture
@@ -144,7 +145,8 @@ function mockApi(initial: Capture[], options: ApiOptions = {}) {
       );
     if (url.includes('/retention'))
       return Promise.resolve(jsonResponse({ days: 0, candidates: [], total_bytes: 0 }));
-    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    if (url.includes('/batches'))
+      return Promise.resolve(jsonResponse({ items: options.batches ?? [] }));
     if (url.includes('/captures'))
       return Promise.resolve(
         jsonResponse({
@@ -201,7 +203,45 @@ test('rows render with an availability chip stating where the bytes are', async 
   );
 });
 
-test('a capture with no local copy renders normally and explains itself', async () => {
+test("the right detail shows the batch condition immediately below Task", async () => {
+  mockApi(
+    [
+      capture({
+        capture_id: "c1",
+        run_id: "run_1",
+        index_in_batch: 1,
+        batch_id: "batch-1",
+        task: "Pick and Place",
+      }),
+    ],
+    {
+      batches: [
+        {
+          batch_id: "batch-1",
+          project: "Manipulation",
+          task: "Pick and Place",
+          condition: "Object: left bin",
+          operator: "op_a",
+          target_episodes: 30,
+          status: "completed",
+          episode_count: 1,
+        },
+      ],
+    },
+  );
+  renderWithClient(<ReviewScreen />);
+
+  const inspection = await screen.findByTestId("review-inspection");
+  expect(screen.getByTestId("review-condition")).toHaveTextContent(
+    "Object: left bin",
+  );
+  const labels = Array.from(inspection.querySelectorAll("dt")).map((node) =>
+    node.textContent?.trim(),
+  );
+  expect(labels.indexOf("Condition")).toBe(labels.indexOf("Task") + 1);
+});
+
+test("a capture with no local copy renders normally and explains itself", async () => {
   // Split deploy, review-before-bytes: a normal state, not an error (§12).
   mockApi([
     capture({ capture_id: 'c1', run_id: 'run_1', index_in_batch: 1, replica: null }),

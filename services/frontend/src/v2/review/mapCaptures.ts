@@ -49,6 +49,7 @@ export function spanMs(started?: string | null, ended?: string | null): number |
 export type BatchSeqLookup = (batchId: string | null | undefined) => {
   seq: number | null;
   createdAt: string | null;
+  condition?: string | null;
 } | null;
 
 export function mapCapturesToEpisodes(
@@ -92,6 +93,7 @@ export function mapCapturesToEpisodes(
       state: capture.state,
       batch: formatBatchLabel(batch?.seq, batch?.createdAt ?? capture.started_at, '—'),
       batchId: capture.batch_id ?? null,
+      condition: batch?.condition ?? null,
       operator: capture.operator ?? null,
       quality,
       task,

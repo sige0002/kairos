@@ -270,9 +270,12 @@ function CaptureNote({ error }: { error: NonNullable<CaptureDetail['error']> }) 
 
 export function CaptureInspection({
   captureId,
+  condition,
   labels,
 }: {
   captureId: string;
+  /** Batch-owned context displayed under Task in Review. */
+  condition?: string | null;
   /** Supplied by Review's detail panel to make the operator/task/robot rows
    *  editable. Absent elsewhere, which leaves them read-only. */
   labels?: LabelEditing;
@@ -437,12 +440,16 @@ export function CaptureInspection({
               task: capture.task ?? null,
               robot: capture.robot ?? null,
             }}
+            condition={condition ?? null}
             editing={labels}
           />
         ) : (
           <>
             <Row label="Operator">{capture.operator || '—'}</Row>
             <Row label="Task">{capture.task || '—'}</Row>
+            {condition !== undefined && (
+              <Row label="Condition">{condition || '—'}</Row>
+            )}
             <Row label="Robot">{capture.robot || '—'}</Row>
           </>
         )}

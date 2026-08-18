@@ -39,6 +39,83 @@ export const MEMBER_PAGE_SIZE = 200;
 export type SortMode = 'recent' | 'alpha';
 export type TaskResultFilter = 'all' | 'success' | 'failure';
 
+/** Fields the candidate rail can turn into explicit, removable predicates. */
+export type CandidateFilterField =
+  | "any"
+  | "operator"
+  | "task"
+  | "condition"
+  | "run_id"
+  | "capture_id"
+  | "task_result";
+export type CandidateFilterOperator = "contains" | "equals";
+export type CandidateFilterJoin = "and" | "or";
+
+export interface CandidateFilterCondition {
+  id: number;
+  field: CandidateFilterField;
+  operator: CandidateFilterOperator;
+  value: string;
+}
+
+const CANDIDATE_FILTER_VALUES: Record<
+  Exclude<CandidateFilterField, "any">,
+  (capture: CaptureListItem) => string | null | undefined
+> = {
+  operator: (capture) => capture.operator,
+  task: (capture) => capture.task,
+  condition: () => null,
+  run_id: (capture) => capture.run_id,
+  capture_id: (capture) => capture.capture_id,
+  task_result: (capture) => capture.task_result,
+};
+
+function candidateFilterValues(
+  capture: CaptureListItem,
+  field: CandidateFilterField,
+  condition: string | null | undefined,
+): string[] {
+  if (field === "any") {
+    return [
+      ...Object.values(CANDIDATE_FILTER_VALUES)
+        .map((read) => read(capture))
+        .filter(
+          (value): value is string => typeof value === "string" && value !== "",
+        ),
+      ...(condition ? [condition] : []),
+    ];
+  }
+  if (field === "condition") return condition ? [condition] : [];
+  const value = CANDIDATE_FILTER_VALUES[field](capture);
+  return typeof value === "string" && value !== "" ? [value] : [];
+}
+
+/** Match the explicit candidate-filter predicates. Values are compared
+ * case-insensitively; an absent field cannot satisfy a predicate about it. */
+export function candidateMatchesConditions(
+  capture: CaptureListItem,
+  conditions: CandidateFilterCondition[],
+  join: CandidateFilterJoin,
+  batchCondition?: string | null,
+): boolean {
+  if (conditions.length === 0) return true;
+  const matchesCondition = (condition: CandidateFilterCondition) => {
+    const needle = condition.value.trim().toLowerCase();
+    if (needle === "") return true;
+    return candidateFilterValues(capture, condition.field, batchCondition).some(
+      (raw) => {
+        const value = raw.toLowerCase();
+        return condition.operator === "equals"
+          ? value === needle
+          : value.includes(needle);
+      },
+    );
+  };
+  return join === "and"
+    ? conditions.every(matchesCondition)
+    : conditions.some(matchesCondition);
+}
+
 // ---- formatting ----------------------------------------------------------
 
 export { formatBytes, formatWhen } from '../review/format';
