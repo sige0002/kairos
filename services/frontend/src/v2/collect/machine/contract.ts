@@ -10,6 +10,7 @@ import type {
   RecordState,
 } from '../../../api/types';
 import type { CaptureDeletionState } from '../../captures/useCaptureDeletion';
+import type { RecordingCueSettings } from '../hooks/useRecordingCues';
 import type {
   EpisodeRecord,
   MachineError,
@@ -213,6 +214,8 @@ export interface BatchMachine {
   targetModalOpen: boolean;
   /** Keyboard-shortcuts help sheet (opened with `?`). */
   shortcutsOpen: boolean;
+  /** Browser-local recording cue settings popover. */
+  soundMenuOpen: boolean;
   toggleBatchMenu: () => void;
   openProjPicker: () => void;
   openTaskPicker: () => void;
@@ -224,6 +227,7 @@ export interface BatchMachine {
   openEndModal: () => void;
   openResetModal: () => void;
   openShortcuts: () => void;
+  toggleSoundMenu: () => void;
   closeModals: () => void;
 
   // Discard this take (§7): a DISCARD, not a delete — the data was never worth
@@ -246,6 +250,10 @@ export interface BatchMachine {
 
   // toast
   toast: string;
+
+  /** Browser-local opt-in cues. Audio is supplemental: playback failure never
+   *  changes recorder state or hides the persistent visual/ARIA feedback. */
+  recordingCueSettings: RecordingCueSettings;
 
   // actions
   startRecording: () => void;

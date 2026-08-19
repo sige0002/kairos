@@ -16,6 +16,7 @@ import { Card, cn } from '../../components/ui';
 import { type BatchMachine } from './useBatchMachine';
 import { findProject, usePlans } from '../plans';
 import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
+import { RecordingSoundControl } from './RecordingSoundControl';
 
 function CellButton({
   label,
@@ -333,6 +334,11 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         onToggle={machine.toggleRobotPicker}
       />
       <div className="flex-1" />
+      <RecordingSoundControl
+        settings={machine.recordingCueSettings}
+        open={machine.soundMenuOpen}
+        onToggle={machine.toggleSoundMenu}
+      />
       <button
         type="button"
         onClick={machine.goMonitor}

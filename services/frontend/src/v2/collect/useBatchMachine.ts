@@ -95,6 +95,7 @@ import { useTakeClock } from './hooks/useTakeClock';
 import { useBatchLifecycle } from './hooks/useBatchLifecycle';
 import { useCollectContext } from './hooks/useCollectContext';
 import { useUnsavedTakeRecovery } from './hooks/useUnsavedTakeRecovery';
+import { useRecordingCues } from './hooks/useRecordingCues';
 
 /** Normalise a thrown error to a MachineError. A backend code passes through; a
  *  5xx or a transport failure (no code) is treated as an unreachable recorder so
@@ -210,6 +211,14 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   // reading that as an empty live set is how a UI ends up telling an operator
   // their running recording does not exist.
   const liveCaptures = recordStatus.live;
+  const recordingCues = useRecordingCues({
+    phase: state.phase,
+    currentCaptureId: state.currentCaptureId,
+    recorderReachable,
+    statusCaptureId: status?.capture_id,
+    statusState: status?.state,
+    liveCaptures,
+  });
 
   // ---- settled quick-check verdict (F1) ------------------------------------
   // After stop the orchestrator settles a quick_check verdict on the capture
@@ -458,6 +467,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         return;
       }
       if (!capture || capture.state === 'failed') {
+        recordingCues.notifyFailure();
         dispatch({
           type: 'START_FAILED',
           error: capture?.error
@@ -466,6 +476,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         });
         return;
       }
+      recordingCues.claimStartedCapture(capture.capture_id ?? null);
       dispatch({
         type: 'START_SUCCEEDED',
         captureId: capture.capture_id ?? null,
@@ -475,6 +486,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     onError: (err) => {
       if (cancelledStartRef.current) {
         cancelledStartRef.current = false;
+        recordingCues.abandonStart();
         if (terminalStartCancellationRef.current) return;
         // No cleanup here, deliberately. A transport failure means we never
         // learned a capture_id, so the only way to name a target would be to
@@ -489,6 +501,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         // the unsaved-take banner. Tracked on #8 rather than closed with it.
         return;
       }
+      recordingCues.notifyFailure();
       dispatch({ type: 'START_FAILED', error: toMachineError(err) });
     },
     // Released however the start ended. Leaving it set on a failure would make
@@ -517,16 +530,18 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       // offer rather than a reflex.
       return capture;
     },
-    onSuccess: () => {
+    onSuccess: (capture) => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
       // The stop returned the finalised capture: advance SAVING → QUICK CHECK on
       // the real event, and refresh the capture cache (the just-stopped capture
       // is now completed — it feeds the unsaved-take scan if the operator
       // navigates away before labelling it).
       void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
+      recordingCues.confirmStop(capture.capture_id ?? null);
       dispatch({ type: 'SAVED' });
     },
     onError: (err) => {
+      recordingCues.notifyFailure();
       dispatch({ type: 'STOP_FAILED', error: toMachineError(err) });
     },
   });
@@ -542,6 +557,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     if (startInFlightRef.current) return;
     startInFlightRef.current = true;
     cancelledStartRef.current = false;
+    recordingCues.markStartRequested();
     dispatch({ type: 'START_REQUESTED' });
     const pending = (async () => {
       let collectionContext: CollectionContextSnapshot;
@@ -549,6 +565,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         collectionContext = await prepareRecordStartContext();
       } catch (err) {
         startInFlightRef.current = false;
+        recordingCues.notifyFailure();
         dispatch({ type: 'START_FAILED', error: toMachineError(err) });
         return;
       }
@@ -556,6 +573,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       // recorder session after the operator has backed out of arming.
       if (cancelledStartRef.current) {
         startInFlightRef.current = false;
+        recordingCues.abandonStart();
         return;
       }
       const body: RecordStartRequest = {
@@ -583,6 +601,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     selection.topics,
     startMutation,
     prepareRecordStartContext,
+    recordingCues,
   ]);
 
   // The arming Cancel ignores its first moments on screen (#8): it lands where
@@ -601,8 +620,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     // button's disabled state.
     if (!canCancelArming) return;
     cancelledStartRef.current = true;
+    recordingCues.abandonStart();
     dispatch({ type: 'CANCEL_ARMING' });
-  }, [state.phase, canCancelArming]);
+  }, [state.phase, canCancelArming, recordingCues]);
 
   // ---- take clock + lifecycle gates (E-28 / E-32 / B1) ---------------------
   // The monotonic baseline, Stop floor, frozen elapsed timer, B1 recovery,
@@ -619,6 +639,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     liveCaptures,
     integrity,
     showToast,
+    onRecordingInterrupted: recordingCues.notifyInterrupted,
   });
 
   const stopRecording = useCallback(() => {
@@ -626,9 +647,10 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     // Guarded here as well as on the control, so the S / Space shortcuts cannot
     // walk around the button's disabled state.
     if (!canStop) return;
+    recordingCues.markStopRequested(state.currentCaptureId);
     dispatch({ type: 'STOP_REQUESTED' });
     stopMutation.mutate();
-  }, [state.phase, canStop, stopMutation]);
+  }, [state.phase, state.currentCaptureId, canStop, stopMutation, recordingCues]);
 
   // Honest progress for the confirmation wait above: seconds since Stop was
   // pressed, shown on the SAVING card while the recorder drains. Null outside
@@ -929,6 +951,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const retakeEpisode = useCallback(() => {
     const snapshot = getStoreSnapshot();
     if (snapshot.phase !== 'result') return;
+    // Retake's actual Start happens after an asynchronous discard. Prime Web
+    // Audio inside this click so browsers do not reject the later start cue.
+    recordingCues.prime();
     const captureId = snapshot.currentCaptureId;
     if (!captureId) {
       dispatch({ type: 'RETRY_EPISODE' });
@@ -946,7 +971,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         // Discard failed (toast already shown) — do NOT auto-start on top of
         // a take that still exists.
       });
-  }, [episodeDiscard]);
+  }, [episodeDiscard, recordingCues]);
   useEffect(() => {
     if (!retakeQueued) return;
     if (state.phase === 'ready') {
@@ -1049,6 +1074,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     resetModalOpen,
     targetModalOpen,
     shortcutsOpen,
+    soundMenuOpen,
     toggleBatchMenu,
     openProjPicker,
     toggleRobotPicker,
@@ -1058,6 +1084,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     openResetModal,
     openTargetModal,
     openShortcuts,
+    toggleSoundMenu,
     setBatchMenuOpen,
     setProjPickerOpen,
     setTaskPickerOpen,
@@ -1066,6 +1093,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     setResetModalOpen,
     setTargetModalOpen,
     setShortcutsOpen,
+    setSoundMenuOpen,
   } = useCollectOverlays({ ctxEditable, condAllowed });
 
   const { confirmEndBatch, resetBatch, startNextBatch, changeTarget } =
@@ -1104,6 +1132,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     setTargetModalOpen(false);
     setTakeoverStopModalOpen(false);
     setShortcutsOpen(false);
+    setSoundMenuOpen(false);
   }, []);
   // ---- context: project / task / condition ----------------------------------
   // Pickers + the set-rollover rule live in hooks/useCollectContext.ts.
@@ -1147,6 +1176,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     targetModalOpen ||
     takeoverStopModalOpen ||
     shortcutsOpen ||
+    soundMenuOpen ||
     projPickerOpen ||
     taskPickerOpen ||
     batchMenuOpen;
@@ -1245,6 +1275,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     resetModalOpen,
     targetModalOpen,
     shortcutsOpen,
+    soundMenuOpen,
     toggleBatchMenu,
     openProjPicker,
     openTaskPicker,
@@ -1254,6 +1285,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     openEndModal,
     openResetModal,
     openShortcuts,
+    toggleSoundMenu,
     closeModals,
 
     episodeDiscard,
@@ -1265,6 +1297,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     adviceNext,
 
     toast,
+
+    recordingCueSettings: recordingCues.settings,
 
     startRecording,
     cancelArming,

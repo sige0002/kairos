@@ -31,6 +31,41 @@ const HEALTHY_KINDS = new Set(['verifying', 'present', 'verified']);
 
 test.describe.configure({ mode: 'serial' });
 
+test('§13-1 Collect: recording sounds are explicit, opt-in and browser-local', async ({
+  page,
+}) => {
+  await openTab(page, 'collect');
+  const toggle = page.getByTestId('recording-sounds-toggle');
+  await expect(toggle).toHaveAttribute('aria-label', 'Recording sounds off');
+  await toggle.click();
+
+  const menu = page.getByTestId('recording-sounds-menu');
+  await expect(menu).toBeVisible();
+  await expect(menu.getByRole('switch')).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeHidden();
+  await expect(toggle).toBeFocused();
+  await toggle.click();
+  await expect(menu.getByRole('switch')).toHaveAttribute(
+    'aria-checked',
+    'false',
+  );
+  await expect(menu.getByRole('button', { name: 'Start' })).toBeDisabled();
+  await expect(menu).toContainText(
+    'End = recording finalized, not a data quality result.',
+  );
+
+  await menu.getByRole('switch').click();
+  await expect(menu.getByRole('switch')).toHaveAttribute(
+    'aria-checked',
+    'true',
+  );
+  await expect(menu.getByRole('button', { name: 'Warning' })).toBeEnabled();
+
+  await page.reload();
+  await expect(toggle).toHaveAttribute('aria-label', 'Recording sounds on');
+});
+
 test('§13-1 Collect: a recording made in the UI appears in the UI and its digest completes', async ({
   page,
 }, testInfo) => {

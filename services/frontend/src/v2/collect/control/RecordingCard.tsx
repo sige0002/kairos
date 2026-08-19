@@ -64,15 +64,20 @@ export function RecordingCard({
         </span>
       </div>
       {unreachable && (
-        <p
+        <div
           data-testid="recorder-unreachable-note"
           className="rounded-control border border-amber-300 bg-amber-50 px-3 py-2 text-[12.5px] leading-relaxed text-amber-900"
         >
-          The recorder is not answering. Last known:{' '}
-          <span className="font-semibold">recording</span>, {staleText}. Whether
-          it is still running cannot be confirmed from here — the figures below
-          are the last ones it reported, not current.
-        </p>
+          <p role="alert" aria-live="assertive">
+            The recorder is not answering. Whether this take is still running cannot be
+            confirmed from here. Check the recorder connection; after it reconnects,
+            confirm whether this take is still live before continuing.
+          </p>
+          <p className="mt-1 text-[11.5px] text-amber-800" aria-live="off">
+            Last known: <span className="font-semibold">recording</span>, {staleText}.
+            The figures below are the last ones reported, not current.
+          </p>
+        </div>
       )}
       <div className="flex items-baseline gap-2.5">
         <span
@@ -81,7 +86,11 @@ export function RecordingCard({
             'font-mono text-[34px] font-semibold',
             unreachable ? 'text-gray-500' : 'text-gray-900',
           )}
-          title={unreachable ? `Frozen at the last confirmed reading (${staleText})` : undefined}
+          title={
+            unreachable
+              ? `Frozen at the last confirmed reading (${staleText})`
+              : undefined
+          }
         >
           {elapsedText}
         </span>
