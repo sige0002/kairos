@@ -235,9 +235,7 @@ fn check(
     let extra: Vec<Value> = counts
         .iter()
         .filter(|(topic, _)| !matched_names.contains(*topic))
-        .map(|(topic, count)| {
-            json!({"name": topic, "type": types.get(topic), "messages": count})
-        })
+        .map(|(topic, count)| json!({"name": topic, "type": types.get(topic), "messages": count}))
         .collect();
 
     let mut record = json!({
@@ -365,7 +363,12 @@ mod tests {
 
     #[test]
     fn reports_a_missing_topic() {
-        let out = check(&required(&["/joint_states"]), &counts(&[("/tf", 5)]), &types(&[]), 0);
+        let out = check(
+            &required(&["/joint_states"]),
+            &counts(&[("/tf", 5)]),
+            &types(&[]),
+            0,
+        );
         assert_eq!(out["ok"], json!(false));
         assert_eq!(out["missing"][0]["reason"], json!("topic not in bag"));
     }

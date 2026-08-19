@@ -259,7 +259,9 @@ pub fn laplacian_var(gray: &[u8], w: usize, h: usize) -> f64 {
         let cur = y * w;
         let left = refl(x as isize - 1, w);
         let right = refl(x as isize + 1, w);
-        let lap = gray[up + x] as i32 + gray[down + x] as i32 + gray[cur + left] as i32
+        let lap = gray[up + x] as i32
+            + gray[down + x] as i32
+            + gray[cur + left] as i32
             + gray[cur + right] as i32
             - 4 * gray[cur + x] as i32;
         let lap = lap as i64;

@@ -331,14 +331,17 @@ fn preflight(
                     .entry(re.to_string())
                     .or_insert_with(|| sanitize_topic(re));
             } else {
-                let (nid, out) = re
-                    .split_once('/')
-                    .with_context(|| format!("bad node reference `{re}` — expected `node_id/output`"))?;
+                let (nid, out) = re.split_once('/').with_context(|| {
+                    format!("bad node reference `{re}` — expected `node_id/output`")
+                })?;
                 let outs = node_outputs
                     .get(nid)
                     .with_context(|| format!("unknown node `{nid}` referenced by `{}`", n.id))?;
                 if !outs.iter().any(|o| o == out) {
-                    bail!("node `{nid}` has no output `{out}` (referenced by `{}`)", n.id);
+                    bail!(
+                        "node `{nid}` has no output `{out}` (referenced by `{}`)",
+                        n.id
+                    );
                 }
             }
             wiring

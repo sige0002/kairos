@@ -96,11 +96,11 @@ jobs:
       run:
         working-directory: services/dora_runner/bagflow
     steps:
+      - uses: actions/checkout@v4
       - name: Install native build dependencies
         run: |
           apt-get update
           apt-get install -y --no-install-recommends git cmake pkg-config libturbojpeg0-dev nasm
-      - uses: actions/checkout@v4
       - run: rustup component add rustfmt clippy
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings

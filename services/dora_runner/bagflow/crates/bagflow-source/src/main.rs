@@ -151,14 +151,12 @@ fn main() -> Result<()> {
         skipped += stats.skipped;
         let file_name = file.display().to_string();
         for (topic, reason) in &stats.failed_topics {
-            failed_topics.push(
-                serde_json::json!({"topic": topic, "reason": reason, "file": file_name }),
-            );
+            failed_topics
+                .push(serde_json::json!({"topic": topic, "reason": reason, "file": file_name }));
         }
         for (topic, reason) in &stats.fallback_topics {
-            fallback_topics.push(
-                serde_json::json!({"topic": topic, "reason": reason, "file": file_name }),
-            );
+            fallback_topics
+                .push(serde_json::json!({"topic": topic, "reason": reason, "file": file_name }));
         }
         if read_error.is_some() {
             break 'files;
@@ -194,8 +192,12 @@ fn main() -> Result<()> {
     )
     .map_err(|e| anyhow!("{e:?}"))?;
     let record = serde_json::json!({ "_bagflow_source": counts }).to_string();
-    node.send_output(result.clone(), BTreeMap::new(), StringArray::from(vec![record]))
-        .map_err(|e| anyhow!("{e:?}"))?;
+    node.send_output(
+        result.clone(),
+        BTreeMap::new(),
+        StringArray::from(vec![record]),
+    )
+    .map_err(|e| anyhow!("{e:?}"))?;
     node.send_output(
         result,
         eos_params(),
