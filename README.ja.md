@@ -86,7 +86,7 @@ flowchart LR
 
 - **Docker** / **Docker Compose**（全サービスをまとめて起動する場合）。
 - ローカル検証用のサンプル rosbag（**MCAP**）を `data/` 配下に配置（例: `data/airoa-moma-mcap/<episode>/`）。`data/` と `*.mcap` は gitignore（コミットしない）。
-- 単体テストを直接走らせる場合のみ: **uv**（Python）と **Node.js + npm**（frontend）。
+- 公開サンプル bag の取得・変換、または単体テストを直接走らせる場合: **uv**（Python）。frontend の単体テストには **Node.js + npm** も必要。
 
 ### 対応環境
 
@@ -102,6 +102,44 @@ flowchart LR
 資源量は topic 数・画像帯域・録画時間で変わるため固定の最小値は保証しません。導入時の開始点は
 4 CPU / 8 GiB RAM / dora 用 2 GiB shared memory とし、データ領域には予定収録量の 2 倍以上の空きを
 確保してください。実機投入前に `make smoke-record` と代表 bag の長時間試験で再計測します。
+
+### 公開サンプル bag を準備する（約 10 秒）
+
+[AIRoA Raw Rosbag Dataset](https://huggingface.co/datasets/airoa-org/airoa-moma-raw) の
+`235210` を最小サンプルとして使います（約 10.1 秒、ダウンロード約 63 MB）。この dataset は
+公開されていますがアクセス条件への同意が必要です。Hugging Face にログインし、dataset ページで
+**Agree and access repository** を済ませてください。ライセンスは配布元に記載された
+**CC BY-NC-SA 4.0** に従います。
+
+配布物は ROS 1 の `data.bag` なので、kairos が再生する ROS 2 MCAP へ一度だけ変換します。
+リポジトリルートで次を実行してください。
+
+```bash
+# ブラウザ認証。すでに hf auth login 済みなら不要
+uvx --from huggingface_hub hf auth login
+
+# 7 episode 全体ではなく、約 10 秒の 235210 だけを取得
+uvx --from huggingface_hub hf download \
+  airoa-org/airoa-moma-raw 235210/data.bag \
+  --repo-type dataset \
+  --local-dir data/airoa-moma-raw
+
+# ROS 1 bag -> ROS 2 MCAP（出力: metadata.yaml + 235210.mcap）
+uvx --from rosbags==0.11.3 rosbags-convert \
+  --src data/airoa-moma-raw/235210/data.bag \
+  --dst data/airoa-moma-mcap/235210 \
+  --dst-storage mcap
+```
+
+`data/` は gitignore 済みです。`data/airoa-moma-mcap/235210/` がすでにあれば再変換は不要です。
+スタックを起動した後、別ターミナルから既定の短い bag をループ再生できます。
+
+```bash
+make rosbag-loop    # Ctrl+C で停止
+```
+
+さらに別ターミナルで `make table` を実行すると全 topic の Hz / 帯域 / 件数を確認でき、
+`make smoke` では health → topic discovery → live metrics の通し確認ができます。
 
 ### 全サービスの起動（Docker）
 

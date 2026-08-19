@@ -89,7 +89,7 @@ For the detailed spec of each service, see [docs/specs/en/](docs/specs/en/README
 
 - **Docker** / **Docker Compose** (to start all services together).
 - Place sample rosbags (**MCAP**) under `data/` for local verification (e.g. `data/airoa-moma-mcap/<episode>/`). `data/` and `*.mcap` are gitignored (not committed).
-- Only when running unit tests directly: **uv** (Python) and **Node.js + npm** (frontend).
+- For downloading and converting the public sample bag, or for running unit tests directly: **uv** (Python). Frontend unit tests also require **Node.js + npm**.
 
 ### Supported environment
 
@@ -106,6 +106,44 @@ Resource needs vary with topic count, image bandwidth, and recording duration, s
 guaranteed. Start with 4 CPUs, 8 GiB RAM, and 2 GiB shared memory for dora; reserve at least twice the
 planned recording volume on the data filesystem. Re-measure with `make smoke-record` and a long representative
 bag run before deployment.
+
+### Prepare the public sample bag (~10 seconds)
+
+Use episode `235210` from the
+[AIRoA Raw Rosbag Dataset](https://huggingface.co/datasets/airoa-org/airoa-moma-raw)
+as the smallest sample (~10.1 seconds, ~63 MB download). The dataset is public, but you must accept
+its access conditions. Log in to Hugging Face and select **Agree and access repository** on the
+dataset page. Follow the source dataset's **CC BY-NC-SA 4.0** license.
+
+The distributed file is a ROS 1 `data.bag`, so convert it once to the ROS 2 MCAP format replayed by
+kairos. Run the following from the repository root:
+
+```bash
+# Browser authentication; skip if you have already run hf auth login
+uvx --from huggingface_hub hf auth login
+
+# Download only the ~10-second episode 235210, not all 7 episodes
+uvx --from huggingface_hub hf download \
+  airoa-org/airoa-moma-raw 235210/data.bag \
+  --repo-type dataset \
+  --local-dir data/airoa-moma-raw
+
+# ROS 1 bag -> ROS 2 MCAP (output: metadata.yaml + 235210.mcap)
+uvx --from rosbags==0.11.3 rosbags-convert \
+  --src data/airoa-moma-raw/235210/data.bag \
+  --dst data/airoa-moma-mcap/235210 \
+  --dst-storage mcap
+```
+
+`data/` is already gitignored. If `data/airoa-moma-mcap/235210/` already exists, no reconversion is
+needed. After starting the stack, replay the default short bag on a loop from another terminal:
+
+```bash
+make rosbag-loop    # Stop with Ctrl+C
+```
+
+Run `make table` in another terminal to inspect every topic's Hz / bandwidth / count, or run
+`make smoke` for an end-to-end health → topic discovery → live metrics check.
 
 ### Start all services (Docker)
 
