@@ -37,10 +37,9 @@ from dora_runner.full_validation import run_full_validation
 from dora_runner.loss_report import run_loss_report
 from dora_runner.loss_report_config import (
     LossReportConfig,
-    coerce_multiplier,
-    coerce_target_topics,
     load_loss_report_config,
 )
+from dora_runner.params_validation import validate_params_schema
 from dora_runner.signal_report import DEFAULT_MAX_POINTS, run_signal_report
 from dora_runner.store import JobRecord, RunnerStore
 from dora_runner.validation import generate_template
@@ -78,6 +77,7 @@ class PipelineRegistry:
         self._items: dict[str, RegisteredPipeline] = {}
 
     def register(self, pipeline: RegisteredPipeline) -> None:
+        validate_params_schema(pipeline.params_schema)
         self._items[pipeline.id] = pipeline
 
     def get(self, pipeline_id: str) -> RegisteredPipeline | None:
@@ -163,8 +163,15 @@ async def _resolve_optional_template(
 def _flow_param(params: dict) -> str:
     """``flow`` job param: which ``config/<robot>/flows/<name>.yml`` to run."""
     raw = params.get("flow")
-    name = str(raw).strip() if raw is not None else ""
-    return name or DEFAULT_FLOW
+    if raw is None:
+        return DEFAULT_FLOW
+    if not isinstance(raw, str) or not raw.strip():
+        raise ApiError(
+            status_code=400,
+            code="invalid_flow",
+            message="flow must be a non-empty string.",
+        )
+    return raw.strip()
 
 
 def _min_coverage_param(params: dict) -> float:
@@ -172,10 +179,7 @@ def _min_coverage_param(params: dict) -> float:
     raw = params.get("min_coverage")
     if raw is None:
         return 0.0
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        value = -1.0
+    value = raw if isinstance(raw, (int, float)) and not isinstance(raw, bool) else -1
     if not 0.0 <= value <= 1.0:
         raise ApiError(
             status_code=400,
@@ -215,14 +219,10 @@ def _loss_report_params(params: dict, config: LossReportConfig) -> dict[str, obj
     multiplier = params.get("gap_threshold_multiplier")
     return {
         "target_topics": (
-            coerce_target_topics(target)
-            if target is not None
-            else list(config.target_topics)
+            list(target) if target is not None else list(config.target_topics)
         ),
         "gap_threshold_multiplier": (
-            coerce_multiplier(multiplier)
-            if multiplier is not None
-            else config.gap_threshold_multiplier
+            multiplier if multiplier is not None else config.gap_threshold_multiplier
         ),
     }
 
@@ -255,12 +255,7 @@ def _threshold_ms_param(params: dict) -> float:
     raw = params.get("threshold_ms")
     if raw is None:
         return DEFAULT_THRESHOLD_MS
-    value = 0.0
-    if not isinstance(raw, bool):
-        try:
-            value = float(raw)
-        except (TypeError, ValueError):
-            value = 0.0
+    value = raw if isinstance(raw, (int, float)) and not isinstance(raw, bool) else 0
     if not math.isfinite(value) or value <= 0:
         raise ApiError(
             status_code=400,
@@ -284,15 +279,7 @@ def _max_samples_param(params: dict) -> int:
     raw = params.get("max_samples_per_topic")
     if raw is None:
         return DEFAULT_MAX_SAMPLES
-    value = 0
-    if not isinstance(raw, bool):
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            value = 0
-        else:
-            if float(raw) != value:  # 10.9 is not an integer, don't truncate
-                value = 0
+    value = raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
     if not 10 <= value <= MAX_CLOCK_CHECK_SAMPLES:
         raise ApiError(
             status_code=400,
@@ -313,7 +300,7 @@ async def _run_clock_check(job: JobRecord, store: RunnerStore, data_dir: Path) -
         data_dir=data_dir,
         threshold_ms=_threshold_ms_param(job.params),
         max_samples_per_topic=_max_samples_param(job.params),
-        target_topics=coerce_target_topics(target) if target is not None else None,
+        target_topics=list(target) if target is not None else None,
         cancel=job.cancel_event,
     )
 
@@ -323,10 +310,7 @@ def _max_frames_param(params: dict) -> int:
     raw = params.get("max_frames")
     if raw is None:
         return MAX_FRAMES
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        value = -1
+    value = raw if isinstance(raw, int) and not isinstance(raw, bool) else -1
     if value < 0:
         raise ApiError(
             status_code=400,
@@ -338,7 +322,7 @@ def _max_frames_param(params: dict) -> int:
 
 async def _run_video_check(job: JobRecord, store: RunnerStore, data_dir: Path) -> dict:
     topic = job.params.get("topic")
-    if not topic or not str(topic).strip():
+    if not isinstance(topic, str) or not topic.strip():
         raise ApiError(
             status_code=400,
             code="topic_required",
@@ -348,9 +332,9 @@ async def _run_video_check(job: JobRecord, store: RunnerStore, data_dir: Path) -
         run_video_check,
         capture_id=job.capture_id,
         data_dir=data_dir,
-        topic=str(topic),
+        topic=topic,
         # Results are cached per (capture_id, topic); force=true re-encodes anyway.
-        force=bool(job.params.get("force")),
+        force=job.params.get("force", False),
         # Encode cap; 0 = full episode (the UI's "re-encode full" path).
         max_frames=_max_frames_param(job.params),
         cancel=job.cancel_event,
@@ -358,25 +342,17 @@ async def _run_video_check(job: JobRecord, store: RunnerStore, data_dir: Path) -
 
 
 def _topics_param(params: dict) -> list[str] | None:
-    """Optional ``topics`` allow-list: list or comma-string, ``None`` = all.
-
-    Accepts the frontend's array of topic names or a comma-separated string
-    (CLI convenience); blank entries are dropped. An empty/absent value returns
-    ``None``, which signal_report reads as "every non-image numeric topic".
-    """
+    """Optional topic-name array; empty/absent means all numeric topics."""
     raw = params.get("topics")
     if raw is None:
         return None
-    if isinstance(raw, str):
-        items = [part.strip() for part in raw.split(",")]
-    elif isinstance(raw, (list, tuple)):
-        items = [str(part).strip() for part in raw]
-    else:
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
         raise ApiError(
             status_code=400,
             code="invalid_topics",
-            message="topics must be a list of topic names (or a comma string).",
+            message="topics must be an array of topic names.",
         )
+    items = [item.strip() for item in raw]
     names = [name for name in items if name]
     return names or None
 
@@ -386,10 +362,7 @@ def _max_points_param(params: dict) -> int:
     raw = params.get("max_points")
     if raw is None:
         return DEFAULT_MAX_POINTS
-    try:
-        value = int(raw)
-    except (TypeError, ValueError):
-        value = 0
+    value = raw if isinstance(raw, int) and not isinstance(raw, bool) else 0
     if value < 1:
         raise ApiError(
             status_code=400,
@@ -414,10 +387,43 @@ async def _run_signal_report(
 
 # ---- default registry ---------------------------------------------------------
 
+_VALIDATION_TEMPLATE_OBJECT_SCHEMA = {
+    "type": "object",
+    "required": ["name", "version"],
+    "additionalProperties": False,
+    "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "version": {"type": "integer", "minimum": 1},
+        "required_topics": {
+            "type": "array",
+            "default": [],
+            "items": {
+                "type": "object",
+                "required": ["name"],
+                "additionalProperties": False,
+                "properties": {
+                    "name": {"type": "string", "minLength": 1},
+                    "type": {"type": ["string", "null"]},
+                },
+            },
+        },
+    },
+}
 _FAST_VALIDATION_SCHEMA = {
     "type": "object",
     "required": ["template"],
-    "properties": {"template": {"type": "string"}},
+    "additionalProperties": False,
+    "properties": {
+        "template": {
+            # Browser/direct callers may use the catalog id.  The orchestrator
+            # resolves that id to this strict object before forwarding so the
+            # runner is independent of the orchestrator's local config tree.
+            "oneOf": [
+                {"type": "string", "minLength": 1},
+                _VALIDATION_TEMPLATE_OBJECT_SCHEMA,
+            ]
+        }
+    },
 }
 _VIDEO_CHECK_SCHEMA = {
     "type": "object",
@@ -552,12 +558,15 @@ def full_validation_schema(flows: list[str]) -> dict:
             # this exact name is special-cased in PipelineForm); empty = the
             # active template (Settings -> Validation), injected by the orchestrator.
             "template": {
-                "type": "string",
                 "title": "Validation template",
                 "description": (
                     "Supplies ${KAIROS_REQUIRED_TOPICS} to the flow; empty uses "
                     "the active template, then the recording config."
                 ),
+                "oneOf": [
+                    {"type": "string"},
+                    _VALIDATION_TEMPLATE_OBJECT_SCHEMA,
+                ],
             },
             "min_coverage": {
                 "type": "number",

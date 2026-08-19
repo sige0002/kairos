@@ -59,6 +59,29 @@ export interface SettingsState {
   showToast: (message: string) => void;
 }
 
+function sameCatalogName(left: string, right: string): boolean {
+  return left.trim().toLocaleLowerCase() === right.trim().toLocaleLowerCase();
+}
+
+function validateCatalogName(
+  raw: string | null,
+  label: string,
+  existing: string[],
+  showToast: (message: string) => void,
+): string | null {
+  if (raw === null) return null;
+  const value = raw.trim();
+  if (!value) {
+    showToast(`${label} cannot be blank`);
+    return null;
+  }
+  if (existing.some((name) => sameCatalogName(name, value))) {
+    showToast(`${label} “${value}” already exists`);
+    return null;
+  }
+  return value;
+}
+
 export function useSettingsState(): SettingsState {
   const [menuIdx, setMenuIdx] = useState(0);
   // The catalog lives in the shared store; mutations below call setPlans (which
@@ -123,7 +146,12 @@ export function useSettingsState(): SettingsState {
   }, [planProj]);
 
   const addProject = useCallback(() => {
-    const v = window.prompt('New project name', '');
+    const v = validateCatalogName(
+      window.prompt('New project name', ''),
+      'Project name',
+      plans.map((project) => project.name),
+      showToast,
+    );
     if (!v) return;
     const next = clonePlans(plans);
     next.push({ project_id: newPlanId('project'), name: v, tasks: [] });
@@ -138,8 +166,14 @@ export function useSettingsState(): SettingsState {
   const renameProject = useCallback(() => {
     const current = plans[ppIdx];
     if (!current) return;
-    const v = window.prompt('Project name', current.name);
+    const v = validateCatalogName(
+      window.prompt('Project name', current.name),
+      'Project name',
+      plans.filter((_, index) => index !== ppIdx).map((project) => project.name),
+      showToast,
+    );
     if (!v) return;
+    if (v === current.name) return;
     const next = clonePlans(plans);
     next[ppIdx]!.name = v;
     setPlans(next);
@@ -183,7 +217,12 @@ export function useSettingsState(): SettingsState {
 
   const addTask = useCallback(() => {
     if (!plans[ppIdx]) return; // empty catalog: no project to add a task to
-    const v = window.prompt('New task name', '');
+    const v = validateCatalogName(
+      window.prompt('New task name', ''),
+      'Task name',
+      plans[ppIdx]!.tasks.map((task) => task.name),
+      showToast,
+    );
     if (!v) return;
     const next = clonePlans(plans);
     const proj = next[ppIdx]!;
@@ -198,84 +237,137 @@ export function useSettingsState(): SettingsState {
     if (taskSelectionLost) return;
     const task = plans[ppIdx]?.tasks[ptIdx];
     if (!task) return;
-    const v = window.prompt('Task name', task.name);
+    const v = validateCatalogName(
+      window.prompt('Task name', task.name),
+      'Task name',
+      plans[ppIdx]!.tasks.filter((_, index) => index !== ptIdx).map((item) => item.name),
+      showToast,
+    );
     if (!v) return;
+    if (v === task.name) return;
     const next = clonePlans(plans);
     next[ppIdx]!.tasks[ptIdx]!.name = v;
     setPlans(next);
     showToast('Task renamed');
   }, [plans, ppIdx, ptIdx, taskSelectionLost, showToast]);
 
-  const removeTask = useCallback((i: number) => {
-    if (!plans[ppIdx]?.tasks[i]) return;
-    const next = clonePlans(plans);
-    next[ppIdx]!.tasks.splice(i, 1);
-    setPlans(next);
-    setPlanTaskIdx(0);
-    setSelectedTaskId(next[ppIdx]?.tasks[0]?.task_id ?? null);
-    showToast('Task removed from plan');
-  }, [plans, ppIdx, showToast]);
+  const removeTask = useCallback(
+    (i: number) => {
+      const target = plans[ppIdx]?.tasks[i];
+      if (!target) return;
+      const ok = window.confirm(
+        `Remove task “${target.name}”? Its ${target.conditions.length} condition${target.conditions.length === 1 ? '' : 's'} will disappear from the Collect picker. Recordings already saved keep their task and condition labels.`,
+      );
+      if (!ok) return;
+      const next = clonePlans(plans);
+      next[ppIdx]!.tasks.splice(i, 1);
+      setPlans(next);
+      setPlanTaskIdx(0);
+      setSelectedTaskId(next[ppIdx]?.tasks[0]?.task_id ?? null);
+      showToast('Task removed from plan');
+    },
+    [plans, ppIdx, showToast],
+  );
 
   const addCondition = useCallback(() => {
     // No project (empty catalog) or no task yet — the button is disabled in both
     // cases, but the handler must not depend on that to stay safe.
     if (taskSelectionLost) return;
     if (!plans[ppIdx]?.tasks[ptIdx]) return;
-    const v = window.prompt('New condition (e.g. "Object: Left → Tray: Center")', '');
+    const v = validateCatalogName(
+      window.prompt('New condition (e.g. "Object: Left → Tray: Center")', ''),
+      'Condition',
+      plans[ppIdx]!.tasks[ptIdx]!.conditions.map((condition) => condition.name),
+      showToast,
+    );
     if (!v) return;
     const next = clonePlans(plans);
-    next[ppIdx]!.tasks[ptIdx]!.conditions.push({ condition_id: newPlanId('condition'), name: v });
+    next[ppIdx]!.tasks[ptIdx]!.conditions.push({
+      condition_id: newPlanId('condition'),
+      name: v,
+    });
     setPlans(next);
     showToast('Condition added');
   }, [plans, ppIdx, ptIdx, taskSelectionLost, showToast]);
 
-  const renameCondition = useCallback((i: number) => {
-    if (taskSelectionLost) return;
-    const condition = plans[ppIdx]?.tasks[ptIdx]?.conditions[i];
-    if (condition === undefined) return;
-    const v = window.prompt('Condition', condition.name);
-    if (!v) return;
-    const next = clonePlans(plans);
-    next[ppIdx]!.tasks[ptIdx]!.conditions[i]!.name = v;
-    setPlans(next);
-    showToast('Condition updated');
-  }, [plans, ppIdx, ptIdx, taskSelectionLost, showToast]);
+  const renameCondition = useCallback(
+    (i: number) => {
+      if (taskSelectionLost) return;
+      const condition = plans[ppIdx]?.tasks[ptIdx]?.conditions[i];
+      if (condition === undefined) return;
+      const v = validateCatalogName(
+        window.prompt('Condition', condition.name),
+        'Condition',
+        plans[ppIdx]!.tasks[ptIdx]!.conditions.filter((_, index) => index !== i).map((item) => item.name),
+        showToast,
+      );
+      if (!v) return;
+      if (v === condition.name) return;
+      const next = clonePlans(plans);
+      next[ppIdx]!.tasks[ptIdx]!.conditions[i]!.name = v;
+      setPlans(next);
+      showToast('Condition updated');
+    },
+    [plans, ppIdx, ptIdx, taskSelectionLost, showToast],
+  );
 
-  const removeCondition = useCallback((i: number) => {
-    if (taskSelectionLost) return;
-    if (plans[ppIdx]?.tasks[ptIdx]?.conditions[i] === undefined) return;
-    const next = clonePlans(plans);
-    next[ppIdx]!.tasks[ptIdx]!.conditions.splice(i, 1);
-    setPlans(next);
-    showToast('Condition removed');
-  }, [plans, ppIdx, ptIdx, taskSelectionLost, showToast]);
+  const removeCondition = useCallback(
+    (i: number) => {
+      if (taskSelectionLost) return;
+      const target = plans[ppIdx]?.tasks[ptIdx]?.conditions[i];
+      if (target === undefined) return;
+      const ok = window.confirm(
+        `Remove condition “${target.name}”? It will disappear from the Collect picker. Recordings already saved keep this condition label.`,
+      );
+      if (!ok) return;
+      const next = clonePlans(plans);
+      next[ppIdx]!.tasks[ptIdx]!.conditions.splice(i, 1);
+      setPlans(next);
+      showToast('Condition removed');
+    },
+    [plans, ppIdx, ptIdx, taskSelectionLost, showToast],
+  );
 
   // Fail-reason vocabulary (Collect's "What failed?" chips) — same shared-store
   // funnel as the plans handlers above.
   const addFailReason = useCallback(() => {
-    const v = window.prompt('New failure reason (e.g. "Grasp missed")', '');
+    const v = validateCatalogName(
+      window.prompt('New failure reason (e.g. "Grasp missed")', ''),
+      'Failure reason',
+      failReasons,
+      showToast,
+    );
     if (!v) return;
     setFailReasons([...failReasons, v]);
     showToast('Failure reason added');
   }, [failReasons, showToast]);
 
-  const renameFailReason = useCallback((i: number) => {
-    const label = failReasons[i];
-    if (label === undefined) return;
-    const v = window.prompt('Failure reason', label);
-    if (!v) return;
-    const next = failReasons.slice();
-    next[i] = v;
-    setFailReasons(next);
-    showToast('Failure reason updated');
-  }, [failReasons, showToast]);
+  const renameFailReason = useCallback(
+    (i: number) => {
+      const label = failReasons[i];
+      if (label === undefined) return;
+      const v = validateCatalogName(
+        window.prompt('Failure reason', label),
+        'Failure reason',
+        failReasons.filter((_, index) => index !== i),
+        showToast,
+      );
+      if (!v) return;
+      if (v === label) return;
+      const next = failReasons.slice();
+      next[i] = v;
+      setFailReasons(next);
+      showToast('Failure reason updated');
+    },
+    [failReasons, showToast],
+  );
 
   // Operator roster (attribution, not auth) — empty is allowed: it turns the
   // OP picker back into free text (see OperatorsSection's caption).
   const addOperator = useCallback(() => {
-    const v = window.prompt('New operator name (e.g. "sadasue")', '');
-    if (!v || !v.trim()) return;
-    setOperators([...operators, v.trim()]);
+    const v = validateCatalogName(window.prompt('New operator name', ''), 'Operator name', operators, showToast);
+    if (!v) return;
+    setOperators([...operators, v]);
     showToast('Operator added');
   }, [operators, showToast]);
 
@@ -283,10 +375,16 @@ export function useSettingsState(): SettingsState {
     (i: number) => {
       const label = operators[i];
       if (label === undefined) return;
-      const v = window.prompt('Operator name', label);
-      if (!v || !v.trim()) return;
+      const v = validateCatalogName(
+        window.prompt('Operator name', label),
+        'Operator name',
+        operators.filter((_, index) => index !== i),
+        showToast,
+      );
+      if (!v) return;
+      if (v === label) return;
       const next = operators.slice();
-      next[i] = v.trim();
+      next[i] = v;
       setOperators(next);
       showToast('Operator renamed');
     },
@@ -295,19 +393,34 @@ export function useSettingsState(): SettingsState {
 
   const removeOperator = useCallback(
     (i: number) => {
+      const target = operators[i];
+      if (target === undefined) return;
+      const ok = window.confirm(
+        `Remove operator “${target}”? The name will disappear from the OP picker. Recordings already saved keep their attribution.`,
+      );
+      if (!ok) return;
       setOperators(operators.filter((_, idx) => idx !== i));
       showToast('Operator removed');
     },
     [operators, showToast],
   );
 
-  const removeFailReason = useCallback((i: number) => {
-    // The last reason can't go: marking a Failure REQUIRES picking one (the
-    // section's ✕ is disabled at one entry; the store refuses [] as well).
-    if (failReasons.length <= 1) return;
-    setFailReasons(failReasons.filter((_, idx) => idx !== i));
-    showToast('Failure reason removed');
-  }, [failReasons, showToast]);
+  const removeFailReason = useCallback(
+    (i: number) => {
+      // The last reason can't go: marking a Failure REQUIRES picking one (the
+      // section's ✕ is disabled at one entry; the store refuses [] as well).
+      if (failReasons.length <= 1) return;
+      const target = failReasons[i];
+      if (target === undefined) return;
+      const ok = window.confirm(
+        `Remove failure reason “${target}”? It will disappear from future Failure labels. Recordings already labeled keep this reason.`,
+      );
+      if (!ok) return;
+      setFailReasons(failReasons.filter((_, idx) => idx !== i));
+      showToast('Failure reason removed');
+    },
+    [failReasons, showToast],
+  );
 
   return {
     menuIdx,

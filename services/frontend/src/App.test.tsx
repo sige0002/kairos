@@ -362,7 +362,30 @@ test('the operator chip sets uiStore.recordOperator (sent with /record/start) an
 
   expect(useUiStore.getState().recordOperator).toBe('Sadasue Yuki');
   expect(window.localStorage.getItem('kairos.operator')).toBe('Sadasue Yuki');
+  expect(screen.getByTestId('operator-visible-name')).toHaveTextContent('Sadasue Yuki');
   expect(chip).toHaveTextContent('SY'); // initials from the saved name
+});
+
+test('a long operator name is visibly bounded without hiding its full identity', async () => {
+  const longName = 'Operator with a deliberately long roster display name';
+  window.history.replaceState(null, '', '/');
+  window.localStorage.setItem('kairos.operator', longName);
+  useUiStore.setState({ recordOperator: longName });
+  renderWithClient(<App />);
+  await waitFor(() =>
+    expect(screen.queryByText(/Loading kairos/i)).not.toBeInTheDocument(),
+  );
+
+  const chip = screen.getByTestId('operator-chip');
+  const visibleName = screen.getByTestId('operator-visible-name');
+  expect(chip).toHaveAttribute('aria-label', `operator: ${longName}`);
+  expect(chip).toHaveAttribute(
+    'title',
+    `Operator: ${longName} — saved into each recording`,
+  );
+  expect(visibleName).toHaveTextContent(longName);
+  expect(visibleName.className).toContain('max-w-[160px]');
+  expect(visibleName.className).toContain('truncate');
 });
 
 // #26. Committing the name lifts Collect's operator gate, and Collect hands

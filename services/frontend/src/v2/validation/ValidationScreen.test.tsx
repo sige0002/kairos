@@ -439,29 +439,23 @@ beforeEach(() => {
 
 afterEach(() => vi.restoreAllMocks());
 
-test('selecting a pipeline updates the detail header (name + lifecycle chip)', async () => {
+test('pipeline selection shows only server-reported facts, never fake lifecycle state', async () => {
   renderWithClient(<ValidationScreen />);
 
   await screen.findByTestId('pipeline-card-fast_validation');
   const detail = () => screen.getByTestId('detail-header');
-  // First pipeline defaults to Standard.
-  await waitFor(() =>
-    expect(within(detail()).getByText('STANDARD')).toBeInTheDocument(),
-  );
   expect(within(detail()).getByText('fast_validation')).toBeInTheDocument();
+  expect(
+    screen.getByText(/Lifecycle and promotion are not configured/),
+  ).toBeInTheDocument();
 
   fireEvent.click(screen.getByTestId('pipeline-card-hello_kairos'));
-  // Second pipeline is the mock Candidate.
   await waitFor(() =>
-    expect(within(detail()).getByText('CANDIDATE')).toBeInTheDocument(),
+    expect(within(detail()).getByText('hello_kairos')).toBeInTheDocument(),
   );
-  expect(within(detail()).getByText('Promote to Standard…')).toBeInTheDocument();
-
-  fireEvent.click(screen.getByTestId('pipeline-card-loss_report'));
-  await waitFor(() =>
-    expect(within(detail()).getByText('EXPERIMENTAL')).toBeInTheDocument(),
-  );
-  expect(within(detail()).queryByText('Promote to Standard…')).not.toBeInTheDocument();
+  expect(screen.queryByText(/STANDARD|CANDIDATE|EXPERIMENTAL/)).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Promote/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /New run/ })).not.toBeInTheDocument();
 });
 
 test("the schema-driven form renders the selected pipeline's real fields", async () => {
@@ -619,9 +613,9 @@ test('Cancel run records a durable server intent', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Cancel run' }));
   await waitFor(() =>
-    expect(requestedUrls.some((url) => url.endsWith('/validation/runs/vr-1/cancel'))).toBe(
-      true,
-    ),
+    expect(
+      requestedUrls.some((url) => url.endsWith('/validation/runs/vr-1/cancel')),
+    ).toBe(true),
   );
 });
 

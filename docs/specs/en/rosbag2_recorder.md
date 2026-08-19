@@ -161,6 +161,7 @@ For the layout conventions see [capture_store](capture_store.md) §2. What the r
 
 - **MCAP is canonical.** Specialized in recording raw data without loss, compliant with ROS 2 standards.
 - A capture interrupted by a restart or the like leaves `state=interrupted` in the manifest.
+- If the child still cannot be reaped after stop escalates through SIGINT, SIGTERM, and SIGKILL, retain `stopping` and the writer lease. Do not publish a digest or terminal manifest until a background reaper proves the writer exited; normal startup recovery handles a service restart.
 - **The `capture_id` is assigned by the recorder** (UUIDv7). The `run_id` is a **display name** assigned and passed by `api_orchestrator`, used neither in paths nor as an API key. The recorder's responsibility is limited to recording and to serving status / manifest (the capture lifecycle and reconciliation are [api_orchestrator](api_orchestrator.md); the durability conventions are [capture_store](capture_store.md)).
 - **Recording depends on nothing else.** start / stop must never depend on the completion of the ledger, digests, or rebuild ([capture_store](capture_store.md) safety principle 5). Even with a full disk, even with a corrupted DB, the recording path alone keeps working.
 - Heavy validation and conversion are delegated to `dora_runner` (this container does not do them).

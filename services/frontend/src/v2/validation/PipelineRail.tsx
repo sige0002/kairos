@@ -1,22 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
 // Left column: the real, enabled pipeline list (GET /pipelines). Each card shows
-// the pipeline's real id + description, plus a client-side lifecycle chip (see
-// lifecycle.ts — the orchestrator doesn't report a lifecycle yet).
-import { Badge, Card, cn } from '../../components/ui';
+// only facts the server reports: the pipeline id and description. Lifecycle is
+// deliberately absent until the backend owns that state.
+import { Card, cn } from '../../components/ui';
 import type { PipelineInfo } from '../../api/types';
-import { lifecycleForIndex, lifecycleTone } from './lifecycle';
 
 export function PipelineRail({
   pipelines,
   selectedIndex,
   onSelect,
-  onNewRun,
 }: {
   pipelines: PipelineInfo[];
   selectedIndex: number;
   onSelect: (index: number) => void;
-  onNewRun: () => void;
 }) {
   return (
     <Card className="flex min-h-0 flex-col overflow-auto">
@@ -24,21 +21,14 @@ export function PipelineRail({
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
           Pipelines
         </h2>
-        <div className="flex-1" />
-        <button
-          type="button"
-          onClick={onNewRun}
-          className="rounded-lg bg-teal-700 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-800"
-        >
-          + New run
-        </button>
       </div>
       <div className="flex flex-col gap-[7px] p-3">
         {pipelines.length === 0 && (
-          <p className="px-1 py-2 text-[11.5px] text-gray-500">No pipelines available.</p>
+          <p className="px-1 py-2 text-[11.5px] text-gray-500">
+            No pipelines available.
+          </p>
         )}
         {pipelines.map((p, i) => {
-          const lifecycle = lifecycleForIndex(i);
           const selected = i === selectedIndex;
           return (
             <div
@@ -59,11 +49,12 @@ export function PipelineRail({
                 <span className="font-mono text-[12.5px] font-semibold text-gray-900">
                   {p.id}
                 </span>
-                <div className="flex-1" />
-                <Badge tone={lifecycleTone(lifecycle)}>{lifecycle.toUpperCase()}</Badge>
               </div>
               {p.description && (
-                <span className="truncate text-[11.5px] text-gray-500" title={p.description}>
+                <span
+                  className="truncate text-[11.5px] text-gray-500"
+                  title={p.description}
+                >
                   {p.description}
                 </span>
               )}
@@ -72,8 +63,8 @@ export function PipelineRail({
         })}
       </div>
       <div className="border-t border-gray-100 px-4 py-[11px] text-[11.5px] leading-relaxed text-gray-500">
-        Experimental results never feed Review automatically. Promote a Candidate to make it
-        Standard.
+        This list shows pipelines enabled by the server. Lifecycle and promotion are not
+        configured in this console.
       </div>
     </Card>
   );

@@ -131,6 +131,20 @@ def create_monitor_app(*, subscriber: TopicSubscriber | None = None) -> FastAPI:
     async def metrics() -> MetricsSnapshot:
         return service.metrics_snapshot()
 
+    @app.get("/diagnostics")
+    async def diagnostics() -> dict[str, object]:
+        """Expose subscriber liveness and per-topic sample freshness."""
+        inspect = getattr(sub, "diagnostics", None)
+        if callable(inspect):
+            return inspect()
+        ready = sub.is_up()
+        return {
+            "state": "ready" if ready else "not_ready",
+            "executor_thread_alive": ready,
+            "subscription_count": 0,
+            "subscriptions": [],
+        }
+
     @app.get("/metrics/stream")
     async def metrics_stream() -> StreamingResponse:
         return StreamingResponse(

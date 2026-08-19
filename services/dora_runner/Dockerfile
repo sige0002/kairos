@@ -69,11 +69,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # DORA_CLI_URL is overridable so a locked-down site can point at a mirror.
 ARG DORA_VERSION=0.5.0
 ARG DORA_CLI_URL=
+ARG DORA_CLI_SHA256_X86_64=fb28079ec1350388ff7f965cee03e43f9bed0fc907b4a3fe7a5fdac0bcc66fcf
+ARG DORA_CLI_SHA256_AARCH64=fc5a316a865855bf0cb300bf4055de1f2576b2d4546e39d326fb11c0e9657261
 RUN ARCH=$(uname -m) \
     && URL="${DORA_CLI_URL:-https://github.com/dora-rs/dora/releases/download/v${DORA_VERSION}/dora-cli-${ARCH}-unknown-linux-gnu.tar.gz}" \
-    && curl -fsSL "$URL" | tar xz -C /tmp \
+    && case "$ARCH" in \
+         x86_64) EXPECTED="$DORA_CLI_SHA256_X86_64" ;; \
+         aarch64) EXPECTED="$DORA_CLI_SHA256_AARCH64" ;; \
+         *) echo "unsupported dora CLI architecture: $ARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "$URL" -o /tmp/dora-cli.tar.gz \
+    && echo "$EXPECTED  /tmp/dora-cli.tar.gz" | sha256sum -c - \
+    && tar xzf /tmp/dora-cli.tar.gz -C /tmp \
     && mv "/tmp/dora-cli-${ARCH}-unknown-linux-gnu/dora" /usr/local/bin/dora \
-    && rm -rf "/tmp/dora-cli-${ARCH}-unknown-linux-gnu" \
+    && rm -rf "/tmp/dora-cli-${ARCH}-unknown-linux-gnu" /tmp/dora-cli.tar.gz \
     && dora --version
 
 WORKDIR /bagflow

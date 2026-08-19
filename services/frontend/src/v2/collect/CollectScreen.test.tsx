@@ -1146,7 +1146,7 @@ test('titles itself with a single h1 and skips no heading level', async () => {
     'h2 READY',
     'h2 System status',
     'h2 Active warnings',
-    'h2 Advice for next episode',
+    'h2 General tip · static guidance',
     'h2 Batch stats',
     'h2 Coverage — Pick and Place',
   ]);

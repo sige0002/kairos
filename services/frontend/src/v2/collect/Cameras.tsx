@@ -159,7 +159,7 @@ export function Cameras({
     // engages on larger displays; the freed vertical space lets the column
     // breathe. Width is bounded by CollectScreen's console max-width.
     <div
-      className="grid flex-1 gap-2 lg:max-h-[600px]"
+      className="grid min-h-0 flex-1 gap-2 lg:max-h-[600px]"
       style={{
         gridTemplateColumns: hasCol2 ? '2fr 1fr' : '1fr',
         gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,

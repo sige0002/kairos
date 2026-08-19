@@ -1,11 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Sadasue Yuki
-"""api_orchestrator service entry point (Stage 1: run lifecycle).
+"""api_orchestrator service entry point.
 
-Builds the wired app via :func:`create_orchestrator_app` (runs store, recorder
-client, run-lifecycle routers, recorder-aware ``/readyz``, startup
-reconciliation). The Stage 0 health endpoints and the ``GET /api/v1/config``
-render-gate stub remain. Run/job/SSE work beyond the run lifecycle lands later.
+Builds the complete wired app via :func:`create_orchestrator_app`, including the
+capture store, downstream clients, API routers, readiness, and startup
+reconciliation.
 """
 
 from __future__ import annotations

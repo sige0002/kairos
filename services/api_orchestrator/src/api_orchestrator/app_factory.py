@@ -32,7 +32,7 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response, status
 from kairos_common import (
     ApiError,
     Settings,
@@ -134,7 +134,7 @@ def _readyz_probe(
     recorder: RecorderClient,
     monitor: MonitorClient,
     streamer: StreamerClient,
-) -> Callable[[], Awaitable[dict[str, object]]]:
+) -> Callable[[Response], Awaitable[dict[str, object]]]:
     """Build the ``/readyz`` probe that checks the downstreams.
 
     The recorder gates readiness; monitor and streamer outages are degraded
@@ -145,14 +145,19 @@ def _readyz_probe(
     lives instead.
     """
 
-    async def readyz() -> dict[str, object]:
-        recorder_ok = await recorder.healthz()
-        monitor_ok = await monitor.healthz()
-        streamer_ok = await streamer.healthz()
-        any_unreachable = not (recorder_ok and monitor_ok and streamer_ok)
-        status = "ready" if recorder_ok and not any_unreachable else "degraded"
+    async def readyz(response: Response) -> dict[str, object]:
+        recorder_ok, monitor_ok, streamer_ok = await asyncio.gather(
+            recorder.healthz(), monitor.healthz(), streamer.healthz()
+        )
+        if not recorder_ok:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            readiness = "unavailable"
+        elif not (monitor_ok and streamer_ok):
+            readiness = "degraded"
+        else:
+            readiness = "ready"
         return {
-            "status": status,
+            "status": readiness,
             "components": {
                 "recorder": _component_state(recorder_ok),
                 "monitor": _component_state(monitor_ok),

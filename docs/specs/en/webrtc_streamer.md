@@ -35,6 +35,8 @@ A **preview-only** container that delivers ROS 2 image topics to the browser wit
 - `POST /stream/offer` — `{ stream_id, sdp: { type: "offer", sdp } }` → `{ type: "answer", sdp }` (WHEP-style HTTP offer/answer. `stream_id` required. v1 exchanges a complete non-trickle SDP with candidates included. If trickle is needed, add WS.)
 - `GET /healthz` / `GET /readyz`
 
+Serialize each stream's start as one lifecycle transaction. A duplicate start reuses only a live stream and waits for the same completion while starting. Factory, ROS spin-up, SDP-offer, and concurrent start/stop failures roll back the registry entry, PeerConnection, and source so the next start is retryable. Stopping always attempts source stop even if peer close fails.
+
 ## Configuration / Behavior
 
 - ICE / network reachability:

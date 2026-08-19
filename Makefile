@@ -113,7 +113,7 @@ export WEBRTC_PUBLIC_URL
 # every `docker compose` invocation below (single-host COMPOSE and the split
 # COMPOSE_ROBOT / COMPOSE_RECORDING) tags the kairos-*:${KAIROS_VERSION} images
 # instead of the :dev fallback baked into compose/compose.yaml. Cutting a release = bump
-# VERSION + update CHANGELOG + git tag (see the README "Releases" section).
+# VERSION + create release notes + git tag (see the README "Releases" section).
 KAIROS_VERSION ?= $(if $(wildcard VERSION),$(strip $(shell cat VERSION)),dev)
 export KAIROS_VERSION
 
@@ -250,7 +250,7 @@ msgs-build: ## build custom ROS msgs (dir from MSGS_OVERLAY_DIR / .env; per-robo
 	 echo "Building $$(ls "$$dir/src") into $$dir/install (colcon, recorder image)..."; \
 	 docker run --rm -u $$(id -u):$$(id -g) -e HOME=/overlay \
 	   -v "$(CURDIR)/$$dir:/overlay" -w /overlay \
-	   --entrypoint bash kairos-rosbag2-recorder:$(ROS_DISTRO) -lc \
+	   --entrypoint bash kairos-rosbag2-recorder:$(KAIROS_VERSION)-$(ROS_DISTRO) -lc \
 	   'set -e; source /opt/ros/$(ROS_DISTRO)/setup.bash; colcon build --merge-install' \
 	 && echo "OK -> $$dir/install/setup.bash"
 
@@ -331,7 +331,16 @@ define save_images
 	 echo "$(2): saving these images -> $(IMAGES_FILE)"; \
 	 echo "$$imgs" | sed 's/^/  /'; \
 	 docker save $$imgs | gzip > "$(IMAGES_FILE)"; \
+	 sha256sum "$(IMAGES_FILE)" > "$(IMAGES_FILE).sha256"; \
+	 { printf '# kairos_version\tgit_sha\timage\timage_id\tplatform\n'; \
+	   for img in $$imgs; do \
+	     docker image inspect --format \
+	       '$(KAIROS_VERSION)\t$(KAIROS_GIT_SHA)\t'"$$img"'\t{{.Id}}\t{{.Os}}/{{.Architecture}}' "$$img"; \
+	   done; \
+	 } > "$(IMAGES_FILE).manifest.tsv"; \
 	 echo "OK -> $(IMAGES_FILE) ($$(du -h "$(IMAGES_FILE)" | cut -f1))"; \
+	 echo "     checksum: $(IMAGES_FILE).sha256"; \
+	 echo "     manifest: $(IMAGES_FILE).manifest.tsv"; \
 	 echo "next: copy it over, then on that machine: make images-load IMAGES_FILE=<file>"
 endef
 
@@ -346,6 +355,14 @@ images-save: ## save ALL stack images + the test harness -> kairos-images.tar.gz
 
 images-load: ## load images from kairos-images.tar.gz (IMAGES_FILE=...) on the offline machine
 	@[ -f "$(IMAGES_FILE)" ] || { echo "not found: $(IMAGES_FILE) (set IMAGES_FILE=...)"; exit 1; }
+	@[ ! -f "$(IMAGES_FILE).sha256" ] || { \
+	  expected="$$(awk 'NR == 1 { print $$1; exit }' "$(IMAGES_FILE).sha256")"; \
+	  actual="$$(sha256sum "$(IMAGES_FILE)" | awk '{ print $$1 }')"; \
+	  [ -n "$$expected" ] && [ "$$expected" = "$$actual" ] || { \
+	    echo "checksum mismatch: $(IMAGES_FILE)"; exit 1; \
+	  }; \
+	  echo "$(IMAGES_FILE): OK"; \
+	}
 	gunzip -c "$(IMAGES_FILE)" | docker load
 	@echo "loaded — now: make up"
 
@@ -501,12 +518,13 @@ smoke-record: ## smoke test incl. record start/stop
 test: test-py test-fe ## run all unit tests (Python + frontend)
 
 test-py: ## run the Python unit-test loop (all services + libs)
-	@for d in $(PY_DIRS); do \
-		printf '### %-32s -> ' "$$d"; \
-		(cd "$$d" && uv run --extra test pytest -q 2>&1 | tail -1); \
-	done
-	@printf '### %-32s -> ' "deploy/sync"; \
-	(cd services/api_orchestrator && uv run --extra test pytest -q ../../deploy/sync/tests 2>&1 | tail -1)
+	@set -e; \
+	for d in $(PY_DIRS); do \
+		printf '\n### %s\n' "$$d"; \
+		(cd "$$d" && uv run --extra test pytest -q); \
+	done; \
+	printf '\n### %s\n' "deploy/sync"; \
+	(cd services/api_orchestrator && uv run --extra test pytest -q ../../deploy/sync/tests)
 
 test-fe: ## frontend build + test + lint
 	cd services/frontend && npm run build && npm test && npm run lint

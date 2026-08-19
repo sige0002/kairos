@@ -67,7 +67,7 @@
 - 転送（split 構成）: `GET /api/v1/transfer/status`、`POST /api/v1/transfer/pull`（下記「転送（split 構成）」）
 - 保持期間: `GET /api/v1/retention` — `RETENTION_DAYS` による**削除候補**を返す（`{ days, candidates: [{ capture_id, run_id, started_at, bytes, state, review_status }], total_bytes }`。都度計算、best-effort サイズ）。**助言のみで自動削除しない**。削除は確認付きの `POST /api/v1/captures/{id}/delete` のみ。`RETENTION_DAYS<=0` で候補は空。**v2 で候補の定義を変更**: 「行が存在する＝未エクスポート」という旧定義は、行が消えなくなった以上意味を成さないので全廃した。新しい候補は「**どの dataset からも参照されておらず、`review_status` が `pending` か `excluded` のまま N 日以上経過した capture**」（詳細は [config.md](config.md) の「運用」）
 - 生成ファイル整理: `POST /api/v1/report-storage/preview` / `POST /api/v1/report-storage/cleanup` — Settings から `report/<pipeline>/<capture_id>/` の派生物を条件付きで分析・削除する（下記「生成ファイルの整理」）。任意パスは受け取らず、`RETENTION_DAYS` とも独立。
-- `GET /healthz` / `GET /readyz`（`components: { recorder, monitor, streamer }` の疎通も返す）
+- `GET /healthz` / `GET /readyz`（依存 3 service は並列 probe。`components: { recorder, monitor, streamer }` を返し、recorder 不可は HTTP 503 + `unavailable`、任意の monitor / streamer 不可は HTTP 200 + `degraded`。`/healthz` は liveness として 200 を維持）
 - `GET /openapi.json`（OpenAPI を自動公開。クライアント自動生成に使える — 現状の frontend は手書きの型付きクライアント）
 
 ### 廃止した API（互換エイリアス無し）

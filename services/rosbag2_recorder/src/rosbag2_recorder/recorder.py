@@ -301,6 +301,11 @@ class RecorderSession:
         self._split: SplitConfig | None = None
         self._topics: list[TopicEntry] = []
         self._process: subprocess.Popen[bytes] | None = None
+        # A bounded stop can exhaust every timeout while a SIGKILLed process is
+        # stuck in uninterruptible I/O.  In that case this daemon blocks only on
+        # child reaping; the session keeps its ``stopping`` writer lease until
+        # the thread has proof that no process can append to the capture.
+        self._reaper_thread: threading.Thread | None = None
         # Optional session metadata (written to the capture's manifest).
         self._operator: str | None = None
         # Two-host provenance for the live session (rides manifest `extra`).
@@ -1589,11 +1594,12 @@ class RecorderSession:
         """Stop the active session (idempotent).
 
         Recording -> signal the process group (SIGINT, escalating as far as
-        SIGKILL — see :meth:`_signal_and_wait`), wait, finalise, return the
-        terminal status. ``armed`` -> disarm (the paused subprocess is killed,
-        the empty capture dir removed — there is nothing recorded to flush). Any
-        other state — idle, or a stop already in progress (``stopping``) —
-        returns the current status unchanged.
+        SIGKILL — see :meth:`_signal_and_wait`), wait, and finalise after reap.
+        If every bounded wait expires, return ``stopping`` while a background
+        reaper retains the writer lease and performs finalisation. ``armed`` ->
+        disarm (the paused subprocess is killed, the empty capture dir removed —
+        there is nothing recorded to flush). Any other state — idle, or a stop
+        already in progress (``stopping``) — returns the current status unchanged.
 
         A session that is ``recording`` with no subprocess handle is broken
         rather than idle, and is finalised from disk here instead of being
@@ -1621,8 +1627,9 @@ class RecorderSession:
             # stop — size-watcher vs user, or two HTTP calls now that the routes
             # run in Starlette's thread pool — cannot re-SIGINT and re-finalise
             # the same process. That second finalise would see ``returncode=None``
-            # and turn a clean ``completed`` run into ``failed``. finalise runs
-            # exactly once, for the caller that won this transition.
+            # and turn a clean ``completed`` run into ``failed``. Finalise runs
+            # exactly once, synchronously for the winning caller or later for
+            # its background reaper.
             if self._state is not RunState.recording:
                 return self._status_locked()
 
@@ -1675,15 +1682,54 @@ class RecorderSession:
             delay = _stop_flush_delay_s()
             if delay > 0:
                 time.sleep(delay)
-            self._signal_and_wait(process)
-            with self._lock:
-                self._finalise(ended_at)
-                status = self._status_locked()
+            reaped = self._signal_and_wait(process)
+            if reaped is False:
+                with self._lock:
+                    self._start_reaper_locked(process, ended_at)
+                    status = self._status_locked()
+            else:
+                with self._lock:
+                    self._finalise(ended_at)
+                    status = self._status_locked()
         # Join the watcher outside the lock (it self-skips if we are it).
         self._stop_size_watcher()
         return status
 
-    def _signal_and_wait(self, process: subprocess.Popen[bytes]) -> None:
+    def _start_reaper_locked(
+        self, process: subprocess.Popen[bytes], ended_at: str
+    ) -> None:
+        """Start one blocking reaper; caller holds ``self._lock``.
+
+        This is intentionally separate from the bounded HTTP stop path.  A
+        process in uninterruptible sleep cannot be killed synchronously, but a
+        daemon thread can wait without falsely releasing the writer lease.
+        """
+        if self._reaper_thread is not None and self._reaper_thread.is_alive():
+            return
+
+        def reap() -> None:
+            try:
+                process.wait()
+            except Exception:  # noqa: BLE001 - keep the lease on uncertain reap.
+                logger.exception(
+                    "failed while reaping bag process; writer lease retained",
+                    extra={"capture_id": self._capture_id, "component": "recorder"},
+                )
+                return
+            with self._lock:
+                # Identity check prevents a stale thread from finalising a later
+                # session if lifecycle invariants are ever changed.
+                if self._state is RunState.stopping and self._process is process:
+                    self._finalise(ended_at)
+
+        self._reaper_thread = threading.Thread(
+            target=reap,
+            name="rosbag2-recorder-reaper",
+            daemon=True,
+        )
+        self._reaper_thread.start()
+
+    def _signal_and_wait(self, process: subprocess.Popen[bytes]) -> bool:
         """Stop the bag process group: SIGINT, then SIGTERM, then SIGKILL.
 
         Each stage waits before escalating (``STOP_TIMEOUT_S``, then
@@ -1702,8 +1748,9 @@ class RecorderSession:
         The final wait can still expire without the kill having failed: a
         process in uninterruptible sleep (D state, typically blocked on disk
         I/O) is unreapable until that I/O completes, and then dies immediately.
-        We log that and return rather than block the stop forever — there is no
-        stronger signal to escalate to.
+        We log that and return ``False`` rather than block the stop request
+        forever.  The caller then retains the writer lease and starts a blocking
+        reaper; terminal finalisation happens only after that reaper returns.
 
         Signals go to the process GROUP throughout: ``ros2 bag record`` spawns
         children, and killing only the parent would orphan the writers.
@@ -1712,25 +1759,38 @@ class RecorderSession:
             pgid = os.getpgid(process.pid)
             os.killpg(pgid, signal.SIGINT)
         except ProcessLookupError:
-            return  # Already gone.
+            try:
+                process.wait(timeout=KILL_TIMEOUT_S)
+                return True
+            except subprocess.TimeoutExpired:
+                return False
         try:
             process.wait(timeout=STOP_TIMEOUT_S)
-            return
+            return True
         except subprocess.TimeoutExpired:
             logger.warning("bag process did not exit on SIGINT; sending SIGTERM")
         try:
             os.killpg(os.getpgid(process.pid), signal.SIGTERM)
             process.wait(timeout=STOP_TIMEOUT_S)
-            return
+            return True
         except ProcessLookupError:
-            return  # Exited between the timeout and the signal.
+            try:
+                process.wait(timeout=KILL_TIMEOUT_S)
+                return True
+            except subprocess.TimeoutExpired:
+                return False
         except subprocess.TimeoutExpired:
             logger.error("bag process did not exit on SIGTERM; sending SIGKILL")
         try:
             os.killpg(os.getpgid(process.pid), signal.SIGKILL)
             process.wait(timeout=KILL_TIMEOUT_S)
+            return True
         except ProcessLookupError:
-            return  # Exited between the timeout and the signal.
+            try:
+                process.wait(timeout=KILL_TIMEOUT_S)
+                return True
+            except subprocess.TimeoutExpired:
+                return False
         except subprocess.TimeoutExpired:
             # Not "the kill was refused" — SIGKILL cannot be. The process is in
             # uninterruptible sleep and will go the moment its I/O returns.
@@ -1739,6 +1799,7 @@ class RecorderSession:
                 "uninterruptible sleep and will exit when that I/O completes",
                 KILL_TIMEOUT_S,
             )
+            return False
 
     def _finalise(self, ended_at: str | None = None) -> None:
         """Move from ``stopping`` to a terminal state, syncing from metadata.

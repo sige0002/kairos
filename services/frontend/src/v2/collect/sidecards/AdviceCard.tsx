@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-// Advice for next episode: the static collection-technique tips, paged by the
-// operator. The only card here that reads nothing live.
+// General collection guidance. This card reads nothing live, so its visible
+// title says that it is static rather than implying episode-specific analysis.
 
 import { Card, cn } from '../../../components/ui';
 import { ADVICE_ITEMS, type BatchMachine } from '../useBatchMachine';
@@ -19,7 +19,7 @@ export function AdviceCard({ machine }: { machine: BatchMachine }) {
     >
       <div className="flex items-center gap-2">
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Advice for next episode
+          General tip · static guidance
         </h2>
         <div className="flex-1" />
         {/* With one tip the pager is not a disabled control, it is a costume —

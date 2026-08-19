@@ -15,7 +15,13 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { jsonResponse } from '../../test/renderWithClient';
-import { __resetPlansStore, getPlans, setPlans } from '../plans';
+import {
+  __resetPlansStore,
+  getOperators,
+  getPlans,
+  setOperators,
+  setPlans,
+} from '../plans';
 import { useSettingsState } from './useSettingsState';
 
 beforeEach(() => {
@@ -41,7 +47,8 @@ function catalogPuts(): number {
   return calls.filter(
     (c) =>
       String(c[0]).includes('/plans') &&
-      String((c[1] as RequestInit | undefined)?.method ?? 'GET').toUpperCase() === 'PUT',
+      String((c[1] as RequestInit | undefined)?.method ?? 'GET').toUpperCase() ===
+        'PUT',
   ).length;
 }
 
@@ -130,7 +137,9 @@ test('a task vanishing under the cursor freezes the selected-task handlers', () 
   act(() => result.current.renameTask());
   act(() => result.current.addCondition());
   act(() => result.current.removeCondition(0));
-  expect(getPlans()).toMatchObject([{ name: 'P', tasks: [{ name: 'T0', conditions: [{ name: 'c0' }] }] }]);
+  expect(getPlans()).toMatchObject([
+    { name: 'P', tasks: [{ name: 'T0', conditions: [{ name: 'c0' }] }] },
+  ]);
   expect(catalogPuts()).toBe(putsBefore);
 
   // Re-confirm, and the handlers act on the task the view is showing.
@@ -150,4 +159,44 @@ test('a shrunken catalog still reports an in-range cursor', () => {
   expect(result.current.planProjIdx).toBe(0);
   expect(result.current.planTaskIdx).toBe(0);
   expect(result.current.plans).toEqual([]);
+});
+
+test('shared taxonomy deletion requires confirmation and cancel keeps the exact catalog', () => {
+  const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  const catalog = [
+    { name: 'Project', tasks: [{ name: 'Task', conditions: ['Condition'] }] },
+  ];
+  const { result } = renderHook(() => useSettingsState());
+  act(() => setPlans(structuredClone(catalog)));
+  const putsBefore = catalogPuts();
+
+  act(() => result.current.removeTask(0));
+  act(() => result.current.removeCondition(0));
+
+  expect(confirmSpy).toHaveBeenCalledTimes(2);
+  expect(getPlans()[0]?.name).toBe('Project');
+  expect(getPlans()[0]?.tasks.map((task) => task.name)).toEqual(['Task']);
+  expect(getPlans()[0]?.tasks[0]?.conditions.map((condition) => condition.name)).toEqual([
+    'Condition',
+  ]);
+  expect(catalogPuts()).toBe(putsBefore);
+});
+
+test('blank and duplicate taxonomy names are refused without a false success receipt', () => {
+  const promptSpy = vi.spyOn(window, 'prompt');
+  const { result } = renderHook(() => useSettingsState());
+  const putsBefore = catalogPuts();
+
+  promptSpy.mockReturnValueOnce('   ');
+  act(() => result.current.addProject());
+  expect(result.current.toast).toBe('Project name cannot be blank');
+  expect(catalogPuts()).toBe(putsBefore);
+
+  act(() => setOperators(['Alex']));
+  const putsAfterSeed = catalogPuts();
+  promptSpy.mockReturnValueOnce(' alex ');
+  act(() => result.current.addOperator());
+  expect(result.current.toast).toBe('Operator name “alex” already exists');
+  expect(getOperators()).toEqual(['Alex']);
+  expect(catalogPuts()).toBe(putsAfterSeed);
 });

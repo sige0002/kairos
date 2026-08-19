@@ -28,6 +28,7 @@
 | `ROS_DOMAIN_ID` | `0` | 全サービス共通の ROS 2 ドメイン |
 | `TZ` | (make がホストから導出。空=UTC) | コンテナのタイムゾーン。recorder が刻む `run_YYYYMMDD_HHMMSS` の表示名がこの時計で決まる — 未設定だとコンテナは UTC で走り、壁時計と 9 時間（JST）ズレた run 名になる（2026-08-05 是正）。`make` 経由なら自動、素の compose では `.env` に `TZ=Asia/Tokyo` 等を書く |
 | `ROS_DISTRO` | `jazzy` | ベースイメージの ROS 2 ディストロ。`.env` の値が Makefile 組み込み既定に勝つ（`make` が `.env` を読んで export する） |
+| `ROS_BASE_IMAGE` | digest 固定の Jazzy ros-base | ROS image の build source。`ROS_DISTRO` を変更する場合は同じ distro を含む digest 固定 image を必ず併記する。不一致は Dockerfile が明示的に拒否する |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS 実装。Fast DDS と Cyclone DDS の両 RMW をイメージに同梱しており、本キーで切替可能。Cyclone DDS のロボットには `rmw_cyclonedds_cpp` を指定する（後述） |
 | `DATA_DIR` | `./data` | ホスト側データ root（→ コンテナ `/data`） |
 | `ROBOT` | `airoa_hsr` | アクティブな機体。`config/<robot>/`（committed）または `config/local/<robot>/`（gitignored）を選ぶ。recording / stream / validation / validators / monitoring の各パスはこれから派生する（Makefile が committed/local を解決し、`docker compose` もネスト補間で尊重。さらに各サービスは**起動時**に、与えられた committed 形のパスが実在しなければ `config/local/` 側へ解決し直す — `kairos_common.resolve_config_path` — ため、素の `docker compose` でも local 機体が解決される）。Settings タブで機体 → aspect → option を選択・編集できる |

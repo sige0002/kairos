@@ -54,7 +54,9 @@ def test_execute_job_skips_a_precanceled_job() -> None:
 
 def _stub_registry(runner) -> types.SimpleNamespace:
     """A registry whose every pipeline is runnable and runs *runner*."""
-    pipeline = types.SimpleNamespace(runner=runner)
+    pipeline = types.SimpleNamespace(
+        id="stub", runner=runner, params_schema={"type": "object"}
+    )
     return types.SimpleNamespace(
         get=lambda pipeline_id: pipeline,
         runnable=lambda pipeline_id: True,

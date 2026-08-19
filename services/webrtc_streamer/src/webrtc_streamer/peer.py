@@ -291,28 +291,35 @@ class AiortcPeerManager:
         pc = RTCPeerConnection(RTCConfiguration(iceServers=self._build_ice_servers()))
         with self._lock:
             self._pcs.add(pc)
+        try:
 
-        @pc.on("connectionstatechange")
-        async def _on_state() -> None:
-            state = pc.connectionState
-            if _should_discard_on_state(state):
-                await self._discard(pc)
-            elif state == "disconnected":
-                # Transient: log and wait for ICE to recover (STR-M1); do not
-                # discard, or a momentary blip would end the preview for good.
-                logger.info("peer transiently disconnected; awaiting ICE recovery")
+            @pc.on("connectionstatechange")
+            async def _on_state() -> None:
+                state = pc.connectionState
+                if _should_discard_on_state(state):
+                    await self._discard(pc)
+                elif state == "disconnected":
+                    # Transient: log and wait for ICE to recover (STR-M1); do not
+                    # discard, or a momentary blip would end the preview for good.
+                    logger.info("peer transiently disconnected; awaiting ICE recovery")
 
-        sender = pc.addTrack(_make_track(self._frames, self._max_fps))
-        self._force_codec(pc, sender)
+            sender = pc.addTrack(_make_track(self._frames, self._max_fps))
+            self._force_codec(pc, sender)
 
-        await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))
-        answer = await pc.createAnswer()
-        await pc.setLocalDescription(answer)
-        # Non-trickle: wait for ICE gathering to complete so the answer carries
-        # all candidates (the spec exchanges complete SDP, no trickle channel).
-        await self._await_ice_complete(pc)
-        local = pc.localDescription
-        return drop_ipv6_candidates(local.sdp), local.type
+            await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))
+            answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+            # Non-trickle: wait for ICE gathering to complete so the answer carries
+            # all candidates (the spec exchanges complete SDP, no trickle channel).
+            await self._await_ice_complete(pc)
+            local = pc.localDescription
+            return drop_ipv6_candidates(local.sdp), local.type
+        except BaseException:
+            # SDP validation, codec setup, ICE gathering and cancellation all
+            # happen after registry insertion. A failed offer owns no usable
+            # client, so close and forget it before propagating the failure.
+            await self._discard(pc)
+            raise
 
     def _force_codec(self, pc: Any, sender: Any) -> None:
         """Restrict the sender to the requested codec, if the API allows it."""

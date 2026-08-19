@@ -104,7 +104,8 @@ services:
       args:
         <<: *build-proxy-args
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
-    image: kairos-rosbag2-recorder:${ROS_DISTRO:-jazzy}
+        ROS_BASE_IMAGE: ${ROS_BASE_IMAGE:-ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9}
+    image: kairos-rosbag2-recorder:${KAIROS_VERSION:-dev}-${ROS_DISTRO:-jazzy}
     env_file:
       - path: ${KAIROS_ENV_FILE:-.env}
         required: false
@@ -141,7 +142,8 @@ services:
       args:
         <<: *build-proxy-args
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
-    image: kairos-topic-monitor:${ROS_DISTRO:-jazzy}
+        ROS_BASE_IMAGE: ${ROS_BASE_IMAGE:-ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9}
+    image: kairos-topic-monitor:${KAIROS_VERSION:-dev}-${ROS_DISTRO:-jazzy}
     env_file:
       - path: ${KAIROS_ENV_FILE:-.env}
         required: false
@@ -184,7 +186,8 @@ services:
       args:
         <<: *build-proxy-args
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
-    image: kairos-webrtc-streamer:${ROS_DISTRO:-jazzy}
+        ROS_BASE_IMAGE: ${ROS_BASE_IMAGE:-ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9}
+    image: kairos-webrtc-streamer:${KAIROS_VERSION:-dev}-${ROS_DISTRO:-jazzy}
     env_file:
       - path: ${KAIROS_ENV_FILE:-.env}
         required: false
@@ -219,7 +222,8 @@ services:
       args:
         <<: *build-proxy-args
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
-    image: kairos-topic-probe:${ROS_DISTRO:-jazzy}
+        ROS_BASE_IMAGE: ${ROS_BASE_IMAGE:-ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9}
+    image: kairos-topic-probe:${KAIROS_VERSION:-dev}-${ROS_DISTRO:-jazzy}
     env_file:
       - path: ${KAIROS_ENV_FILE:-.env}
         required: false

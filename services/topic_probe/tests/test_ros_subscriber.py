@@ -12,6 +12,30 @@ import pytest
 from topic_probe.ros_subscriber import RosProbeSubscriber
 
 
+class _LifecycleObject:
+    def __init__(self) -> None:
+        self.cleaned = False
+
+    def shutdown(self) -> None:
+        self.cleaned = True
+
+    def destroy_node(self) -> None:
+        self.cleaned = True
+
+
+class _Thread:
+    def __init__(self, *, alive: bool = True) -> None:
+        self.alive = alive
+        self.joined = False
+
+    def is_alive(self) -> bool:
+        return self.alive
+
+    def join(self, timeout: float) -> None:
+        assert timeout == 2.0
+        self.joined = True
+
+
 def test_unsubscribe_is_defensive() -> None:
     """Double / never unsubscribe is a no-op, not a KeyError (PRB-L1).
 
@@ -25,11 +49,58 @@ def test_unsubscribe_is_defensive() -> None:
     assert sub.subscribed_topics() == ["/a"]  # one ref left
     sub.unsubscribe("/a")
     assert sub.subscribed_topics() == []
-    # No live reference: a further release (double unsubscribe / lost race) and an
-    # unsubscribe of a never-held topic must both be no-ops.
+    # No live reference: repeated/unknown releases remain no-ops.
     sub.unsubscribe("/a")
     sub.unsubscribe("/never")
     assert sub.subscribed_topics() == []
+
+
+def test_failed_start_rolls_back_partial_ros_state_and_can_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sub = RosProbeSubscriber()
+    node = _LifecycleObject()
+    executor = _LifecycleObject()
+    thread = _Thread()
+
+    def fail_after_allocation() -> None:
+        sub._node = node
+        sub._executor = executor
+        sub._thread = thread  # type: ignore[assignment]
+        raise RuntimeError("rclpy init failed")
+
+    monkeypatch.setattr(sub, "_spin_up", fail_after_allocation)
+    with pytest.raises(RuntimeError, match="rclpy init failed"):
+        sub.start()
+
+    assert sub.is_up() is False
+    assert sub._node is None
+    assert sub._executor is None
+    assert sub._thread is None
+    assert node.cleaned is True
+    assert executor.cleaned is True
+    assert thread.joined is True
+
+    live_thread = _Thread()
+
+    def succeed() -> None:
+        sub._thread = live_thread  # type: ignore[assignment]
+
+    monkeypatch.setattr(sub, "_spin_up", succeed)
+    sub.start()
+    assert sub.is_up() is True
+
+
+def test_readiness_drops_when_executor_thread_dies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sub = RosProbeSubscriber()
+    thread = _Thread()
+    monkeypatch.setattr(sub, "_spin_up", lambda: setattr(sub, "_thread", thread))
+    sub.start()
+    assert sub.is_up() is True
+    thread.alive = False
+    assert sub.is_up() is False
 
 
 def test_unresolved_type_warning_is_rate_limited(

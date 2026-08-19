@@ -1,0 +1,85 @@
+name: Release gate
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  vendored-source-license:
+    name: vendored source redistribution rights
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Refuse redistribution without upstream licenses
+        run: |
+          test -f services/dora_runner/bagflow/LICENSE.bagflow
+          test -f services/dora_runner/bagflow/LICENSE.mcap2dora
+
+  images-and-acceptance:
+    name: clean images + generated-bag E2E
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      KAIROS_GIT_SHA: ${{ github.sha }}
+      BAG: ci-e2e/fixture
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify tag and VERSION agree
+        if: startsWith(github.ref, 'refs/tags/')
+        run: test "${GITHUB_REF_NAME#v}" = "$(cat VERSION)"
+      - name: Build every core runtime image from this checkout
+        run: |
+          make build
+          docker compose --project-directory . -f compose/recording.yaml build importer
+          docker compose -f deploy/test/compose.yaml build
+      - name: Generate a redistributable MCAP fixture
+        run: |
+          docker run --rm --network host \
+            -e ROS_DOMAIN_ID=97 \
+            -v "$PWD:/work" -w /work \
+            --entrypoint bash \
+            ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9 \
+            -lc 'apt-get update && apt-get install -y --no-install-recommends ros-jazzy-rosbag2-storage-mcap && source /opt/ros/jazzy/setup.bash && deploy/test/generate_e2e_fixture.sh data/ci-e2e/fixture'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: e2e/package-lock.json
+      - name: Run real-stack browser acceptance
+        run: make test-e2e
+      - name: Gate the 1366x768 operator layout
+        run: |
+          rc=0
+          make test-e2e-up || rc=$?
+          if [ "$rc" -eq 0 ]; then
+            node e2e/tools/layout-probe.mjs --self-test --tab collect --width 1366 --height 768 --zoom 1 || rc=$?
+          fi
+          if [ "$rc" -eq 0 ]; then
+            node e2e/tools/layout-probe.mjs --width 1366 --height 768 --zoom 1 || rc=$?
+          fi
+          make test-e2e-down || true
+          exit "$rc"
+      - name: Write immutable image manifest
+        if: always()
+        run: |
+          images="$({ docker compose --project-directory . -f compose/compose.yaml config --images; docker compose --project-directory . -f compose/recording.yaml config --images; docker compose -f deploy/test/compose.yaml config --images; } | sort -u)"
+          printf '# version\tgit_sha\timage\timage_id\tplatform\n' > release-manifest.tsv
+          for image in $images; do
+            docker image inspect --format "$(cat VERSION)\t${GITHUB_SHA}\t${image}\t{{.Id}}\t{{.Os}}/{{.Architecture}}" "$image" >> release-manifest.tsv
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-evidence-${{ github.sha }}
+          path: |
+            release-manifest.tsv
+            e2e/playwright-report
+            e2e/test-results

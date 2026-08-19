@@ -155,7 +155,7 @@ export interface AdviceItem {
 // item, per the design decision (see the Collect task brief).
 export const ADVICE_ITEMS: AdviceItem[] = [
   {
-    badge: 'QUALITY',
+    badge: 'GENERAL',
     title: 'Hold still for ~1 s before starting',
     detail:
       'The first second after Start stabilizes the initial state the model learns ' +
@@ -198,8 +198,7 @@ export const COLLECT_UNSAVED_DISCARD_REASON =
 // A start the operator backed out of during ARMING still reaches the recorder,
 // so the sub-second bag it wrote is discarded rather than left in the catalog
 // as a take nobody meant to make (#8). The ledger says which gesture it was.
-export const CANCELLED_START_DISCARD_REASON =
-  'Start cancelled during arming (Collect)';
+export const CANCELLED_START_DISCARD_REASON = 'Start cancelled during arming (Collect)';
 
 /**
  * Why Start is refused when nobody has said who is recording (#11).

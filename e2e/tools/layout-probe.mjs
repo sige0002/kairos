@@ -46,9 +46,9 @@
 // Exit code is 1 when any defect is found (or when the self-test fails to
 // detect its own planted defects), so it can gate a manual round.
 
-import { chromium } from '@playwright/test';
-import { mkdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { chromium } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { resolve } from "node:path";
 
 const args = process.argv.slice(2);
 const flag = (name, fallback = null) => {
@@ -57,13 +57,28 @@ const flag = (name, fallback = null) => {
 };
 const has = (name) => args.includes(`--${name}`);
 
-const BASE = flag('base', process.env.E2E_BASE_URL ?? 'http://127.0.0.1:18080');
-const WIDTH = Number(flag('width', 1280));
-const HEIGHT = Number(flag('height', 800));
-const TABS = String(flag('tab', 'collect,review,datasets,validation,monitor,settings')).split(',');
-const ZOOMS = has('zoom') ? [Number(flag('zoom'))] : [1, 1.5];
-const SHOTS = flag('shots', null);
-const SELF_TEST = has('self-test');
+const BASE = flag("base", process.env.E2E_BASE_URL ?? "http://127.0.0.1:18080");
+const CUSTOM_VIEWPORT = has("width") || has("height");
+const VIEWPORTS = CUSTOM_VIEWPORT
+  ? [
+      {
+        width: Number(flag("width", 1280)),
+        height: Number(flag("height", 800)),
+      },
+    ]
+  : [
+      { width: 1280, height: 800 },
+      // Canonical Collect acceptance floor (docs/specs/ja/frontend.md): this
+      // short, wide laptop profile catches vertical overflow that 1280x800
+      // misses or understates.
+      { width: 1366, height: 768 },
+    ];
+const TABS = String(
+  flag("tab", "collect,review,datasets,validation,monitor,settings"),
+).split(",");
+const ZOOMS = has("zoom") ? [Number(flag("zoom"))] : [1, 1.5];
+const SHOTS = flag("shots", null);
+const SELF_TEST = has("self-test");
 
 /**
  * The measurement, run inside the page.
@@ -105,30 +120,42 @@ const MEASURE = () => {
   // operator sees "…"), and a `title` is a mark (they can hover). A plain
   // `overflow: hidden` is not: the text simply stops.
   const isMarked = (el, cs) => {
-    if (cs.textOverflow === 'ellipsis') return true;
-    if (el.getAttribute('title')) return true;
+    if (cs.textOverflow === "ellipsis") return true;
+    if (el.getAttribute("title")) return true;
     // A scrollable box is not a cut: the content is reachable.
-    if (cs.overflowX === 'auto' || cs.overflowX === 'scroll') return true;
+    if (cs.overflowX === "auto" || cs.overflowX === "scroll") return true;
     return false;
   };
 
-  for (const el of document.querySelectorAll('body *')) {
+  for (const el of document.querySelectorAll("body *")) {
     const cs = getComputedStyle(el);
-    if (cs.display === 'none' || cs.visibility === 'hidden') continue;
+    if (cs.display === "none" || cs.visibility === "hidden") continue;
     const r = el.getBoundingClientRect();
     if (r.width === 0 || r.height === 0) continue;
+    // ScreenTitle's Tailwind `sr-only` h1 is intentionally clipped into a 1px
+    // box while remaining in the accessibility tree. It is not lost visible
+    // copy, so treating its scrollWidth as an unmarked cut makes every screen
+    // fail forever. Match the rendered hiding technique, not a class name.
+    if (
+      r.width <= 1 &&
+      r.height <= 1 &&
+      cs.position === "absolute" &&
+      cs.overflow === "hidden"
+    ) {
+      continue;
+    }
     // Only leaf-ish text holders: a container whose CHILD overflows is reported
     // on the child, and reporting both would bury the real site in ancestors.
     const overflow = el.scrollWidth - el.clientWidth;
     if (overflow <= 1) continue;
-    if (cs.overflow === 'visible' && cs.overflowX === 'visible') continue;
+    if (cs.overflow === "visible" && cs.overflowX === "visible") continue;
     if (isMarked(el, cs)) continue;
-    const text = (el.textContent ?? '').trim().slice(0, 60);
+    const text = (el.textContent ?? "").trim().slice(0, 60);
     if (!text) continue;
     out.clipped.push({
       tag: el.tagName.toLowerCase(),
-      testid: el.getAttribute('data-testid') ?? null,
-      cls: (el.className ?? '').toString().slice(0, 70),
+      testid: el.getAttribute("data-testid") ?? null,
+      cls: (el.className ?? "").toString().slice(0, 70),
       overflowPx: overflow,
       text,
     });
@@ -138,20 +165,21 @@ const MEASURE = () => {
 
 /** Plant one defect of EACH KIND the probe claims to detect (self-test). */
 const BREAK = () => {
-  const wide = document.createElement('div');
-  wide.style.cssText = 'width:4000px;height:8px;background:red';
-  wide.setAttribute('data-selftest', 'page-scroll');
+  const wide = document.createElement("div");
+  wide.style.cssText = "width:4000px;height:8px;background:red";
+  wide.setAttribute("data-selftest", "page-scroll");
   document.body.appendChild(wide);
 
-  const tall = document.createElement('div');
-  tall.style.cssText = 'height:4000px;width:8px;background:red';
-  tall.setAttribute('data-selftest', 'vertical-scroll');
+  const tall = document.createElement("div");
+  tall.style.cssText = "height:4000px;width:8px;background:red";
+  tall.setAttribute("data-selftest", "vertical-scroll");
   document.body.appendChild(tall);
 
-  const cut = document.createElement('div');
-  cut.setAttribute('data-testid', 'selftest-clipped');
-  cut.style.cssText = 'width:40px;overflow:hidden;white-space:nowrap;font-size:12px';
-  cut.textContent = 'a label far longer than forty pixels of box';
+  const cut = document.createElement("div");
+  cut.setAttribute("data-testid", "selftest-clipped");
+  cut.style.cssText =
+    "width:40px;overflow:hidden;white-space:nowrap;font-size:12px";
+  cut.textContent = "a label far longer than forty pixels of box";
   document.body.appendChild(cut);
 };
 
@@ -160,57 +188,64 @@ async function run() {
   const findings = [];
   if (SHOTS) mkdirSync(resolve(SHOTS), { recursive: true });
 
-  for (const zoom of ZOOMS) {
-    // Browser zoom shrinks the CSS viewport; see MEASURE's comment.
-    const vw = Math.round(WIDTH / zoom);
-    const vh = Math.round(HEIGHT / zoom);
-    const ctx = await browser.newContext({ viewport: { width: vw, height: vh } });
-    const page = await ctx.newPage();
+  for (const viewport of VIEWPORTS) {
+    for (const zoom of ZOOMS) {
+      // Browser zoom shrinks the CSS viewport; see MEASURE's comment.
+      const vw = Math.round(viewport.width / zoom);
+      const vh = Math.round(viewport.height / zoom);
+      const ctx = await browser.newContext({
+        viewport: { width: vw, height: vh },
+      });
+      const page = await ctx.newPage();
 
-    for (const tab of TABS) {
-      await page.goto(`${BASE}/?tab=${tab}`, { waitUntil: 'networkidle' });
-      // Let the first data land: an empty screen cannot overflow.
-      await page.waitForTimeout(2500);
-      if (SELF_TEST) await page.evaluate(BREAK);
+      for (const tab of TABS) {
+        await page.goto(`${BASE}/?tab=${tab}`, { waitUntil: "networkidle" });
+        // Let the first data land: an empty screen cannot overflow.
+        await page.waitForTimeout(2500);
+        if (SELF_TEST) await page.evaluate(BREAK);
 
-      const m = await page.evaluate(MEASURE);
-      const defects = [];
-      const kinds = { horizontal: false, vertical: false, clipped: false };
-      if (m.pageScrollX > 1) {
-        kinds.horizontal = true;
-        defects.push(`page scrolls horizontally by ${m.pageScrollX}px`);
-      }
-      if (tab === 'collect' && m.collectScrollY > 1) {
-        kinds.vertical = true;
-        defects.push(
-          `Collect scrolls vertically by ${m.collectScrollY}px ` +
-            `(doc ${m.scrollerWhen.doc} / body ${m.scrollerWhen.body} / panel ${m.scrollerWhen.panel})`,
-        );
-      }
-      for (const c of m.clipped) {
-        kinds.clipped = true;
-        defects.push(
-          `unmarked cut: ${c.testid ?? c.tag} overflows ${c.overflowPx}px — "${c.text}"`,
-        );
-      }
+        const m = await page.evaluate(MEASURE);
+        const defects = [];
+        const kinds = { horizontal: false, vertical: false, clipped: false };
+        if (m.pageScrollX > 1) {
+          kinds.horizontal = true;
+          defects.push(`page scrolls horizontally by ${m.pageScrollX}px`);
+        }
+        if (tab === "collect" && m.collectScrollY > 1) {
+          kinds.vertical = true;
+          defects.push(
+            `Collect scrolls vertically by ${m.collectScrollY}px ` +
+              `(doc ${m.scrollerWhen.doc} / body ${m.scrollerWhen.body} / panel ${m.scrollerWhen.panel})`,
+          );
+        }
+        for (const c of m.clipped) {
+          kinds.clipped = true;
+          defects.push(
+            `unmarked cut: ${c.testid ?? c.tag} overflows ${c.overflowPx}px — "${c.text}"`,
+          );
+        }
 
-      const label = `${tab} @ ${zoom * 100}% (${vw}x${vh})`;
-      if (defects.length === 0) {
-        console.log(`ok    ${label}`);
-      } else {
-        console.log(`FAIL  ${label}`);
-        for (const d of defects) console.log(`        ${d}`);
-      }
-      findings.push({ tab, zoom, defects, kinds });
+        const label = `${tab} @ ${zoom * 100}% (${vw}x${vh}; ${viewport.width}x${viewport.height} base)`;
+        if (defects.length === 0) {
+          console.log(`ok    ${label}`);
+        } else {
+          console.log(`FAIL  ${label}`);
+          for (const d of defects) console.log(`        ${d}`);
+        }
+        findings.push({ tab, zoom, defects, kinds });
 
-      if (SHOTS) {
-        await page.screenshot({
-          path: resolve(SHOTS, `layout-${tab}-${zoom * 100}.png`),
-          fullPage: false,
-        });
+        if (SHOTS) {
+          await page.screenshot({
+            path: resolve(
+              SHOTS,
+              `layout-${tab}-${viewport.width}x${viewport.height}-${zoom * 100}.png`,
+            ),
+            fullPage: false,
+          });
+        }
       }
+      await ctx.close();
     }
-    await ctx.close();
   }
   await browser.close();
 
@@ -218,42 +253,48 @@ async function run() {
   if (SELF_TEST) {
     // Per KIND, not per page: "some defect showed up" is satisfied by a probe
     // that can only see one of the three.
-    const collectRuns = findings.filter((f) => f.tab === 'collect');
+    const collectRuns = findings.filter((f) => f.tab === "collect");
     const sawHorizontal = findings.filter((f) => f.kinds.horizontal).length;
     const sawClipped = findings.filter((f) => f.kinds.clipped).length;
     const sawVertical = collectRuns.filter((f) => f.kinds.vertical).length;
 
-    console.log('\nself-test, by kind:');
+    console.log("\nself-test, by kind:");
     console.log(`  horizontal: ${sawHorizontal}/${findings.length} pages`);
     console.log(`  clipped:    ${sawClipped}/${findings.length} pages`);
     console.log(
       `  vertical:   ${sawVertical}/${collectRuns.length} collect pages` +
-        (collectRuns.length === 0 ? '  (NOT ASSESSED — no collect run)' : ''),
+        (collectRuns.length === 0 ? "  (NOT ASSESSED — no collect run)" : ""),
     );
 
     const failures = [];
-    if (sawHorizontal < findings.length) failures.push('horizontal scroll');
-    if (sawClipped < findings.length) failures.push('unmarked clipping');
+    if (sawHorizontal < findings.length) failures.push("horizontal scroll");
+    if (sawClipped < findings.length) failures.push("unmarked clipping");
     // Collect-only by design (see the header). Not assessable without a collect
     // run, and "not assessed" must not read as "passed".
     if (collectRuns.length === 0) {
-      failures.push('vertical scroll (no collect page in --tab; cannot be assessed)');
+      failures.push(
+        "vertical scroll (no collect page in --tab; cannot be assessed)",
+      );
     } else if (sawVertical < collectRuns.length) {
-      failures.push('vertical scroll');
+      failures.push("vertical scroll");
     }
 
     if (failures.length > 0) {
       console.log(
-        '\nself-test FAILED — the probe is blind to: ' +
-          failures.join(', ') +
-          '\n  A clean run from this probe would not mean anything.',
+        "\nself-test FAILED — the probe is blind to: " +
+          failures.join(", ") +
+          "\n  A clean run from this probe would not mean anything.",
       );
       process.exit(1);
     }
-    console.log('\nself-test passed — all three kinds detected. A clean run means something.');
+    console.log(
+      "\nself-test passed — all three kinds detected. A clean run means something.",
+    );
     process.exit(0);
   }
-  console.log(`\n${findings.length - bad}/${findings.length} page-zoom combinations clean`);
+  console.log(
+    `\n${findings.length - bad}/${findings.length} page-zoom combinations clean`,
+  );
   process.exit(bad > 0 ? 1 : 0);
 }
 

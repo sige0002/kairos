@@ -26,7 +26,8 @@ x-ros-common: &ros-common
     context: .
     args:
       ROS_DISTRO: ${ROS_DISTRO:-jazzy}
-  image: kairos-rosbag-player:${ROS_DISTRO:-jazzy}
+      ROS_BASE_IMAGE: ${ROS_BASE_IMAGE:-ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9}
+  image: kairos-rosbag-player:${KAIROS_VERSION:-dev}-${ROS_DISTRO:-jazzy}
   # Share the host's ROS 2 DDS graph so replayed topics reach services on the
   # host / other containers.
   network_mode: host

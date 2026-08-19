@@ -241,7 +241,7 @@ bagflow は「事実」だけを報告する（ノードごとの `ok`・エッ�
 
 ## API（サービス内部 API。公開は `api_orchestrator` 経由）
 
-- `POST /jobs` — `{ capture_id, pipeline, params? }` → `{ job_id }`
+- `POST /jobs` — `{ capture_id, pipeline, params? }` → `{ job_id }`。pipeline 登録時に `params_schema` 自体を Draft 2020-12 で meta-validation し、受付時に defaults を materialize して coercion 無しで検証する。不正値は job row / task を作る前に `400 invalid_pipeline_params`（pipeline / path / schema_path / reason）
 - `GET /jobs/{id}/status` — `{ state: "queued"|"running"|"succeeded"|"failed"|"canceled", progress, logs_tail, cancel_requested }`
 - `GET /jobs/{id}/result` — `{ summary, artifacts: [] }`
 - `POST /jobs/{id}/cancel` — **協調キャンセル**（2026-08 改修）。`queued` の job は即座に `canceled`（worker は開始前に honour する）。**`running` の job に対しては「要求」であって「状態」ではない**: 応答は `running` + `cancel_requested: true` のままで、worker が次のチェックポイント — bagflow は subprocess 監視（0.5 秒間隔で cancel event を見て CLI を kill + `dora stop` で dataflow 掃除）、in-process 系（loss_report / signal_report はメッセージごと、video_check はフレームごと）は cancel event の検査 — で実作業を実際に止めたときに初めて `canceled` になる。以前は shield 下の threadpool / subprocess が完走し続けるのにラベルだけ `canceled` になり、orchestrator が lease を解放して走行中ジョブの capture が削除できてしまった（timing sweep S1-1/S1-2）。チェックポイントに到達する前に作業が完了した場合は `succeeded` のまま（cancel が間に合わなかった、という正直な結末）。クライアントは cancel 応答でポーリングを止めてはならず、終端状態まで見続ける。

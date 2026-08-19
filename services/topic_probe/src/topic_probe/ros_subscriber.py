@@ -47,6 +47,7 @@ class RosProbeSubscriber:
 
     def __init__(self, *, node_name: str = "topic_probe") -> None:
         self._node_name = node_name
+        self._lifecycle_lock = threading.RLock()
         self._lock = threading.Lock()
         self._up = False
         # Desired (ref-counted) topics — mutated by web threads.
@@ -64,11 +65,33 @@ class RosProbeSubscriber:
 
     # ---- lifecycle ---------------------------------------------------------
     def start(self) -> None:
+        with self._lifecycle_lock:
+            with self._lock:
+                if self._up and self._thread is not None and self._thread.is_alive():
+                    return
+                stale = self._up or any(
+                    value is not None
+                    for value in (self._node, self._executor, self._thread)
+                )
+            if stale:
+                self.stop()
+            try:
+                self._spin_up()
+            except BaseException:
+                self._abandon_partial()
+                raise
+            with self._lock:
+                self._up = True
+
+    def _abandon_partial(self) -> None:
+        """Release resources allocated by a failed start, without latching up."""
         with self._lock:
-            if self._up:
-                return
-            self._up = True
-        self._spin_up()
+            self._up = False
+            node, executor, thread = self._node, self._executor, self._thread
+            self._node = self._executor = self._thread = self._reconcile_timer = None
+            self._subs.clear()
+            self._latest.clear()
+        self._teardown(node, executor, thread)
 
     def _spin_up(self) -> None:
         import rclpy
@@ -82,25 +105,37 @@ class RosProbeSubscriber:
         self._reconcile_timer = node.create_timer(_RECONCILE_PERIOD_S, self._reconcile)
 
         executor = SingleThreadedExecutor()
+        self._executor = executor
         executor.add_node(node)
         thread = threading.Thread(
             target=executor.spin, name="topic-probe-spin", daemon=True
         )
-        self._executor = executor
         self._thread = thread
         thread.start()
         logger.info("topic_probe subscriber started")
 
     def stop(self) -> None:
-        with self._lock:
-            if not self._up:
-                return
-            self._up = False
-            node, executor, thread = self._node, self._executor, self._thread
-            self._node = self._executor = self._thread = None
-            self._desired.clear()
-            self._subs.clear()
-            self._latest.clear()
+        with self._lifecycle_lock:
+            with self._lock:
+                if not self._up and all(
+                    value is None
+                    for value in (self._node, self._executor, self._thread)
+                ):
+                    return
+                self._up = False
+                node, executor, thread = self._node, self._executor, self._thread
+                self._node = self._executor = self._thread = self._reconcile_timer = (
+                    None
+                )
+                self._desired.clear()
+                self._subs.clear()
+                self._latest.clear()
+            self._teardown(node, executor, thread)
+        logger.info("topic_probe subscriber stopped")
+
+    @staticmethod
+    def _teardown(node: Any, executor: Any, thread: threading.Thread | None) -> None:
+        """Release detached ROS resources, attempting every cleanup step."""
         if executor is not None:
             try:
                 executor.shutdown()
@@ -113,11 +148,12 @@ class RosProbeSubscriber:
                 logger.exception("error destroying ros node")
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
-        logger.info("topic_probe subscriber stopped")
 
     def is_up(self) -> bool:
         with self._lock:
-            return self._up
+            return bool(
+                self._up and self._thread is not None and self._thread.is_alive()
+            )
 
     # ---- discovery / selection --------------------------------------------
     def discover_topics(self) -> list[TopicMeta]:

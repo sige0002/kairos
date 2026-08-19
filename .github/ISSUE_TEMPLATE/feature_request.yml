@@ -1,0 +1,29 @@
+name: Feature request
+description: Propose an operator or maintainer outcome
+title: "feat: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: user
+    attributes:
+      label: User and task
+      description: Who needs this, and what robot-data task are they trying to complete?
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Current problem and evidence
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired observable outcome
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Compatibility and deployment constraints
+      description: Include ROS/RMW, topology, offline operation, data invariants, and migration needs.

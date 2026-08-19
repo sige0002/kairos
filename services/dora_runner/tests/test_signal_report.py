@@ -609,23 +609,26 @@ def test_registry_registers_signal_report() -> None:
     assert "topics" in props
 
 
-def test_topics_param_coercion() -> None:
+def test_topics_param_requires_an_array_of_strings() -> None:
     assert _topics_param({}) is None
     assert _topics_param({"topics": None}) is None
     assert _topics_param({"topics": []}) is None
     assert _topics_param({"topics": ["/a", " ", "/b"]}) == ["/a", "/b"]
-    assert _topics_param({"topics": "/a, /b"}) == ["/a", "/b"]
+    with pytest.raises(ApiError):
+        _topics_param({"topics": "/a, /b"})
     with pytest.raises(ApiError):
         _topics_param({"topics": 5})
 
 
-def test_max_points_param_coercion() -> None:
+def test_max_points_param_requires_an_integer() -> None:
     assert _max_points_param({}) == DEFAULT_MAX_POINTS
-    assert _max_points_param({"max_points": "500"}) == 500
+    assert _max_points_param({"max_points": 500}) == 500
     with pytest.raises(ApiError):
         _max_points_param({"max_points": 0})
     with pytest.raises(ApiError):
-        _max_points_param({"max_points": "lots"})
+        _max_points_param({"max_points": "500"})
+    with pytest.raises(ApiError):
+        _max_points_param({"max_points": True})
 
 
 def test_pipelines_endpoint_exposes_signal_report() -> None:

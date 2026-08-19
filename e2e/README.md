@@ -71,7 +71,8 @@ named, reproducible defect. See below for the history.
 
 ## `tools/` — measurements the suite cannot make
 
-Two probes that are **not part of `make test-e2e` and never run in CI**. They
+Two probes that are **not part of `make test-e2e`**. The release gate runs the
+layout probe at 1366×768 (including its self-test); the peer-failure probe remains manual. They
 answer questions a spec cannot: one needs a layout engine (jsdom has none, so
 every width and overflow is `0` there and an assertion about them passes against
 any stylesheet), the other needs a real ICE agent. They are here so the numbers
@@ -90,7 +91,7 @@ node e2e/tools/layout-probe.mjs                # the measurement
 node e2e/tools/layout-probe.mjs --zoom 1.5 --tab collect --shots dev_image
 ```
 
-Walks every tab at 1280x800 at 100% and 150% zoom and reports three things:
+Walks every tab at 1280x800 and 1366x768 at 100% and 150% zoom and reports three things:
 the page scrolling horizontally, Collect scrolling vertically, and text cut off
 with nothing (no ellipsis, no `title`, no scrollable box) telling the operator
 it was cut. Browser zoom is modelled by shrinking the CSS viewport, which is
@@ -238,11 +239,13 @@ config for the acceptance stack.
 
 ### The replayed bag
 
-`data/airoa-moma-mcap/235210` (61 MB, ~10 s, HSR topics) plays on a loop for the
-whole run. Its standard-typed topics are exactly the `default_topics` of
-`config/airoa_hsr/recording/default.yaml`, so no custom-message overlay is
-needed and a clean clone can run the suite. Override with
-`BAG=<path under data/> bash e2e/scripts/stack.sh up`.
+The local default is `data/airoa-moma-mcap/235210` (61 MB, ~10 s, HSR topics),
+which is gitignored and therefore is **not** present in a clean clone. Point
+`E2E_REPLAY_DATA_DIR` / `BAG` at a local fixture, or generate the small standard-message
+fixture with `deploy/test/generate_e2e_fixture.sh` in a sourced Jazzy environment with the
+MCAP storage plugin. Release CI performs that generation and runs with `BAG=ci-e2e/fixture`.
+The topics match `config/airoa_hsr/recording/default.yaml`, so no custom-message
+overlay is needed.
 
 Recordings wait on the Collect screen's own `elapsed` counter rather than on a
 sleep, so a slow DDS discovery lengthens the wait instead of silently shortening

@@ -1,10 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Sadasue Yuki
-"""api_orchestrator: API hub / job & state management (Stage 0 skeleton).
+"""api_orchestrator: the frontend's capture and workflow API hub.
 
-The single public API the frontend talks to. Stage 0 provides only a runnable
-FastAPI shell (/healthz, /readyz, stub root) plus a minimal stub
-``GET /api/v1/config`` so the frontend's render-gate has an endpoint to fetch.
-Run lifecycle, SSE event hub, recorder proxying, SQLite persistence, and the
-job/pipeline APIs land in Stages 1-3.
+The service coordinates recording, capture catalog persistence, review and
+dataset workflows, validation jobs, transfer, event streaming, and downstream
+service status behind one FastAPI boundary.
 """

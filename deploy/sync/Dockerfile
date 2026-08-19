@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1
+# syntax=docker/dockerfile:1@sha256:87999aa3d42bdc6bea60565083ee17e86d1f3339802f543c0d03998580f9cb89
 # importer — recording-PC sidecar that pulls finalised runs from the robot
 # (deploy/sync/import_runs.sh behind a tiny HTTP trigger, importer_httpd.py).
 # Defined ONLY in compose/recording.yaml: the single-host stack (compose/compose.yaml)

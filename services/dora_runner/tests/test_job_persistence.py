@@ -170,8 +170,8 @@ def test_cancel_of_restarted_job_is_noop(tmp_path: Path) -> None:
 def test_completed_job_survives_restart(tmp_path: Path) -> None:
     """A job run to completion is served from SQLite after the live handle is gone.
 
-    Uses a video_check job with no topic, which the worker fails fast on
-    (``topic_required``) with no MCAP needed — so it exercises the real
+    Uses a loss_report job whose capture is absent, which the worker fails fast
+    (``capture_missing``) — so it exercises the real
     create -> running -> terminal persistence path end to end.
     """
     data_dir = tmp_path
@@ -181,7 +181,7 @@ def test_completed_job_survives_restart(tmp_path: Path) -> None:
             "/jobs",
             json={
                 "capture_id": CAPTURE_ID,
-                "pipeline": "video_check",
+                "pipeline": "loss_report",
                 "params": {},
             },
         )
@@ -201,7 +201,7 @@ def test_completed_job_survives_restart(tmp_path: Path) -> None:
     with TestClient(restarted) as client:
         assert client.get(f"/jobs/{job_id}/status").json()["state"] == "failed"
         body = client.get(f"/jobs/{job_id}/result").json()
-        assert body["summary"]["error"]["error"]["code"] == "topic_required"
+        assert body["summary"]["error"]["code"] == "capture_missing"
 
 
 def test_concurrent_idempotency_key_creates_one_job(tmp_path: Path) -> None:
@@ -219,7 +219,7 @@ def test_concurrent_idempotency_key_creates_one_job(tmp_path: Path) -> None:
                             "/jobs",
                             json={
                                 "capture_id": CAPTURE_ID,
-                                "pipeline": "video_check",
+                                "pipeline": "loss_report",
                                 "params": {},
                                 "idempotency_key": "response-loss-test",
                             },

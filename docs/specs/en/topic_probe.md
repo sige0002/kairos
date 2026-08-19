@@ -40,6 +40,7 @@ Robot-independent by construction: topics come from whatever is actually on the 
 - `GET /probe/fields?topic=<name>` — list of numeric field paths for that topic type (live introspection). Arrays are index-expanded. Returns an empty list + `reason` when no message has been received / there are no numeric fields.
 - `GET /probe/stream?topic=<name>&fields=<a,b,c>&hz=<n>` — SSE sample stream. **One connection carries multiple fields of one topic** as multi-valued samples (the old v0 single `field` is extended to `fields`; a single field is the special case). `hz` is clamped to the server-side max.
 - `GET /healthz` / `GET /readyz`
+- `/readyz` is ready only after the rclpy node and executor thread start successfully. A partial initialization failure releases every resource and remains retryable; readiness also drops after the thread dies.
 - Common API conventions (error format / types / time) follow [config](config.md).
 
 ## Output schema (example, SSE / JSON)

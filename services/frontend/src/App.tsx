@@ -343,7 +343,7 @@ function OperatorChip() {
     <div className="relative">
       <button
         type="button"
-        aria-label="operator"
+        aria-label={operator.trim() ? `operator: ${operator}` : 'set operator'}
         data-testid="operator-chip"
         title={
           operator.trim()
@@ -355,14 +355,25 @@ function OperatorChip() {
           setOpen((v) => !v);
         }}
         className={cn(
-          'flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold',
+          'inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full border px-2 text-xs font-semibold',
           HIT_AREA_CHIP,
           operator.trim()
             ? 'border-teal-200 bg-teal-50 text-teal-700 hover:border-teal-400'
             : 'border-gray-200 bg-gray-100 text-gray-600 hover:border-gray-300',
         )}
       >
-        {initials}
+        <span
+          aria-hidden
+          className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-white/70 px-1 font-mono text-[10px]"
+        >
+          {initials}
+        </span>
+        <span
+          data-testid="operator-visible-name"
+          className="max-w-[160px] truncate"
+        >
+          {operator.trim() || 'Set operator'}
+        </span>
       </button>
       {open && (
         <div className="absolute right-0 top-full z-40 mt-2 w-72 rounded-card border border-gray-200 bg-white p-3 shadow-float">

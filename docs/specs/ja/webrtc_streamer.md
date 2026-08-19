@@ -33,6 +33,8 @@ ROS 2 の image トピックをブラウザへ低遅延配信する**プレビ�
 - `POST /stream/offer` — `{ stream_id, sdp: { type: "offer", sdp } }` → `{ type: "answer", sdp }`（WHEP 風 HTTP offer/answer。`stream_id` 必須。v1 は non-trickle で候補込みの完全 SDP を交換。トリクルが必要なら WS を追加）
 - `GET /healthz` / `GET /readyz`
 
+同一 stream の start は 1 つの lifecycle transaction として直列化する。重複 start は live のみ再利用し、starting は同じ完了を待つ。source / peer factory・ROS spin-up・SDP offer の失敗や start/stop 競合では registry entry、PeerConnection、source を必ず rollback し、次の start を再試行可能にする。停止時は peer close が失敗しても source stop を実行する。
+
 ## 設定 / 挙動
 
 - ICE / ネットワーク到達性:

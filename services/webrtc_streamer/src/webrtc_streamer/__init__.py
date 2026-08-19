@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Sadasue Yuki
-"""webrtc_streamer: ROS 2 image -> browser WebRTC preview (Stage 0 skeleton).
+"""ROS 2 image-to-browser WebRTC preview service for kairos.
 
-Stage 0 provides only a runnable FastAPI shell (/healthz, /readyz, stub root).
-The streaming logic (image subscribe, frame queue, VP8/H.264 encode, WHEP-style
-/stream/offer signaling) lands in Stage 2. This is a preview-only path,
-independent of the canonical recording path (rosbag2_recorder).
+The implemented preview-only path subscribes to images, applies a latest-frame
+queue, encodes VP8/H.264, and negotiates per-client peer connections through
+WHEP-style signaling. It is independent of the canonical rosbag recording path.
 """

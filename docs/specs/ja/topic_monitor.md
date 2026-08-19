@@ -34,6 +34,7 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
 - `get_publishers_info_by_topic()` で各 publisher の offered QoS を取得して購読を生成する（取りこぼし防止）。
 - 複数 publisher で QoS が異なる場合は互換側に寄せる: いずれかが `best_effort` なら `best_effort`、`durability` は `volatile`、`depth` は小（`keep_last`）。
 - `RECORDING_CONFIG` の `topic_qos_overrides`（パターン一致）が**最優先**。取得不能時のフォールバックは `best_effort` / `keep_last`。
+- publisher endpoint・type・QoS の fingerprint を discovery 周期ごとに比較し、publisher の再起動、消失、QoS 変更時は古い subscription を executor thread 上で破棄して再生成する。初回 QoS を永続利用しない。
 
 ## メトリクス定義
 
@@ -58,6 +59,7 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
 - `GET /alerts` / `GET /alerts/stream` — 現在発火中 / 直近解消の incident（`rule_origin` / `severity` を含む）。
 - `GET /incidents?since_ns=<int>` — incident 履歴（上限付きリング、直近 500 件）。`fired_at_ns` **または** `cleared_at_ns` が `since_ns` 以上のエピソードを返す（`since_ns` 省略 = 全件）。`api_orchestrator` が録画 stop 時に「そのウィンドウで何が発火したか」を確定する情報源。時刻は wall-clock UNIX ナノ秒。
 - `GET /healthz` / `GET /readyz`
+- `GET /diagnostics` — executor thread の生存、subscription 数、各 topic の解決 QoS / publisher 数 / subscription age / last sample age。thread が死亡した場合 `/readyz` は ready を返さない。
 - API 共通規約（エラー形式・型・時刻）は [config](config.md) に従う。
 
 ## 出力スキーマ（例、WebSocket / SSE / JSON）

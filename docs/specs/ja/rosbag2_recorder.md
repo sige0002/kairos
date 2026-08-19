@@ -159,6 +159,7 @@ readiness gate の待機条件（`missing ∪ unsubscribed` が空になるま�
 
 - **MCAP が正本。** 生データを欠損なく記録することに特化し、ROS 2 標準に準拠する。
 - 再起動などで中断した capture は `state=interrupted` を manifest に残す。
+- stop の SIGINT → SIGTERM → SIGKILL 後も child を reap できない場合は `stopping` と writer lease を維持し、background reaper が終了を確認するまで digest / terminal manifest を公開しない。再起動時は既存の startup recovery が回収する。
 - **`capture_id` は recorder が採番する**（UUIDv7）。`run_id` は `api_orchestrator` が採番して渡す**表示名**で、パスにも API のキーにも使わない。recorder は記録と status / manifest 提供に責務を限定する（capture ライフサイクル・reconciliation は [api_orchestrator](api_orchestrator.md)、耐久性の規約は [capture_store](capture_store.md)）。
 - **録画は他の何にも依存しない。** start / stop は ledger・digest・rebuild の完了に依存してはならない（[capture_store](capture_store.md) 安全原則 5）。ディスクが満杯でも、DB が壊れていても、録画系だけは動く。
 - 重い検証・変換は `dora_runner` に委譲（このコンテナはやらない）。

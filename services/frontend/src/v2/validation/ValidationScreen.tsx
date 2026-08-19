@@ -6,8 +6,9 @@
 // features/validation/PipelineForm + SummaryResult over GET /pipelines ·
 // GET /captures · GET /config/options · GET /validation/presets · POST /jobs ·
 // GET /jobs/{id}/status|result (see docs/specs/ja/dora_plugins.md §"UI 非依存の契約").
-// Only the pipeline lifecycle chip is a client-side placeholder — the
-// orchestrator doesn't report a lifecycle yet (see lifecycle.ts).
+// Pipeline lifecycle is intentionally not rendered: the orchestrator does not
+// report that state yet, so an index-derived badge or promotion receipt would
+// be fabricated.
 //
 // Every target here is a capture (contract §10.5): a job resolves its source as
 // `objects/<capture_id>` and writes to `report/<pipeline>/<capture_id>/`. A
@@ -178,7 +179,7 @@ export function ValidationScreen() {
     readPendingValidationRequest,
   );
   const submittedRequestIds = useRef(new Set<string>());
-  const { toast, showToast } = useToast();
+  const { toast } = useToast();
 
   const setPersistedPendingRequest = useCallback(
     (request: PendingValidationRequest | null) => {
@@ -798,7 +799,6 @@ export function ValidationScreen() {
           pipelines={pipelines}
           selectedIndex={0}
           onSelect={selectPipeline}
-          onNewRun={() => showToast('New run — pick pipeline, targets, parameters')}
         />
         <Card className="flex items-center justify-center p-8 text-sm text-gray-500">
           {pipelinesQuery.isPending ? 'Loading pipelines…' : 'No enabled pipelines.'}
@@ -814,19 +814,10 @@ export function ValidationScreen() {
         pipelines={pipelines}
         selectedIndex={selectedIndex}
         onSelect={selectPipeline}
-        onNewRun={() => showToast('New run — pick pipeline, targets, parameters')}
       />
 
       <Card className="flex min-h-0 flex-col overflow-auto">
-        <DetailHeader
-          pipeline={selectedPipeline}
-          index={selectedIndex}
-          onPromote={() =>
-            showToast(
-              `${selectedPipeline.id} promoted to Standard — applies to new captures`,
-            )
-          }
-        />
+        <DetailHeader pipeline={selectedPipeline} />
         <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_1fr]">
           <ParamsPanel
             schema={schema}

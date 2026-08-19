@@ -660,6 +660,7 @@ test('only Dataset profiles + Users & permissions stay honest placeholders', asy
 });
 
 test('Plans: adding and removing a task updates the task list and condition count', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
   const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('New Task');
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
@@ -678,6 +679,7 @@ test('Plans: adding and removing a task updates the task list and condition coun
 });
 
 test('Plans: adding and removing a condition updates the condition count', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
   const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('Object: Top → Tray: Left');
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
@@ -736,6 +738,7 @@ test('Plans: cancelling the remove confirmation keeps the project', async () => 
 });
 
 test('Failure reasons: adding and removing writes the SHARED store (so Collect sees it)', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
   vi.spyOn(window, 'prompt').mockReturnValue('Cable snagged');
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
@@ -767,6 +770,7 @@ test('Failure reasons: renaming replaces the entry in place', async () => {
 });
 
 test('Failure reasons: the last remaining reason cannot be removed', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
   fireEvent.click(screen.getByTestId('settings-menu-item-2'));

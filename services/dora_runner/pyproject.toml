@@ -5,13 +5,16 @@ build-backend = "hatchling.build"
 [project]
 name = "dora-runner"
 version = "0.1.0"
-description = "Post-recording validation & conversion (dora) for kairos. Stage 0 skeleton."
+description = "Post-recording validation and conversion pipelines for kairos."
 requires-python = ">=3.12"
 license = { text = "Apache-2.0" }
 dependencies = [
     "kairos-common",
+    "fastapi>=0.111",
     "mcap>=1.4.0",
     "mcap-ros2-support>=0.5.7",
+    "jsonschema>=4.23",
+    "pydantic>=2.7",
     "pyyaml>=6.0.3",
     "uvicorn>=0.30",
     # video_check mp4 encode: PyAV bundles ffmpeg (no system ffmpeg needed),

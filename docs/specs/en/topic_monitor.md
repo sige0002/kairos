@@ -36,6 +36,7 @@ A container for **lightweight, non-destructive real-time monitoring** of ROS 2 t
 - Use `get_publishers_info_by_topic()` to obtain each publisher's offered QoS and generate the subscription (to prevent drops).
 - When QoS differs across multiple publishers, lean toward the compatible side: if any is `best_effort`, use `best_effort`; `durability` is `volatile`; `depth` is small (`keep_last`).
 - `topic_qos_overrides` in `RECORDING_CONFIG` (pattern matching) has **highest priority**. The fallback when retrieval is not possible is `best_effort` / `keep_last`.
+- Compare a fingerprint of publisher endpoint, type, and QoS on every discovery cycle. When a publisher restarts, disappears, or changes QoS, destroy the stale subscription on the executor thread and recreate it; never retain the first QoS forever.
 
 ## Metric definitions
 
@@ -60,6 +61,7 @@ A container for **lightweight, non-destructive real-time monitoring** of ROS 2 t
 - `GET /alerts` / `GET /alerts/stream` — currently-firing / recently-cleared incidents (including `rule_origin` / `severity`).
 - `GET /incidents?since_ns=<int>` — incident history (bounded ring, last 500). Returns episodes whose `fired_at_ns` **or** `cleared_at_ns` is `>= since_ns` (omit `since_ns` = all). The source `api_orchestrator` uses at recording stop to settle "what fired during that window". Timestamps are wall-clock UNIX nanoseconds.
 - `GET /healthz` / `GET /readyz`
+- `GET /diagnostics` — executor-thread liveness, subscription count, and each topic's resolved QoS, publisher count, subscription age, and last-sample age. `/readyz` is not ready after the executor thread dies.
 - The common API conventions (error format / types / time) follow [config](config.md).
 
 ## Output schema (example, WebSocket / SSE / JSON)
