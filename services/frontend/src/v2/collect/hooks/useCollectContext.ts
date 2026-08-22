@@ -177,6 +177,7 @@ export function useCollectContext({
           project_id: next.projectId,
           task_id: next.taskId,
           condition_id: t.conditions[0]?.condition_id ?? null,
+          project: next.project,
           task: next.task,
           condition: next.condition !== '—' ? next.condition : null,
         },

@@ -12,7 +12,7 @@
 import { useState } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
 import { END_REASONS, type BatchMachine } from './useBatchMachine';
-import { findTask, usePlans } from '../plans';
+import { usePlans } from '../plans';
 import { Toast } from '../shared/Toast';
 import { formatBytes } from '../review/format';
 
@@ -163,7 +163,11 @@ function ResetBatchModal({ machine }: { machine: BatchMachine }) {
 
 function ConditionModal({ machine }: { machine: BatchMachine }) {
   const plans = usePlans();
-  const task = findTask(plans, machine.project ?? '', machine.task ?? '');
+  // A catalog condition is a task-owned value. Display labels are mutable, so
+  // a stale/deleted selection must not borrow another task's first conditions.
+  const task = plans
+    .find((project) => project.project_id === machine.projectId)
+    ?.tasks.find((candidate) => candidate.task_id === machine.taskId);
   // Free-text condition input (mirrors the custom-task pattern: trim, ignore
   // empty). A typed condition is just a string on the batch — never added to the
   // plan catalog.
@@ -192,21 +196,28 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
           : 'Applies to this batch. No episodes are recorded yet.'}
       </p>
       <div className="flex flex-col gap-1.5">
-        {task.conditions.map((c) => (
-          <button
-            key={c.condition_id}
-            type="button"
-            onClick={() => machine.pickCondition(c.name)}
-            className={cn(
-              'rounded-control border px-3.5 py-2.5 text-left text-sm',
-              c.name === machine.condition
-                ? 'border-teal-600 bg-teal-50 font-semibold text-teal-700'
-                : 'border-gray-200 bg-white font-medium text-gray-700',
-            )}
-          >
-            {c.name}
-          </button>
-        ))}
+        {task ? (
+          task.conditions.map((c) => (
+            <button
+              key={c.condition_id}
+              type="button"
+              onClick={() => machine.pickCondition(c.name)}
+              className={cn(
+                'rounded-control border px-3.5 py-2.5 text-left text-sm',
+                c.name === machine.condition
+                  ? 'border-teal-600 bg-teal-50 font-semibold text-teal-700'
+                  : 'border-gray-200 bg-white font-medium text-gray-700',
+              )}
+            >
+              {c.name}
+            </button>
+          ))
+        ) : (
+          <p className="rounded-control border border-gray-100 bg-gray-50 px-3.5 py-2.5 text-sm text-gray-500">
+            This project or task is no longer in the catalog. Choose a project/task or
+            add a custom condition.
+          </p>
+        )}
       </div>
       <div className="mt-3 flex gap-2">
         <input

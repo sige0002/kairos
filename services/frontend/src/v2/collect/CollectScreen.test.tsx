@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
 import { CollectScreen } from './CollectScreen';
-import { __resetBatchStore, __setStopFloorMs, __resetStopFloorMs } from './useBatchMachine';
+import {
+  __rehydrateBatchStore,
+  __resetBatchStore,
+  __setStopFloorMs,
+  __resetStopFloorMs,
+} from './useBatchMachine';
 import { __resetCameraStore } from './cameraStore';
 import { __resetPlansStore, clonePlans, getPlans, setPlans } from '../plans';
 import {
@@ -697,6 +702,169 @@ test('Collect degrades gracefully when its selected project is absent from the s
   expect(screen.getByText('Tabletop Manipulation')).toBeInTheDocument();
   fireEvent.click(screen.getByTitle('Change task (from plan)'));
   expect(screen.getByRole('button', { name: 'Only Task' })).toBeInTheDocument();
+});
+
+test('a fallback task relabels an empty active batch with matching labels and IDs after reload', async () => {
+  const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> =
+    [];
+  let remote = {
+    batch_id: 'batch-stale',
+    batch_seq: 4,
+    status: 'active',
+    operator: 'tester',
+    project: 'Removed project',
+    project_id: 'project-removed',
+    task: 'Removed task',
+    task_id: 'task-removed',
+    condition: 'Removed condition',
+    condition_id: 'condition-removed',
+    target_episodes: 30,
+    captures: [],
+  };
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    const body = init?.body
+      ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+      : undefined;
+    calls.push({ url, method, body });
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    if (url.includes('/batches/batch-stale') && method === 'GET') {
+      return Promise.resolve(jsonResponse(remote));
+    }
+    if (url.includes('/batches/batch-stale') && method === 'PATCH') {
+      remote = { ...remote, ...body };
+      return Promise.resolve(jsonResponse(remote));
+    }
+    if (url.includes('/record/start')) return Promise.resolve(jsonResponse(capture()));
+    if (url.includes('/record/status')) {
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: null,
+          run_id: null,
+          state: 'created',
+          live_capture_ids: [],
+        }),
+      );
+    }
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  window.localStorage.setItem(
+    'kairos.collect.batch',
+    JSON.stringify({
+      batchSeq: 4,
+      recordedCount: 0,
+      targetEpisodes: 30,
+      batchId: 'batch-stale',
+      episodes: [],
+      project: 'Removed project',
+      projectId: 'project-removed',
+      task: 'Removed task',
+      taskId: 'task-removed',
+      condition: 'Removed condition',
+      lastCaptureId: null,
+    }),
+  );
+  __rehydrateBatchStore();
+  setPlans([
+    {
+      project_id: 'project-surviving',
+      name: 'Surviving project',
+      tasks: [
+        {
+          task_id: 'task-surviving',
+          name: 'Surviving task',
+          conditions: [
+            { condition_id: 'condition-surviving', name: 'Surviving condition' },
+          ],
+        },
+      ],
+    },
+  ]);
+
+  const first = renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  fireEvent.click(screen.getByTitle('Change task (from plan)'));
+  fireEvent.click(screen.getByRole('button', { name: 'Surviving task' }));
+
+  await waitFor(() =>
+    expect(
+      calls.find(
+        (call) => call.url.includes('/batches/batch-stale') && call.method === 'PATCH',
+      )?.body,
+    ).toMatchObject({
+      project: 'Surviving project',
+      project_id: 'project-surviving',
+      task: 'Surviving task',
+      task_id: 'task-surviving',
+      condition: 'Surviving condition',
+      condition_id: 'condition-surviving',
+    }),
+  );
+
+  first.unmount();
+  __rehydrateBatchStore();
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+
+  await waitFor(() =>
+    expect(calls.some((call) => call.url.includes('/record/start'))).toBe(true),
+  );
+  expect(
+    calls.find((call) => call.url.includes('/record/start'))?.body?.collection_context,
+  ).toMatchObject({
+    batch_id: 'batch-stale',
+    project: 'Surviving project',
+    project_id: 'project-surviving',
+    task: 'Surviving task',
+    task_id: 'task-surviving',
+    condition: 'Surviving condition',
+    condition_id: 'condition-surviving',
+  });
+});
+
+test('a stale same-name project/task shows no catalog conditions but keeps custom input', async () => {
+  mockFetch();
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  await act(async () => {
+    setPlans([
+      {
+        project_id: 'project-replaced',
+        name: 'Tabletop Manipulation',
+        tasks: [
+          {
+            task_id: 'task-replaced',
+            name: 'Pick and Place',
+            conditions: [
+              { condition_id: 'condition-replaced', name: 'Replacement condition' },
+            ],
+          },
+        ],
+      },
+    ]);
+  });
+
+  fireEvent.click(
+    screen.getByTitle(
+      'Change condition (starts a new set once this one has recordings)',
+    ),
+  );
+  expect(
+    screen.getByText(/project or task is no longer in the catalog/i),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole('button', { name: 'Replacement condition' }),
+  ).not.toBeInTheDocument();
+  const custom = screen.getByTestId('custom-condition-input');
+  fireEvent.change(custom, { target: { value: 'Manual recovery condition' } });
+  fireEvent.click(screen.getByTestId('custom-condition-add'));
+  await waitFor(() =>
+    expect(screen.getByText('Manual recovery condition')).toBeInTheDocument(),
+  );
 });
 
 test('Batch menu → Reset batch on an empty batch is a no-op (honest wording)', async () => {
