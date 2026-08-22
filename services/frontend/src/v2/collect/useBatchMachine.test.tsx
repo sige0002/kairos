@@ -3573,7 +3573,7 @@ test('changing the project before any recording PATCHes {project, task, conditio
   await waitFor(() => expect(result.current.batchSeq).toBe(4));
 
   await act(async () => {
-    await result.current.pickProject('Bin Picking');
+    await result.current.pickProject('project-bin-picking');
   });
 
   expect(result.current.batchSeq).toBe(4);
@@ -3631,7 +3631,13 @@ test('a custom task before any recording PATCHes only {task} (no condition sent 
   const patch = calls.find(
     (c) => c.url.includes('/batches/batch0') && c.method === 'PATCH',
   )!;
-  expect(patch.body).toEqual({ task: 'Handover', condition: null });
+  expect(patch.body).toEqual({
+    project_id: null,
+    task_id: null,
+    condition_id: null,
+    task: 'Handover',
+    condition: null,
+  });
 });
 
 test('changing the task once the set has a recording rolls over with a Task change reason', async () => {
@@ -3707,7 +3713,7 @@ test('changing the project once the set has a recording rolls over with a Plan c
   expect(result.current.batchSeq).toBe(2);
 
   await act(async () => {
-    await result.current.pickProject('Bin Picking');
+    await result.current.pickProject('project-bin-picking');
   });
 
   // The new project reloads its first task + condition into a fresh set.
