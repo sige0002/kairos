@@ -30,8 +30,9 @@ export interface ExternalActionsInput {
   /** RECORDING's Stop is usable (the stop floor has passed) — the same gate
    *  that disables the mouse Stop button. */
   stopEnabled: boolean;
-  project: string | null;
-  task: string | null;
+  /** Stable catalog identities only: names can be renamed or reused. */
+  projectId: string | null;
+  taskId: string | null;
 }
 
 export interface ExternalActions {
@@ -46,8 +47,8 @@ export function useExternalActions(input: ExternalActionsInput): ExternalActions
   // never use findTask's display-oriented fallback: a custom or stale context
   // could otherwise trigger another task's configured failure reason.
   const task = plans
-    .find((project) => project.name === input.project)
-    ?.tasks.find((candidate) => candidate.name === input.task);
+    .find((project) => project.project_id === input.projectId)
+    ?.tasks.find((candidate) => candidate.task_id === input.taskId);
   return useMemo(
     () => ({
       meanings: resolveExternalActionMeanings({
@@ -68,8 +69,8 @@ export function useExternalActions(input: ExternalActionsInput): ExternalActions
       input.takeoverActive,
       input.startEnabled,
       input.stopEnabled,
-      input.project,
-      input.task,
+      input.projectId,
+      input.taskId,
       task,
     ],
   );

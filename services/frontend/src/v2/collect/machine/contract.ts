@@ -195,7 +195,11 @@ export interface BatchMachine {
   /** `null` when there is no plan catalog to name one from — the header renders
    *  that state instead of a placeholder, and it never reaches the wire. */
   project: string | null;
+  /** Stable catalog identity; null means the visible label is not safely mapped. */
+  projectId: string | null;
   task: string | null;
+  /** Stable catalog identity; null for custom, legacy, or stale task contexts. */
+  taskId: string | null;
   condition: string;
   /** Planned episodes for the current batch (server target_episodes). */
   targetEpisodes: number;
@@ -318,8 +322,8 @@ export interface BatchMachine {
   startNextBatch: () => void;
   /** Reset the batch (counts → 0/30, recordings kept in Review). */
   resetBatch: () => void;
-  pickProject: (name: string) => void;
-  pickTask: (name: string) => void;
+  pickProject: (projectId: string) => void;
+  pickTask: (projectId: string, taskId: string) => void;
   /** Set a free-text task the operator typed (v1 parity — recording accepted any
    *  task string). Not added to the plans store; flows into the next
    *  /record/start and /batches as-is. */

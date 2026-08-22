@@ -10,7 +10,7 @@
 // acceptance path (a programmable pedal maps its switches onto exactly these
 // events).
 
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
@@ -18,6 +18,7 @@ import { useUiStore } from '../../store/uiStore';
 import { CollectScreen } from './CollectScreen';
 import {
   __resetBatchStore,
+  __rehydrateBatchStore,
   __setStopFloorMs,
   __resetStopFloorMs,
 } from './useBatchMachine';
@@ -343,14 +344,16 @@ test('unassigned slot: visible feedback, and NO save, ever', async () => {
   expect(phaseTitle()).toHaveTextContent(/result/i);
 });
 
-test('a custom task never falls back to another task\'s failure shortcuts', async () => {
-  vi.spyOn(window, 'prompt').mockReturnValue('Custom handoff');
+test("a same-label custom task never falls back to another task's failure shortcuts", async () => {
+  // This exact label exists in the catalog. Its custom selection must still
+  // carry taskId: null, rather than resolving the catalog task by name.
+  vi.spyOn(window, 'prompt').mockReturnValue('Pick and Place');
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
 
   fireEvent.click(screen.getByTitle('Change task (from plan)'));
   fireEvent.click(screen.getByRole('button', { name: /Custom/ }));
-  await waitFor(() => expect(screen.getByText('Custom handoff')).toBeInTheDocument());
+  await waitFor(() => expect(screen.getByText('Pick and Place')).toBeInTheDocument());
 
   press('center');
   release('center');
@@ -375,6 +378,126 @@ test('a custom task never falls back to another task\'s failure shortcuts', asyn
   await waitFor(() => expect(toastSays('CENTER is unassigned')).toBe(true));
   expect(reviewBodies).toHaveLength(0);
   expect(phaseTitle()).toHaveTextContent(/result/i);
+});
+
+test('same-name catalog tasks resolve the selected task ID, not the first label match', async () => {
+  setPlans([
+    {
+      project_id: 'project-collision',
+      name: 'Collision',
+      tasks: [
+        {
+          task_id: 'task-first',
+          name: 'Repeat',
+          conditions: [],
+          failure_shortcuts: { left: 'First reason', center: null, right: null },
+        },
+        {
+          task_id: 'task-second',
+          name: 'Repeat',
+          conditions: [],
+          failure_shortcuts: { left: 'Second reason', center: null, right: null },
+        },
+      ],
+    },
+  ]);
+  __resetBatchStore();
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+
+  fireEvent.click(screen.getByTitle('Change task (from plan)'));
+  fireEvent.click(screen.getAllByRole('button', { name: 'Repeat' })[1]!);
+
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent(/result/i), {
+    timeout: 5000,
+  });
+  press('left');
+  release('left');
+
+  await waitFor(() => expect(hud('left').textContent).toBe('Second reason'));
+});
+
+test('a deleted and same-name replacement task cannot inherit the old selection', async () => {
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+
+  // Keep the machine's original IDs, then replace the catalog with a new item
+  // carrying the same visible names. A name lookup would incorrectly use this.
+  await act(async () => {
+    setPlans([
+      {
+        project_id: 'project-replacement',
+        name: 'Tabletop',
+        tasks: [
+          {
+            task_id: 'task-replacement',
+            name: 'Pick and Place',
+            conditions: [],
+            failure_shortcuts: {
+              left: 'Replacement reason',
+              center: null,
+              right: null,
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent(/result/i), {
+    timeout: 5000,
+  });
+  press('left');
+  release('left');
+
+  await waitFor(() => expect(hud('left').textContent).toBe('Unassigned'));
+  press('left');
+  release('left');
+  await waitFor(() => expect(toastSays('LEFT is unassigned')).toBe(true));
+  expect(reviewBodies).toHaveLength(0);
+});
+
+test('a legacy persisted label-only context stays unassigned rather than guessing', async () => {
+  window.localStorage.setItem(
+    'kairos.collect.batch',
+    JSON.stringify({
+      batchSeq: null,
+      recordedCount: 0,
+      batchId: null,
+      episodes: [],
+      project: 'Tabletop',
+      task: 'Pick and Place',
+      condition: '—',
+      lastCaptureId: null,
+    }),
+  );
+  __rehydrateBatchStore();
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent(/result/i), {
+    timeout: 5000,
+  });
+  press('left');
+  release('left');
+
+  await waitFor(() => expect(hud('left').textContent).toBe('Unassigned'));
+  expect(screen.queryByTestId('ext-action-task-name')).not.toBeInTheDocument();
 });
 
 test('task switch changes the displayed AND effective reasons mid-batch', async () => {

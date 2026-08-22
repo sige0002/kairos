@@ -3527,7 +3527,7 @@ test('changing the task before any recording PATCHes {task, condition} onto the 
   await waitFor(() => expect(result.current.batchSeq).toBe(4));
 
   await act(async () => {
-    await result.current.pickTask('Stacking');
+    await result.current.pickTask('project-tabletop-manipulation', 'task-stacking');
   });
 
   // In place: same set, task + its first condition synced to the server.

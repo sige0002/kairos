@@ -70,7 +70,11 @@ export interface MachineState {
   /** `null` = no plan catalog to name one from. NOT the display placeholder:
    *  that em dash used to reach POST /batches and be stored as a real label. */
   project: string | null;
+  /** Catalog identity for `project`, separate from its mutable display label. */
+  projectId: string | null;
   task: string | null;
+  /** Null for custom, legacy, or stale task contexts with no safe identity. */
+  taskId: string | null;
   condition: string;
   endReason: string;
 }
@@ -101,7 +105,9 @@ function createInitialState(): MachineState {
     currentReviewRevision: 0,
     lastCaptureId: null,
     project: firstPlan?.name ?? null,
+    projectId: firstPlan?.project_id ?? null,
     task: firstTask?.name ?? null,
+    taskId: firstTask?.task_id ?? null,
     condition: firstTask?.conditions[0]?.name ?? '—',
     endReason: '',
   };
@@ -143,12 +149,21 @@ export type Action =
   | { type: 'START_NEXT_BATCH' }
   | { type: 'RESET_BATCH' }
   | { type: 'SET_CONDITION'; condition: string }
-  | { type: 'SET_PROJECT'; project: string; task: string; condition: string }
-  | { type: 'SET_TASK'; task: string; condition: string }
+  | {
+      type: 'SET_PROJECT';
+      project: string;
+      projectId?: string | null;
+      task: string;
+      taskId?: string | null;
+      condition: string;
+    }
+  | { type: 'SET_TASK'; task: string; taskId?: string | null; condition: string }
   | {
       type: 'ROLLOVER_SET';
       project: string | null;
+      projectId?: string | null;
       task: string | null;
+      taskId?: string | null;
       condition: string;
     }
   | { type: 'SET_BATCH'; batchId: string | null; batchSeq: number | null };
@@ -390,11 +405,18 @@ function reducer(state: MachineState, action: Action): MachineState {
       return {
         ...state,
         project: action.project,
+        projectId: action.projectId ?? null,
         task: action.task,
+        taskId: action.taskId ?? null,
         condition: action.condition,
       };
     case 'SET_TASK':
-      return { ...state, task: action.task, condition: action.condition };
+      return {
+        ...state,
+        task: action.task,
+        taskId: action.taskId ?? null,
+        condition: action.condition,
+      };
     case 'ROLLOVER_SET': {
       // A context change (project/task/condition) once this batch already holds a
       // recording: close the current set locally and open a fresh one with the
@@ -416,7 +438,9 @@ function reducer(state: MachineState, action: Action): MachineState {
         batchId: null,
         predictedSeq: nextPredicted,
         project: action.project,
+        projectId: action.projectId ?? null,
         task: action.task,
+        taskId: action.taskId ?? null,
         condition: action.condition,
         phase: 'ready',
         elapsedMs: 0,

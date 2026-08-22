@@ -1225,7 +1225,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   } = useCollectContext({
     ctxEditable,
     project: state.project,
+    projectId: state.projectId,
     task: state.task,
+    taskId: state.taskId,
     batchId: state.batchId,
     showToast,
     setProjPickerOpen,
@@ -1281,8 +1283,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       !operatorMissing &&
       !startMutation.isPending,
     stopEnabled: state.phase === 'recording' && canStop,
-    project: state.project,
-    task: state.task,
+    projectId: state.projectId,
+    taskId: state.taskId,
   });
   useExternalOperatorShortcuts({
     meanings: externalActions.meanings,
@@ -1365,7 +1367,9 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
     recordedIsFloor: state.recordedIsFloor,
     project: state.project,
+    projectId: state.projectId,
     task: state.task,
+    taskId: state.taskId,
     condition: state.condition,
     targetEpisodes: state.targetEpisodes,
     ctxEditable,
