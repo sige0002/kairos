@@ -352,12 +352,32 @@ function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
 
 // Keyboard-shortcuts help sheet (opened with `?`). Collect-local — the shared
 // header is out of scope for this screen (deviation noted in the change report).
+// The three external operator actions are documented here too (#36/#37): the
+// exact chords, their state-dependent meanings, and the hardware story (any
+// programmable three-switch pedal maps onto the chords — Kairos assumes no
+// specific product, driver or SDK).
 function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
   const rows: [string, string][] = [
     ['R', 'Start recording (when ready)'],
     ['S / Space', 'Stop recording'],
     ['Esc', 'Cancel arming · close a dialog'],
+    ['Ctrl+Alt+1', 'External action LEFT — state-dependent, see the table'],
+    ['Ctrl+Alt+2', 'External action CENTER — state-dependent, see the table'],
+    ['Ctrl+Alt+3', 'External action RIGHT — state-dependent, see the table'],
     ['?', 'Show this shortcuts sheet'],
+  ];
+  const stateRows: [string, string, string, string][] = [
+    ['State', 'LEFT', 'CENTER', 'RIGHT'],
+    ['READY', '—', 'Start', '—'],
+    ['RECORDING', '—', 'Stop', '—'],
+    ['SAVING / QUICK CHECK', '—', '—', '—'],
+    ['RESULT, before Failure', 'Select Failure', '—', 'Success + Save'],
+    [
+      'RESULT, Failure selected',
+      'Reason 1 + Save',
+      'Reason 2 + Save',
+      'Reason 3 + Save',
+    ],
   ];
   return (
     <Modal
@@ -379,6 +399,40 @@ function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
             <span className="text-[12.5px] text-gray-600">{desc}</span>
           </div>
         ))}
+      </div>
+      <div className="mt-3 border-t border-gray-100 pt-3">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          External actions (hands-busy / foot pedal)
+        </span>
+        <div className="mt-2 overflow-hidden rounded-control border border-gray-200">
+          {stateRows.map((row, i) => (
+            <div
+              key={row[0]}
+              className={cn(
+                'grid grid-cols-[1.3fr_1fr_1fr_1fr] gap-2 px-3 py-1.5 text-[11.5px]',
+                i === 0
+                  ? 'bg-gray-50 font-semibold text-gray-500'
+                  : 'border-t border-gray-100 text-gray-700',
+              )}
+            >
+              {row.map((cell, cellIndex) => (
+                <span key={`${row[0]}-${cellIndex}`} className="truncate">
+                  {cell}
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+        <p className="mt-2 text-[11.5px] leading-[1.6] text-gray-500">
+          The “Reason N” slots are the current task&apos;s three failure shortcuts
+          (Settings → Projects &amp; tasks); an unassigned slot saves nothing and
+          explains why. Failure reasons are accepted only AFTER Failure has been
+          selected — the slots can never stamp a reason during recording. The chords
+          work on a plain keyboard (development and testing need no hardware), and any
+          programmable three-switch USB foot pedal can be mapped onto them — left switch
+          → Ctrl+Alt+1, center → Ctrl+Alt+2, right → Ctrl+Alt+3. No specific pedal
+          product, driver or SDK is required or assumed.
+        </p>
       </div>
     </Modal>
   );

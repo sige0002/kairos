@@ -819,6 +819,121 @@ test('Plans: removing the selected project falls back to a surviving one (no cra
 });
 
 // ---------------------------------------------------------------------------
+// Per-task failure-reason shortcuts (#35): the Settings editor for the three
+// LEFT / CENTER / RIGHT slots, the duplicate prevention, and the rename/delete
+// integrity rules (a shortcut must never silently point at a stale label).
+// ---------------------------------------------------------------------------
+
+function openPlansSection() {
+  fireEvent.click(screen.getByTestId('settings-menu-item-1'));
+}
+function openTaskShortcuts() {
+  openPlansSection();
+  // The first task of the first project is the default selection; clicking its
+  // NAME (the row's selector — the same pattern the selection-lost tests use)
+  // keeps the selection explicit (and re-arms the editor after a task swap).
+  // Clicking the row's padding does nothing.
+  fireEvent.click(within(screen.getByTestId('plan-task-0')).getByText('Pick and Place'));
+  return screen.getByTestId('plan-task-shortcuts');
+}
+function shortcutSelect(slot: 'left' | 'center' | 'right') {
+  return screen.getByTestId(`plan-task-shortcut-${slot}`) as HTMLSelectElement;
+}
+function setShortcut(slot: 'left' | 'center' | 'right', reason: string | null) {
+  fireEvent.change(shortcutSelect(slot), { target: { value: reason ?? '' } });
+}
+function selectedTaskShortcuts() {
+  return getPlans().find((p) => p.name === 'Tabletop Manipulation')!.tasks[0]!.failure_shortcuts;
+}
+
+test('Plans: the shortcut editor offers the shared vocabulary and writes the shared store', async () => {
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  openTaskShortcuts();
+
+  expect(screen.getByTestId('plan-task-shortcut-slot-left')).toHaveTextContent('LEFT');
+  expect(screen.getByTestId('plan-task-shortcut-slot-center')).toHaveTextContent('CENTER');
+  expect(screen.getByTestId('plan-task-shortcut-slot-right')).toHaveTextContent('RIGHT');
+  // Unassigned by default; the options are the shared failure-reason vocabulary.
+  expect(shortcutSelect('left')).toHaveValue('');
+  expect(screen.getByTestId('plan-task-shortcuts')).toHaveTextContent(
+    new RegExp(getFailReasons()[0]!),
+  );
+
+  setShortcut('left', 'Grasp missed');
+  expect(selectedTaskShortcuts().left).toBe('Grasp missed');
+  // The same reason is offered to no other slot of THIS task (one reason,
+  // one slot — the server would reject a duplicate too).
+  const centerOptions = Array.from(
+    shortcutSelect('center').querySelectorAll('option'),
+  ) as HTMLOptionElement[];
+  const centerGrasp = centerOptions.find((o) => o.value === 'Grasp missed');
+  expect(centerGrasp?.disabled).toBe(true);
+  // A different reason is still assignable to the other slot.
+  setShortcut('center', 'Object dropped');
+  expect(selectedTaskShortcuts()).toMatchObject({
+    left: 'Grasp missed',
+    center: 'Object dropped',
+    right: null,
+  });
+
+  // Unassigning clears the slot.
+  setShortcut('left', null);
+  expect(selectedTaskShortcuts().left).toBeNull();
+});
+
+test('Plans: a task switch shows that task own shortcuts', async () => {
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  openTaskShortcuts();
+  setShortcut('left', 'Grasp missed');
+
+  // Stacking (the second task) starts unassigned — each task maps its own.
+  // The task NAME button is the selector (a click on the row's padding is a
+  // no-op), exactly like the existing selection tests click 'B1'/'B2'.
+  fireEvent.click(within(screen.getByTestId('plan-task-1')).getByText('Stacking'));
+  await waitFor(() => expect(shortcutSelect('left')).toHaveValue(''));
+  expect(selectedTaskShortcuts().left).toBe('Grasp missed'); // first task untouched
+
+  // …and switching back restores the first task's assignment.
+  fireEvent.click(within(screen.getByTestId('plan-task-0')).getByText('Pick and Place'));
+  await waitFor(() => expect(shortcutSelect('left')).toHaveValue('Grasp missed'));
+});
+
+test('Plans: renaming a referenced reason follows the shortcut to the new name', async () => {
+  vi.spyOn(window, 'prompt').mockReturnValue('Grasp slipped');
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  openTaskShortcuts();
+  setShortcut('left', 'Grasp missed');
+
+  // Rename the reason in its own section — the slot must not go stale.
+  fireEvent.click(screen.getByTestId('settings-menu-item-2'));
+  fireEvent.click(within(screen.getByTestId('fail-reason-0')).getByTitle('Rename'));
+  expect(getFailReasons()[0]).toBe('Grasp slipped');
+
+  openTaskShortcuts();
+  await waitFor(() => expect(selectedTaskShortcuts().left).toBe('Grasp slipped'));
+});
+
+test('Plans: removing a referenced reason clears its slot and says so', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  openTaskShortcuts();
+  setShortcut('center', 'Object dropped');
+
+  fireEvent.click(screen.getByTestId('settings-menu-item-2'));
+  // 'Object dropped' is fail-reason-1 in the default vocabulary.
+  fireEvent.click(within(screen.getByTestId('fail-reason-1')).getByTitle('Remove reason'));
+  expect(getFailReasons()).not.toContain('Object dropped');
+
+  openTaskShortcuts();
+  await waitFor(() => expect(selectedTaskShortcuts().center).toBeNull());
+  expect(screen.getByTestId('settings-toast')).toHaveTextContent(/unassigned/i);
+});
+
+// ---------------------------------------------------------------------------
 // An EMPTIED shared catalog. `PUT /api/v1/plans {"projects": []}` is accepted
 // and served back as an explicitly-emptied catalog (routers/plans.py), and this
 // browser adopts it as-is rather than resurrecting the seeds (plans.ts

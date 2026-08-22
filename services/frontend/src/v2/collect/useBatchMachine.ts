@@ -90,6 +90,8 @@ import type {
 } from './machine/contract';
 import { useCollectOverlays } from './hooks/useCollectOverlays';
 import { useCollectShortcuts } from './hooks/useCollectShortcuts';
+import { useExternalActions } from './hooks/useExternalActions';
+import { useExternalOperatorShortcuts } from './hooks/useExternalOperatorShortcuts';
 import { usePreArm } from './hooks/usePreArm';
 import { useTakeClock } from './hooks/useTakeClock';
 import { useBatchLifecycle } from './hooks/useBatchLifecycle';
@@ -700,191 +702,266 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const completionConfirmation = useBatchCompletionConfirmation();
   const dismissSaveError = useCallback(() => setSaveError(null), []);
 
-  const confirmEpisode = useCallback(() => {
-    if (state.phase !== 'result' || !state.pendingTask) return;
-    if (state.pendingTask === 'fail' && !state.failReason) return;
-    if (isSavingReview) return;
-    if (completionConfirmation.pendingCompletion) {
+  // Synchronous in-flight marker for the review save: `isSavingReview` is a
+  // state flip that lands on the NEXT render, and a double press inside that
+  // window (two keys or two clicks in the same tick) would read the stale
+  // `false`. The ref is set before the first await — the same shape as
+  // `startInFlightRef` on the start path.
+  const savingReviewRef = useRef(false);
+
+  /** The review-save flow itself, called with the EFFECTIVE result and
+   *  reason. A compound action ("Success + Save", "reason + Save") is ONE
+   *  step through this same code the mouse Save button uses — not two
+   *  sequential state updates a render could interleave. Every value that
+   *  could just have changed is read from the LIVE store snapshot, never
+   *  from a render closure.
+   *
+   *  The save is a compare-and-swap on the capture (§4.1), so it can genuinely
+   *  be refused. The local episode is therefore recorded only AFTER the
+   *  server accepted it: a strip chip or a receipt for a save that did not
+   *  happen is the one thing this screen must never show (§12). */
+  const performReviewSave = useCallback(
+    (taskResult: 'ok' | 'fail', reason: string) => {
+      if (getStoreSnapshot().phase !== 'result') return;
+      if (savingReviewRef.current) return;
+      if (completionConfirmation.pendingCompletion) {
+        savingReviewRef.current = true;
+        setIsSavingReview(true);
+        setSaveError(null);
+        void completionConfirmation
+          .retry((pendingCompletion) => {
+            dispatch({
+              type: 'CONFIRM_EPISODE',
+              quality: pendingCompletion.quality,
+              index: pendingCompletion.index,
+            });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
+            void queryClient.invalidateQueries({ queryKey: queryKeys.batches });
+            flashSaved(pendingCompletion.index);
+            const batchSeq = getStoreSnapshot().batchSeq;
+            const seqPart = batchSeq != null ? ` of Batch ${batchSeq}` : '';
+            showToast(
+              `Saved — Episode ${pendingCompletion.index}${seqPart}${operator.trim() ? ` · ${operator.trim()}` : ''}`,
+            );
+          })
+          .catch((err) => {
+            setSaveError(err);
+          })
+          .finally(() => {
+            savingReviewRef.current = false;
+            setIsSavingReview(false);
+          });
+        return;
+      }
+      // The pick may have landed milliseconds ago (a compound action), so the
+      // snapshot — not this render's `state` — is what the save reflects.
+      const snap = getStoreSnapshot();
+      // Monotone: the new episode's number follows the recorded count, so a
+      // prior Review delete never causes a reused index_in_batch on the server.
+      const nextIndex = snap.recordedCount + 1;
+      const willComplete = nextIndex >= snap.targetEpisodes;
+      const isFail = taskResult === 'fail';
+      // Quality (D-2 / F1): the operator's override if any, else the auto
+      // value. `localQuality` drives the LOCAL strip chip ('notusable' has no
+      // local axis, so it shows as 'review'). The REQUEST carries a quality
+      // only on an override, stamped `quality_source: 'operator'` — that
+      // provenance is what stops the orchestrator's quick_check reconciliation
+      // from later overwriting a human decision (§4.1). With no override both
+      // fields are OMITTED so the server derives the value from the settled
+      // verdict: one place derives it, and a save made before settlement gets
+      // corrected rather than frozen at a guess. Claiming 'operator' for a
+      // value the operator never chose would fabricate that provenance and
+      // disable the correction for good.
+      const override = snap.qualityOverride;
+      const effective: QualityOverride = override ?? autoQuality;
+      const localQuality: Quality = effective === 'good' ? 'good' : 'review';
+      const captureId = snap.currentCaptureId;
+      const baseRevision = snap.currentReviewRevision;
+      const op = operator.trim();
+
+      if (!captureId) {
+        // The recorder named no capture, so there is nothing to write a
+        // review to. Record the take locally and say exactly that — never a
+        // bare "Saved".
+        dispatch({ type: 'CONFIRM_EPISODE', quality: localQuality });
+        flashSaved(nextIndex);
+        showToast(
+          `Episode ${nextIndex} labeled on screen only — the recorder named no capture`,
+        );
+        return;
+      }
+
+      savingReviewRef.current = true;
       setIsSavingReview(true);
       setSaveError(null);
-      void completionConfirmation
-        .retry((pendingCompletion) => {
+      void (async () => {
+        try {
+          // A batch still being created has to land first: a batch_id that
+          // arrived after the save would leave this capture ungrouped for
+          // good.
+          const recoveredBatchId = recoveredBatchIdForCapture(captureId);
+          const batchId =
+            recoveredBatchId === undefined
+              ? await ensureBatch(false)
+              : recoveredBatchId;
+          const body: ReviewSaveRequest = {
+            base_revision: baseRevision,
+            task_result: isFail ? 'failure' : 'success',
+            failure_reason: isFail ? reason || null : null,
+            review_status: collectReviewStatus(isFail ? 'fail' : 'ok', effective),
+            batch_id: batchId,
+            // An index inside no batch means nothing, so it is only sent with
+            // one.
+            index_in_batch: batchId ? nextIndex : null,
+          };
+          if (override != null) {
+            body.quality = SERVER_QUALITY[override];
+            body.quality_source = 'operator';
+          }
+          const saved = await saveReview(captureId, body);
+          // E-7: the number we sent was a PROPOSAL. The orchestrator
+          // renumbers on collision and answers with what it actually wrote,
+          // and the spec says to adopt that. Nothing else corrects it — the
+          // strip places chips by this local number, and the only path that
+          // reads server indices is the once-per-page-load hydrate, which the
+          // invalidations below do not re-run. Keeping the proposal parks a
+          // chip on a slot belonging to a different take until the next
+          // reload.
+          const storedIndex =
+            typeof saved?.index_in_batch === 'number'
+              ? saved.index_in_batch
+              : nextIndex;
+          if (willComplete && batchId) {
+            try {
+              await completionConfirmation.confirm({
+                batchId,
+                index: storedIndex,
+                quality: localQuality,
+              });
+            } catch (err) {
+              throw new Error(
+                `The review was saved, but batch completion was not confirmed. Retry Save to finish the batch. (${toMachineError(err).message})`,
+              );
+            }
+          }
           dispatch({
             type: 'CONFIRM_EPISODE',
-            quality: pendingCompletion.quality,
-            index: pendingCompletion.index,
+            quality: localQuality,
+            index: storedIndex,
           });
+          // The capture now carries a review, so it is no longer an unsaved
+          // take.
           void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
+          // The FIRST review save for a capture is what moves the batch's
+          // `episodes_recorded` server-side (§4.1), and Coverage is read from
+          // that counter. Without this the figure sat on its own 30s refetch
+          // and silently disagreed with the strip the operator had just
+          // watched update.
           void queryClient.invalidateQueries({ queryKey: queryKeys.batches });
-          flashSaved(pendingCompletion.index);
+          flashSaved(storedIndex);
           const batchSeq = getStoreSnapshot().batchSeq;
           const seqPart = batchSeq != null ? ` of Batch ${batchSeq}` : '';
           showToast(
-            `Saved — Episode ${pendingCompletion.index}${seqPart}${operator.trim() ? ` · ${operator.trim()}` : ''}`,
+            batchId
+              ? `Saved — Episode ${storedIndex}${seqPart}${op ? ` · ${op}` : ''}`
+              : `Saved — Episode ${storedIndex}, not grouped into a set (no batch)`,
           );
-        })
-        .catch((err) => {
+          // Say what validation makes of the take while the operator can still
+          // act on it — a needs_review verdict discovered days later in Review
+          // is a re-setup, not a retake. Best effort: a failed read says
+          // nothing rather than claiming a verdict.
+          void getCapture(captureId)
+            .then((detail) => {
+              if (detail.verdict === 'needs_review') {
+                showToast(
+                  `Episode ${storedIndex}: validation failed — Review can override it with a reason`,
+                );
+              }
+            })
+            .catch(() => {});
+        } catch (err) {
+          // Never swallowed and never retried behind the operator's back
+          // (§12). The result panel stays put with their values intact, so a
+          // re-apply is their decision.
           setSaveError(err);
-        })
-        .finally(() => setIsSavingReview(false));
-      return;
-    }
-    // Monotone: the new episode's number follows the recorded count, so a prior
-    // Review delete never causes a reused index_in_batch on the server.
-    const nextIndex = state.recordedCount + 1;
-    const willComplete = nextIndex >= state.targetEpisodes;
-    const isFail = state.pendingTask === 'fail';
-    const reason = state.failReason;
-    // Quality (D-2 / F1): the operator's override if any, else the auto value.
-    // `localQuality` drives the LOCAL strip chip ('notusable' has no local axis,
-    // so it shows as 'review'). The REQUEST carries a quality only on an
-    // override, stamped `quality_source: 'operator'` — that provenance is what
-    // stops the orchestrator's quick_check reconciliation from later overwriting
-    // a human decision (§4.1). With no override both fields are OMITTED so the
-    // server derives the value from the settled verdict: one place derives it,
-    // and a save made before settlement gets corrected rather than frozen at a
-    // guess. Claiming 'operator' for a value the operator never chose would
-    // fabricate that provenance and disable the correction for good.
-    const override = state.qualityOverride;
-    const effective: QualityOverride = override ?? autoQuality;
-    const localQuality: Quality = effective === 'good' ? 'good' : 'review';
-    const captureId = state.currentCaptureId;
-    const baseRevision = state.currentReviewRevision;
-    const op = operator.trim();
-
-    if (!captureId) {
-      // The recorder named no capture, so there is nothing to write a review to.
-      // Record the take locally and say exactly that — never a bare "Saved".
-      dispatch({ type: 'CONFIRM_EPISODE', quality: localQuality });
-      flashSaved(nextIndex);
-      showToast(
-        `Episode ${nextIndex} labeled on screen only — the recorder named no capture`,
-      );
-      return;
-    }
-
-    setIsSavingReview(true);
-    setSaveError(null);
-    void (async () => {
-      try {
-        // A batch still being created has to land first: a batch_id that arrived
-        // after the save would leave this capture ungrouped for good.
-        const recoveredBatchId = recoveredBatchIdForCapture(captureId);
-        const batchId =
-          recoveredBatchId === undefined ? await ensureBatch(false) : recoveredBatchId;
-        const body: ReviewSaveRequest = {
-          base_revision: baseRevision,
-          task_result: isFail ? 'failure' : 'success',
-          failure_reason: isFail ? reason || null : null,
-          review_status: collectReviewStatus(isFail ? 'fail' : 'ok', effective),
-          batch_id: batchId,
-          // An index inside no batch means nothing, so it is only sent with one.
-          index_in_batch: batchId ? nextIndex : null,
-        };
-        if (override != null) {
-          body.quality = SERVER_QUALITY[override];
-          body.quality_source = 'operator';
-        }
-        const saved = await saveReview(captureId, body);
-        // E-7: the number we sent was a PROPOSAL. The orchestrator renumbers on
-        // collision and answers with what it actually wrote, and the spec says
-        // to adopt that. Nothing else corrects it — the strip places chips by
-        // this local number, and the only path that reads server indices is the
-        // once-per-page-load hydrate, which the invalidations below do not
-        // re-run. Keeping the proposal parks a chip on a slot belonging to a
-        // different take until the next reload.
-        const storedIndex =
-          typeof saved?.index_in_batch === 'number' ? saved.index_in_batch : nextIndex;
-        if (willComplete && batchId) {
-          try {
-            await completionConfirmation.confirm({
-              batchId,
-              index: storedIndex,
-              quality: localQuality,
-            });
-          } catch (err) {
-            throw new Error(
-              `The review was saved, but batch completion was not confirmed. Retry Save to finish the batch. (${toMachineError(err).message})`,
-            );
-          }
-        }
-        dispatch({
-          type: 'CONFIRM_EPISODE',
-          quality: localQuality,
-          index: storedIndex,
-        });
-        // The capture now carries a review, so it is no longer an unsaved take.
-        void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
-        // The FIRST review save for a capture is what moves the batch's
-        // `episodes_recorded` server-side (§4.1), and Coverage is read from
-        // that counter. Without this the figure sat on its own 30s refetch and
-        // silently disagreed with the strip the operator had just watched
-        // update.
-        void queryClient.invalidateQueries({ queryKey: queryKeys.batches });
-        flashSaved(storedIndex);
-        const batchSeq = getStoreSnapshot().batchSeq;
-        const seqPart = batchSeq != null ? ` of Batch ${batchSeq}` : '';
-        showToast(
-          batchId
-            ? `Saved — Episode ${storedIndex}${seqPart}${op ? ` · ${op}` : ''}`
-            : `Saved — Episode ${storedIndex}, not grouped into a set (no batch)`,
-        );
-        // Say what validation makes of the take while the operator can still
-        // act on it — a needs_review verdict discovered days later in Review
-        // is a re-setup, not a retake. Best effort: a failed read says nothing
-        // rather than claiming a verdict.
-        void getCapture(captureId)
-          .then((detail) => {
-            if (detail.verdict === 'needs_review') {
-              showToast(
-                `Episode ${storedIndex}: validation failed — Review can override it with a reason`,
-              );
+          if (needsReload(err)) {
+            // The capture moved under us. Refetch it so a re-apply is a
+            // compare-and-swap against what is actually stored — never a
+            // merge.
+            try {
+              const fresh = await queryClient.fetchQuery({
+                queryKey: queryKeys.capture(captureId),
+                queryFn: ({ signal }: { signal: AbortSignal }) =>
+                  getCapture(captureId, signal),
+              });
+              dispatch({ type: 'SET_REVIEW_BASE', revision: fresh.review_revision });
+            } catch {
+              // The refetch failed too. The operator still sees the original
+              // failure, and the stale base_revision is simply refused again.
             }
-          })
-          .catch(() => {});
-      } catch (err) {
-        // Never swallowed and never retried behind the operator's back (§12).
-        // The result panel stays put with their values intact, so a re-apply is
-        // their decision.
-        setSaveError(err);
-        if (needsReload(err)) {
-          // The capture moved under us. Refetch it so a re-apply is a
-          // compare-and-swap against what is actually stored — never a merge.
-          try {
-            const fresh = await queryClient.fetchQuery({
-              queryKey: queryKeys.capture(captureId),
-              queryFn: ({ signal }: { signal: AbortSignal }) =>
-                getCapture(captureId, signal),
-            });
-            dispatch({ type: 'SET_REVIEW_BASE', revision: fresh.review_revision });
-          } catch {
-            // The refetch failed too. The operator still sees the original
-            // failure, and the stale base_revision is simply refused again.
           }
+        } finally {
+          savingReviewRef.current = false;
+          setIsSavingReview(false);
         }
-      } finally {
-        setIsSavingReview(false);
-      }
-    })();
-  }, [
-    state.phase,
-    state.pendingTask,
-    state.failReason,
-    state.qualityOverride,
-    state.recordedCount,
-    state.targetEpisodes,
-    state.currentCaptureId,
-    state.currentReviewRevision,
-    isSavingReview,
-    completionConfirmation,
-    autoQuality,
-    operator,
-    ensureBatch,
-    recoveredBatchIdForCapture,
-    showToast,
-    flashSaved,
-    queryClient,
-  ]);
+      })();
+    },
+    [
+      completionConfirmation,
+      autoQuality,
+      operator,
+      ensureBatch,
+      recoveredBatchIdForCapture,
+      showToast,
+      flashSaved,
+      queryClient,
+    ],
+  );
+
+  const confirmEpisode = useCallback(() => {
+    const snap = getStoreSnapshot();
+    if (snap.phase !== 'result' || !snap.pendingTask) return;
+    if (snap.pendingTask === 'fail' && !snap.failReason) return;
+    performReviewSave(
+      snap.pendingTask === 'fail' ? 'fail' : 'ok',
+      snap.pendingTask === 'fail' ? snap.failReason : '',
+    );
+  }, [performReviewSave]);
+
+  // ---- compound external actions (#36) --------------------------------------
+  // The keyboard/pedal driver never does pick-then-confirm as two sequential
+  // React updates (a render could interleave and the second update would read
+  // stale state): each is ONE dispatch + ONE save through the same flow the
+  // mouse Save uses. The guards mirror the meaning resolution, so a press the
+  // HUD shows as disabled is refused here too.
+
+  /** RIGHT on RESULT (before Failure): Success + Save in one step. */
+  const saveSuccess = useCallback(() => {
+    const snap = getStoreSnapshot();
+    if (snap.phase !== 'result' || snap.pendingTask === 'fail') return;
+    dispatch({ type: 'PICK_RESULT', result: 'ok' });
+    performReviewSave('ok', '');
+  }, [performReviewSave]);
+
+  /** LEFT / CENTER / RIGHT on RESULT after Failure: save THAT reason.
+   *  Unassigned slots never reach here (they resolve to feedback only) and
+   *  there is deliberately no silent fallback to "Other".
+   *
+   *  Invocable ONLY from the failure-selected result state — the same state
+   *  the meaning resolver gates the slot meanings on — so no other call site
+   *  can stamp a failure reason before the operator has explicitly selected
+   *  Failure (and a Success-selected result can never be flipped into one).
+   *  From that state the pick + reason + save is still ONE step. */
+  const saveFailureWithReason = useCallback(
+    (reason: string) => {
+      const snap = getStoreSnapshot();
+      if (snap.phase !== 'result' || snap.pendingTask !== 'fail' || !reason) return;
+      dispatch({ type: 'PICK_RESULT', result: 'fail' });
+      dispatch({ type: 'PICK_FAIL_REASON', reason });
+      performReviewSave('fail', reason);
+    },
+    [performReviewSave],
+  );
 
   // ---- discard this take (§7 + §12) -----------------------------------------
   // "Discard & re-record" is a DISCARD, not a delete: the take was never worth
@@ -1188,6 +1265,36 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     cancelArming,
     openShortcutsSheet: openShortcuts,
   });
+  // The three external operator actions (#36): ONE resolution feeds both the
+  // HUD and the key handler, and the handler dispatches the existing machine
+  // actions only (never the record APIs). The input guards (typing, overlays,
+  // auto-repeat, latching, takeover, saving, unsupported phases) live in the
+  // two hooks, exactly as the R/S layer's do.
+  const externalActions = useExternalActions({
+    phase: state.phase,
+    pendingTask: state.pendingTask,
+    isSavingReview,
+    takeoverActive: !!takeover,
+    startEnabled:
+      state.phase === 'ready' &&
+      !noSelection &&
+      !operatorMissing &&
+      !startMutation.isPending,
+    stopEnabled: state.phase === 'recording' && canStop,
+    project: state.project,
+    task: state.task,
+  });
+  useExternalOperatorShortcuts({
+    meanings: externalActions.meanings,
+    taskName: externalActions.taskName,
+    anyOverlayOpen,
+    startRecording,
+    stopRecording,
+    pickFailure,
+    saveSuccess,
+    saveFailureWithReason,
+    showToast,
+  });
 
   const stats: BatchStats = useMemo(() => {
     // The recorded count / next number are MONOTONE (from recordedCount) so a
@@ -1314,6 +1421,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     pickFailure,
     pickFailReason,
     confirmEpisode,
+    saveSuccess,
+    saveFailureWithReason,
     isSavingReview,
     saveError,
     dismissSaveError,
@@ -1332,5 +1441,10 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     pickCondition,
     pickCustomCondition,
     goMonitor,
+
+    // External operator actions (#36/#37): the CURRENT meanings of the three
+    // logical slots (the HUD renders these) and the task they resolve against.
+    externalActionMeanings: externalActions.meanings,
+    externalActionTaskName: externalActions.taskName,
   };
 }

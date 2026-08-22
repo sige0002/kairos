@@ -24,6 +24,7 @@ import {
 import { Cameras, sameCameraHealth, type CameraHealth } from './Cameras';
 import { EpisodeStrip } from './EpisodeStrip';
 import { CollectModals } from './Modals';
+import { ExternalActionHud } from './ExternalActionHud';
 import { COL_GAP } from './compact';
 import { useBatchMachine, type BatchMachine } from './useBatchMachine';
 import { Card, cn } from '../../components/ui';
@@ -201,6 +202,10 @@ export function CollectScreen() {
         <div className={cn('flex flex-col overflow-hidden lg:min-h-0', COL_GAP)}>
           <UnsavedTakeBanner machine={machine} />
           <ControlCard machine={machine} />
+          <ExternalActionHud
+            meanings={machine.externalActionMeanings}
+            taskName={machine.externalActionTaskName}
+          />
           <div
             className={cn(
               'flex flex-col overflow-y-auto lg:min-h-0 lg:flex-1',

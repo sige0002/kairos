@@ -11,6 +11,7 @@ import type {
 } from '../../../api/types';
 import type { CaptureDeletionState } from '../../captures/useCaptureDeletion';
 import type { RecordingCueSettings } from '../hooks/useRecordingCues';
+import type { ExternalActionMeanings } from './externalActions';
 import type {
   EpisodeRecord,
   MachineError,
@@ -288,6 +289,14 @@ export interface BatchMachine {
    *  the server accepted it — the strip chip and the receipt never claim a save
    *  that did not happen (§12). */
   confirmEpisode: () => void;
+  /** External action RIGHT on RESULT (before Failure): Success + Save as ONE
+   *  compound step (#36) — the same save flow as confirmEpisode, so a render
+   *  can never interleave between the pick and the save. */
+  saveSuccess: () => void;
+  /** External action LEFT/CENTER/RIGHT on RESULT after Failure: save THAT
+   *  exact reason (unassigned slots never reach here; no "Other" fallback).
+   *  No-op unless Failure is already selected in the result state. */
+  saveFailureWithReason: (reason: string) => void;
   /** True while that save is in flight. */
   isSavingReview: boolean;
   /** The rejected save, kept until the operator acts on it. A 409 means someone
@@ -323,4 +332,11 @@ export interface BatchMachine {
   pickCustomCondition: (condition: string) => void;
   /** Jump to the Monitor tab (Warnings card's "Open in Monitor →"). */
   goMonitor: () => void;
+
+  // External operator actions (#36/#37): the CURRENT meaning of each logical
+  // slot (derived, see machine/externalActions.ts) — the HUD renders these and
+  // the shortcut handler dispatches on the same value.
+  externalActionMeanings: ExternalActionMeanings;
+  /** The task the failure-reason slots resolve against (null: no catalog). */
+  externalActionTaskName: string | null;
 }

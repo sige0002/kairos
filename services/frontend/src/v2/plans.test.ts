@@ -18,9 +18,14 @@ import {
   resolvePlanIds,
   setFailReasons,
   setPlans,
+  setFailReasonsAndPlans,
+  clearFailureShortcutsForReason,
+  renameFailureShortcuts,
+  withTaskFailureShortcuts,
 } from './plans';
 
 const KEY = 'kairos.v2.plans.v1';
+const FAIL_REASONS_KEY = 'kairos.v2.failreasons.v1';
 
 beforeEach(() => __resetPlansStore());
 
@@ -42,6 +47,7 @@ test('setPlans updates the snapshot and persists to localStorage', () => {
         task_id: 'task-sort-bins',
         name: 'Sort bins',
         conditions: [{ condition_id: 'condition-bin-a', name: 'Bin: A' }],
+        failure_shortcuts: { left: null, center: null, right: null },
       },
     ],
   });
@@ -516,6 +522,164 @@ test('storage that THROWS on every access leaves the store usable', () => {
   expect(getPlans()[0]!.name).toBe('Incognito edit');
   expect(() => setFailReasons(['Only reason'])).not.toThrow();
   expect(() => __resetPlansStore()).not.toThrow();
+});
+
+// ---- per-task failure-reason shortcuts (#35) --------------------------------
+
+function catalogWithShortcuts(): ReturnType<typeof getPlans> {
+  const plans = clonePlans(getPlans());
+  plans[0]!.tasks[0]!.failure_shortcuts = {
+    left: 'Grasp missed',
+    center: 'Object dropped',
+    right: null,
+  };
+  plans[1]!.tasks[0]!.failure_shortcuts = {
+    left: 'Other',
+    center: null,
+    right: null,
+  };
+  return plans;
+}
+
+test('a pre-field local catalog restores with empty shortcut slots', () => {
+  window.localStorage.setItem(
+    KEY,
+    JSON.stringify([{ name: 'Saved', tasks: [{ name: 'S', conditions: ['x'] }] }]),
+  );
+  __rehydratePlansStore();
+  expect(getPlans()[0]!.tasks[0]!.failure_shortcuts).toEqual({
+    left: null,
+    center: null,
+    right: null,
+  });
+});
+
+test('malformed shortcut values degrade to unassigned, not to a dropped catalog', () => {
+  window.localStorage.setItem(
+    KEY,
+    JSON.stringify([
+      {
+        name: 'Saved',
+        tasks: [
+          {
+            name: 'S',
+            conditions: [],
+            failure_shortcuts: { left: 42, center: 'Object dropped', right: { nope: true } },
+          },
+        ],
+      },
+    ]),
+  );
+  __rehydratePlansStore();
+  expect(getPlans()[0]!.tasks[0]!.failure_shortcuts).toEqual({
+    left: null,
+    center: 'Object dropped',
+    right: null,
+  });
+});
+
+test('clonePlans deep-copies the shortcut slots', () => {
+  const plans = catalogWithShortcuts();
+  setPlans(plans);
+  const clone = clonePlans(getPlans());
+  clone[0]!.tasks[0]!.failure_shortcuts.left = 'Tampered';
+  expect(getPlans()[0]!.tasks[0]!.failure_shortcuts.left).toBe('Grasp missed');
+});
+
+test('renameFailureShortcuts re-points only the slots naming the old label', () => {
+  const plans = catalogWithShortcuts();
+  const renamed = renameFailureShortcuts(plans, 'Grasp missed', 'Grasp failed');
+  expect(renamed[0]!.tasks[0]!.failure_shortcuts).toEqual({
+    left: 'Grasp failed',
+    center: 'Object dropped',
+    right: null,
+  });
+  // A reason no slot used is untouched, and the original is not mutated.
+  expect(plans[0]!.tasks[0]!.failure_shortcuts.left).toBe('Grasp missed');
+  expect(renamed[1]!.tasks[0]!.failure_shortcuts.left).toBe('Other');
+});
+
+test('clearFailureShortcutsForReason clears exactly the referencing slots', () => {
+  const plans = catalogWithShortcuts();
+  const cleared = clearFailureShortcutsForReason(plans, 'Object dropped');
+  expect(cleared[0]!.tasks[0]!.failure_shortcuts.center).toBeNull();
+  expect(cleared[0]!.tasks[0]!.failure_shortcuts.left).toBe('Grasp missed');
+  expect(cleared[1]!.tasks[0]!.failure_shortcuts.left).toBe('Other');
+});
+
+test('withTaskFailureShortcuts targets one task by task_id', () => {
+  const plans = catalogWithShortcuts();
+  const target = plans[1]!.tasks[0]!.task_id;
+  const next = withTaskFailureShortcuts(plans, target, {
+    left: 'Robot fault',
+    center: 'Grasp missed',
+    right: null,
+  });
+  expect(next[1]!.tasks[0]!.failure_shortcuts).toEqual({
+    left: 'Robot fault',
+    center: 'Grasp missed',
+    right: null,
+  });
+  // The other task is untouched, and a missing task_id changes nothing.
+  expect(next[0]!.tasks[0]!.failure_shortcuts.left).toBe('Grasp missed');
+  expect(withTaskFailureShortcuts(plans, 'task-does-not-exist', next[0]!.tasks[0]!.failure_shortcuts)).toEqual(plans);
+});
+
+test('setFailReasonsAndPlans updates both halves in ONE edit', () => {
+  const plans = catalogWithShortcuts();
+  setPlans(plans);
+  const reasons = getFailReasons().slice();
+  const newReason = 'New reason';
+  setFailReasonsAndPlans(
+    [...reasons, newReason],
+    renameFailureShortcuts(plans, 'Grasp missed', newReason),
+  );
+  expect(getFailReasons()).toContain(newReason);
+  expect(getPlans()[0]!.tasks[0]!.failure_shortcuts.left).toBe(newReason);
+  // The stored catalog is consistent: every assigned slot names a stored reason.
+  for (const project of getPlans()) {
+    for (const task of project.tasks) {
+      for (const slot of ['left', 'center', 'right'] as const) {
+        const reason = task.failure_shortcuts[slot];
+        if (reason !== null) expect(getFailReasons()).toContain(reason);
+      }
+    }
+  }
+});
+
+test('setFailReasonsAndPlans syncs the complete pair when one localStorage write fails', async () => {
+  const puts = mockPlansFetch({ projects: null, updated_at: null });
+  const plans = catalogWithShortcuts();
+  setPlans(plans);
+  await vi.waitFor(() => expect(puts).toHaveLength(1));
+
+  const nativeSetItem = Storage.prototype.setItem;
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+    this: Storage,
+    key: string,
+    value: string,
+  ) {
+    if (key === FAIL_REASONS_KEY) {
+      throw new DOMException('The quota is exceeded.', 'QuotaExceededError');
+    }
+    return nativeSetItem.call(this, key, value);
+  });
+
+  const nextReason = 'New reason';
+  setFailReasonsAndPlans(
+    [...getFailReasons(), nextReason],
+    renameFailureShortcuts(plans, 'Grasp missed', nextReason),
+  );
+
+  // The two keys cannot be transactionally persisted, but a partial local
+  // failure must not leave the in-memory paired edit unsent this session.
+  await vi.waitFor(() => expect(puts).toHaveLength(2));
+  const latest = puts[1] as unknown as {
+    failure_reasons: string[];
+    projects: Array<{ tasks: Array<{ failure_shortcuts: { left: string | null } }> }>;
+  };
+  expect(latest.failure_reasons).toContain(nextReason);
+  expect(latest.projects[0]!.tasks[0]!.failure_shortcuts.left).toBe(nextReason);
 });
 
 test('the module survives being IMPORTED with storage that throws', async () => {

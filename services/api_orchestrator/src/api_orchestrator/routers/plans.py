@@ -63,6 +63,21 @@ class PlanCondition(BaseModel):
     _normalize_name = field_validator("name")(_label)
 
 
+class FailureShortcuts(BaseModel):
+    """Per-task fast paths for the three logical external operator actions.
+
+    ``left`` / ``center`` / ``right`` are vendor-neutral names for the logical
+    actions a foot pedal (or a keyboard) can trigger during collection; each
+    slot references one label from the shared ``failure_reasons`` vocabulary,
+    or ``None`` when unassigned. The full vocabulary stays available in the
+    Collect UI — these three slots are shortcuts, not a replacement for it.
+    """
+
+    left: str | None = None
+    center: str | None = None
+    right: str | None = None
+
+
 class PlanTask(BaseModel):
     """One task and the fixed conditions it may be recorded under."""
 
@@ -71,6 +86,7 @@ class PlanTask(BaseModel):
     )
     name: str = Field(max_length=200)
     conditions: list[PlanCondition] = Field(default_factory=list)
+    failure_shortcuts: FailureShortcuts = Field(default_factory=FailureShortcuts)
 
     _normalize_id = field_validator("task_id")(_entity_id)
     _normalize_name = field_validator("name")(_label)
@@ -78,6 +94,23 @@ class PlanTask(BaseModel):
     @model_validator(mode="after")
     def _unique_conditions(self) -> PlanTask:
         _reject_duplicates(self.conditions, "condition")
+        return self
+
+    @model_validator(mode="after")
+    def _unique_failure_shortcuts(self) -> PlanTask:
+        assigned = [
+            reason
+            for reason in (
+                self.failure_shortcuts.left,
+                self.failure_shortcuts.center,
+                self.failure_shortcuts.right,
+            )
+            if reason is not None
+        ]
+        if len(assigned) != len(set(assigned)):
+            raise ValueError(
+                "failure shortcuts must not assign the same reason to two slots"
+            )
         return self
 
 
@@ -181,10 +214,50 @@ async def get_plans(request: Request) -> dict:
     }
 
 
+def _validate_failure_shortcuts(
+    projects: list[PlanProject], vocabulary: list[str]
+) -> None:
+    """Every assigned shortcut must name a reason in the EFFECTIVE vocabulary.
+
+    The effective one is the list this PUT submits when it carries one, else
+    the stored list (omitted means "keep"). Checked here — not in the model —
+    because it is the only place that knows both halves.
+    """
+    allowed = set(vocabulary)
+    for project in projects:
+        for task in project.tasks:
+            for slot, reason in (
+                ("left", task.failure_shortcuts.left),
+                ("center", task.failure_shortcuts.center),
+                ("right", task.failure_shortcuts.right),
+            ):
+                if reason is not None and reason not in allowed:
+                    raise ApiError(
+                        status_code=422,
+                        code="failure_shortcut_unknown_reason",
+                        message=(
+                            f"Task {task.task_id!r} assigns {slot} shortcut to "
+                            f"“{reason}”, which is not in the shared failure "
+                            "reason vocabulary."
+                        ),
+                        details={
+                            "task_id": task.task_id,
+                            "slot": slot,
+                            "reason": reason,
+                        },
+                    )
+
+
 @router.put("")
 async def put_plans(request: Request, body: PlanCatalogPut) -> dict:
     """Replace the shared catalog (validated shape, stamped server-side)."""
     store = _store(request)
+    if "failure_reasons" in body.model_fields_set:
+        effective_vocabulary = body.failure_reasons or []
+    else:
+        stored = store.get_plan_catalog()
+        effective_vocabulary = (stored[1] if stored is not None else None) or []
+    _validate_failure_shortcuts(body.projects, effective_vocabulary)
     now = utc_now_iso8601()
     projects = [p.model_dump() for p in body.projects]
     try:
