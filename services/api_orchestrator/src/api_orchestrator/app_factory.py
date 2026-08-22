@@ -394,6 +394,14 @@ def create_orchestrator_app(
         membership_resume_task.cancel()
         with suppress(asyncio.CancelledError):
             await membership_resume_task
+        # A POST /imports request returns before its copy and catalog write
+        # complete.  The task owns this app's store and data directory, so it
+        # must reach its terminal state before either can be torn down.  In
+        # particular, cancelling an ``asyncio.to_thread`` awaiter would leave
+        # its file copy running after shutdown, with an in-memory record stuck
+        # at ``running`` and a worker still able to touch a replaced catalog.
+        while import_tasks := app.state.import_tasks:
+            await asyncio.gather(*list(import_tasks), return_exceptions=True)
         await reconciler.stop()
         await validation_supervisor.stop()
         validation_run_store.close()
