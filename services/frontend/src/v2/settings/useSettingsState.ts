@@ -11,13 +11,18 @@
 import { useCallback, useState } from 'react';
 import { clonePlans, type PlanProjectData } from './data';
 import {
+  clearFailureShortcutsForReason,
+  renameFailureShortcuts,
   setFailReasons,
+  setFailReasonsAndPlans,
   newPlanId,
   setOperators,
   setPlans,
+  withTaskFailureShortcuts,
   useFailReasons,
   useOperators,
   usePlans,
+  type FailureShortcutSlot,
 } from '../plans';
 import { useToast } from '../shared/useToast';
 
@@ -49,6 +54,10 @@ export interface SettingsState {
   addFailReason: () => void;
   renameFailReason: (i: number) => void;
   removeFailReason: (i: number) => void;
+  /** Assign (or clear, with null) one of the selected task's LEFT / CENTER /
+   *  RIGHT failure shortcuts. The value must come from the shared
+   *  failure-reason vocabulary; duplicates are prevented in the UI. */
+  setTaskFailureShortcut: (slot: FailureShortcutSlot, reason: string | null) => void;
 
   operators: string[];
   addOperator: () => void;
@@ -96,6 +105,22 @@ export function useSettingsState(): SettingsState {
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const { toast, showToast } = useToast();
+
+  // Does any task's LEFT/CENTER/RIGHT slot name this reason? Decides whether a
+  // vocabulary rename/remove must rewrite the task shortcuts in the SAME edit.
+  const someTaskShortcutReferences = useCallback(
+    (reason: string) =>
+      plans.some((project) =>
+        project.tasks.some((task) =>
+          [
+            task.failure_shortcuts.left,
+            task.failure_shortcuts.center,
+            task.failure_shortcuts.right,
+          ].includes(reason),
+        ),
+      ),
+    [plans],
+  );
 
   const selectMenu = useCallback((i: number) => setMenuIdx(i), []);
 
@@ -226,7 +251,12 @@ export function useSettingsState(): SettingsState {
     if (!v) return;
     const next = clonePlans(plans);
     const proj = next[ppIdx]!;
-    proj.tasks.push({ task_id: newPlanId('task'), name: v, conditions: [] });
+    proj.tasks.push({
+      task_id: newPlanId('task'),
+      name: v,
+      conditions: [],
+      failure_shortcuts: { left: null, center: null, right: null },
+    });
     setPlans(next);
     setPlanTaskIdx(proj.tasks.length - 1);
     setSelectedTaskId(proj.tasks.at(-1)?.task_id ?? null);
@@ -356,10 +386,20 @@ export function useSettingsState(): SettingsState {
       if (v === label) return;
       const next = failReasons.slice();
       next[i] = v;
-      setFailReasons(next);
-      showToast('Failure reason updated');
+      // Renaming keeps the reason's identity: every task shortcut that named
+      // it must follow to the new name, or the slot would silently point at a
+      // reason that no longer exists (#35). One combined edit — a split
+      // vocabulary/plans push would leave an intermediate catalog whose
+      // shortcut the server's validation rejects.
+      if (someTaskShortcutReferences(label)) {
+        setFailReasonsAndPlans(next, renameFailureShortcuts(plans, label, v));
+        showToast('Failure reason updated — task shortcuts updated too');
+      } else {
+        setFailReasons(next);
+        showToast('Failure reason updated');
+      }
     },
-    [failReasons, showToast],
+    [failReasons, plans, showToast, someTaskShortcutReferences],
   );
 
   // Operator roster (attribution, not auth) — empty is allowed: it turns the
@@ -412,14 +452,49 @@ export function useSettingsState(): SettingsState {
       if (failReasons.length <= 1) return;
       const target = failReasons[i];
       if (target === undefined) return;
+      const clearsShortcut = someTaskShortcutReferences(target);
       const ok = window.confirm(
-        `Remove failure reason “${target}”? It will disappear from future Failure labels. Recordings already labeled keep this reason.`,
+        `Remove failure reason “${target}”? It will disappear from future Failure labels. Recordings already labeled keep this reason.${
+          clearsShortcut
+            ? ' A task shortcut uses it — that slot becomes unassigned.'
+            : ''
+        }`,
       );
       if (!ok) return;
-      setFailReasons(failReasons.filter((_, idx) => idx !== i));
-      showToast('Failure reason removed');
+      const next = failReasons.filter((_, idx) => idx !== i);
+      if (clearsShortcut) {
+        // A removed reason must not leave a stale mapping that would save a
+        // label nobody configured any more (#35) — clear the slot and say so.
+        setFailReasonsAndPlans(next, clearFailureShortcutsForReason(plans, target));
+        showToast('Failure reason removed — its task shortcut is now unassigned');
+      } else {
+        setFailReasons(next);
+        showToast('Failure reason removed');
+      }
     },
-    [failReasons, showToast],
+    [failReasons, plans, showToast, someTaskShortcutReferences],
+  );
+
+  // The selected task's shortcut editor writes the shared catalog through the
+  // same funnel as every other plan edit (so Collect sees it immediately).
+  const setTaskFailureShortcut = useCallback(
+    (slot: FailureShortcutSlot, reason: string | null) => {
+      if (taskSelectionLost) return;
+      const task = plans[ppIdx]?.tasks[ptIdx];
+      if (!task) return;
+      if (reason !== null && !failReasons.includes(reason)) {
+        // The selects only offer vocabulary members; this is the backstop for
+        // a future caller (the server would reject it as unknown too).
+        showToast(`“${reason}” is not in the failure reason vocabulary`);
+        return;
+      }
+      const next = withTaskFailureShortcuts(plans, task.task_id, {
+        ...task.failure_shortcuts,
+        [slot]: reason,
+      });
+      setPlans(next);
+    },
+    [plans, ppIdx, ptIdx, taskSelectionLost, failReasons, showToast],
   );
 
   return {
@@ -444,6 +519,7 @@ export function useSettingsState(): SettingsState {
     addFailReason,
     renameFailReason,
     removeFailReason,
+    setTaskFailureShortcut,
     operators,
     addOperator,
     renameOperator,

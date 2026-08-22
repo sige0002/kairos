@@ -9,7 +9,10 @@
 // episodes stay aggregable across machines.
 
 import { Card, cn } from '../../components/ui';
+import { FAILURE_SHORTCUT_SLOTS, type FailureShortcutSlot } from '../plans';
 import type { SettingsState } from './useSettingsState';
+
+const SHORTCUT_SLOTS: FailureShortcutSlot[] = FAILURE_SHORTCUT_SLOTS;
 
 export function PlansSection({ settings }: { settings: SettingsState }) {
   const {
@@ -28,6 +31,8 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
     renameCondition,
     removeCondition,
     taskSelectionLost,
+    failReasons,
+    setTaskFailureShortcut,
   } = settings;
 
   // The catalog can be EMPTY — it is shared, and a catalog emptied from another
@@ -209,9 +214,70 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                 >
                   + Add condition
                 </button>
+
+                {/* Per-task LEFT / CENTER / RIGHT failure-reason shortcuts (#35):
+                    the three slots Collect's external operator actions save when
+                    Failure is selected. Values come from the shared vocabulary;
+                    a slot may stay unassigned; the same reason cannot sit in two
+                    slots of this task (the options disable it). */}
+                <div
+                  className="flex flex-col gap-1.5"
+                  data-testid="plan-task-shortcuts"
+                >
+                  <div className="flex items-baseline gap-2 pt-1">
+                    <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+                      Failure shortcuts
+                    </h3>
+                    <span className="text-[11px] text-gray-400">
+                      {task ? task.name : '—'} · saved by Collect&apos;s LEFT / CENTER / RIGHT
+                      external actions after Failure is selected
+                    </span>
+                  </div>
+                  {SHORTCUT_SLOTS.map((slot) => {
+                    const assigned = task?.failure_shortcuts[slot] ?? null;
+                    const takenElsewhere = (reason: string) =>
+                      task !== undefined &&
+                      SHORTCUT_SLOTS.some(
+                        (other) =>
+                          other !== slot && task.failure_shortcuts[other] === reason,
+                      );
+                    return (
+                      <div key={slot} className="flex items-center gap-2.5">
+                        <span
+                          className="w-[52px] text-[11.5px] font-bold uppercase tracking-wide text-gray-600"
+                          data-testid={`plan-task-shortcut-slot-${slot}`}
+                        >
+                          {slot.toUpperCase()}
+                        </span>
+                        <select
+                          data-testid={`plan-task-shortcut-${slot}`}
+                          value={assigned ?? ''}
+                          disabled={!task || taskSelectionLost}
+                          onChange={(event) =>
+                            setTaskFailureShortcut(
+                              slot,
+                              event.target.value === '' ? null : event.target.value,
+                            )
+                          }
+                          className="h-[34px] min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2 text-[12.5px] text-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <option value="">Unassigned</option>
+                          {failReasons.map((reason) => (
+                            <option key={reason} value={reason} disabled={takenElsewhere(reason)}>
+                              {reason}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    );
+                  })}
+                </div>
+
                 <div className="rounded-control border border-gray-100 bg-gray-50 px-3 py-2.5 text-xs leading-[1.5] text-gray-500">
                   Changes here update the Collect Project / Task / Condition pickers immediately.
                   Episodes already recorded keep the plan version they were recorded under.
+                  Renaming or removing a failure reason updates or clears the shortcuts that
+                  reference it.
                 </div>
               </div>
             </div>

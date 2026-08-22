@@ -31,7 +31,33 @@ export interface PlanTask {
   task_id: string;
   name: string;
   conditions: PlanCondition[];
+  /** Per-task fast paths for the three logical external operator actions
+   *  (LEFT / CENTER / RIGHT). Each slot names one label from the shared
+   *  failure-reason vocabulary, or null when unassigned. Vendor-neutral: a
+   *  foot pedal maps its switches onto these slots, but the slots describe
+   *  the LOGICAL action, not any hardware. */
+  failure_shortcuts: FailureShortcuts;
 }
+
+export type FailureShortcutSlot = 'left' | 'center' | 'right';
+
+export interface FailureShortcuts {
+  left: string | null;
+  center: string | null;
+  right: string | null;
+}
+
+export const EMPTY_FAILURE_SHORTCUTS: FailureShortcuts = {
+  left: null,
+  center: null,
+  right: null,
+};
+
+export const FAILURE_SHORTCUT_SLOTS: FailureShortcutSlot[] = [
+  'left',
+  'center',
+  'right',
+];
 export interface PlanProject {
   project_id: string;
   name: string;
@@ -60,6 +86,7 @@ export const DEFAULT_PLANS: PlanProject[] = [
           { condition_id: 'condition-object-center-tray-center', name: 'Object: Center → Tray: Center' },
           { condition_id: 'condition-object-right-tray-center', name: 'Object: Right → Tray: Center' },
         ],
+        failure_shortcuts: { left: null, center: null, right: null },
       },
       {
         task_id: 'task-stacking',
@@ -68,6 +95,7 @@ export const DEFAULT_PLANS: PlanProject[] = [
           { condition_id: 'condition-blocks-3', name: 'Blocks: 3' },
           { condition_id: 'condition-blocks-5', name: 'Blocks: 5' },
         ],
+        failure_shortcuts: { left: null, center: null, right: null },
       },
     ],
   },
@@ -82,6 +110,7 @@ export const DEFAULT_PLANS: PlanProject[] = [
           { condition_id: 'condition-bin-full', name: 'Bin: full' },
           { condition_id: 'condition-bin-sparse', name: 'Bin: sparse' },
         ],
+        failure_shortcuts: { left: null, center: null, right: null },
       },
     ],
   },
@@ -96,6 +125,7 @@ export const DEFAULT_PLANS: PlanProject[] = [
           { condition_id: 'condition-drawer-top', name: 'Drawer: top' },
           { condition_id: 'condition-drawer-bottom', name: 'Drawer: bottom' },
         ],
+        failure_shortcuts: { left: null, center: null, right: null },
       },
     ],
   },
@@ -124,6 +154,7 @@ export function clonePlans(plans: PlanProject[]): PlanProject[] {
       task_id: t.task_id,
       name: t.name,
       conditions: t.conditions.map((c) => ({ condition_id: c.condition_id, name: c.name })),
+      failure_shortcuts: { ...t.failure_shortcuts },
     })),
   }));
 }
@@ -138,7 +169,12 @@ export function findProject(plans: PlanProject[], name: string): PlanProject {
  *  task — same graceful fallback as findProject. */
 export function findTask(plans: PlanProject[], projectName: string, taskName: string): PlanTask {
   const project = findProject(plans, projectName);
-  return project.tasks.find((t) => t.name === taskName) ?? project.tasks[0] ?? { task_id: '', name: '—', conditions: [] };
+  return project.tasks.find((t) => t.name === taskName) ?? project.tasks[0] ?? {
+    task_id: '',
+    name: '—',
+    conditions: [],
+    failure_shortcuts: { ...EMPTY_FAILURE_SHORTCUTS },
+  };
 }
 
 /** Resolve displayed labels to catalog identities. Custom and absent labels have
@@ -213,6 +249,16 @@ function normalizeLegacyPlans(value: unknown): PlanProject[] | null {
           name,
         });
       }
+      const rawShortcuts =
+        t.failure_shortcuts && typeof t.failure_shortcuts === 'object'
+          ? (t.failure_shortcuts as Record<string, unknown>)
+          : null;
+      // Tolerant, like the server's canonical adapter: a malformed slot
+      // degrades to "unassigned" instead of discarding the whole catalog.
+      const shortcutSlot = (slot: FailureShortcutSlot): string | null =>
+        typeof rawShortcuts?.[slot] === 'string' && rawShortcuts[slot]
+          ? (rawShortcuts[slot] as string)
+          : null;
       tasks.push({
         task_id:
           typeof t.task_id === 'string' && t.task_id
@@ -220,6 +266,11 @@ function normalizeLegacyPlans(value: unknown): PlanProject[] | null {
             : legacyPlanId('task', taskPath),
         name: taskName,
         conditions,
+        failure_shortcuts: {
+          left: shortcutSlot('left'),
+          center: shortcutSlot('center'),
+          right: shortcutSlot('right'),
+        },
       });
     }
     normalized.push({
@@ -376,6 +427,102 @@ export function setFailReasons(next: string[]): void {
   currentFailReasons = next;
   editedThisSession = true;
   if (persist(FAIL_REASONS_KEY, JSON.stringify(next))) markCatalogDirty();
+  notify();
+  pushCatalogToServer();
+}
+
+// ---- failure-shortcut edits -------------------------------------------------
+
+function mapShortcutSlots(
+  shortcuts: FailureShortcuts,
+  fn: (reason: string | null) => string | null,
+): FailureShortcuts {
+  return {
+    left: fn(shortcuts.left),
+    center: fn(shortcuts.center),
+    right: fn(shortcuts.right),
+  };
+}
+
+/** Re-point every task slot that names `from` at `to` — renaming a reason
+ *  keeps its identity, so the operator's shortcut still means the same
+ *  reason under the new name instead of silently going stale. */
+export function renameFailureShortcuts(
+  plans: PlanProject[],
+  from: string,
+  to: string,
+): PlanProject[] {
+  return plans.map((project) => ({
+    ...project,
+    tasks: project.tasks.map((task) => ({
+      ...task,
+      failure_shortcuts: mapShortcutSlots(task.failure_shortcuts, (r) =>
+        r === from ? to : r,
+      ),
+    })),
+  }));
+}
+
+/** Clear every slot that references `reason`. A removed reason must not leave
+ *  a stale mapping that would save a label nobody configured any more. */
+export function clearFailureShortcutsForReason(
+  plans: PlanProject[],
+  reason: string,
+): PlanProject[] {
+  return plans.map((project) => ({
+    ...project,
+    tasks: project.tasks.map((task) => ({
+      ...task,
+      failure_shortcuts: mapShortcutSlots(task.failure_shortcuts, (r) =>
+        r === reason ? null : r,
+      ),
+    })),
+  }));
+}
+
+/** Set one task's three slots (addressed by task_id, so a concurrent reorder
+ *  cannot retarget the edit). */
+export function withTaskFailureShortcuts(
+  plans: PlanProject[],
+  taskId: string,
+  next: FailureShortcuts,
+): PlanProject[] {
+  return plans.map((project) =>
+    project.tasks.some((task) => task.task_id === taskId)
+      ? {
+          ...project,
+          tasks: project.tasks.map((task) =>
+            task.task_id === taskId
+              ? { ...task, failure_shortcuts: { ...next } }
+              : task,
+          ),
+        }
+      : project,
+  );
+}
+
+/** Replace the fail-reason vocabulary AND the catalog in ONE edit — used when
+ *  a vocabulary edit rewrites (rename) or clears (remove) task shortcuts. One
+ *  dirty mark, one push: the server never sees the intermediate state where a
+ *  slot names a reason the vocabulary no longer carries (its validation would
+ *  reject that PUT, and a rejected push would leave the vocabulary half-done). */
+export function setFailReasonsAndPlans(
+  reasons: string[],
+  plans: PlanProject[],
+): void {
+  if (reasons.length === 0) return;
+  const normalized = normalizeLegacyPlans(plans);
+  if (normalized === null) return;
+  currentFailReasons = reasons;
+  currentPlans = normalized;
+  editedThisSession = true;
+  // localStorage has no transaction across these two keys. Both writes are
+  // best-effort, but a failure must not strand an in-memory paired edit: mark
+  // it dirty and push the complete current catalog in this session either way.
+  // A successful pair still provides the normal reload retry path.
+  persist(FAIL_REASONS_KEY, JSON.stringify(reasons));
+  persist(STORAGE_KEY, JSON.stringify(normalized));
+  markCatalogDirty();
   notify();
   pushCatalogToServer();
 }

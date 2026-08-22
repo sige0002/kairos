@@ -127,6 +127,24 @@ def _legacy_plan_name(value: Any) -> str:
     ).strip()
 
 
+def _canonical_failure_shortcuts(raw: Any) -> dict[str, Any]:
+    """Tolerant normalizer for a task's failure-shortcut slots.
+
+    Runs on every read, including rebuilds from payloads written before the
+    field existed, so a missing or malformed value degrades to "unassigned"
+    instead of failing the catalog restore.
+    """
+    value = raw if isinstance(raw, dict) else {}
+    return {
+        slot: (
+            value.get(slot)
+            if isinstance(value.get(slot), str) and value.get(slot)
+            else None
+        )
+        for slot in ("left", "center", "right")
+    }
+
+
 def _canonical_plan_projects(projects: list[Any]) -> list[dict[str, Any]]:
     """Convert the former name/string tree into the canonical ID-bearing tree.
 
@@ -180,6 +198,9 @@ def _canonical_plan_projects(projects: list[Any]) -> list[dict[str, Any]]:
                         ),
                         "name": task_name,
                         "conditions": conditions,
+                        "failure_shortcuts": _canonical_failure_shortcuts(
+                            task.get("failure_shortcuts")
+                        ),
                     }
                 )
         project_id = project.get("project_id")

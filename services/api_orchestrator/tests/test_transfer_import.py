@@ -133,6 +133,52 @@ class TestBagImport:
         # The operator's data belongs to them; move is opt-in.
         assert (source / "bag_0.mcap").is_file()
 
+    def test_shutdown_finishes_an_unpolled_import(
+        self, app, tmp_path: Path, monkeypatch
+    ) -> None:
+        """A shutdown keeps an accepted import from becoming a stuck record."""
+        source = tmp_path / "external_bag"
+        _make_bag(source)
+        copy_started = threading.Event()
+        allow_copy = threading.Event()
+        shutdown_done = threading.Event()
+        real_copy = bag_import.copy_into_staging
+
+        def _paused_copy(bag: bag_import.SourceBag, staging: Path) -> int:
+            copy_started.set()
+            assert allow_copy.wait(timeout=5), "shutdown never released the copy"
+            return real_copy(bag, staging)
+
+        monkeypatch.setattr(bag_import, "copy_into_staging", _paused_copy)
+        test_client = TestClient(app)
+        test_client.__enter__()
+        closer: threading.Thread | None = None
+        try:
+            queued = test_client.post(
+                "/api/v1/imports", json={"source_path": str(source)}
+            ).json()
+            assert copy_started.wait(timeout=5), "import did not start"
+
+            def _shutdown() -> None:
+                test_client.__exit__(None, None, None)
+                shutdown_done.set()
+
+            closer = threading.Thread(target=_shutdown)
+            closer.start()
+            assert not shutdown_done.wait(timeout=0.1), "shutdown abandoned the import"
+            allow_copy.set()
+            closer.join(timeout=5)
+            assert shutdown_done.is_set(), "shutdown did not finish"
+
+            record = app.state.import_registry.get(queued["import_id"])
+            assert record.state == "succeeded"
+            assert not app.state.import_tasks
+        finally:
+            allow_copy.set()
+            if closer is not None:
+                closer.join(timeout=5)
+            test_client.__exit__(None, None, None)
+
     def test_a_bag_without_metadata_is_rejected_with_a_remedy(
         self, client: TestClient, tmp_path: Path
     ) -> None:

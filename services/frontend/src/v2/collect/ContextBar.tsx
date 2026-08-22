@@ -14,7 +14,7 @@ import { getConfigOptions, selectConfig } from '../../api/config';
 import { queryKeys } from '../../api/queryKeys';
 import { Card, cn } from '../../components/ui';
 import { type BatchMachine } from './useBatchMachine';
-import { findProject, usePlans } from '../plans';
+import { usePlans } from '../plans';
 import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
 import { RecordingSoundControl } from './RecordingSoundControl';
 
@@ -253,7 +253,11 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       : phase === 'ended'
         ? '· ended early'
         : `· next #${stats.epNext}`;
-  const curProject = findProject(plans, machine.project ?? '');
+  // This fallback only supplies choices after Settings removed the selected
+  // project. Clicking one is an explicit new ID selection; it is never used
+  // to resolve task-specific shortcuts for the stale machine context.
+  const curProject =
+    plans.find((project) => project.project_id === machine.projectId) ?? plans[0];
   // Real count of what the NEXT recording captures (config defaults + the
   // Monitor picker), mirroring v1 LiveTab's idleTopicLabel.
   const recTopicsLabel = selection.customized
@@ -373,9 +377,9 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
           ) : (
             plans.map((p) => (
               <PickItem
-                key={p.name}
-                active={p.name === machine.project}
-                onClick={() => machine.pickProject(p.name)}
+                key={p.project_id}
+                active={p.project_id === machine.projectId}
+                onClick={() => machine.pickProject(p.project_id)}
               >
                 {p.name}
               </PickItem>
@@ -388,11 +392,11 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
           className="left-3.5 top-full lg:left-[210px] lg:top-[58px]"
           heading="Task (from plan)"
         >
-          {curProject.tasks.map((t) => (
+          {(curProject?.tasks ?? []).map((t) => (
             <PickItem
-              key={t.name}
-              active={t.name === machine.task}
-              onClick={() => machine.pickTask(t.name)}
+              key={t.task_id}
+              active={t.task_id === machine.taskId}
+              onClick={() => machine.pickTask(curProject!.project_id, t.task_id)}
             >
               {t.name}
             </PickItem>
@@ -402,7 +406,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
               editor's interaction style; sets it as the selected task without
               adding it to the shared plans catalog. */}
           <PickItem
-            active={!curProject.tasks.some((t) => t.name === machine.task)}
+            active={machine.taskId === null}
             onClick={() => {
               const entered = window.prompt('Custom task', '');
               if (entered && entered.trim()) machine.pickCustomTask(entered);

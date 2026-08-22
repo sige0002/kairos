@@ -55,7 +55,9 @@ function renderContext() {
     useCollectContext({
       ctxEditable: true,
       project: snapshot.project,
+      projectId: snapshot.projectId,
       task: snapshot.task,
+      taskId: snapshot.taskId,
       batchId: snapshot.batchId,
       showToast,
       setProjPickerOpen,
@@ -89,6 +91,9 @@ test('empty-batch relabel commits and closes its picker only after PATCH succeed
 
   expect(fetchSpy).toHaveBeenCalledTimes(1);
   expect(patchBody(fetchSpy.mock.calls[0])).toEqual({
+    project_id: null,
+    task_id: null,
+    condition_id: null,
     condition: 'Object: Center → Tray: Center',
   });
   expect(getStoreSnapshot().condition).toBe('Object: Center → Tray: Center');
@@ -217,6 +222,9 @@ test('a custom task explicitly clears an empty batch condition', async () => {
   });
 
   expect(patchBody(fetchSpy.mock.calls[0])).toEqual({
+    project_id: null,
+    task_id: null,
+    condition_id: null,
     task: 'Fold the towel',
     condition: null,
   });

@@ -12,7 +12,7 @@
 import { useState } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
 import { END_REASONS, type BatchMachine } from './useBatchMachine';
-import { findTask, usePlans } from '../plans';
+import { usePlans } from '../plans';
 import { Toast } from '../shared/Toast';
 import { formatBytes } from '../review/format';
 
@@ -163,7 +163,11 @@ function ResetBatchModal({ machine }: { machine: BatchMachine }) {
 
 function ConditionModal({ machine }: { machine: BatchMachine }) {
   const plans = usePlans();
-  const task = findTask(plans, machine.project ?? '', machine.task ?? '');
+  // A catalog condition is a task-owned value. Display labels are mutable, so
+  // a stale/deleted selection must not borrow another task's first conditions.
+  const task = plans
+    .find((project) => project.project_id === machine.projectId)
+    ?.tasks.find((candidate) => candidate.task_id === machine.taskId);
   // Free-text condition input (mirrors the custom-task pattern: trim, ignore
   // empty). A typed condition is just a string on the batch — never added to the
   // plan catalog.
@@ -192,21 +196,28 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
           : 'Applies to this batch. No episodes are recorded yet.'}
       </p>
       <div className="flex flex-col gap-1.5">
-        {task.conditions.map((c) => (
-          <button
-            key={c.condition_id}
-            type="button"
-            onClick={() => machine.pickCondition(c.name)}
-            className={cn(
-              'rounded-control border px-3.5 py-2.5 text-left text-sm',
-              c.name === machine.condition
-                ? 'border-teal-600 bg-teal-50 font-semibold text-teal-700'
-                : 'border-gray-200 bg-white font-medium text-gray-700',
-            )}
-          >
-            {c.name}
-          </button>
-        ))}
+        {task ? (
+          task.conditions.map((c) => (
+            <button
+              key={c.condition_id}
+              type="button"
+              onClick={() => machine.pickCondition(c.name)}
+              className={cn(
+                'rounded-control border px-3.5 py-2.5 text-left text-sm',
+                c.name === machine.condition
+                  ? 'border-teal-600 bg-teal-50 font-semibold text-teal-700'
+                  : 'border-gray-200 bg-white font-medium text-gray-700',
+              )}
+            >
+              {c.name}
+            </button>
+          ))
+        ) : (
+          <p className="rounded-control border border-gray-100 bg-gray-50 px-3.5 py-2.5 text-sm text-gray-500">
+            This project or task is no longer in the catalog. Choose a project/task or
+            add a custom condition.
+          </p>
+        )}
       </div>
       <div className="mt-3 flex gap-2">
         <input
@@ -352,12 +363,32 @@ function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
 
 // Keyboard-shortcuts help sheet (opened with `?`). Collect-local — the shared
 // header is out of scope for this screen (deviation noted in the change report).
+// The three external operator actions are documented here too (#36/#37): the
+// exact chords, their state-dependent meanings, and the hardware story (any
+// programmable three-switch pedal maps onto the chords — Kairos assumes no
+// specific product, driver or SDK).
 function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
   const rows: [string, string][] = [
     ['R', 'Start recording (when ready)'],
     ['S / Space', 'Stop recording'],
     ['Esc', 'Cancel arming · close a dialog'],
+    ['Ctrl+Alt+1', 'External action LEFT — state-dependent, see the table'],
+    ['Ctrl+Alt+2', 'External action CENTER — state-dependent, see the table'],
+    ['Ctrl+Alt+3', 'External action RIGHT — state-dependent, see the table'],
     ['?', 'Show this shortcuts sheet'],
+  ];
+  const stateRows: [string, string, string, string][] = [
+    ['State', 'LEFT', 'CENTER', 'RIGHT'],
+    ['READY', '—', 'Start', '—'],
+    ['RECORDING', '—', 'Stop', '—'],
+    ['SAVING / QUICK CHECK', '—', '—', '—'],
+    ['RESULT, before Failure', 'Select Failure', '—', 'Success + Save'],
+    [
+      'RESULT, Failure selected',
+      'Reason 1 + Save',
+      'Reason 2 + Save',
+      'Reason 3 + Save',
+    ],
   ];
   return (
     <Modal
@@ -379,6 +410,40 @@ function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
             <span className="text-[12.5px] text-gray-600">{desc}</span>
           </div>
         ))}
+      </div>
+      <div className="mt-3 border-t border-gray-100 pt-3">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          External actions (hands-busy / foot pedal)
+        </span>
+        <div className="mt-2 overflow-hidden rounded-control border border-gray-200">
+          {stateRows.map((row, i) => (
+            <div
+              key={row[0]}
+              className={cn(
+                'grid grid-cols-[1.3fr_1fr_1fr_1fr] gap-2 px-3 py-1.5 text-[11.5px]',
+                i === 0
+                  ? 'bg-gray-50 font-semibold text-gray-500'
+                  : 'border-t border-gray-100 text-gray-700',
+              )}
+            >
+              {row.map((cell, cellIndex) => (
+                <span key={`${row[0]}-${cellIndex}`} className="truncate">
+                  {cell}
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+        <p className="mt-2 text-[11.5px] leading-[1.6] text-gray-500">
+          The “Reason N” slots are the current task&apos;s three failure shortcuts
+          (Settings → Projects &amp; tasks); an unassigned slot saves nothing and
+          explains why. Failure reasons are accepted only AFTER Failure has been
+          selected — the slots can never stamp a reason during recording. The chords
+          work on a plain keyboard (development and testing need no hardware), and any
+          programmable three-switch USB foot pedal can be mapped onto them — left switch
+          → Ctrl+Alt+1, center → Ctrl+Alt+2, right → Ctrl+Alt+3. No specific pedal
+          product, driver or SDK is required or assumed.
+        </p>
       </div>
     </Modal>
   );

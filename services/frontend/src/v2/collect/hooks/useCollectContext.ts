@@ -7,14 +7,16 @@
 
 import { useCallback, useRef, useState } from 'react';
 import { patchBatch } from '../../../api/batches';
-import { findProject, findTask, getPlans } from '../../plans';
+import { getPlans } from '../../plans';
 import { ADVICE_ITEMS } from '../machine/types';
 import { dispatch, getStoreSnapshot } from '../machine/store';
 
 export function useCollectContext({
   ctxEditable,
   project,
+  projectId,
   task,
+  taskId,
   showToast,
   setProjPickerOpen,
   setTaskPickerOpen,
@@ -22,7 +24,9 @@ export function useCollectContext({
 }: {
   ctxEditable: boolean;
   project: string | null;
+  projectId: string | null;
   task: string | null;
+  taskId: string | null;
   batchId: string | null;
   showToast: (msg: string) => void;
   setProjPickerOpen: (open: boolean) => void;
@@ -50,7 +54,13 @@ export function useCollectContext({
       rolloverReason: string;
       rolloverSuccessLabel: string;
       emptyPatch: Parameters<typeof patchBatch>[1];
-      next: { project: string | null; task: string | null; condition: string };
+      next: {
+        project: string | null;
+        projectId: string | null;
+        task: string | null;
+        taskId: string | null;
+        condition: string;
+      };
       closePicker: () => void;
       applyEmpty: () => void;
       emptySuccessToast: string;
@@ -72,7 +82,9 @@ export function useCollectContext({
           dispatch({
             type: 'ROLLOVER_SET',
             project: next.project,
+            projectId: next.projectId,
             task: next.task,
+            taskId: next.taskId,
             condition: next.condition,
           });
           closePicker();
@@ -107,14 +119,19 @@ export function useCollectContext({
   // so relabeling in place would retroactively mislabel them. A set with nothing
   // recorded yet is updated in place instead (no empty set is ever minted).
   const pickProject = useCallback(
-    async (name: string) => {
+    async (selectedProjectId: string) => {
       // Never re-label a take in flight, whatever left this handler reachable.
       if (!ctxEditable) return;
-      const plan = findProject(getPlans(), name);
+      const plan = getPlans().find(
+        (candidate) => candidate.project_id === selectedProjectId,
+      );
+      if (!plan) return;
       const t0 = plan.tasks[0];
       const next = {
         project: plan.name,
+        projectId: plan.project_id,
         task: t0?.name ?? '—',
+        taskId: t0?.task_id ?? null,
         condition: t0?.conditions[0]?.name ?? '—',
       };
       await applyContextChange({
@@ -122,6 +139,9 @@ export function useCollectContext({
         rolloverReason: 'Plan change',
         rolloverSuccessLabel: 'project changed',
         emptyPatch: {
+          project_id: next.projectId,
+          task_id: next.taskId,
+          condition_id: t0?.conditions[0]?.condition_id ?? null,
           project: next.project,
           task: next.task,
           condition: next.condition !== '—' ? next.condition : null,
@@ -135,30 +155,47 @@ export function useCollectContext({
     [applyContextChange, ctxEditable, setProjPickerOpen],
   );
   const pickTask = useCallback(
-    async (name: string) => {
+    async (selectedProjectId: string, selectedTaskId: string) => {
       if (!ctxEditable) return;
-      const t = findTask(getPlans(), project ?? '', name);
+      const plan = getPlans().find(
+        (candidate) => candidate.project_id === selectedProjectId,
+      );
+      const t = plan?.tasks.find((candidate) => candidate.task_id === selectedTaskId);
+      if (!plan || !t) return;
       const next = {
-        project: project,
-        task: t?.name ?? '—',
-        condition: t?.conditions[0]?.name ?? '—',
+        project: plan.name,
+        projectId: plan.project_id,
+        task: t.name,
+        taskId: t.task_id,
+        condition: t.conditions[0]?.name ?? '—',
       };
       await applyContextChange({
         changeLabel: 'Task',
         rolloverReason: 'Task change',
         rolloverSuccessLabel: 'task changed',
         emptyPatch: {
+          project_id: next.projectId,
+          task_id: next.taskId,
+          condition_id: t.conditions[0]?.condition_id ?? null,
+          project: next.project,
           task: next.task,
           condition: next.condition !== '—' ? next.condition : null,
         },
         next,
         closePicker: () => setTaskPickerOpen(false),
         applyEmpty: () =>
-          dispatch({ type: 'SET_TASK', task: next.task, condition: next.condition }),
+          dispatch({
+            type: 'SET_PROJECT',
+            project: next.project,
+            projectId: next.projectId,
+            task: next.task,
+            taskId: next.taskId,
+            condition: next.condition,
+          }),
         emptySuccessToast: 'Task switched',
       });
     },
-    [applyContextChange, ctxEditable, project, setTaskPickerOpen],
+    [applyContextChange, ctxEditable, setTaskPickerOpen],
   );
   const pickCustomTask = useCallback(
     async (name: string) => {
@@ -169,42 +206,70 @@ export function useCollectContext({
       // '—' so a stale plan condition can't ride along with an unrelated task.
       const next = {
         project: project,
+        projectId,
         task: trimmed,
+        taskId: null,
         condition: '—',
       };
       await applyContextChange({
         changeLabel: 'Task',
         rolloverReason: 'Task change',
         rolloverSuccessLabel: 'task changed',
-        emptyPatch: { task: trimmed, condition: null },
+        emptyPatch: {
+          project_id: projectId,
+          task_id: null,
+          condition_id: null,
+          task: trimmed,
+          condition: null,
+        },
         next,
         closePicker: () => setTaskPickerOpen(false),
-        applyEmpty: () => dispatch({ type: 'SET_TASK', task: trimmed, condition: '—' }),
+        applyEmpty: () =>
+          dispatch({ type: 'SET_TASK', task: trimmed, taskId: null, condition: '—' }),
         emptySuccessToast: 'Custom task set',
       });
     },
-    [applyContextChange, ctxEditable, project, setTaskPickerOpen],
+    [applyContextChange, ctxEditable, project, projectId, setTaskPickerOpen],
   );
   const pickCondition = useCallback(
     async (condition: string) => {
       if (!ctxEditable) return;
       const next = {
         project: project,
+        projectId,
         task: task,
+        taskId,
         condition,
       };
+      const selectedCondition = getPlans()
+        .find((candidate) => candidate.project_id === projectId)
+        ?.tasks.find((candidate) => candidate.task_id === taskId)
+        ?.conditions.find((candidate) => candidate.name === condition);
       await applyContextChange({
         changeLabel: 'Condition',
         rolloverReason: 'Condition change',
         rolloverSuccessLabel: 'condition changed',
-        emptyPatch: { condition },
+        emptyPatch: {
+          project_id: projectId,
+          task_id: taskId,
+          condition_id: selectedCondition?.condition_id ?? null,
+          condition,
+        },
         next,
         closePicker: () => setCondModalOpen(false),
         applyEmpty: () => dispatch({ type: 'SET_CONDITION', condition }),
         emptySuccessToast: 'Condition updated',
       });
     },
-    [applyContextChange, ctxEditable, project, setCondModalOpen, task],
+    [
+      applyContextChange,
+      ctxEditable,
+      project,
+      projectId,
+      setCondModalOpen,
+      task,
+      taskId,
+    ],
   );
   const pickCustomCondition = useCallback(
     async (condition: string) => {
@@ -213,21 +278,36 @@ export function useCollectContext({
       if (!trimmed) return;
       const next = {
         project: project,
+        projectId,
         task: task,
+        taskId,
         condition: trimmed,
       };
       await applyContextChange({
         changeLabel: 'Condition',
         rolloverReason: 'Condition change',
         rolloverSuccessLabel: 'condition changed',
-        emptyPatch: { condition: trimmed },
+        emptyPatch: {
+          project_id: projectId,
+          task_id: taskId,
+          condition_id: null,
+          condition: trimmed,
+        },
         next,
         closePicker: () => setCondModalOpen(false),
         applyEmpty: () => dispatch({ type: 'SET_CONDITION', condition: trimmed }),
         emptySuccessToast: 'Condition updated',
       });
     },
-    [applyContextChange, ctxEditable, project, setCondModalOpen, task],
+    [
+      applyContextChange,
+      ctxEditable,
+      project,
+      projectId,
+      setCondModalOpen,
+      task,
+      taskId,
+    ],
   );
 
   const advicePrev = useCallback(
