@@ -370,6 +370,148 @@ def test_old_payloads_without_shortcuts_stay_valid(client: TestClient) -> None:
     assert resp.status_code == 200, resp.text
 
 
+def _legacy_projects(projects: list[dict]) -> list[dict]:
+    """The same tree as a pre-shortcut client would PUT: no failure_shortcuts key."""
+    return [
+        {
+            **project,
+            "tasks": [
+                {
+                    key: value
+                    for key, value in task.items()
+                    if key != "failure_shortcuts"
+                }
+                for task in project.get("tasks", [])
+            ],
+        }
+        for project in projects
+    ]
+
+
+def test_legacy_put_without_shortcuts_preserves_stored_mappings(
+    client: TestClient,
+) -> None:
+    # Regression: an older client that omits each task's failure_shortcuts must
+    # not wipe the configured mappings (Pydantic defaults must not win).
+    client.put("/api/v1/plans", json=SHORTCUTS_CATALOG)
+    legacy = {
+        "base_revision": 1,
+        "projects": _legacy_projects(SHORTCUTS_CATALOG["projects"]),
+    }
+    resp = client.put("/api/v1/plans", json=legacy)
+    assert resp.status_code == 200, resp.text
+    tasks = {t["task_id"]: t for t in resp.json()["projects"][0]["tasks"]}
+    # The mapping survives under its stable task_id in the response AND on disk.
+    assert tasks["task-pick-place"]["failure_shortcuts"] == {
+        "left": "Grasp missed",
+        "center": "Object dropped",
+        "right": "Wrong placement",
+    }
+    # A task that never had a mapping keeps unassigned slots.
+    assert tasks["task-stacking"]["failure_shortcuts"] == {
+        "left": None,
+        "center": None,
+        "right": None,
+    }
+    # Omitted failure_reasons still keeps the stored vocabulary (same PUT).
+    assert resp.json()["failure_reasons"] == SHORTCUTS_CATALOG["failure_reasons"]
+    got = client.get("/api/v1/plans").json()
+    tasks = {t["task_id"]: t for t in got["projects"][0]["tasks"]}
+    assert tasks["task-pick-place"]["failure_shortcuts"] == {
+        "left": "Grasp missed",
+        "center": "Object dropped",
+        "right": "Wrong placement",
+    }
+
+
+def test_legacy_put_of_a_new_task_starts_with_empty_slots(client: TestClient) -> None:
+    # A task absent from the stored catalog has no mapping to restore; the
+    # field-less payload must still give it all-unassigned slots.
+    client.put("/api/v1/plans", json=SHORTCUTS_CATALOG)
+    projects = _legacy_projects(SHORTCUTS_CATALOG["projects"])
+    projects[0]["tasks"].append(
+        {"task_id": "task-new", "name": "New Task", "conditions": []}
+    )
+    resp = client.put("/api/v1/plans", json={"base_revision": 1, "projects": projects})
+    assert resp.status_code == 200, resp.text
+    tasks = {t["task_id"]: t for t in resp.json()["projects"][0]["tasks"]}
+    assert tasks["task-new"]["failure_shortcuts"] == {
+        "left": None,
+        "center": None,
+        "right": None,
+    }
+    # The existing task's mapping is preserved in the same PUT.
+    assert tasks["task-pick-place"]["failure_shortcuts"]["left"] == "Grasp missed"
+
+
+def test_explicit_shortcuts_stay_authoritative_over_stored(client: TestClient) -> None:
+    # An explicit object — including explicit nulls — replaces the stored
+    # mapping; only the field ABSENT in the payload triggers the merge.
+    client.put("/api/v1/plans", json=SHORTCUTS_CATALOG)
+    cleared = {
+        "base_revision": 1,
+        "projects": [
+            {
+                "project_id": "project-tabletop",
+                "name": "Tabletop Manipulation",
+                "tasks": [
+                    {
+                        "task_id": "task-pick-place",
+                        "name": "Pick and Place",
+                        "conditions": [],
+                        "failure_shortcuts": {
+                            "left": None,
+                            "center": None,
+                            "right": None,
+                        },
+                    },
+                    {
+                        "task_id": "task-stacking",
+                        "name": "Stacking",
+                        "conditions": [],
+                        "failure_shortcuts": {"left": "Other"},
+                    },
+                ],
+            }
+        ],
+    }
+    resp = client.put("/api/v1/plans", json=cleared)
+    assert resp.status_code == 200, resp.text
+    tasks = {t["task_id"]: t for t in resp.json()["projects"][0]["tasks"]}
+    assert tasks["task-pick-place"]["failure_shortcuts"] == {
+        "left": None,
+        "center": None,
+        "right": None,
+    }
+    assert tasks["task-stacking"]["failure_shortcuts"] == {
+        "left": "Other",
+        "center": None,
+        "right": None,
+    }
+
+
+def test_legacy_put_validates_merged_mapping_against_submitted_vocabulary(
+    client: TestClient,
+) -> None:
+    # Validation runs on the EFFECTIVE merged catalog: a stored mapping the
+    # replaced vocabulary no longer contains must be refused, not persisted
+    # as a stale reference or silently dropped.
+    client.put("/api/v1/plans", json=SHORTCUTS_CATALOG)
+    resp = client.put(
+        "/api/v1/plans",
+        json={
+            "base_revision": 1,
+            "failure_reasons": ["Brand new"],
+            "projects": _legacy_projects(SHORTCUTS_CATALOG["projects"]),
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "failure_shortcut_unknown_reason"
+    assert resp.json()["error"]["details"]["task_id"] == "task-pick-place"
+    # The rejected PUT must not have advanced the catalog.
+    assert client.get("/api/v1/plans").json()["revision"] == 1
+
+
 def test_failure_reason_vocabulary_is_not_capped_at_three(client: TestClient) -> None:
     reasons = [f"Reason {i}" for i in range(10)]
     put = client.put(
