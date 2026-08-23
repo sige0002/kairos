@@ -13,7 +13,7 @@
 // there — dropping it from the report is how an operator ends up believing the
 // disk is emptier than it is.
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { deleteCapture } from '../../api/captures';
 import { cancelJob, getJobStatus } from '../../api/jobs';
@@ -90,12 +90,18 @@ export interface CaptureDeletionState {
    *  opens and the caller supplies the ledger reason itself. A failure lands on
    *  the toast — the capture is still there, and so is the button the operator
    *  just pressed, so the retry path is the same press. Only ids are needed:
-   *  there is no dialog left that would have to state sizes. */
+   *  there is no dialog left that would have to state sizes.
+   *
+   *  Resolves true only after EVERY target was removed AND the local follow-up
+   *  (`onDeleted` and cache invalidation) finished. False blocks follow-up
+   *  work (Collect's retake restarts only on true): a failed local follow-up
+   *  can mean the target was already removed, which the toast says explicitly.
+   *  It never rejects. */
   discardNow: (
     targets: Pick<CaptureListItem, 'capture_id'> | Pick<CaptureListItem, 'capture_id'>[],
     reason: string,
     successToast?: string,
-  ) => Promise<void>;
+  ) => Promise<boolean>;
 }
 
 export interface UseCaptureDeletionOptions {
@@ -122,6 +128,10 @@ export function useCaptureDeletion(
   const [error, setError] = useState<unknown>(null);
   const [clearingBlockers, setClearingBlockers] = useState(false);
   const [blockerFailures, setBlockerFailures] = useState<DeletionFailure[]>([]);
+  // `busy` reaches callers on the next render. A second external-action press
+  // can arrive before then, so the one-click path needs its own synchronous
+  // guard just like Collect's start and review-save flows.
+  const discardInFlightRef = useRef(false);
 
   const open = useCallback((next: DeleteKind, list: CaptureListItem | CaptureListItem[]) => {
     setKind(next);
@@ -263,45 +273,63 @@ export function useCaptureDeletion(
       reason: string,
       successToast?: string,
     ) => {
-      if (busy) return;
+      if (discardInFlightRef.current || busy) return false;
       const captures = Array.isArray(list) ? list : [list];
-      if (captures.length === 0) return;
+      if (captures.length === 0) return false;
+      discardInFlightRef.current = true;
       setKind(null);
       setBusy(true);
       setDone(0);
       setFailures([]);
       setError(null);
-      const failed: DeletionFailure[] = [];
       const removed: string[] = [];
-      for (const capture of captures) {
-        try {
-          await deleteCapture(capture.capture_id, { kind: 'discard', reason });
-          removed.push(capture.capture_id);
-        } catch (e) {
-          failed.push({
-            captureId: capture.capture_id,
-            error: captureErrorText(e, 'delete'),
-          });
-          if (captures.length === 1) setError(e);
+      try {
+        const failed: DeletionFailure[] = [];
+        for (const capture of captures) {
+          try {
+            await deleteCapture(capture.capture_id, { kind: 'discard', reason });
+            removed.push(capture.capture_id);
+          } catch (e) {
+            failed.push({
+              captureId: capture.capture_id,
+              error: captureErrorText(e, 'delete'),
+            });
+            if (captures.length === 1) setError(e);
+          }
+          setDone((d) => d + 1);
+          setFailures([...failed]);
         }
-        setDone((d) => d + 1);
-        setFailures([...failed]);
-      }
-      if (removed.length > 0) onDeleted?.(removed, 'discard');
-      await queryClient.invalidateQueries({ queryKey: queryKeys.captures });
-      for (const key of invalidate ?? []) {
-        await queryClient.invalidateQueries({ queryKey: key });
-      }
-      setBusy(false);
-      if (failed.length === 0) {
+        if (removed.length > 0) onDeleted?.(removed, 'discard');
+        await queryClient.invalidateQueries({ queryKey: queryKeys.captures });
+        for (const key of invalidate ?? []) {
+          await queryClient.invalidateQueries({ queryKey: key });
+        }
+        if (failed.length === 0) {
+          onToast?.(
+            successToast ??
+              `Discarded ${removed.length} recording${removed.length === 1 ? '' : 's'}`,
+          );
+        } else {
+          // No dialog to keep the failure readable in, so the toast carries the
+          // failure itself — the job-voiced capture_busy text included.
+          onToast?.(failed[0]?.error ?? 'Discard failed');
+        }
+        return failed.length === 0;
+      } catch (e) {
+        // The removal request may have succeeded before its local aftermath
+        // failed (a state callback or cache refetch). Returning false keeps a
+        // caller from treating that uncertain UI state as permission for a
+        // destructive follow-up such as Retake's new recording.
+        const completed = removed.length;
         onToast?.(
-          successToast ??
-            `Discarded ${removed.length} recording${removed.length === 1 ? '' : 's'}`,
+          completed > 0
+            ? `Discarded ${completed} recording${completed === 1 ? '' : 's'}, but local follow-up failed: ${captureErrorText(e, 'delete')}`
+            : `Discard follow-up failed: ${captureErrorText(e, 'delete')}`,
         );
-      } else {
-        // No dialog to keep the failure readable in, so the toast carries the
-        // failure itself — the job-voiced capture_busy text included.
-        onToast?.(failed[0]?.error ?? 'Discard failed');
+        return false;
+      } finally {
+        discardInFlightRef.current = false;
+        setBusy(false);
       }
     },
     [busy, queryClient, invalidate, onDeleted, onToast],

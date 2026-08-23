@@ -382,7 +382,12 @@ function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
     ['READY', '—', 'Start', '—'],
     ['RECORDING', '—', 'Stop', '—'],
     ['SAVING / QUICK CHECK', '—', '—', '—'],
-    ['RESULT, before Failure', 'Select Failure', '—', 'Success + Save'],
+    [
+      'RESULT, before Failure',
+      'Select Failure',
+      'Retake — discard + record',
+      'Success + Save',
+    ],
     [
       'RESULT, Failure selected',
       'Reason 1 + Save',
@@ -442,7 +447,9 @@ function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
           work on a plain keyboard (development and testing need no hardware), and any
           programmable three-switch USB foot pedal can be mapped onto them — left switch
           → Ctrl+Alt+1, center → Ctrl+Alt+2, right → Ctrl+Alt+3. No specific pedal
-          product, driver or SDK is required or assumed.
+          product, driver or SDK is required or assumed. The Retake slot (RESULT, before
+          Failure) discards the take without saving it and immediately records again
+          under the same labels.
         </p>
       </div>
     </Modal>

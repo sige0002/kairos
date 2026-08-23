@@ -1041,14 +1041,18 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       .discardNow(
         { capture_id: captureId },
         RETAKE_DISCARD_REASON,
-        'Take discarded — recording the retake',
+        splitDeploy
+          ? 'Take discarded from this machine — a copy may remain on the robot; recording the retake'
+          : 'Take discarded — recording the retake',
       )
-      .then(() => setRetakeQueued(true))
-      .catch(() => {
-        // Discard failed (toast already shown) — do NOT auto-start on top of
-        // a take that still exists.
+      .then((discarded) => {
+        // Queue the restart ONLY when the take is actually gone. A failed
+        // discard (toast already shown) must not leave an armed auto-start:
+        // the moment this machine next reaches READY it would fire a second
+        // recording on top of the take that still exists.
+        if (discarded) setRetakeQueued(true);
       });
-  }, [episodeDiscard, recordingCues]);
+  }, [episodeDiscard, recordingCues, splitDeploy]);
   useEffect(() => {
     if (!retakeQueued) return;
     if (state.phase === 'ready') {
@@ -1275,7 +1279,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const externalActions = useExternalActions({
     phase: state.phase,
     pendingTask: state.pendingTask,
-    isSavingReview,
+    isSavingReview: isSavingReview || episodeDiscard.busy,
     takeoverActive: !!takeover,
     startEnabled:
       state.phase === 'ready' &&
@@ -1293,6 +1297,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     startRecording,
     stopRecording,
     pickFailure,
+    retakeEpisode,
     saveSuccess,
     saveFailureWithReason,
     showToast,

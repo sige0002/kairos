@@ -25,6 +25,7 @@ export function useExternalOperatorShortcuts({
   startRecording,
   stopRecording,
   pickFailure,
+  retakeEpisode,
   saveSuccess,
   saveFailureWithReason,
   showToast,
@@ -35,6 +36,7 @@ export function useExternalOperatorShortcuts({
   startRecording: () => void;
   stopRecording: () => void;
   pickFailure: () => void;
+  retakeEpisode: () => void;
   saveSuccess: () => void;
   saveFailureWithReason: (reason: string) => void;
   showToast: (message: string) => void;
@@ -51,6 +53,7 @@ export function useExternalOperatorShortcuts({
     startRecording,
     stopRecording,
     pickFailure,
+    retakeEpisode,
     saveSuccess,
     saveFailureWithReason,
     showToast,
@@ -59,6 +62,7 @@ export function useExternalOperatorShortcuts({
     startRecording,
     stopRecording,
     pickFailure,
+    retakeEpisode,
     saveSuccess,
     saveFailureWithReason,
     showToast,
@@ -101,6 +105,9 @@ export function useExternalOperatorShortcuts({
           break;
         case 'pick-failure':
           actions.pickFailure();
+          break;
+        case 'retake':
+          actions.retakeEpisode();
           break;
         case 'save-success':
           actions.saveSuccess();

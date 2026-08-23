@@ -44,8 +44,17 @@ let recording = false;
 let captureSeq = 0;
 let currentCapture = '0192f0aa-3333-7000-8000-000000000000';
 let reviewBodies: unknown[] = [];
+let deleteBodies: unknown[] = [];
+let startBodies: unknown[] = [];
 let startCalls = 0;
 let stopDelayMs = 0;
+// Regression seam: make the /delete endpoint refuse, to prove a failed
+// discard leaves neither a second recording nor an armed auto-start behind.
+let deleteShouldFail = false;
+let holdDelete = false;
+let resolveHeldDelete: (() => void) | null = null;
+let holdCaptureInvalidation = false;
+let resolveHeldCaptureInvalidation: (() => void) | null = null;
 
 /** The catalog the tests run against: TWO tasks with different shortcuts, so
  *  a task switch observably changes the three effective reasons (#35/#36). */
@@ -91,6 +100,7 @@ function mockFetch() {
     }
     if (url.includes('/record/start')) {
       startCalls += 1;
+      startBodies.push((init as RequestInit)?.body ?? null);
       captureSeq += 1;
       currentCapture = `0192f0aa-3333-7000-8000-00000000000${captureSeq}`;
       recording = true;
@@ -113,6 +123,31 @@ function mockFetch() {
       return Promise.resolve(
         jsonResponse({ ...completed('completed'), review_revision: 1 }),
       );
+    }
+    if (url.match(/\/captures\/[^/]+\/delete$/)) {
+      // A discard is NOT a review: track its own body and answer with the
+      // capture's discarded tombstone, as the API does.
+      deleteBodies.push((init as RequestInit)?.body ?? null);
+      if (deleteShouldFail) {
+        return Promise.resolve(
+          jsonResponse(
+            { error: { code: 'internal', message: 'delete exploded' } },
+            500,
+          ),
+        );
+      }
+      if (holdDelete) {
+        return new Promise((resolve) => {
+          resolveHeldDelete = () => resolve(jsonResponse(completed('discarded')));
+        });
+      }
+      return Promise.resolve(jsonResponse(completed('discarded')));
+    }
+    if (holdCaptureInvalidation && method === 'GET' && /\/captures(?:\?|$)/.test(url)) {
+      return new Promise((resolve) => {
+        resolveHeldCaptureInvalidation = () =>
+          resolve(jsonResponse({ items: [], next_cursor: null }));
+      });
     }
     if (url.match(/\/captures\/[^/]+$/)) {
       return Promise.resolve(jsonResponse(completed('completed')));
@@ -186,14 +221,33 @@ function reviewBody() {
   return JSON.parse(String(reviewBodies.at(-1))) as Record<string, unknown>;
 }
 
+function startLabelFields(body: unknown) {
+  const request = JSON.parse(String(body)) as Record<string, unknown>;
+  const context = request.collection_context as Record<string, unknown>;
+  return {
+    project: context.project,
+    task: request.task,
+    condition: context.condition,
+    operator: request.operator,
+    topics: request.topics,
+  };
+}
+
 beforeEach(() => {
   setApiBase('/api/v1');
   recording = false;
   captureSeq = 0;
   currentCapture = '0192f0aa-3333-7000-8000-000000000000';
   reviewBodies = [];
+  deleteBodies = [];
+  startBodies = [];
   startCalls = 0;
   stopDelayMs = 0;
+  deleteShouldFail = false;
+  holdDelete = false;
+  resolveHeldDelete = null;
+  holdCaptureInvalidation = false;
+  resolveHeldCaptureInvalidation = null;
   __resetBatchStore();
   __resetCameraStore();
   __resetPlansStore();
@@ -229,8 +283,9 @@ test('the common SUCCESS workflow runs on the three chords alone', async () => {
     timeout: 5000,
   });
 
-  // RESULT HUD: LEFT = Failure, RIGHT = Success + Save.
+  // RESULT HUD: LEFT = Failure, CENTER = Retake, RIGHT = Success + Save.
   expect(hud('left').textContent).toBe('Failure');
+  expect(hud('center').textContent).toBe('Retake');
   expect(hud('right').textContent).toBe('Success + Save');
 
   press('right');
@@ -270,6 +325,171 @@ test('the common FAILURE workflow: LEFT selects Failure, a slot saves its reason
   const body = reviewBody();
   expect(body.task_result).toBe('failure');
   expect(body.failure_reason).toBe('Object dropped');
+});
+
+test('CENTER on RESULT before Failure is Retake: discard without saving, then record again', async () => {
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent(/result/i), {
+    timeout: 5000,
+  });
+
+  // The HUD names the slot before it is used.
+  expect(hud('center').textContent).toBe('Retake');
+
+  press('center');
+  release('center');
+  // The press is a DISCARD, not a review: the delete request carries the
+  // retake's ledger reason, and nothing reaches the review endpoint.
+  await waitFor(() => expect(deleteBodies).toHaveLength(1), { timeout: 5000 });
+  expect(reviewBodies).toHaveLength(0);
+  const body = JSON.parse(String(deleteBodies[0])) as Record<string, unknown>;
+  expect(body.kind).toBe('discard');
+  expect(body.reason).toBe('Superseded by retake (Collect)');
+  // …and the second take is already rolling under the same labels.
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'), {
+    timeout: 5000,
+  });
+  expect(startCalls).toBe(2);
+  expect(startBodies).toHaveLength(2);
+  expect(startLabelFields(startBodies[1])).toEqual(startLabelFields(startBodies[0]));
+});
+
+test('a pending Retake disables the HUD and absorbs a release/repress until its discard resolves', async () => {
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent(/result/i), {
+    timeout: 5000,
+  });
+
+  holdDelete = true;
+  press('center');
+  release('center');
+  // Re-press before React has to publish `busy`: the synchronous discard
+  // guard, not a later disabled render, owns this narrow race.
+  press('center');
+  release('center');
+
+  await waitFor(() => expect(deleteBodies).toHaveLength(1), { timeout: 5000 });
+  await waitFor(() => expect(hud('center').textContent).toBe('—'));
+  expect(resolveHeldDelete).not.toBeNull();
+
+  resolveHeldDelete?.();
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'), {
+    timeout: 5000,
+  });
+  expect(startCalls).toBe(2);
+  expect(deleteBodies).toHaveLength(1);
+});
+
+test('Retake keeps external Start disabled until its capture invalidation settles', async () => {
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent(/result/i), {
+    timeout: 5000,
+  });
+
+  // onDeleted moves the machine to READY before the shared deletion flow
+  // awaits this refetch. Hold it open to cover that otherwise tiny window.
+  holdCaptureInvalidation = true;
+  press('center');
+  release('center');
+  await waitFor(() => expect(resolveHeldCaptureInvalidation).not.toBeNull());
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  await waitFor(() => expect(hud('center').textContent).toBe('—'));
+
+  // A pedal release/repress cannot start a manual take while Retake is still
+  // completing its discard; only the queued restart may do that.
+  press('center');
+  release('center');
+  expect(startCalls).toBe(1);
+
+  resolveHeldCaptureInvalidation?.();
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'), {
+    timeout: 5000,
+  });
+  expect(startCalls).toBe(2);
+});
+
+test('a rejected Retake cache invalidation reports the error and does not restart', async () => {
+  const { client } = renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent(/result/i), {
+    timeout: 5000,
+  });
+
+  vi.spyOn(client, 'invalidateQueries').mockRejectedValueOnce(
+    new Error('capture refresh unavailable'),
+  );
+  press('center');
+  release('center');
+
+  await waitFor(() => expect(toastSays('capture refresh unavailable')).toBe(true));
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  // The rejected invalidation resolves discardNow(false), so Retake never
+  // queues its own restart and does not leave an unhandled promise behind.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  });
+  expect(startCalls).toBe(1);
+});
+
+test('a FAILED retake discard starts nothing and leaves no queued auto-start', async () => {
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
+  press('center');
+  release('center');
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent(/result/i), {
+    timeout: 5000,
+  });
+
+  deleteShouldFail = true;
+  press('center');
+  release('center');
+  await waitFor(() => expect(deleteBodies).toHaveLength(1), { timeout: 5000 });
+  // The refusal is told in the toast, and the operator is still standing at
+  // the take that survived it.
+  await waitFor(() => expect(toastSays('delete exploded')).toBe(true));
+  expect(phaseTitle()).toHaveTextContent(/result/i);
+  expect(startCalls).toBe(1);
+
+  // Save the take — with the batch target of 30 the machine returns to READY
+  // for the next episode. A retake queued by the FAILED discard above would
+  // arm itself exactly here and start a recording on its own; it must not.
+  press('right');
+  release('right');
+  await waitFor(() => expect(recorded()).toHaveTextContent('1'));
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  // Let any wrongly armed auto-start have its chance to misfire, then prove
+  // there was none.
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  });
+  expect(startCalls).toBe(1);
+  expect(phaseTitle()).toHaveTextContent('READY');
 });
 
 test('LEFT/RIGHT do nothing while recording (no accidental reason stamp)', async () => {

@@ -22,6 +22,7 @@ export type ExternalSlotMeaning =
   | { kind: 'start' }
   | { kind: 'stop' }
   | { kind: 'pick-failure' }
+  | { kind: 'retake' }
   | { kind: 'save-success' }
   | { kind: 'save-failure-reason'; reason: string }
   | { kind: 'unassigned' };
@@ -54,19 +55,24 @@ function allDisabled(): ExternalActionMeanings {
  *   READY:            CENTER = Start
  *   RECORDING:        CENTER = Stop
  *   SAVING/QUICKCHECK/ARMING/PAUSED/ENDED/COMPLETED: all disabled
- *   RESULT (before Failure): LEFT = select Failure, RIGHT = Success + Save
+ *   RESULT (before Failure): LEFT = Failure, CENTER = Retake,
+ *                            RIGHT = Success + Save
  *   RESULT (Failure selected): LEFT/CENTER/RIGHT = the Task's three
  *                              configured reasons + Save (null slot =
  *                              unassigned: feedback only, never a save,
  *                              never a silent "Other" fallback)
- *   takeover / saving: all disabled
+ *   takeover / action in flight: all disabled
  *
  * Failure-reason meanings are ONLY reachable once Failure has been selected —
  * pressing a slot in READY or RECORDING can never stamp a reason. */
 export function resolveExternalActionMeanings(
   ctx: ExternalActionContext,
 ): ExternalActionMeanings {
-  if (ctx.takeoverActive) return allDisabled();
+  // This guard must apply BEFORE phase resolution. Retake deletes transition
+  // RESULT → READY before the shared deletion flow finishes invalidating the
+  // capture cache; accepting READY's Start in that window would create a
+  // second recording before Retake's queued restart resolves.
+  if (ctx.takeoverActive || ctx.isSavingReview) return allDisabled();
 
   if (ctx.phase === 'ready') {
     return {
@@ -83,7 +89,6 @@ export function resolveExternalActionMeanings(
     };
   }
   if (ctx.phase === 'result') {
-    if (ctx.isSavingReview) return allDisabled();
     if (ctx.pendingTask === 'fail') {
       const slot = (s: ExternalActionSlot): ExternalSlotMeaning =>
         ctx.shortcuts[s] === null
@@ -93,7 +98,7 @@ export function resolveExternalActionMeanings(
     }
     return {
       left: { kind: 'pick-failure' },
-      center: DISABLED,
+      center: { kind: 'retake' },
       right: { kind: 'save-success' },
     };
   }
@@ -160,6 +165,8 @@ export function externalActionMeaningLabel(meaning: ExternalSlotMeaning): string
       return 'Stop';
     case 'pick-failure':
       return 'Failure';
+    case 'retake':
+      return 'Retake';
     case 'save-success':
       return 'Success + Save';
     case 'save-failure-reason':

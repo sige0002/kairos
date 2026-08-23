@@ -70,11 +70,11 @@ describe('resolveExternalActionMeanings — the #36 state table', () => {
     }
   });
 
-  test('RESULT before Failure: LEFT selects Failure, RIGHT saves Success', () => {
+  test('RESULT before Failure: LEFT Failure, CENTER Retake, RIGHT saves Success', () => {
     for (const pendingTask of ['ok', null] as const) {
       const m = resolveExternalActionMeanings(ctx({ phase: 'result', pendingTask }));
       expect(m.left.kind).toBe('pick-failure');
-      expect(m.center.kind).toBe('disabled');
+      expect(m.center.kind).toBe('retake');
       expect(m.right.kind).toBe('save-success');
     }
   });
@@ -160,13 +160,19 @@ describe('resolveExternalActionMeanings — the #36 state table', () => {
     }
   });
 
-  test('a save in flight disables the RESULT slots (no double save)', () => {
-    const m = resolveExternalActionMeanings(
-      ctx({ phase: 'result', pendingTask: 'fail', isSavingReview: true }),
-    );
-    expect(m.left.kind).toBe('disabled');
-    expect(m.center.kind).toBe('disabled');
-    expect(m.right.kind).toBe('disabled');
+  test('an action in flight disables every external slot regardless of phase', () => {
+    for (const phase of ['ready', 'recording', 'result'] as const) {
+      const m = resolveExternalActionMeanings(
+        ctx({
+          phase,
+          pendingTask: phase === 'result' ? 'fail' : null,
+          isSavingReview: true,
+        }),
+      );
+      expect(m.left.kind).toBe('disabled');
+      expect(m.center.kind).toBe('disabled');
+      expect(m.right.kind).toBe('disabled');
+    }
   });
 });
 
@@ -276,6 +282,7 @@ describe('externalActionMeaningLabel (the HUD words)', () => {
     expect(externalActionMeaningLabel({ kind: 'start' })).toBe('Start');
     expect(externalActionMeaningLabel({ kind: 'stop' })).toBe('Stop');
     expect(externalActionMeaningLabel({ kind: 'pick-failure' })).toBe('Failure');
+    expect(externalActionMeaningLabel({ kind: 'retake' })).toBe('Retake');
     expect(externalActionMeaningLabel({ kind: 'save-success' })).toBe('Success + Save');
     expect(
       externalActionMeaningLabel({
