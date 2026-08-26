@@ -90,3 +90,47 @@ def test_prepare_rejects_oversized_or_unsupported_input(client: TestClient) -> N
     assert bad_language.status_code == 422
     assert too_long.status_code == 422
     assert provider.calls == []
+
+
+def test_asset_download_refuses_symbolic_links(
+    client: TestClient, tmp_path: Path
+) -> None:
+    service = client.app.state.audio_feedback
+    service.cache_dir.mkdir(parents=True, exist_ok=True)
+    asset_id = "a" * 64
+    service.path_for(asset_id).symlink_to(tmp_path / "outside.wav")
+    (tmp_path / "outside.wav").write_bytes(b"not-cache-content")
+
+    response = client.get(f"/api/v1/audio/assets/{asset_id}.wav")
+
+    assert response.status_code == 404
+    assert b"not-cache-content" not in response.content
+
+
+def test_voice_generation_is_deferred_during_recording(
+    client: TestClient, fake_recorder
+) -> None:
+    provider = FakeTtsProvider()
+    client.app.state.audio_feedback.provider = provider
+    fake_recorder.state = "recording"
+
+    response = client.post(
+        "/api/v1/audio/assets",
+        json={
+            "phrases": [
+                {
+                    "key": "success",
+                    "text": "Success",
+                    "language": "en",
+                    "voice": "test-en",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["assets"] == []
+    assert response.json()["errors"] == [
+        "Voice generation is deferred while recording is active"
+    ]
+    assert provider.calls == []

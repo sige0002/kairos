@@ -684,13 +684,10 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     () => dispatch({ type: 'PICK_RESULT', result: 'ok' }),
     [],
   );
-  const pickFailure = useCallback(
-    () => {
-      dispatch({ type: 'PICK_RESULT', result: 'fail' });
-      recordingCues.emit('failure');
-    },
-    [recordingCues],
-  );
+  const pickFailure = useCallback(() => {
+    dispatch({ type: 'PICK_RESULT', result: 'fail' });
+    recordingCues.emit('failure');
+  }, [recordingCues]);
   const pickFailReason = useCallback(
     (reason: string) => dispatch({ type: 'PICK_FAIL_REASON', reason }),
     [],
@@ -740,6 +737,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
             });
             void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
             void queryClient.invalidateQueries({ queryKey: queryKeys.batches });
+            recordingCues.emit(
+              taskResult === 'fail' ? 'failure_reason' : 'success',
+              reason,
+            );
+            recordingCues.emit('save');
             flashSaved(pendingCompletion.index);
             const batchSeq = getStoreSnapshot().batchSeq;
             const seqPart = batchSeq != null ? ` of Batch ${batchSeq}` : '';
@@ -749,6 +751,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
           })
           .catch((err) => {
             setSaveError(err);
+            recordingCues.emit('error');
           })
           .finally(() => {
             savingReviewRef.current = false;
@@ -889,6 +892,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
           // (§12). The result panel stays put with their values intact, so a
           // re-apply is their decision.
           setSaveError(err);
+          recordingCues.emit('error');
           if (needsReload(err)) {
             // The capture moved under us. Refetch it so a re-apply is a
             // compare-and-swap against what is actually stored — never a

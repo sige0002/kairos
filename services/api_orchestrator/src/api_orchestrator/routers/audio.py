@@ -7,7 +7,7 @@ from __future__ import annotations
 import asyncio
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 router = APIRouter(prefix="/api/v1/audio", tags=["audio"])
@@ -46,6 +46,17 @@ async def prepare_assets(body: PrepareRequest, request: Request) -> dict[str, ob
             "assets": [],
             "errors": ["TTS engine is unavailable"],
         }
+    try:
+        recorder_status = await request.app.state.recorder_client.status()
+    except Exception:
+        recorder_status = {}
+    if recorder_status.get("state") in {"armed", "recording", "stopping"}:
+        return {
+            "available": True,
+            "engine": provider.name,
+            "assets": [],
+            "errors": ["Voice generation is deferred while recording is active"],
+        }
     assets: list[dict[str, str]] = []
     errors: list[str] = []
     for phrase in body.phrases:
@@ -74,11 +85,9 @@ async def prepare_assets(body: PrepareRequest, request: Request) -> dict[str, ob
 
 
 @router.get("/assets/{asset_id}.wav")
-async def get_asset(asset_id: str, request: Request) -> FileResponse:
+async def get_asset(asset_id: str, request: Request) -> Response:
     try:
-        path = request.app.state.audio_feedback.path_for(asset_id)
-    except ValueError as exc:
+        data = request.app.state.audio_feedback.read_asset(asset_id)
+    except (ValueError, FileNotFoundError) as exc:
         raise HTTPException(status_code=404, detail="audio asset not found") from exc
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="audio asset not found")
-    return FileResponse(path, media_type="audio/wav")
+    return Response(content=data, media_type="audio/wav")

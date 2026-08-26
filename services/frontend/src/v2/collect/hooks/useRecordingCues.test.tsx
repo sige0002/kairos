@@ -8,6 +8,7 @@ import type { Phase } from '../machine/types';
 import type { RecordingCueKind, RecordingCuePlayer } from '../recordingCues';
 import { useRecordingCues } from './useRecordingCues';
 import {
+  __reloadAudioSettings,
   DEFAULT_AUDIO_SETTINGS,
   setAudioSettings,
 } from '../../audio/settings';
@@ -236,14 +237,16 @@ test('master off and per-event sound controls suppress playback', async () => {
   await act(async () => result.current.notifyFailure());
   expect(played).toEqual([]);
 
-  act(() => setAudioSettings({
-    ...structuredClone(DEFAULT_AUDIO_SETTINGS),
-    master: true,
-    events: {
-      ...structuredClone(DEFAULT_AUDIO_SETTINGS.events),
-      error: { sound: false, voice: false },
-    },
-  }));
+  act(() =>
+    setAudioSettings({
+      ...structuredClone(DEFAULT_AUDIO_SETTINGS),
+      master: true,
+      events: {
+        ...structuredClone(DEFAULT_AUDIO_SETTINGS.events),
+        error: { sound: false, voice: false },
+      },
+    }),
+  );
   await act(async () => result.current.notifyFailure());
   expect(played).toEqual([]);
 });
@@ -294,4 +297,28 @@ test('higher-priority voice interrupts and stale lower-priority voice is dropped
   expect(played.map((audio) => audio.src)).toEqual(['/success.wav', '/error.wav']);
   expect(played[0]!.paused).toBe(true);
   expect(played[1]!.paused).toBe(false);
+});
+
+test('malformed persisted event settings and browser Audio errors never escape Collect', () => {
+  window.localStorage.setItem(
+    'kairos.audio-feedback.v2',
+    JSON.stringify({
+      ...DEFAULT_AUDIO_SETTINGS,
+      master: true,
+      events: { ...DEFAULT_AUDIO_SETTINGS.events, success: null },
+    }),
+  );
+  __reloadAudioSettings();
+  vi.stubGlobal(
+    'Audio',
+    class BrokenAudio {
+      constructor() {
+        throw new Error('audio backend failed');
+      }
+    },
+  );
+  const { player } = fakePlayer();
+  const { result } = renderHook(() => useRecordingCues({ ...baseSignals, player }));
+
+  expect(() => result.current.emit('success')).not.toThrow();
 });
