@@ -223,7 +223,7 @@ define require_images
 	 fi
 endef
 
-.PHONY: up up-nobuild down build build-pull rebuild restart logs ps stop urls msgs-build
+.PHONY: up up-nobuild down build build-pull rebuild restart logs ps stop urls msgs-build compose-check
 up: ## start the stack detached, using existing images (RECORDING_CONFIG-aware)
 	$(call require_images,$(COMPOSE),build)
 	@# Pre-create the RELOCATED exports dir user-owned (a bind mount Docker makes
@@ -303,6 +303,9 @@ rebuild: ## rebuild + recreate service(s) — the "apply my code changes" comman
 
 build-pull: ## rebuild pulling FRESH base images (ros/python/node upstream). NEEDS NETWORK
 	$(COMPOSE) build --pull $(SVC)
+
+compose-check: ## validate Compose files and the shared build proxy/network policy
+	python3 deploy/check_compose_build_policy.py
 
 restart: ## restart service(s): `make restart monitor orchestrator`
 	$(COMPOSE) restart $(SVC)

@@ -21,10 +21,22 @@
 # ROS_DISTRO is overridable: ROS_DISTRO=humble docker compose -f deploy/test/compose.yaml build
 name: kairos-test
 
+# This is a standalone Compose project and therefore cannot reuse the anchor in
+# compose/compose.yaml. deploy/check_compose_build_policy.py keeps it aligned.
+x-build-proxy-args: &build-proxy-args
+  HTTP_PROXY: ${HTTP_PROXY:-${http_proxy:-}}
+  HTTPS_PROXY: ${HTTPS_PROXY:-${https_proxy:-}}
+  NO_PROXY: ${NO_PROXY:-${no_proxy:-}}
+  http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
+  https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
+  no_proxy: ${no_proxy:-${NO_PROXY:-}}
+
 x-ros-common: &ros-common
   build:
     context: .
+    network: host
     args:
+      <<: *build-proxy-args
       ROS_DISTRO: ${ROS_DISTRO:-jazzy}
       ROS_BASE_IMAGE: ${ROS_BASE_IMAGE:-ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9}
   image: kairos-rosbag-player:${KAIROS_VERSION:-dev}-${ROS_DISTRO:-jazzy}

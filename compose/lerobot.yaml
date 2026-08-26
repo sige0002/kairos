@@ -32,11 +32,16 @@ services:
     build:
       context: .
       dockerfile: services/lerobot_exporter/Dockerfile
+      # Keep this standalone overlay aligned with the core build policy; the
+      # build-policy check verifies both proxy casings and host networking.
       network: host
       args:
-        http_proxy: ${http_proxy:-}
-        https_proxy: ${https_proxy:-}
-        no_proxy: ${no_proxy:-}
+        HTTP_PROXY: ${HTTP_PROXY:-${http_proxy:-}}
+        HTTPS_PROXY: ${HTTPS_PROXY:-${https_proxy:-}}
+        NO_PROXY: ${NO_PROXY:-${no_proxy:-}}
+        http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
+        https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
+        no_proxy: ${no_proxy:-${NO_PROXY:-}}
     image: kairos-lerobot-exporter:${KAIROS_VERSION:-dev}
     env_file:
       - path: ${KAIROS_ENV_FILE:-.env}

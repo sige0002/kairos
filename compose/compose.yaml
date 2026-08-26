@@ -62,17 +62,19 @@ x-no-proxy: &no-proxy
   NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
   no_proxy: ${NO_PROXY:-localhost,127.0.0.1}
 
-# Build-time proxy passthrough for the images whose builder stage fetches from
-# the internet: the 4 ROS ones run `uv pip install` against PyPI, and
-# dora_runner additionally builds the vendored bagflow crates (crates.io) and
-# downloads the dora CLI release. They need the same corporate proxy the host
-# uses (empty defaults are a no-op off-proxy). Paired with `build: network: host`
-# below so DNS resolution uses the host's resolver instead of Docker's isolated
-# build-bridge network.
+# Build-time proxy passthrough for every image. Dependency installers differ in
+# which casing they honor, so either host casing populates both forms. Empty
+# defaults are a no-op off-proxy. Paired with `build: network: host` below so a
+# builder can reach host/corporate proxy and DNS infrastructure instead of being
+# isolated behind Docker's build-bridge network. This does not change runtime
+# networking.
 x-build-proxy-args: &build-proxy-args
-  HTTP_PROXY: ${HTTP_PROXY:-}
-  HTTPS_PROXY: ${HTTPS_PROXY:-}
-  NO_PROXY: ${NO_PROXY:-}
+  HTTP_PROXY: ${HTTP_PROXY:-${http_proxy:-}}
+  HTTPS_PROXY: ${HTTPS_PROXY:-${https_proxy:-}}
+  NO_PROXY: ${NO_PROXY:-${no_proxy:-}}
+  http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
+  https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
+  no_proxy: ${no_proxy:-${NO_PROXY:-}}
   # Build identity, baked into every image (make derives it; '-dirty' when the
   # worktree has uncommitted changes). The recorder stamps it into capture
   # sidecars and the console compares both hosts' values — a robot still
@@ -252,6 +254,7 @@ services:
     build:
       context: .
       dockerfile: services/api_orchestrator/Dockerfile
+      network: host
       args:
         <<: *build-proxy-args
     # Release-versioned tag: KAIROS_VERSION comes from the root VERSION file (the
@@ -373,6 +376,9 @@ services:
     build:
       context: .
       dockerfile: services/frontend/Dockerfile
+      network: host
+      args:
+        <<: *build-proxy-args
     image: kairos-frontend:${KAIROS_VERSION:-dev}
     env_file:
       - path: ${KAIROS_ENV_FILE:-.env}

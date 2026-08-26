@@ -148,3 +148,5 @@ jobs:
           EXPORTS_DIR=/tmp/ci-exports docker compose --project-directory . \
             -f compose/compose.yaml -f compose/lerobot.yaml \
             -f compose/lerobot-exports.yaml config -q
+      - name: Compose build proxy/network policy
+        run: make compose-check
