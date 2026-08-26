@@ -11,21 +11,30 @@ import {
   clonePlans,
   findProject,
   findTask,
+  getExternalControls,
+  getExternalControlsInvalid,
   getPlansConflict,
   getFailReasons,
   getPlans,
   adoptServerCatalog,
   resolvePlanIds,
   setFailReasons,
+  setExternalControls,
   setPlans,
   setFailReasonsAndPlans,
   clearFailureShortcutsForReason,
   renameFailureShortcuts,
   withTaskFailureShortcuts,
 } from './plans';
+import {
+  cloneExternalControls,
+  DEFAULT_EXTERNAL_CONTROLS,
+  type ExternalControlsConfig,
+} from './collect/machine/externalControlConfig';
 
 const KEY = 'kairos.v2.plans.v1';
 const FAIL_REASONS_KEY = 'kairos.v2.failreasons.v1';
+const EXTERNAL_CONTROLS_KEY = 'kairos.v2.external-controls.v1';
 
 beforeEach(() => __resetPlansStore());
 
@@ -123,6 +132,7 @@ interface PutCall {
   projects: { name: string }[];
   operators?: string[];
   failure_reasons?: string[];
+  external_controls?: ExternalControlsConfig;
 }
 
 function mockPlansFetch(getBody: unknown, opts: { putFails?: boolean } = {}) {
@@ -133,14 +143,20 @@ function mockPlansFetch(getBody: unknown, opts: { putFails?: boolean } = {}) {
     if (url.includes('/plans') && method === 'GET') {
       const body = getBody as { projects?: unknown } | null;
       return Promise.resolve(
-        jsonResponse({ revision: Array.isArray(body?.projects) ? 1 : 0, ...body }),
+        jsonResponse({
+          revision: Array.isArray(body?.projects) ? 1 : 0,
+          external_controls: DEFAULT_EXTERNAL_CONTROLS,
+          ...body,
+        }),
       );
     }
     if (url.includes('/plans') && method === 'PUT') {
       const body = JSON.parse(String(init?.body)) as PutCall;
       puts.push(body);
       if (opts.putFails) {
-        return Promise.resolve(jsonResponse({ error: { code: 'io', message: 'down' } }, 500));
+        return Promise.resolve(
+          jsonResponse({ error: { code: 'io', message: 'down' } }, 500),
+        );
       }
       return Promise.resolve(
         jsonResponse({ ...body, updated_at: 't1', revision: body.base_revision + 1 }),
@@ -157,11 +173,15 @@ test('a never-set server catalog is seeded from this browser', async () => {
   const puts = mockPlansFetch({ projects: null, updated_at: null });
   ensurePlansSynced();
   await vi.waitFor(() => expect(puts).toHaveLength(1));
-  expect(puts[0]!.projects.map((p) => p.name)).toEqual(DEFAULT_PLANS.map((p) => p.name));
+  expect(puts[0]!.projects.map((p) => p.name)).toEqual(
+    DEFAULT_PLANS.map((p) => p.name),
+  );
 });
 
 test('the server catalog is adopted when no local edits are unsynced', async () => {
-  const server = [{ name: 'Server Project', tasks: [{ name: 'T', conditions: ['C'] }] }];
+  const server = [
+    { name: 'Server Project', tasks: [{ name: 'T', conditions: ['C'] }] },
+  ];
   const puts = mockPlansFetch({
     projects: server,
     failure_reasons: ['Server reason'],
@@ -176,6 +196,87 @@ test('the server catalog is adopted when no local edits are unsynced', async () 
     { name: 'Server Project', tasks: [{ name: 'T', conditions: [{ name: 'C' }] }] },
   ]);
   expect(puts).toHaveLength(0);
+});
+
+test('the server external-control mapping is adopted and persisted', async () => {
+  const configured = cloneExternalControls(DEFAULT_EXTERNAL_CONTROLS);
+  configured.ready = { left: 'start', center: 'none', right: 'none' };
+  const puts = mockPlansFetch({
+    projects: [],
+    failure_reasons: ['Server reason'],
+    operators: [],
+    external_controls: configured,
+    updated_at: 't0',
+  });
+  ensurePlansSynced();
+  await vi.waitFor(() => expect(getExternalControls()).toEqual(configured));
+  expect(JSON.parse(window.localStorage.getItem(EXTERNAL_CONTROLS_KEY)!)).toEqual(
+    configured,
+  );
+  expect(puts).toHaveLength(0);
+});
+
+test('a never-set server external-control mapping is seeded with the safe default', async () => {
+  const puts = mockPlansFetch({
+    projects: [],
+    failure_reasons: ['Server reason'],
+    operators: [],
+    external_controls: null,
+    updated_at: 't0',
+  });
+  ensurePlansSynced();
+  await vi.waitFor(() => expect(puts).toHaveLength(1));
+  expect(puts[0]!.external_controls).toEqual(DEFAULT_EXTERNAL_CONTROLS);
+});
+
+test('external-control edits persist only valid mappings', () => {
+  const configured = cloneExternalControls(DEFAULT_EXTERNAL_CONTROLS);
+  configured.result = {
+    left: 'retake',
+    center: 'success_save',
+    right: 'failure',
+  };
+  setExternalControls(configured);
+  expect(getExternalControls()).toEqual(configured);
+  expect(JSON.parse(window.localStorage.getItem(EXTERNAL_CONTROLS_KEY)!)).toEqual(
+    configured,
+  );
+
+  setExternalControls({ ...configured, schema_version: 2 });
+  expect(getExternalControls()).toEqual(configured);
+});
+
+test('a corrupt stored external-control mapping falls back visibly and safely', () => {
+  window.localStorage.setItem(
+    EXTERNAL_CONTROLS_KEY,
+    JSON.stringify({ schema_version: 1, ready: { left: 'retake' } }),
+  );
+  __rehydratePlansStore();
+  expect(getExternalControls()).toEqual(DEFAULT_EXTERNAL_CONTROLS);
+  expect(getExternalControlsInvalid()).toBe(true);
+  expect(JSON.parse(window.localStorage.getItem(EXTERNAL_CONTROLS_KEY)!)).toEqual(
+    DEFAULT_EXTERNAL_CONTROLS,
+  );
+});
+
+test('a valid offline external-control edit survives reload and wins reconcile', async () => {
+  const local = cloneExternalControls(DEFAULT_EXTERNAL_CONTROLS);
+  local.recording = { left: 'stop', center: 'none', right: 'none' };
+  window.localStorage.setItem(EXTERNAL_CONTROLS_KEY, JSON.stringify(local));
+  window.localStorage.setItem('kairos.v2.plans.dirty.v1', '1');
+  __rehydratePlansStore();
+
+  const puts = mockPlansFetch({
+    projects: [],
+    failure_reasons: ['Server reason'],
+    operators: [],
+    external_controls: DEFAULT_EXTERNAL_CONTROLS,
+    updated_at: 't0',
+  });
+  ensurePlansSynced();
+  await vi.waitFor(() => expect(puts).toHaveLength(1));
+  expect(puts[0]!.external_controls).toEqual(local);
+  expect(getExternalControls()).toEqual(local);
 });
 
 test('an explicitly emptied server catalog is honored (no re-seed)', async () => {
@@ -219,9 +320,7 @@ test('a failed push keeps the dirty flag so the edit retries later', async () =>
 });
 
 test('a 409 keeps the local draft and only an explicit server adopt clears it', async () => {
-  const server = [
-    { project_id: 'server-p', name: 'Server project', tasks: [] },
-  ];
+  const server = [{ project_id: 'server-p', name: 'Server project', tasks: [] }];
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const method = (init?.method ?? 'GET').toUpperCase();
     if (String(input).includes('/plans') && method === 'PUT') {
@@ -232,7 +331,9 @@ test('a 409 keeps the local draft and only an explicit server adopt clears it', 
         ),
       );
     }
-    return Promise.resolve(jsonResponse({ projects: server, revision: 3, updated_at: 't3' }));
+    return Promise.resolve(
+      jsonResponse({ projects: server, revision: 3, updated_at: 't3' }),
+    );
   });
   const local = clonePlans(getPlans());
   local[0]!.name = 'Local draft';
@@ -317,9 +418,9 @@ test('a never-set server vocabulary is seeded from this browser', async () => {
   });
   ensurePlansSynced();
   await vi.waitFor(() => expect(puts).toHaveLength(1));
-  expect(
-    (puts[0] as unknown as { failure_reasons: string[] }).failure_reasons,
-  ).toEqual(DEFAULT_FAIL_REASONS);
+  expect((puts[0] as unknown as { failure_reasons: string[] }).failure_reasons).toEqual(
+    DEFAULT_FAIL_REASONS,
+  );
   // The projects half was still adopted, not clobbered by the seed push.
   expect(getPlans()).toMatchObject([{ name: 'P', tasks: [] }]);
 });
@@ -363,10 +464,12 @@ const TEAM_SERVER = {
  *  is one byte) and the shape private mode has historically taken. */
 function failWritesTo(key: string) {
   const real = window.localStorage.setItem.bind(window.localStorage);
-  return vi.spyOn(Storage.prototype, 'setItem').mockImplementation((k: string, v: string) => {
-    if (k === key) throw new DOMException('exceeded the quota', 'QuotaExceededError');
-    real(k, v);
-  });
+  return vi
+    .spyOn(Storage.prototype, 'setItem')
+    .mockImplementation((k: string, v: string) => {
+      if (k === key) throw new DOMException('exceeded the quota', 'QuotaExceededError');
+      real(k, v);
+    });
 }
 
 /** What each push would put on the server, across ALL THREE shared vocabularies.
@@ -452,7 +555,9 @@ test('a RESTORED catalog with a dirty flag still pushes (the guard is not a mute
   // That claim is backed by something, so it must still reach the server.
   window.localStorage.setItem(
     KEY,
-    JSON.stringify([{ name: 'Real offline edit', tasks: [{ name: 'T', conditions: [] }] }]),
+    JSON.stringify([
+      { name: 'Real offline edit', tasks: [{ name: 'T', conditions: [] }] },
+    ]),
   );
   window.localStorage.setItem(DIRTY, '1');
   const puts = mockPlansFetch(TEAM_SERVER);
@@ -481,7 +586,9 @@ test('an edit made while the reconcile is in flight is kept, not overwritten', a
       puts.push(JSON.parse(String(init?.body)) as PutCall);
       // Failing push: the dirty flag stays set, which is what the reconcile
       // then has to judge.
-      return Promise.resolve(jsonResponse({ error: { code: 'io', message: 'down' } }, 500));
+      return Promise.resolve(
+        jsonResponse({ error: { code: 'io', message: 'down' } }, 500),
+      );
     }
     return gate.then(() => jsonResponse(TEAM_SERVER));
   });
@@ -496,9 +603,11 @@ test('an edit made while the reconcile is in flight is kept, not overwritten', a
   // re-pushes rather than adopting the server copy over the operator's work.
   await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
   expect(getPlans()[0]!.name).toBe('Edited before the sync landed');
-  expect(puts.some((p) => p.projects.some((x) => x.name === 'Edited before the sync landed'))).toBe(
-    true,
-  );
+  expect(
+    puts.some((p) =>
+      p.projects.some((x) => x.name === 'Edited before the sync landed'),
+    ),
+  ).toBe(true);
 });
 
 test('storage that THROWS on every access leaves the store usable', () => {
@@ -564,7 +673,11 @@ test('malformed shortcut values degrade to unassigned, not to a dropped catalog'
           {
             name: 'S',
             conditions: [],
-            failure_shortcuts: { left: 42, center: 'Object dropped', right: { nope: true } },
+            failure_shortcuts: {
+              left: 42,
+              center: 'Object dropped',
+              right: { nope: true },
+            },
           },
         ],
       },
@@ -622,7 +735,13 @@ test('withTaskFailureShortcuts targets one task by task_id', () => {
   });
   // The other task is untouched, and a missing task_id changes nothing.
   expect(next[0]!.tasks[0]!.failure_shortcuts.left).toBe('Grasp missed');
-  expect(withTaskFailureShortcuts(plans, 'task-does-not-exist', next[0]!.tasks[0]!.failure_shortcuts)).toEqual(plans);
+  expect(
+    withTaskFailureShortcuts(
+      plans,
+      'task-does-not-exist',
+      next[0]!.tasks[0]!.failure_shortcuts,
+    ),
+  ).toEqual(plans);
 });
 
 test('setFailReasonsAndPlans updates both halves in ONE edit', () => {

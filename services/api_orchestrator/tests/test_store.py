@@ -616,8 +616,10 @@ class TestCatalogSidecars:
                     updated_at="2026-08-01T00:00:00.000Z",
                     failure_reasons=None,
                     operators=None,
+                    external_controls=None,
                     keep_failure_reasons=False,
                     keep_operators=False,
+                    keep_external_controls=False,
                 )
             except PlanCatalogConflictError:
                 return "conflict"
@@ -627,7 +629,7 @@ class TestCatalogSidecars:
             outcomes = list(executor.map(replace, ("p1", "p2")))
         assert sorted(outcomes) == ["conflict", "saved"]
         catalog = store.get_plan_catalog()
-        assert catalog is not None and catalog[4] == 1
+        assert catalog is not None and catalog[5] == 1
 
     def test_a_saved_template_is_mirrored_to_the_catalog_dir(
         self, store: CaptureStore, tmp_path: Path
@@ -648,14 +650,17 @@ class TestCatalogSidecars:
             updated_at="2026-08-01T00:00:00.000Z",
             failure_reasons=["Robot fault"],
             operators=None,
+            external_controls={"schema_version": 1},
             keep_failure_reasons=False,
             keep_operators=False,
+            keep_external_controls=False,
         )
         sidecar = tmp_path / "catalog" / "plan_catalog.json"
         assert sidecar.is_file()
         mirrored = json.loads(sidecar.read_text())
         assert mirrored["projects"][0]["name"] == "proj"
         assert mirrored["failure_reasons"] == ["Robot fault"]
+        assert mirrored["external_controls"] == {"schema_version": 1}
         assert mirrored["revision"] == 1
 
     def test_catalog_sidecars_restore_into_a_fresh_db(self, tmp_path: Path) -> None:
@@ -667,8 +672,10 @@ class TestCatalogSidecars:
             updated_at="2026-08-01T00:00:00.000Z",
             failure_reasons=["Robot fault"],
             operators=None,
+            external_controls={"schema_version": 1},
             keep_failure_reasons=False,
             keep_operators=False,
+            keep_external_controls=False,
         )
         first.close()
         (tmp_path / "kairos.db").unlink()
@@ -682,7 +689,8 @@ class TestCatalogSidecars:
             {"project_id": "p", "name": "proj", "tasks": []}
         ]
         assert catalog[1] == ["Robot fault"]
-        assert catalog[4] == 1
+        assert catalog[3] == {"schema_version": 1}
+        assert catalog[5] == 1
         second.close()
 
     def test_legacy_plan_sidecar_is_canonicalized_with_stable_ids(
@@ -713,7 +721,7 @@ class TestCatalogSidecars:
         assert project["tasks"][0]["conditions"][0]["condition_id"].startswith(
             "legacy-"
         )
-        assert catalog[4] == 1
+        assert catalog[5] == 1
         assert json.loads(sidecar.read_text())["projects"] == catalog[0]
         store.close()
 

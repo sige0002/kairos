@@ -1,11 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-// The external-operator state table (#36) as pure tests: the meaning of each
-// slot in every Collect state, the key mapping, and the label derivation the
-// HUD renders. No React, no hardware — the table IS the contract.
+// The external-operator resolution (#36, configurable since #43) as pure
+// tests: the meaning of each slot in every Collect state under the safe
+// default AND under rearranged mappings, the key mapping, and the label
+// derivation the HUD renders. No React, no hardware — the resolver IS the
+// contract, and the config (externalControlConfig.ts) only chooses among the
+// actions each state already allows.
 
 import { describe, expect, test } from 'vitest';
 import type { FailureShortcuts } from '../../plans';
+import {
+  DEFAULT_EXTERNAL_CONTROLS,
+  type ExternalControlsConfig,
+} from './externalControlConfig';
 import {
   EXTERNAL_ACTION_KEYS,
   externalActionMeaningLabel,
@@ -21,6 +28,12 @@ const SHORTCUTS: FailureShortcuts = {
 };
 const EMPTY: FailureShortcuts = { left: null, center: null, right: null };
 
+function config(
+  overrides: Partial<ExternalControlsConfig> = {},
+): ExternalControlsConfig {
+  return { ...DEFAULT_EXTERNAL_CONTROLS, ...overrides };
+}
+
 function ctx(overrides: Partial<ExternalActionContext>): ExternalActionContext {
   return {
     phase: 'ready',
@@ -30,6 +43,7 @@ function ctx(overrides: Partial<ExternalActionContext>): ExternalActionContext {
     startEnabled: true,
     stopEnabled: true,
     shortcuts: SHORTCUTS,
+    config: DEFAULT_EXTERNAL_CONTROLS,
     ...overrides,
   };
 }
@@ -173,6 +187,155 @@ describe('resolveExternalActionMeanings — the #36 state table', () => {
       expect(m.center.kind).toBe('disabled');
       expect(m.right.kind).toBe('disabled');
     }
+  });
+});
+
+describe('the configurable mapping (#43)', () => {
+  test('Start can be moved from CENTER to LEFT or RIGHT', () => {
+    const left = resolveExternalActionMeanings(
+      ctx({
+        config: config({ ready: { left: 'start', center: 'none', right: 'none' } }),
+      }),
+    );
+    expect(left.left.kind).toBe('start');
+    expect(left.center.kind).toBe('disabled');
+    expect(left.right.kind).toBe('disabled');
+
+    const right = resolveExternalActionMeanings(
+      ctx({
+        config: config({ ready: { left: 'none', center: 'none', right: 'start' } }),
+      }),
+    );
+    expect(right.right.kind).toBe('start');
+    expect(right.left.kind).toBe('disabled');
+  });
+
+  test('Stop can be moved independently of Start', () => {
+    const m = resolveExternalActionMeanings(
+      ctx({
+        phase: 'recording',
+        config: config({
+          ready: { left: 'start', center: 'none', right: 'none' },
+          recording: { left: 'stop', center: 'none', right: 'none' },
+        }),
+      }),
+    );
+    expect(m.left.kind).toBe('stop');
+    expect(m.center.kind).toBe('disabled');
+    expect(m.right.kind).toBe('disabled');
+  });
+
+  test('Success / Failure / Retake can be rearranged in RESULT', () => {
+    const m = resolveExternalActionMeanings(
+      ctx({
+        phase: 'result',
+        pendingTask: 'ok',
+        config: config({
+          result: { left: 'retake', center: 'success_save', right: 'failure' },
+        }),
+      }),
+    );
+    expect(m.left.kind).toBe('retake');
+    expect(m.center.kind).toBe('save-success');
+    expect(m.right.kind).toBe('pick-failure');
+  });
+
+  test('Retake, mapped to a RESULT channel, is no longer UI-only', () => {
+    const m = resolveExternalActionMeanings(
+      ctx({
+        phase: 'result',
+        pendingTask: null,
+        config: config({
+          result: { left: 'failure', center: 'retake', right: 'success_save' },
+        }),
+      }),
+    );
+    expect(m.center.kind).toBe('retake');
+  });
+
+  test('a RESULT channel mapped to none does nothing', () => {
+    const m = resolveExternalActionMeanings(
+      ctx({
+        phase: 'result',
+        pendingTask: 'ok',
+        config: config({ result: { left: 'none', center: 'none', right: 'none' } }),
+      }),
+    );
+    expect(m.left.kind).toBe('disabled');
+    expect(m.center.kind).toBe('disabled');
+    expect(m.right.kind).toBe('disabled');
+  });
+
+  test('failure-reason slots rearrange independently of their Task content', () => {
+    // The mapping says LEFT reads slot 3, CENTER reads slot 1, RIGHT reads
+    // slot 2 — the Task's reasons stay in their own slots and just follow.
+    const m = resolveExternalActionMeanings(
+      ctx({
+        phase: 'result',
+        pendingTask: 'fail',
+        config: config({
+          failure_reason: {
+            left: 'reason_slot_3',
+            center: 'reason_slot_1',
+            right: 'reason_slot_2',
+          },
+        }),
+      }),
+    );
+    expect(m.left).toEqual({ kind: 'save-failure-reason', reason: 'Wrong placement' });
+    expect(m.center).toEqual({ kind: 'save-failure-reason', reason: 'Grasp missed' });
+    expect(m.right).toEqual({ kind: 'save-failure-reason', reason: 'Object dropped' });
+  });
+
+  test('a reason channel mapped to none is disabled, not unassigned', () => {
+    const m = resolveExternalActionMeanings(
+      ctx({
+        phase: 'result',
+        pendingTask: 'fail',
+        config: config({
+          failure_reason: {
+            left: 'none',
+            center: 'reason_slot_2',
+            right: 'reason_slot_3',
+          },
+        }),
+      }),
+    );
+    expect(m.left.kind).toBe('disabled');
+    expect(m.center.kind).toBe('save-failure-reason');
+    expect(m.right.kind).toBe('save-failure-reason');
+  });
+
+  test('a mapped channel still honors its guard (blocked start does not start)', () => {
+    const m = resolveExternalActionMeanings(
+      ctx({
+        config: config({ ready: { left: 'start', center: 'none', right: 'none' } }),
+        startEnabled: false,
+      }),
+    );
+    expect(m.left.kind).toBe('disabled');
+  });
+
+  test('a mapped channel still honors the stop floor', () => {
+    const m = resolveExternalActionMeanings(
+      ctx({
+        phase: 'recording',
+        config: config({ recording: { right: 'stop', center: 'none', left: 'none' } }),
+        stopEnabled: false,
+      }),
+    );
+    expect(m.right.kind).toBe('disabled');
+  });
+
+  test('takeover disables a mapped channel even in an active state', () => {
+    const m = resolveExternalActionMeanings(
+      ctx({
+        phase: 'ready',
+        config: config({ ready: { left: 'start', center: 'none', right: 'none' } }),
+        takeoverActive: true,
+      }),
+    );
+    expect(m.left.kind).toBe('disabled');
   });
 });
 

@@ -8,11 +8,14 @@
 
 /** One selectable settings section (left menu rail). Order/labels are the
  *  mock's `setSections` — plus "Failure reasons" (post-mock, 2026-08-04: the
- *  fail-reason vocabulary editor, kept next to the other label vocabulary). */
+ *  fail-reason vocabulary editor, kept next to the other label vocabulary)
+ *  and "External controls" (2026-08-26, #43: the channel→action mapping, kept
+ *  next to the failure-reason slots it reads). */
 export const SETTINGS_MENU = [
   'Robots',
   'Projects & tasks',
   'Failure reasons',
+  'External controls',
   'Operators',
   'Recording',
   'Data quality',
@@ -26,5 +29,8 @@ export const SETTINGS_MENU = [
 // store — the single source of truth for both Settings and Collect, so an edit
 // here reflects in Collect immediately. These re-exports keep the existing
 // Settings type names (`PlanProjectData`/`PlanTaskData`).
-export type { PlanProject as PlanProjectData, PlanTask as PlanTaskData } from '../plans';
+export type {
+  PlanProject as PlanProjectData,
+  PlanTask as PlanTaskData,
+} from '../plans';
 export { DEFAULT_PLANS as INITIAL_PLANS, clonePlans } from '../plans';
