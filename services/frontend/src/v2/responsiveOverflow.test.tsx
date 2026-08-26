@@ -72,10 +72,11 @@ test('the episode strip scrolls inside its own container', async () => {
 });
 
 // Collect is an operational console, not a reading column. It must use the
-// available large-monitor workspace while preserving one bounded grid row;
-// otherwise the old 1480/742/600px caps leave most of a 4K screen empty, and
-// the implicit auto row overflows the capped grid by its min-content height.
-test('Collect stays fluid and constrains its desktop grid row', async () => {
+// available large-monitor workspace while preserving one bounded grid row.
+// Its operational sidebar must also retain roughly its original share on a
+// wide screen: a fixed 340px track shrinks to 9% at 4K and becomes unreadable
+// beside the camera wall.
+test('Collect stays fluid with a proportional sidebar and bounded grid row', async () => {
   renderWithClient(<CollectScreen />);
   const layout = await screen.findByTestId('collect-layout');
   const grid = screen.getByTestId('collect-main-grid');
@@ -84,6 +85,9 @@ test('Collect stays fluid and constrains its desktop grid row', async () => {
   expect(layout.className).toContain('lg:w-full');
   expect(layout.className).not.toContain('max-w-');
   expect(layout.className).not.toContain('justify-center');
+  expect(grid.className).toContain(
+    'lg:grid-cols-[minmax(340px,0.3fr)_minmax(0,1fr)]',
+  );
   expect(grid.className).toContain('lg:grid-rows-[minmax(0,1fr)]');
   expect(grid.className).not.toContain('max-h-');
   expect(cameras.className).not.toContain('max-h-');

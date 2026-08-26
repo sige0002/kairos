@@ -160,7 +160,11 @@ export function CollectScreen() {
           // auto row takes the left cards' min-content height instead, so its
           // children can overflow a shorter grid even when the grid itself is
           // constrained. Datasets uses the same minmax(0,1fr) invariant.
-          'grid grid-cols-1 lg:min-h-0 lg:flex-1 lg:grid-cols-[340px_1fr] lg:grid-rows-[minmax(0,1fr)]',
+          // Keep the compact desktop floor at 340px, then preserve the
+          // sidebar's original ~23% share as the viewport widens. A fixed
+          // 340px track becomes only 9% of a 4K screen and leaves operational
+          // controls visually lost beside an oversized camera wall.
+          'grid grid-cols-1 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(340px,0.3fr)_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)]',
           COL_GAP,
         )}
       >

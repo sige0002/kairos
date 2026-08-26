@@ -29,11 +29,12 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
 - **Sensor Preview** — **decode allowlist（既定 無効）。** UI で有効化した小型・固定型（`std_msgs/*` 数値、`sensor_msgs/Imu`・`NavSatFix`・`BatteryState` 等）のみ軽量 decode。
 - **Metrics Publisher** — SSE / JSON で配信。
 
-## QoS 自動マッチ
+## QoS 解決
 
-- `get_publishers_info_by_topic()` で各 publisher の offered QoS を取得して購読を生成する（取りこぼし防止）。
-- 複数 publisher で QoS が異なる場合は互換側に寄せる: いずれかが `best_effort` なら `best_effort`、`durability` は `volatile`、`depth` は小（`keep_last`）。
-- `RECORDING_CONFIG` の `topic_qos_overrides`（パターン一致）が**最優先**。取得不能時のフォールバックは `best_effort` / `keep_last`。
+- `get_publishers_info_by_topic()` で各 publisher の offered QoS を取得し、互換な購読を生成する。
+- monitor は観測者であり publisher の配信保証に参加しない。明示 override がない購読は、publisher が全て `reliable` でも `best_effort` / `volatile` とする。`reliable` publisher → `best_effort` subscriber は互換であり、遅い・遠隔の monitor を publisher の ACK / 再送責務に加えない。
+- `depth` は offered depth を基に `keep_last` で解決し、`monitor.qos_depth` を下限とする。これは executor の一時的な遅延による監視側の過少カウントを抑えるためであり、配信 reliability は追加しない。
+- `RECORDING_CONFIG` の `topic_qos_overrides`（パターン一致）が**最優先**。厳密な監視が必要な topic はここで明示的に `reliable` を選べる。取得不能時のフォールバックは `best_effort` / `keep_last`。
 - publisher endpoint・type・QoS の fingerprint を discovery 周期ごとに比較し、publisher の再起動、消失、QoS 変更時は古い subscription を executor thread 上で破棄して再生成する。初回 QoS を永続利用しない。
 
 ## メトリクス定義

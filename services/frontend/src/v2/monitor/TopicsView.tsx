@@ -103,8 +103,11 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
   const availableNames = useMemo(() => rows.map((r) => r.name), [rows]);
 
   // Layout: one column for a single panel, two columns beyond that; panels share
-  // the left column's height (auto-rows-fr) and the chart height shrinks with the
-  // row count so the whole thing fits without page scroll.
+  // the chart area's height (auto-rows-fr) and the chart height shrinks with the
+  // row count so the whole thing fits without page scroll. On desktop the chart
+  // area takes two shares and is capped at 420px, while the topic table below
+  // takes three shares and all remaining tall-screen space. The table is the
+  // scan/action surface; the graph remains context rather than dominating it.
   const cols = panels.length >= 2 ? 2 : 1;
   const rowCount = Math.ceil(panels.length / cols);
   // Shrink the chart as rows stack so the panels + table fit without page scroll;
@@ -221,7 +224,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
         <div
           data-testid="chart-panels"
           className={cn(
-            'grid min-h-0 flex-1 auto-rows-fr gap-2.5 overflow-hidden',
+            'grid min-h-0 flex-1 auto-rows-fr gap-2.5 overflow-hidden lg:max-h-[420px] lg:flex-[2_1_0%]',
             cols === 2 ? 'grid-cols-2' : 'grid-cols-1',
           )}
         >

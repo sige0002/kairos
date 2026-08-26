@@ -64,7 +64,10 @@ export function TopicsTable({
   const atCap = chartedTopics.length >= MAX_SERIES;
 
   return (
-    <Card className="flex max-h-[270px] shrink-0 flex-col">
+    <Card
+      data-testid="topics-table"
+      className="flex max-h-[270px] shrink-0 flex-col lg:min-h-[270px] lg:max-h-none lg:flex-[3_1_0%]"
+    >
       <div
         className={cn(
           'grid gap-2 border-b border-gray-100 px-[18px] py-2.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500',

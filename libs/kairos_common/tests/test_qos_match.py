@@ -28,10 +28,13 @@ def test_any_best_effort_publisher_forces_best_effort() -> None:
     assert qos.depth == 15
 
 
-def test_all_reliable_publishers_resolve_reliable() -> None:
+def test_all_reliable_publishers_still_use_non_intrusive_best_effort() -> None:
     pubs = [_qos("reliable", depth=10), _qos("reliable", depth=20)]
     qos = resolve_subscription_qos("/topic", pubs)
-    assert qos.reliability == Reliability.reliable.value
+    # A monitor is an observer, not part of the delivery contract. Requesting
+    # reliable here makes a slow or remote monitor eligible for ACK/retry
+    # backpressure on the publisher even though best-effort is compatible.
+    assert qos.reliability == Reliability.best_effort.value
     assert qos.depth == 10
 
 

@@ -31,11 +31,12 @@ A container for **lightweight, non-destructive real-time monitoring** of ROS 2 t
 - **Sensor Preview** — **decode allowlist (disabled by default).** Lightweight decoding only for small, fixed types enabled in the UI (`std_msgs/*` numeric, `sensor_msgs/Imu` / `NavSatFix` / `BatteryState`, etc.).
 - **Metrics Publisher** — publish via SSE / JSON.
 
-## Automatic QoS matching
+## QoS resolution
 
-- Use `get_publishers_info_by_topic()` to obtain each publisher's offered QoS and generate the subscription (to prevent drops).
-- When QoS differs across multiple publishers, lean toward the compatible side: if any is `best_effort`, use `best_effort`; `durability` is `volatile`; `depth` is small (`keep_last`).
-- `topic_qos_overrides` in `RECORDING_CONFIG` (pattern matching) has **highest priority**. The fallback when retrieval is not possible is `best_effort` / `keep_last`.
+- Use `get_publishers_info_by_topic()` to obtain each publisher's offered QoS and generate a compatible subscription.
+- The monitor is an observer and does not participate in the publisher's delivery guarantee. Without an explicit override, subscriptions use `best_effort` / `volatile` even when every publisher is `reliable`. A `reliable` publisher is compatible with a `best_effort` subscriber, and this keeps a slow or remote monitor out of the publisher's ACK / retry obligations.
+- Resolve `depth` as `keep_last` from the offered depths, with `monitor.qos_depth` as the floor. This reduces undercounting on the monitor side during temporary executor delays without adding delivery reliability.
+- `topic_qos_overrides` in `RECORDING_CONFIG` (pattern matching) has **highest priority**. Topics that require strict monitoring can explicitly select `reliable` here. The fallback when retrieval is not possible is `best_effort` / `keep_last`.
 - Compare a fingerprint of publisher endpoint, type, and QoS on every discovery cycle. When a publisher restarts, disappears, or changes QoS, destroy the stale subscription on the executor thread and recreate it; never retain the first QoS forever.
 
 ## Metric definitions
