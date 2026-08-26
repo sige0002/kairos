@@ -30,6 +30,25 @@ expect_failure() {
 expect_failure "replay bag directory does not exist" \
   env E2E_REPLAY_DATA_DIR="$TMP_ROOT" BAG="myrobot/sample" bash "$STACK" replay-check
 
+# The acceptance profile must stay fully disjoint from the shipped 8xxx ports.
+# Check both the source profile and stack.sh's derived URLs: Playwright reads
+# the latter, while Compose and service CORS read the former.
+set -a
+# shellcheck disable=SC1091
+. "$HERE/e2e/stack.env"
+set +a
+[ "$API_ORCH_PORT" = "28000" ]
+[ "$TOPIC_MONITOR_PORT" = "28001" ]
+[ "$WEBRTC_PORT" = "28002" ]
+[ "$TOPIC_PROBE_PORT" = "28003" ]
+[ "$RECORDER_PORT" = "28010" ]
+[ "$DORA_RUNNER_PORT" = "28020" ]
+[ "$FRONTEND_PORT" = "28080" ]
+[ "$CORS_ORIGINS" = "http://localhost:$FRONTEND_PORT" ]
+stack_env="$(bash "$STACK" env)"
+grep -Fqx 'E2E_BASE_URL=http://127.0.0.1:28080' <<<"$stack_env"
+grep -Fqx 'E2E_API_URL=http://127.0.0.1:28000/api/v1' <<<"$stack_env"
+
 mkdir -p "$TMP_ROOT/myrobot/sample"
 expect_failure "replay bag has no metadata.yaml" \
   env E2E_REPLAY_DATA_DIR="$TMP_ROOT" BAG="myrobot/sample" bash "$STACK" replay-check

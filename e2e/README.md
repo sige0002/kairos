@@ -225,8 +225,9 @@ The stack is deliberately **beside**, not instead of, a developer's own
 
 | | dev stack | e2e stack |
 |---|---|---|
-| UI / API | `:8080` / `:8000` | `:18080` / `:18000` |
-| recorder / dora | `:8010` / `:8020` | `:18010` / `:18020` |
+| UI / API | `:8080` / `:8000` | `:28080` / `:28000` |
+| monitor / WebRTC / probe | `:8001` / `:8002` / `:8003` | `:28001` / `:28002` / `:28003` |
+| recorder / dora | `:8010` / `:8020` | `:28010` / `:28020` |
 | `ROS_DOMAIN_ID` | `.env` (0) | 42 |
 | data dir | `./data` | `./e2e/.run/data` (wiped per run) |
 | robot config | `.env` | `airoa_hsr` (the bundled sample) |
@@ -291,14 +292,14 @@ docker save kairos-e2e:<version> | gzip > kairos-e2e-image.tar.gz
 # at the site
 gunzip -c kairos-e2e-image.tar.gz | docker load
 docker run --rm --network host \
-  -e E2E_BASE_URL=http://127.0.0.1:18080 \
+  -e E2E_BASE_URL=http://127.0.0.1:28080 \
   -v "$PWD/e2e/.run:/e2e/.run" kairos-e2e:<version> npx playwright test
 ```
 
 Four things the skill's checklist flags that apply directly here:
 
 - **`--network host`.** Both the stack and the replay harness use host
-  networking; a bridged test container cannot reach `127.0.0.1:18080`.
+  networking; a bridged test container cannot reach `127.0.0.1:28080`.
 - **The data dir must be mounted.** The secondary assertions read
   `objects/<id>/object_manifest.json` and `lifecycle.jsonl` off the host
   filesystem — without the mount, four of the five scenarios lose their
