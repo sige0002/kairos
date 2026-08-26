@@ -202,7 +202,7 @@ capture 一覧には**決して現れない 2 つの最悪の状態**を可視�
 - rebuild が読めなかった manifest — その capture には行が無い（[capture_store](capture_store.md) §8.2 規則 4 が「無い」ことにするのを禁じている）ので、一覧に出しようがない。
 - 一度に大量のコピーが消えたために適用を拒否した reconciler パス — このときカタログは**正常に見える**のに、ディスクはそうではない。
 
-- `GET /api/v1/store/health` → `{ instance_id, state: "ok"|"suspect", suspect_reason?, suspect_at?, delete_available, delete_unavailable_reason?, rebuilt_at?, rebuild_summary?, corrupt: [{capture_id?, path, reason}], corrupt_source: "rebuild"|"reconcile", corrupt_observed_at?, warnings: [], last_reconcile_at?, last_reconcile? }`。
+- `GET /api/v1/store/health` → `{ instance_id, state: "ok"|"suspect", suspect_reason?, suspect_at?, delete_available, delete_unavailable_reason?, rebuilt_at?, rebuild_summary?, corrupt: [{capture_id?, path, reason}], corrupt_source: "rebuild"|"reconcile", corrupt_observed_at?, warnings: [], dismissible_warnings: [], last_reconcile_at?, last_reconcile? }`。`dismissible_warnings` は global banner でローカル acknowledgement を許す `warnings` の部分集合で、現在は batch counter の lower-bound 通知だけを含む。dataset archive destination conflict や batch identity collision など、それ以外の rebuild 警告は含めず永続表示する。
   - corrupt リストは 1 本で、**最新の「完走した」スキャンが勝つ**。観測できなかったパス（marker 不一致・ledger 不読）は、保持しているリストを**クリアせずそのまま保つ**（見えなかったことを「全部きれいだった」と報告しない）。閾値でブロックされたパスも、見た内容は報告する。
 - `POST /api/v1/store/reconcile` — 整合パスを今すぐ 1 回走らせて結果を返す（背景ループと同じパス。マウントを直した operator が間隔を待たずに済むように、またテストが sleep でなく決定的に駆動できるように公開している）。
 - `POST /api/v1/store/repair` — SUSPECT を解除する operator の承認。**volume marker が読めないときは `409 volume_unidentified` で拒否する** — ラッチは「ボリュームごと消えた」と「ファイルが消えた」を区別できないことを理由に存在するので、どのボリュームを承認しているのか名指しできない承認は承認ではない。解除後は `approved=True` で 1 パス走らせる（通常パスを走らせ直すと同じ閾値で再ラッチし、Repair が何もしないボタンになるため）。

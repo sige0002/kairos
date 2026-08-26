@@ -344,9 +344,11 @@ def create_orchestrator_app(
                 # have to know the catalog is reconstructed in two passes.
                 # Batches first: they are plain rows with no cross-references,
                 # and a dataset warning should not be lost to a batch failure.
+                batch_report = batch_service.restore_from_ledger()
+                dataset_report = dataset_service.restore_from_ledger()
                 health.add_rebuild_warnings(
-                    batch_service.restore_from_ledger().warnings
-                    + dataset_service.restore_from_ledger().warnings
+                    batch_report.warnings + dataset_report.warnings,
+                    dismissible=batch_report.dismissible_warnings,
                 )
             except ledger_v2.LedgerUnreadableError as exc:
                 # The same refusal bootstrap_store makes, for the same reason

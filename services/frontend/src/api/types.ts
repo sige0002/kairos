@@ -984,6 +984,9 @@ export interface StoreHealth {
   corrupt_source?: 'rebuild' | 'reconcile' | null;
   corrupt_observed_at?: string | null;
   warnings: string[];
+  /** Subset of rebuild warnings that the global banner may acknowledge
+   *  locally. Warnings absent from this list remain persistent. */
+  dismissible_warnings?: string[];
   last_reconcile_at?: string | null;
   last_reconcile?: Record<string, unknown> | null;
 }
