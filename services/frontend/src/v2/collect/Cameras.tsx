@@ -138,7 +138,10 @@ export function Cameras({
 
   if (panes.length === 0) {
     return (
-      <div className="flex flex-1 items-center justify-center rounded-card border border-gray-200 bg-[#1f2937]">
+      <div
+        data-testid="collect-camera-grid"
+        className="flex flex-1 items-center justify-center rounded-card border border-gray-200 bg-[#1f2937]"
+      >
         <span className="font-mono text-xs text-gray-500">
           No cameras configured for this robot.
         </span>
@@ -152,14 +155,9 @@ export function Cameras({
   const hasCol2 = subs.length > 0 || addVisible;
 
   return (
-    // max-h caps the camera area's height on tall/large screens so a small
-    // (e.g. 640×480) stream isn't stretched to fill the whole column — object-
-    // contain would otherwise upscale it to dominate the screen. The cap sits
-    // above the compact 1366×768 height (~534px) so it's a no-op there and only
-    // engages on larger displays; the freed vertical space lets the column
-    // breathe. Width is bounded by CollectScreen's console max-width.
     <div
-      className="grid min-h-0 flex-1 gap-2 lg:max-h-[600px]"
+      data-testid="collect-camera-grid"
+      className="grid min-h-0 flex-1 gap-2"
       style={{
         gridTemplateColumns: hasCol2 ? '2fr 1fr' : '1fr',
         gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,

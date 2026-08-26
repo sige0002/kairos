@@ -147,50 +147,20 @@ export function CollectScreen() {
   }
 
   return (
-    // Cap the console width and center it on large screens. Without a cap the
-    // right column's `1fr` track (and thus the camera tile) grows unbounded — a
-    // 640×480 preview balloons to ~1440px wide on a 2560 display. ~1480px keeps
-    // the whole console (context bar + both columns) aligned and centered, and
-    // holds the main camera tile near its 4:3 source aspect. Below the cap
-    // (≤1366) it's a no-op, so the compact single-page layout is unchanged.
-    //
-    // Scroll fallback, scoped to the ≥900 band (where `justify-center` +
-    // `max-h-742` engage): there we switch `h-full` → `h-auto`/`min-h-full` so
-    // the console can grow PAST the viewport and the enclosing overflow-auto tab
-    // panel scrolls to it, instead of `justify-center` clipping both the context
-    // bar's top and the Batch-stats footnote with no way to reach them (verified
-    // clipped at 1440×900). Below 900 the console keeps `h-full` so the grid's
-    // flex-1 fill + the left column's own internal scroll are unchanged (the
-    // ControlCard stays pinned; no page scroll at 1366×768).
     <div
-      className={cn(
-        'flex flex-col lg:mx-auto lg:h-full lg:min-h-0 lg:w-full lg:max-w-[1480px]',
-        '[@media(min-height:900px)]:lg:h-auto [@media(min-height:900px)]:lg:min-h-full',
-        // On tall viewports the capped camera height frees vertical space; center
-        // the console block so that space is shared top and bottom (an
-        // intentional centered console) rather than pinned to the top. Gated on
-        // min-height so the short 1366×768 layout — which relies on the grid row
-        // filling and the left cards scrolling internally — is untouched.
-        '[@media(min-height:900px)]:lg:justify-center',
-        COL_GAP,
-      )}
+      data-testid="collect-layout"
+      className={cn('flex flex-col lg:h-full lg:min-h-0 lg:w-full', COL_GAP)}
     >
       <ScreenTitle>Collect</ScreenTitle>
       <ContextBar machine={machine} />
       <div
+        data-testid="collect-main-grid"
         className={cn(
-          'grid grid-cols-1 lg:min-h-0 lg:flex-1 lg:grid-cols-[340px_1fr]',
-          // Paired with the console's min-height centering: CAP the row's height
-          // on tall screens (742px = the console's natural height at the 600px
-          // camera cap + episode strip) instead of flex-none'ing it. flex-1 +
-          // max-h means: when the viewport has room the row stops at its natural
-          // height and the centering has slack to distribute; when it does NOT
-          // (e.g. a ~900px-tall window, where flex-none used to overflow by
-          // ~22px and justify-center clipped the context bar's top AND the batch
-          // stats' bottom), the row shrinks to fit and the left column falls
-          // back to its internal scroll — nothing is ever clipped. Short screens
-          // (<900) are untouched: plain lg:flex-1 fill + internal scroll.
-          '[@media(min-height:900px)]:lg:max-h-[742px]',
+          // Pin the one desktop grid row to the available height. An implicit
+          // auto row takes the left cards' min-content height instead, so its
+          // children can overflow a shorter grid even when the grid itself is
+          // constrained. Datasets uses the same minmax(0,1fr) invariant.
+          'grid grid-cols-1 lg:min-h-0 lg:flex-1 lg:grid-cols-[340px_1fr] lg:grid-rows-[minmax(0,1fr)]',
           COL_GAP,
         )}
       >

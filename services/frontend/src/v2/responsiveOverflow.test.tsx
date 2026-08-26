@@ -71,6 +71,24 @@ test('the episode strip scrolls inside its own container', async () => {
   expect(ancestorWith(count, 'overflow-x-auto')).not.toBeNull();
 });
 
+// Collect is an operational console, not a reading column. It must use the
+// available large-monitor workspace while preserving one bounded grid row;
+// otherwise the old 1480/742/600px caps leave most of a 4K screen empty, and
+// the implicit auto row overflows the capped grid by its min-content height.
+test('Collect stays fluid and constrains its desktop grid row', async () => {
+  renderWithClient(<CollectScreen />);
+  const layout = await screen.findByTestId('collect-layout');
+  const grid = screen.getByTestId('collect-main-grid');
+  const cameras = screen.getByTestId('collect-camera-grid');
+
+  expect(layout.className).toContain('lg:w-full');
+  expect(layout.className).not.toContain('max-w-');
+  expect(layout.className).not.toContain('justify-center');
+  expect(grid.className).toContain('lg:grid-rows-[minmax(0,1fr)]');
+  expect(grid.className).not.toContain('max-h-');
+  expect(cameras.className).not.toContain('max-h-');
+});
+
 // Monitor measured 502px at 375px. The outer row ALREADY wrapped before this
 // change; the seven-button sub-view group nested inside it did not, and that
 // group is the whole Monitor half of the fix.
