@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review, Publish, and Run"
+  short_description: "Review, publish, build, and start kairos safely"
+  default_prompt: "Use $review-publish-run to review the finished change, run its gates, commit and push it, then build and start kairos."
