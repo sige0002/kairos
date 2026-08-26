@@ -2,9 +2,11 @@
 // Copyright 2026 Sadasue Yuki
 // Non-blocking global notice for conditions invisible in a capture list.
 
+import { useState } from 'react';
 import { useUiStore } from '../../store/uiStore';
 import { cn } from '../../components/ui';
 import { useStoreHealth } from './useStoreHealth';
+import type { StoreHealth } from '../../api/types';
 
 function observedBy(health: {
   corrupt_source?: 'rebuild' | 'reconcile' | null;
@@ -22,6 +24,40 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'The request failed.';
 }
 
+function informationalNoticeKey(health: StoreHealth): string | null {
+  if (health.state !== 'ok') return null;
+  if (health.corrupt.length !== 0) return null;
+  if (health.delete_available !== true) return null;
+  if (health.warnings.length === 0) return null;
+
+  const rebuiltAt = health.rebuilt_at?.trim();
+  if (!rebuiltAt) return null;
+
+  return `kairos.store-health.notice.v1:${JSON.stringify([
+    health.instance_id,
+    rebuiltAt,
+    health.warnings,
+  ])}`;
+}
+
+function safeIsAcknowledged(key: string): boolean {
+  try {
+    return window.localStorage.getItem(key) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function safeSetAcknowledged(key: string): boolean {
+  try {
+    window.localStorage.setItem(key, '1');
+    return true;
+  } catch {
+    // Ignore storage errors; banner remains visible.
+    return false;
+  }
+}
+
 /**
  * A compact status strip for every main and solo screen. It intentionally has
  * no Repair action: repair is an acknowledgement with storage consequences and
@@ -30,6 +66,7 @@ function errorMessage(error: unknown): string {
  */
 export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
   const query = useStoreHealth();
+  const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   const setActiveTab = useUiStore((s) => s.setActiveTab);
   const health = query.data;
 
@@ -51,13 +88,19 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
         data-state="loading"
         className="my-2.5 flex items-center gap-2 rounded-control border border-gray-200 bg-white px-3 py-2 text-[12px] text-gray-600"
       >
-        <span className="animate-pulse" aria-hidden="true">●</span>
+        <span className="animate-pulse" aria-hidden="true">
+          ●
+        </span>
         Checking store health…
       </div>
     );
   }
 
-  if (query.isError || !health || (health.state !== 'ok' && health.state !== 'suspect')) {
+  if (
+    query.isError ||
+    !health ||
+    (health.state !== 'ok' && health.state !== 'suspect')
+  ) {
     return (
       <div
         role="status"
@@ -67,7 +110,9 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
       >
         <span className="font-semibold">Store status unavailable.</span>
         <span>Nothing is known; this is not an all-clear.</span>
-        {query.isError && <span className="text-amber-800">{errorMessage(query.error)}</span>}
+        {query.isError && (
+          <span className="text-amber-800">{errorMessage(query.error)}</span>
+        )}
         <button
           type="button"
           data-testid="store-health-banner-retry"
@@ -83,7 +128,24 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
 
   const corruptCount = health.corrupt.length;
   const hasWarnings = health.warnings.length > 0;
-  if (health.state === 'ok' && corruptCount === 0 && !hasWarnings) return null;
+  const deleteUnavailable = health.delete_available !== true;
+
+  if (
+    health.state === 'ok' &&
+    corruptCount === 0 &&
+    !hasWarnings &&
+    !deleteUnavailable
+  ) {
+    return null;
+  }
+
+  const noticeKey = informationalNoticeKey(health);
+
+  if (noticeKey) {
+    if (dismissedKey === noticeKey || safeIsAcknowledged(noticeKey)) {
+      return null;
+    }
+  }
 
   const suspect = health.state === 'suspect';
   return (
@@ -111,6 +173,12 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
         </span>
       )}
       {hasWarnings && <span>{health.warnings.join(' ')}</span>}
+      {deleteUnavailable && (
+        <span>
+          Delete unavailable:{' '}
+          {health.delete_unavailable_reason ?? 'No reason was reported.'}
+        </span>
+      )}
       <button
         type="button"
         data-testid="store-health-banner-monitor"
@@ -119,6 +187,20 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
       >
         Open Monitor
       </button>
+      {noticeKey && (
+        <button
+          type="button"
+          data-testid="store-health-banner-dismiss"
+          onClick={() => {
+            if (safeSetAcknowledged(noticeKey)) {
+              setDismissedKey(noticeKey);
+            }
+          }}
+          className="font-semibold underline underline-offset-2"
+        >
+          Dismiss
+        </button>
+      )}
     </div>
   );
 }
