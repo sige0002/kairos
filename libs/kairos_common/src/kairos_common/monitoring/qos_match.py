@@ -9,10 +9,9 @@ section):
 
 1. If RECORDING_CONFIG ``topic_qos_overrides`` matches the topic (first match
    wins), that override takes precedence — operators get the final say.
-2. Otherwise use ``best_effort`` reliability even when every publisher is
-   reliable. A monitoring reader is an observer, not part of the delivery
-   contract: best-effort is compatible with both publisher kinds and avoids
-   making a slow or remote monitor eligible for reliable ACK/retry backpressure.
+2. Otherwise auto-match from the offered QoS of every publisher: if *any*
+   publisher offers ``best_effort`` we subscribe ``best_effort`` (the compatible
+   side — a best_effort sub receives from both reliable and best_effort pubs);
    ``durability`` is ``volatile``; ``depth`` is the smallest offered (keep_last)
    but no shallower than ``default_depth`` (the floor). A depth-1 subscriber was
    field-measured undercounting a bursty topic (27 Hz observed vs 46.6 Hz true):
@@ -113,11 +112,14 @@ def resolve_subscription_qos(
             depth=default_depth,
         )
 
-    # Non-intrusive observer: best-effort receives from both reliable and
-    # best-effort publishers without adding this monitor to a reliable writer's
-    # ACK/retry contract. Sites that explicitly require reliable monitoring can
-    # still opt in through topic_qos_overrides above.
-    reliability = Reliability.best_effort.value
+    # Compatible side: best_effort if ANY publisher is best_effort (a best_effort
+    # subscriber is compatible with both reliable and best_effort publishers).
+    any_best_effort = any(
+        p.reliability == Reliability.best_effort.value for p in publishers
+    )
+    reliability = (
+        Reliability.best_effort.value if any_best_effort else Reliability.reliable.value
+    )
 
     # Durability volatile: a volatile subscriber is compatible with both volatile
     # and transient_local publishers, and we do not want replayed history.
