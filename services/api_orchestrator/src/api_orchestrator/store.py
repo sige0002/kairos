@@ -2698,8 +2698,18 @@ class CaptureStore:
 
     def get_plan_catalog(
         self,
-    ) -> tuple[list[Any], list[str] | None, list[str] | None, str, int] | None:
-        """``(projects, failure_reasons, operators, updated_at, revision)``.
+    ) -> (
+        tuple[
+            list[Any],
+            list[str] | None,
+            list[str] | None,
+            dict[str, Any] | None,
+            str,
+            int,
+        ]
+        | None
+    ):
+        """Catalog fields plus ``updated_at`` and ``revision``.
 
         ``None`` is distinct from an explicitly emptied catalog (``([], ts)``):
         the client seeds the server from its local copy only in the never-set
@@ -2718,7 +2728,17 @@ class CaptureStore:
     @staticmethod
     def _plan_catalog_from_row(
         row: sqlite3.Row | None,
-    ) -> tuple[list[Any], list[str] | None, list[str] | None, str, int] | None:
+    ) -> (
+        tuple[
+            list[Any],
+            list[str] | None,
+            list[str] | None,
+            dict[str, Any] | None,
+            str,
+            int,
+        ]
+        | None
+    ):
         if row is None:
             return None
         try:
@@ -2727,7 +2747,7 @@ class CaptureStore:
             return None
         if isinstance(payload, list):  # pre-failure_reasons payload shape
             projects = _canonical_plan_projects(payload)
-            return projects, None, None, row["updated_at"], int(row["revision"])
+            return projects, None, None, None, row["updated_at"], int(row["revision"])
         if not isinstance(payload, dict) or not isinstance(
             payload.get("projects"), list
         ):
@@ -2743,6 +2763,11 @@ class CaptureStore:
             _canonical_plan_projects(payload["projects"]),
             _str_list("failure_reasons"),
             _str_list("operators"),
+            (
+                payload["external_controls"]
+                if isinstance(payload.get("external_controls"), dict)
+                else None
+            ),
             row["updated_at"],
             int(row["revision"]),
         )
@@ -2755,9 +2780,18 @@ class CaptureStore:
         updated_at: str,
         failure_reasons: list[str] | None,
         operators: list[str] | None,
+        external_controls: dict[str, Any] | None,
         keep_failure_reasons: bool,
         keep_operators: bool,
-    ) -> tuple[list[Any], list[str] | None, list[str] | None, str, int]:
+        keep_external_controls: bool,
+    ) -> tuple[
+        list[Any],
+        list[str] | None,
+        list[str] | None,
+        dict[str, Any] | None,
+        str,
+        int,
+    ]:
         """CAS-replace the catalog and then best-effort mirror it to disk.
 
         The read, revision check and INSERT/UPDATE share one SQLite write
@@ -2767,7 +2801,15 @@ class CaptureStore:
         """
         conflict: PlanCatalogConflictError | None = None
         result: (
-            tuple[list[Any], list[str] | None, list[str] | None, str, int] | None
+            tuple[
+                list[Any],
+                list[str] | None,
+                list[str] | None,
+                dict[str, Any] | None,
+                str,
+                int,
+            ]
+            | None
         ) = None
         with self._conn() as conn:
             # The in-process connection lock serializes ordinary requests; the
@@ -2778,7 +2820,7 @@ class CaptureStore:
                 "SELECT payload, updated_at, revision FROM plan_catalog WHERE id = 1"
             ).fetchone()
             current = self._plan_catalog_from_row(row)
-            current_revision = 0 if current is None else current[4]
+            current_revision = 0 if current is None else current[5]
             if current_revision != base_revision:
                 conflict = PlanCatalogConflictError(current_revision)
             else:
@@ -2790,12 +2832,18 @@ class CaptureStore:
                 effective_operators = (
                     current[2] if keep_operators and current is not None else operators
                 )
+                effective_external_controls = (
+                    current[3]
+                    if keep_external_controls and current is not None
+                    else external_controls
+                )
                 revision = current_revision + 1
                 payload = json.dumps(
                     {
                         "projects": projects,
                         "failure_reasons": effective_reasons,
                         "operators": effective_operators,
+                        "external_controls": effective_external_controls,
                     },
                     ensure_ascii=False,
                 )
@@ -2824,6 +2872,7 @@ class CaptureStore:
                         projects,
                         effective_reasons,
                         effective_operators,
+                        effective_external_controls,
                         updated_at,
                         revision,
                     )
@@ -2865,6 +2914,7 @@ class CaptureStore:
         projects: list[Any],
         failure_reasons: list[str] | None,
         operators: list[str] | None,
+        external_controls: dict[str, Any] | None,
         updated_at: str,
         revision: int,
     ) -> None:
@@ -2879,6 +2929,7 @@ class CaptureStore:
                     "projects": projects,
                     "failure_reasons": failure_reasons,
                     "operators": operators,
+                    "external_controls": external_controls,
                     "updated_at": updated_at,
                     "revision": revision,
                 },
@@ -2929,6 +2980,11 @@ class CaptureStore:
 
             reasons = _side_list("failure_reasons")
             side_operators = _side_list("operators")
+            side_external_controls = (
+                plan["external_controls"]
+                if isinstance(plan.get("external_controls"), dict)
+                else None
+            )
             # A pre-CAS sidecar has no revision. It is nevertheless an already
             # saved catalog, so it starts at 1; only a missing row means 0.
             side_revision = plan.get("revision")
@@ -2950,6 +3006,7 @@ class CaptureStore:
                                 "projects": projects,
                                 "failure_reasons": reasons,
                                 "operators": side_operators,
+                                "external_controls": side_external_controls,
                             },
                             ensure_ascii=False,
                         ),
@@ -2964,6 +3021,7 @@ class CaptureStore:
                 projects,
                 reasons,
                 side_operators,
+                side_external_controls,
                 plan.get("updated_at") or utc_now_iso8601(),
                 revision,
             )

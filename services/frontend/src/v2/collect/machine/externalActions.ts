@@ -2,15 +2,26 @@
 // Copyright 2026 Sadasue Yuki
 // The three logical external operator actions (LEFT / CENTER / RIGHT) — the
 // vendor-neutral vocabulary a foot pedal (or a keyboard) can trigger during
-// collection (#36). Pure resolution: ONE function derives the CURRENT meaning
-// of each slot from the machine state, and BOTH the HUD and the shortcut
-// handler consume it, so the display can never drift from the behavior.
+// collection (#36, configurable per Collect state since #43). Pure
+// resolution: ONE function derives the CURRENT meaning of each slot from the
+// machine state AND the validated external-control mapping, and BOTH the HUD
+// and the shortcut handler consume it, so the display can never drift from the
+// behavior — including after a layout change.
+//
+// The mapping (externalControlConfig.ts) only CHOOSES among the actions the
+// current state already allows; it grants nothing. The live guards below
+// (takeover, save in flight, start/stop floors) always win over the mapping,
+// and the state machine downstream remains the final authority.
 //
 // No hardware is assumed: the slots describe the logical action, and the
 // documented chords (Ctrl+Alt+1/2/3) are what a programmable HID pedal maps
 // its three switches onto. Kairos detects nothing about any device.
 
 import type { FailureShortcuts } from '../../plans';
+import type {
+  ExternalControlAction,
+  ExternalControlsConfig,
+} from './externalControlConfig';
 import type { Phase } from './types';
 
 export const EXTERNAL_ACTION_SLOTS = ['left', 'center', 'right'] as const;
@@ -42,7 +53,22 @@ export interface ExternalActionContext {
   stopEnabled: boolean;
   /** The current Task's configured slots (null = unassigned). */
   shortcuts: FailureShortcuts;
+  /** The validated channel→action mapping for each state (#43). Always a
+   *  trusted config: the store falls back to the safe default for anything
+   *  it cannot read, so an invalid mapping never reaches this resolver. */
+  config: ExternalControlsConfig;
 }
+
+/** Which of the Task's three reason slots each `reason_slot_N` action names.
+ *  The mapping chooses WHICH slot a channel reads; the Task's
+ *  `failure_shortcuts` still decides WHAT reason each slot holds (#35). */
+const REASON_SLOT_TO_SHORTCUT: Partial<
+  Record<ExternalControlAction, keyof FailureShortcuts>
+> = {
+  reason_slot_1: 'left',
+  reason_slot_2: 'center',
+  reason_slot_3: 'right',
+};
 
 const DISABLED: ExternalSlotMeaning = { kind: 'disabled' };
 
@@ -50,21 +76,25 @@ function allDisabled(): ExternalActionMeanings {
   return { left: DISABLED, center: DISABLED, right: DISABLED };
 }
 
-/** The state table of #36, as one pure function.
+/** The external-control table of #36/#43, as one pure function.
  *
- *   READY:            CENTER = Start
- *   RECORDING:        CENTER = Stop
+ *   READY:            the channel mapped to `start` starts
+ *                     (disabled while the start gates are not cleared)
+ *   RECORDING:        the channel mapped to `stop` stops
+ *                     (disabled inside the stop floor)
  *   SAVING/QUICKCHECK/ARMING/PAUSED/ENDED/COMPLETED: all disabled
- *   RESULT (before Failure): LEFT = Failure, CENTER = Retake,
- *                            RIGHT = Success + Save
- *   RESULT (Failure selected): LEFT/CENTER/RIGHT = the Task's three
- *                              configured reasons + Save (null slot =
+ *   RESULT (before Failure): the channels mapped to `failure` / `retake` /
+ *                            `success_save`
+ *   RESULT (Failure selected): the channels mapped to `reason_slot_N` save
+ *                              that slot's Task reason + Save (empty slot =
  *                              unassigned: feedback only, never a save,
  *                              never a silent "Other" fallback)
  *   takeover / action in flight: all disabled
  *
- * Failure-reason meanings are ONLY reachable once Failure has been selected —
- * pressing a slot in READY or RECORDING can never stamp a reason. */
+ * A channel mapped to `none` (or to an action whose gate is closed) is
+ * `disabled` — it does nothing, which is what the HUD shows. Failure-reason
+ * meanings are ONLY reachable once Failure has been selected — pressing a
+ * slot in READY or RECORDING can never stamp a reason, whatever the mapping. */
 export function resolveExternalActionMeanings(
   ctx: ExternalActionContext,
 ): ExternalActionMeanings {
@@ -75,31 +105,63 @@ export function resolveExternalActionMeanings(
   if (ctx.takeoverActive || ctx.isSavingReview) return allDisabled();
 
   if (ctx.phase === 'ready') {
+    const resolve = (slot: ExternalActionSlot): ExternalSlotMeaning =>
+      ctx.config.ready[slot] === 'start' && ctx.startEnabled
+        ? { kind: 'start' }
+        : DISABLED;
     return {
-      left: DISABLED,
-      center: ctx.startEnabled ? { kind: 'start' } : DISABLED,
-      right: DISABLED,
+      left: resolve('left'),
+      center: resolve('center'),
+      right: resolve('right'),
     };
   }
   if (ctx.phase === 'recording') {
+    const resolve = (slot: ExternalActionSlot): ExternalSlotMeaning =>
+      ctx.config.recording[slot] === 'stop' && ctx.stopEnabled
+        ? { kind: 'stop' }
+        : DISABLED;
     return {
-      left: DISABLED,
-      center: ctx.stopEnabled ? { kind: 'stop' } : DISABLED,
-      right: DISABLED,
+      left: resolve('left'),
+      center: resolve('center'),
+      right: resolve('right'),
     };
   }
   if (ctx.phase === 'result') {
     if (ctx.pendingTask === 'fail') {
-      const slot = (s: ExternalActionSlot): ExternalSlotMeaning =>
-        ctx.shortcuts[s] === null
+      const resolve = (slot: ExternalActionSlot): ExternalSlotMeaning => {
+        const shortcutKey = REASON_SLOT_TO_SHORTCUT[ctx.config.failure_reason[slot]];
+        if (shortcutKey === undefined) return DISABLED;
+        const reason = ctx.shortcuts[shortcutKey];
+        return reason === null
           ? { kind: 'unassigned' }
-          : { kind: 'save-failure-reason', reason: ctx.shortcuts[s]! };
-      return { left: slot('left'), center: slot('center'), right: slot('right') };
+          : { kind: 'save-failure-reason', reason };
+      };
+      return {
+        left: resolve('left'),
+        center: resolve('center'),
+        right: resolve('right'),
+      };
     }
+    const resolve = (slot: ExternalActionSlot): ExternalSlotMeaning => {
+      switch (ctx.config.result[slot]) {
+        case 'success_save':
+          return { kind: 'save-success' };
+        case 'failure':
+          return { kind: 'pick-failure' };
+        case 'retake':
+          return { kind: 'retake' };
+        case 'none':
+          return DISABLED;
+      }
+      // The validated config makes this unreachable. Keep the resolver
+      // fail-closed if a future action expands the shared union without also
+      // defining its RESULT behavior here.
+      return DISABLED;
+    };
     return {
-      left: { kind: 'pick-failure' },
-      center: { kind: 'retake' },
-      right: { kind: 'save-success' },
+      left: resolve('left'),
+      center: resolve('center'),
+      right: resolve('right'),
     };
   }
   // arming, saving, quickcheck, paused, ended, completed

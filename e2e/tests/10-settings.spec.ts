@@ -34,6 +34,7 @@ import { expect, test } from "@playwright/test";
 import { api } from "../fixtures/api";
 import { repoConfig } from "../fixtures/config";
 import {
+  ensureOperator,
   openRecordingJsonEditor,
   openRecordingSettings,
   openTab,
@@ -203,4 +204,66 @@ test("Settings: the recording config loads, a broken edit is refused, and a save
     repoConfig.read(before.path),
     "the acceptance run left the tracked recording config rewritten",
   ).toBe(originalBytes);
+});
+
+test("Settings: external-control mapping reaches Collect's effective HUD", async ({
+  page,
+}) => {
+  let original: Awaited<ReturnType<typeof api.plansCatalog>> | null = null;
+  let changed = false;
+
+  try {
+    await openTab(page, "settings");
+    await page.getByTestId("settings-menu-item-3").click();
+    await expect(page.getByTestId("settings-ext-controls")).toBeVisible();
+    // A never-set installation seeds all catalog halves on this first mount.
+    // Snapshot only after that reconcile, so cleanup restores an actual saved
+    // catalog rather than inventing an empty replacement for `projects: null`.
+    await expect
+      .poll(async () => (await api.plansCatalog()).external_controls)
+      .not.toBeNull();
+    original = await api.plansCatalog();
+
+    // Moving Start is intentionally a two-step operation: duplicate actions
+    // are disabled, so the old channel is cleared before the new one is set.
+    await page.getByTestId("ext-control-ready-center").selectOption("none");
+    await page.getByTestId("ext-control-ready-left").selectOption("start");
+    changed = true;
+
+    await expect(page.getByTestId("ext-control-ready-left")).toHaveValue(
+      "start",
+    );
+    await expect(page.getByTestId("ext-control-ready-center")).toHaveValue(
+      "none",
+    );
+    await expect
+      .poll(async () => {
+        const controls = (await api.plansCatalog()).external_controls as {
+          ready?: { left?: string; center?: string };
+        } | null;
+        return [controls?.ready?.left, controls?.ready?.center];
+      })
+      .toEqual(["start", "none"]);
+
+    // The Collect HUD consumes the same resolved mapping as the key handler.
+    // READY therefore exposes Start on LEFT, not on the old CENTER channel.
+    await openTab(page, "collect");
+    await ensureOperator(page);
+    await expect(page.getByTestId("phase-title")).toHaveText("READY");
+    await expect(page.getByTestId("ext-action-left-meaning")).toHaveText(
+      "Start",
+    );
+    await expect(page.getByTestId("ext-action-center-meaning")).toHaveText("—");
+  } finally {
+    if (changed && original !== null) {
+      const latest = await api.plansCatalog();
+      await api.replacePlansCatalog({
+        base_revision: latest.revision,
+        projects: original.projects ?? [],
+        failure_reasons: original.failure_reasons,
+        operators: original.operators,
+        external_controls: original.external_controls,
+      });
+    }
+  }
 });

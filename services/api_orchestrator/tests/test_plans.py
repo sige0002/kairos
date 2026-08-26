@@ -39,6 +39,18 @@ CATALOG = {
     ]
 }
 
+DEFAULT_EXTERNAL_CONTROLS = {
+    "schema_version": 1,
+    "ready": {"left": "none", "center": "start", "right": "none"},
+    "recording": {"left": "none", "center": "stop", "right": "none"},
+    "result": {"left": "failure", "center": "retake", "right": "success_save"},
+    "failure_reason": {
+        "left": "reason_slot_1",
+        "center": "reason_slot_2",
+        "right": "reason_slot_3",
+    },
+}
+
 
 EMPTY_SHORTCUTS = {"left": None, "center": None, "right": None}
 
@@ -67,6 +79,7 @@ def test_get_never_set_is_null(client: TestClient) -> None:
         "projects": None,
         "failure_reasons": None,
         "operators": None,
+        "external_controls": None,
         "updated_at": None,
         "revision": 0,
     }
@@ -93,6 +106,83 @@ def test_put_empty_is_distinct_from_never_set(client: TestClient) -> None:
     # Explicitly emptied: [] with a timestamp — the client must NOT re-seed.
     assert got["projects"] == []
     assert got["updated_at"] is not None
+
+
+def test_external_controls_round_trip(client: TestClient) -> None:
+    configured = {
+        **DEFAULT_EXTERNAL_CONTROLS,
+        "ready": {"left": "start", "center": "none", "right": "none"},
+        "recording": {"left": "stop", "center": "none", "right": "none"},
+        "result": {
+            "left": "retake",
+            "center": "success_save",
+            "right": "failure",
+        },
+        "failure_reason": {
+            "left": "reason_slot_3",
+            "center": "reason_slot_1",
+            "right": "reason_slot_2",
+        },
+    }
+    put = client.put(
+        "/api/v1/plans",
+        json={"base_revision": 0, **CATALOG, "external_controls": configured},
+    )
+    assert put.status_code == 200, put.text
+    assert put.json()["external_controls"] == configured
+    assert client.get("/api/v1/plans").json()["external_controls"] == configured
+
+
+def test_legacy_put_keeps_external_controls(client: TestClient) -> None:
+    first = client.put(
+        "/api/v1/plans",
+        json={
+            "base_revision": 0,
+            **CATALOG,
+            "external_controls": DEFAULT_EXTERNAL_CONTROLS,
+        },
+    )
+    assert first.status_code == 200, first.text
+
+    legacy = client.put(
+        "/api/v1/plans",
+        json={"base_revision": 1, "projects": []},
+    )
+    assert legacy.status_code == 200, legacy.text
+    assert legacy.json()["external_controls"] == DEFAULT_EXTERNAL_CONTROLS
+
+
+def test_external_controls_reject_invalid_or_ambiguous_actions(
+    client: TestClient,
+) -> None:
+    invalid_state = {
+        **DEFAULT_EXTERNAL_CONTROLS,
+        "ready": {"left": "retake", "center": "none", "right": "none"},
+    }
+    duplicate = {
+        **DEFAULT_EXTERNAL_CONTROLS,
+        "result": {"left": "failure", "center": "failure", "right": "none"},
+    }
+    extra_slot = {
+        **DEFAULT_EXTERNAL_CONTROLS,
+        "ready": {
+            "left": "none",
+            "center": "start",
+            "right": "none",
+            "fourth": "none",
+        },
+    }
+    for external_controls in (invalid_state, duplicate, extra_slot):
+        response = client.put(
+            "/api/v1/plans",
+            json={
+                "base_revision": 0,
+                **CATALOG,
+                "external_controls": external_controls,
+            },
+        )
+        assert response.status_code == 422
+    assert client.get("/api/v1/plans").json()["revision"] == 0
 
 
 def test_put_rejects_malformed_shapes(client: TestClient) -> None:

@@ -8,6 +8,7 @@
 //   Robots            — robot select + per-aspect options + recording editor
 //   Projects & tasks  — the shared plans catalog editor (also drives Collect)
 //   Failure reasons   — the "What failed?" vocabulary editor (also drives Collect)
+//   External controls — the channel→action mapping editor (also drives Collect)
 //   Operators         — the attribution roster (fills the OP picker; not auth)
 //   Recording         — form-first active-robot recording config (JSON = Advanced)
 //   Data quality      — read-only expected rates + thresholds + required topics
@@ -24,6 +25,7 @@ import { MenuRail } from './MenuRail';
 import { RobotsSection } from './RobotsSection';
 import { PlansSection } from './PlansSection';
 import { FailureReasonsSection } from './FailureReasonsSection';
+import { ExternalControlsSection } from './ExternalControlsSection';
 import { OperatorsSection } from './OperatorsSection';
 import { RecordingSection } from './RecordingSection';
 import { DataQualitySection } from './DataQualitySection';
@@ -65,6 +67,8 @@ export function SettingsScreen() {
         <PlansSection settings={settings} />
       ) : label === 'Failure reasons' ? (
         <FailureReasonsSection settings={settings} />
+      ) : label === 'External controls' ? (
+        <ExternalControlsSection />
       ) : label === 'Operators' ? (
         <OperatorsSection settings={settings} />
       ) : label === 'Recording' ? (
@@ -97,7 +101,8 @@ function CatalogConflictNote() {
       role="alert"
       className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-control border border-rose-300 bg-rose-50 px-3.5 py-2 text-[12px] text-rose-800 shadow-card"
     >
-      The shared catalog changed elsewhere. Your local draft was kept and was not retried.
+      The shared catalog changed elsewhere. Your local draft was kept and was not
+      retried.
       <button
         type="button"
         data-testid="plans-use-server"
@@ -110,7 +115,8 @@ function CatalogConflictNote() {
   );
 }
 
-/** The shared catalog (projects, failure reasons, operators) is pushed to the
+/** The shared catalog (projects, failure reasons, operators, external controls)
+ *  is pushed to the
  *  server best-effort, and the editors report an edit the moment it applies
  *  locally. When that push fails the local copy is still correct FOR THIS
  *  BROWSER — but every other terminal reads the server's copy, so saying

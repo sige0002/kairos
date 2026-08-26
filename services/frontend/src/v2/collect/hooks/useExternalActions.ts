@@ -1,18 +1,22 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
 // Live resolution of the three external operator actions for THIS machine:
-// the current phase/result state plus the CURRENT TASK's configured failure
-// shortcuts (#35), funneled through the ONE pure resolver in
-// machine/externalActions.ts. The HUD renders `meanings` and the shortcut
-// handler dispatches on the same value, so what the operator reads is exactly
-// what a press will do. Switching Task (picker or batch rollover) re-resolves
-// immediately — the displayed reasons follow the task.
+// the current phase/result state, the CURRENT TASK's configured failure
+// shortcuts (#35), and the installation-global channel→action mapping (#43),
+// funneled through the ONE pure resolver in machine/externalActions.ts. The
+// HUD renders `meanings` and the shortcut handler dispatches on the same
+// value, so what the operator reads is exactly what a press will do.
+// Switching Task (picker or batch rollover) re-resolves immediately — the
+// displayed reasons follow the task — and a Settings change to the mapping
+// re-resolves it too, so the HUD always shows the effective layout.
 //
 // Takes explicit fields (not the whole machine) so it can be wired next to
-// the other shortcut layer before the machine object is assembled.
+// the other shortcut layer before the machine object is assembled. The
+// mapping comes from the shared plans store, not the call site: every screen
+// that resolves external actions reads the SAME validated config.
 
 import { useMemo } from 'react';
-import { EMPTY_FAILURE_SHORTCUTS, usePlans } from '../../plans';
+import { EMPTY_FAILURE_SHORTCUTS, useExternalControls, usePlans } from '../../plans';
 import {
   resolveExternalActionMeanings,
   type ExternalActionMeanings,
@@ -43,6 +47,7 @@ export interface ExternalActions {
 
 export function useExternalActions(input: ExternalActionsInput): ExternalActions {
   const plans = usePlans();
+  const config = useExternalControls();
   // Unlike picker rendering, an external action may SAVE a review. It must
   // never use findTask's display-oriented fallback: a custom or stale context
   // could otherwise trigger another task's configured failure reason.
@@ -59,6 +64,7 @@ export function useExternalActions(input: ExternalActionsInput): ExternalActions
         startEnabled: input.startEnabled,
         stopEnabled: input.stopEnabled,
         shortcuts: task?.failure_shortcuts ?? EMPTY_FAILURE_SHORTCUTS,
+        config,
       }),
       taskName: task?.name ?? null,
     }),
@@ -72,6 +78,7 @@ export function useExternalActions(input: ExternalActionsInput): ExternalActions
       input.projectId,
       input.taskId,
       task,
+      config,
     ],
   );
 }
