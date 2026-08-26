@@ -1149,6 +1149,9 @@ class StoreHealth(BaseModel):
     corrupt_source: Literal["rebuild", "reconcile"] | None = None
     corrupt_observed_at: str | None = None
     warnings: list[str] = Field(default_factory=list)
+    # A subset of warnings that the global UI may acknowledge locally. Other
+    # rebuild warnings describe conditions that must remain persistent.
+    dismissible_warnings: list[str] = Field(default_factory=list)
     last_reconcile_at: str | None = None
     last_reconcile: dict[str, Any] | None = None
 

@@ -20,6 +20,7 @@ const INFORMATIONAL: StoreHealth = {
   ...OK,
   rebuilt_at: '2026-08-26T08:00:00Z',
   warnings: ['Batch counters were rebuilt as lower bounds.'],
+  dismissible_warnings: ['Batch counters were rebuilt as lower bounds.'],
 };
 
 function mockHealth(answer: () => Promise<Response>) {
@@ -172,6 +173,7 @@ test('shows a later rebuild notice after the earlier one was dismissed', async (
     ...INFORMATIONAL,
     rebuilt_at: '2026-08-26T09:00:00Z',
     warnings: ['A later rebuild produced a new lower-bound notice.'],
+    dismissible_warnings: ['A later rebuild produced a new lower-bound notice.'],
   };
   renderWithClient(<StoreHealthBanner />);
 
@@ -196,6 +198,50 @@ test('does not offer dismissal without a trustworthy rebuild identity', async ()
   renderWithClient(<StoreHealthBanner />);
 
   expect(await screen.findByTestId('store-health-banner')).toBeInTheDocument();
+  expect(screen.queryByTestId('store-health-banner-dismiss')).toBeNull();
+});
+
+test('does not offer dismissal for an unclassified rebuild warning', async () => {
+  mockHealth(() =>
+    Promise.resolve(
+      jsonResponse({
+        ...INFORMATIONAL,
+        warnings: ['Two datasets claim the same archive destination.'],
+        dismissible_warnings: [],
+      }),
+    ),
+  );
+  renderWithClient(<StoreHealthBanner />);
+
+  const banner = await screen.findByTestId('store-health-banner');
+  await waitFor(() =>
+    expect(banner).toHaveTextContent(
+      'Two datasets claim the same archive destination.',
+    ),
+  );
+  expect(screen.queryByTestId('store-health-banner-dismiss')).toBeNull();
+});
+
+test('does not offer dismissal when active and informational warnings are mixed', async () => {
+  mockHealth(() =>
+    Promise.resolve(
+      jsonResponse({
+        ...INFORMATIONAL,
+        warnings: [
+          ...INFORMATIONAL.warnings,
+          'Two batches disagree about their restored identity.',
+        ],
+      }),
+    ),
+  );
+  renderWithClient(<StoreHealthBanner />);
+
+  const banner = await screen.findByTestId('store-health-banner');
+  await waitFor(() =>
+    expect(banner).toHaveTextContent(
+      'Two batches disagree about their restored identity.',
+    ),
+  );
   expect(screen.queryByTestId('store-health-banner-dismiss')).toBeNull();
 });
 

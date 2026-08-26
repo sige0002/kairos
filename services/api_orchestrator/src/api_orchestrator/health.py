@@ -47,6 +47,7 @@ class RebuildReport:
     deferred: tuple[str, ...] = ()
     corrupt: tuple[dict[str, Any], ...] = ()
     warnings: tuple[str, ...] = ()
+    dismissible_warnings: tuple[str, ...] = ()
     # Why the rebuild ran at all: no database, wrong schema version, or an
     # explicit request. Shown so "why did my catalog change" has an answer.
     trigger: str = "startup"
@@ -134,7 +135,12 @@ class StoreHealth:
         with self._lock:
             self._rebuild = report
 
-    def add_rebuild_warnings(self, warnings: Iterable[str]) -> None:
+    def add_rebuild_warnings(
+        self,
+        warnings: Iterable[str],
+        *,
+        dismissible: Iterable[str] = (),
+    ) -> None:
         """Append to the recorded rebuild's warnings (no-op with no rebuild).
 
         The catalog is rebuilt in two passes — captures and replicas from the
@@ -144,8 +150,11 @@ class StoreHealth:
         left in a log line nothing reads.
         """
         extra = tuple(warnings)
+        dismissible_extra = tuple(dismissible)
         if not extra:
             return
+        if any(warning not in extra for warning in dismissible_extra):
+            raise ValueError("dismissible rebuild warnings must also be warnings")
         with self._lock:
             if self._rebuild is None:
                 # Nothing to attach them to, which today cannot happen: the
@@ -164,7 +173,11 @@ class StoreHealth:
                 )
                 return
             self._rebuild = replace(
-                self._rebuild, warnings=self._rebuild.warnings + extra
+                self._rebuild,
+                warnings=self._rebuild.warnings + extra,
+                dismissible_warnings=(
+                    self._rebuild.dismissible_warnings + dismissible_extra
+                ),
             )
 
     @property
@@ -233,6 +246,9 @@ class StoreHealth:
                 "rebuild_summary": rebuild.summary() if rebuild else None,
                 "corrupt": corrupt,
                 "warnings": list(rebuild.warnings) if rebuild else [],
+                "dismissible_warnings": (
+                    list(rebuild.dismissible_warnings) if rebuild else []
+                ),
                 "last_reconcile_at": self._last_reconcile_at,
                 "last_reconcile": self._last_reconcile,
             }

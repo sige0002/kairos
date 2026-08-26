@@ -279,10 +279,12 @@ class TestTheCounterResetIsAnnounced:
             assert back["batch_seq"] == 1
             # ...and the one field that cannot be is back at zero.
             assert back["episodes_recorded"] == 0
-            surfaced = restarted.get("/api/v1/store/health").json()["warnings"]
+            health = restarted.get("/api/v1/store/health").json()
+            surfaced = health["warnings"]
 
         assert any("recorded-episode" in warning for warning in surfaced), surfaced
         assert any(batch["batch_id"] in warning for warning in surfaced), surfaced
+        assert health["dismissible_warnings"] == surfaced
 
 
 class TestALostCreationLine:

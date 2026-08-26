@@ -29,6 +29,14 @@ function informationalNoticeKey(health: StoreHealth): string | null {
   if (health.corrupt.length !== 0) return null;
   if (health.delete_available !== true) return null;
   if (health.warnings.length === 0) return null;
+  if (
+    health.dismissible_warnings?.length !== health.warnings.length ||
+    health.warnings.some(
+      (warning, index) => health.dismissible_warnings?.[index] !== warning,
+    )
+  ) {
+    return null;
+  }
 
   const rebuiltAt = health.rebuilt_at?.trim();
   if (!rebuiltAt) return null;

@@ -63,6 +63,7 @@ class BatchReplayReport:
 
     restored: int
     warnings: tuple[str, ...] = ()
+    dismissible_warnings: tuple[str, ...] = ()
 
 
 class BatchService:
@@ -202,9 +203,11 @@ class BatchService:
                         "ended_at": event.get("ended_at"),
                     },
                 )
+        counter_warnings = _counter_warning(restored)
         return BatchReplayReport(
             restored=len(restored),
-            warnings=_counter_warning(restored) + tuple(collisions),
+            warnings=counter_warnings + tuple(collisions),
+            dismissible_warnings=counter_warnings,
         )
 
     def _compare_existing(self, batch: Batch) -> list[str]:
