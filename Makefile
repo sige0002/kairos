@@ -4,6 +4,7 @@
 #   make up                   # start the whole stack (detached) from existing images
 #   make rebuild frontend     # apply code changes: build + recreate that service
 #   make build monitor        # build one service (positional); `make build` = all
+#   make build NO_CACHE=1     # build without using Docker's layer cache
 #   make restart monitor orchestrator   # restart service(s)
 #
 # BUILD vs START are separate on purpose: building needs the network even when
@@ -77,6 +78,12 @@ export ALERT_CONFIG_PATH
 UID ?= $(shell id -u)
 GID ?= $(shell id -g)
 export UID GID
+
+# Set NO_CACHE=1 (also accepts true/yes) to pass --no-cache to every image-build
+# entry point. Rebuild targets build and recreate in separate Compose calls when
+# enabled because `docker compose up` has no --no-cache option.
+NO_CACHE ?=
+NO_CACHE_FLAG := $(if $(filter 1 true yes,$(strip $(NO_CACHE))),--no-cache,)
 
 # Host timezone → containers (compose maps TZ through x-ros-env). The recorder
 # mints the human-facing run_YYYYMMDD_HHMMSS from ITS clock; without TZ the
@@ -295,14 +302,19 @@ define _lerobot_build
 
 endef
 
-build: ## build images: `make build` (all) or `make build monitor`
-	$(call _lerobot_build,build)
+build: ## build images: `make build` (all), `make build monitor`, `make build NO_CACHE=1`
+	$(call _lerobot_build,build $(NO_CACHE_FLAG))
 
 rebuild: ## rebuild + recreate service(s) — the "apply my code changes" command
+ifneq ($(NO_CACHE_FLAG),)
+	$(call _lerobot_build,build $(NO_CACHE_FLAG))
+	$(call _lerobot_build,up -d --force-recreate)
+else
 	$(call _lerobot_build,up -d --build --force-recreate)
+endif
 
 build-pull: ## rebuild pulling FRESH base images (ros/python/node upstream). NEEDS NETWORK
-	$(COMPOSE) build --pull $(SVC)
+	$(COMPOSE) build --pull $(NO_CACHE_FLAG) $(SVC)
 
 compose-check: ## validate Compose files and the shared build proxy/network policy
 	python3 deploy/check_compose_build_policy.py
@@ -405,10 +417,15 @@ robot-down: ## [ON THE ROBOT] stop + remove the robot-edge services
 	$(COMPOSE_ROBOT) down
 
 robot-build: ## [ON THE ROBOT] build robot-edge images: `make robot-build` (all) or `make robot-build recorder`
-	$(COMPOSE_ROBOT) build $(SVC)
+	$(COMPOSE_ROBOT) build $(NO_CACHE_FLAG) $(SVC)
 
 robot-rebuild: ## [ON THE ROBOT] rebuild + recreate robot-edge service(s): `make robot-rebuild recorder`
+ifneq ($(NO_CACHE_FLAG),)
+	$(COMPOSE_ROBOT) build $(NO_CACHE_FLAG) $(SVC)
+	$(COMPOSE_ROBOT) up -d --force-recreate $(SVC)
+else
 	$(COMPOSE_ROBOT) up -d --build --force-recreate $(SVC)
+endif
 
 robot-restart: ## [ON THE ROBOT] restart robot-edge service(s): `make robot-restart monitor`
 	$(COMPOSE_ROBOT) restart $(SVC)
@@ -434,10 +451,15 @@ recording-down: ## [ON THE RECORDING PC] stop + remove the recording-host servic
 	$(COMPOSE_RECORDING) down
 
 recording-build: ## [ON THE RECORDING PC] build recording-host images: `make recording-build` (all) or `... frontend`
-	$(COMPOSE_RECORDING) build $(SVC)
+	$(COMPOSE_RECORDING) build $(NO_CACHE_FLAG) $(SVC)
 
 recording-rebuild: ## [ON THE RECORDING PC] rebuild + recreate recording-host service(s): `make recording-rebuild frontend`
+ifneq ($(NO_CACHE_FLAG),)
+	$(COMPOSE_RECORDING) build $(NO_CACHE_FLAG) $(SVC)
+	$(COMPOSE_RECORDING) up -d --force-recreate $(SVC)
+else
 	$(COMPOSE_RECORDING) up -d --build --force-recreate $(SVC)
+endif
 
 recording-restart: ## [ON THE RECORDING PC] restart recording-host service(s): `make recording-restart orchestrator`
 	$(COMPOSE_RECORDING) restart $(SVC)
