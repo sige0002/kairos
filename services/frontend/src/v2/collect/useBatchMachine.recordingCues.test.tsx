@@ -15,6 +15,7 @@ import {
   __setStopFloorMs,
   useBatchMachine,
 } from './useBatchMachine';
+import { DEFAULT_AUDIO_SETTINGS, setAudioSettings } from '../audio/settings';
 
 const cueHarness = vi.hoisted(() => ({
   played: [] as string[],
@@ -70,6 +71,7 @@ beforeEach(() => {
     'kairos.collect.recording-cues.v1',
     JSON.stringify({ enabled: true, volume: 0.45 }),
   );
+  setAudioSettings({ ...structuredClone(DEFAULT_AUDIO_SETTINGS), master: true });
   useUiStore.setState({
     recordOperator: 'tester',
     operatorHydrated: true,

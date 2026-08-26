@@ -12,6 +12,12 @@ import {
   type RecordingCueKind,
   type RecordingCuePlayer,
 } from '../recordingCues';
+import { assetKey, phraseFor } from '../../audio/phrases';
+import {
+  setAudioSettings,
+  useAudioSettings,
+  type AudioFeedbackEvent,
+} from '../../audio/settings';
 
 const STORAGE_KEY = 'kairos.collect.recording-cues.v1';
 const DEFAULT_VOLUME = 0.45;
@@ -83,15 +89,14 @@ export function useRecordingCues({
   /** Test seam; production uses the lazy Web Audio player. */
   player?: RecordingCuePlayer;
 }) {
+  const audioSettings = useAudioSettings();
   const playerRef = useRef<RecordingCuePlayer | null>(null);
   playerRef.current ??= suppliedPlayer ?? createRecordingCuePlayer();
   const player = playerRef.current;
   const initialRef = useRef<StoredSettings | null>(null);
   initialRef.current ??= readSettings();
-  const [enabled, setEnabledState] = useState(
-    player.supported && initialRef.current.enabled,
-  );
-  const [volume, setVolumeState] = useState(initialRef.current.volume);
+  const enabled = player.supported && audioSettings.master;
+  const volume = audioSettings.version === 2 ? audioSettings.volume : initialRef.current.volume;
   const [playbackState, setPlaybackState] = useState<RecordingCuePlaybackState>(
     !player.supported ? 'unsupported' : enabled ? 'ready' : 'disabled',
   );
@@ -113,7 +118,7 @@ export function useRecordingCues({
         setPlaybackState('unsupported');
         return;
       }
-      setEnabledState(next);
+      setAudioSettings({ ...audioSettings, master: next });
       persistSettings({ enabled: next, volume });
       if (!next) {
         setPlaybackState(player.supported ? 'disabled' : 'unsupported');
@@ -127,16 +132,66 @@ export function useRecordingCues({
         .unlock()
         .then((unlocked) => setPlaybackState(unlocked ? 'ready' : 'blocked'));
     },
-    [player, volume],
+    [audioSettings, player, volume],
   );
 
   const setVolume = useCallback(
     (next: number) => {
       const clamped = clampVolume(next);
-      setVolumeState(clamped);
+      setAudioSettings({ ...audioSettings, volume: clamped });
       persistSettings({ enabled, volume: clamped });
     },
-    [enabled],
+    [audioSettings, enabled],
+  );
+
+  const voiceRef = useRef<HTMLAudioElement | null>(null);
+  const voicePriorityRef = useRef(0);
+  const priority: Record<AudioFeedbackEvent, number> = {
+    save: 1, start: 2, stop: 2, success: 3, failure: 3,
+    failure_reason: 4, retake: 5, invalid: 6, error: 7,
+  };
+
+  useEffect(() => {
+    for (const url of Object.values(audioSettings.assets)) {
+      const audio = new Audio(url);
+      audio.preload = 'auto';
+      audio.load();
+    }
+  }, [audioSettings.assets]);
+
+  const emit = useCallback(
+    (event: AudioFeedbackEvent, detail?: string) => {
+      if (!enabled) return;
+      const eventSettings = audioSettings.events[event];
+      const cue: RecordingCueKind = event === 'stop'
+        ? 'end'
+        : event === 'failure_reason'
+          ? 'failure'
+          : event === 'error'
+            ? 'warning'
+            : event;
+      if (audioSettings.soundEffects && eventSettings.sound) void play(cue);
+      if (!audioSettings.voice || !eventSettings.voice) return;
+      const phrase = phraseFor(event, audioSettings.language, detail);
+      const url = audioSettings.assets[assetKey(event, phrase)];
+      if (!url) return;
+      if (voiceRef.current && !voiceRef.current.paused) {
+        if (priority[event] <= voicePriorityRef.current) return;
+        voiceRef.current.pause();
+      }
+      const audio = new Audio(url);
+      audio.volume = audioSettings.volume;
+      voiceRef.current = audio;
+      voicePriorityRef.current = priority[event];
+      audio.addEventListener('ended', () => {
+        if (voiceRef.current === audio) {
+          voiceRef.current = null;
+          voicePriorityRef.current = 0;
+        }
+      }, { once: true });
+      void audio.play().catch(() => setPlaybackState('blocked'));
+    },
+    [audioSettings, enabled, play],
   );
 
   const preview = useCallback(
@@ -186,7 +241,7 @@ export function useRecordingCues({
     if (!recorderReachable || statusCaptureId !== owned) return;
     if (statusState !== 'recording' || !liveCaptures?.includes(owned)) return;
     startPlayedRef.current = owned;
-    void play('start');
+    emit('start');
   }, [
     phase,
     currentCaptureId,
@@ -194,7 +249,7 @@ export function useRecordingCues({
     statusCaptureId,
     statusState,
     liveCaptures,
-    play,
+    emit,
   ]);
 
   const markStopRequested = useCallback(
@@ -213,23 +268,23 @@ export function useRecordingCues({
         return;
       stopPlayedRef.current = captureId;
       stopRequestedRef.current = null;
-      void play('end');
+      emit('stop');
     },
-    [play],
+    [emit],
   );
 
   const notifyFailure = useCallback(() => {
     abandonStart();
-    void play('warning');
-  }, [abandonStart, play]);
+    emit('error');
+  }, [abandonStart, emit]);
 
   const warnOnce = useCallback(
     (key: string) => {
       if (warnedRef.current.has(key)) return;
       warnedRef.current.add(key);
-      void play('warning');
+      emit('error');
     },
-    [play],
+    [emit],
   );
 
   // Losing the recorder while an owned capture is active is uncertain, not a
@@ -270,5 +325,6 @@ export function useRecordingCues({
     confirmStop,
     notifyFailure,
     notifyInterrupted,
+    emit,
   };
 }

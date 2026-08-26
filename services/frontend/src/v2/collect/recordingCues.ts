@@ -3,7 +3,16 @@
 // Short, synthetic recording-state cues. No audio asset or network request is
 // involved, and the AudioContext is created lazily after an operator gesture.
 
-export type RecordingCueKind = 'start' | 'end' | 'warning';
+export type RecordingCueKind =
+  | 'start'
+  | 'end'
+  | 'warning'
+  | 'success'
+  | 'failure'
+  | 'retake'
+  | 'save'
+  | 'invalid'
+  | 'error';
 
 export interface RecordingCuePlayer {
   readonly supported: boolean;
@@ -36,6 +45,29 @@ const CUES: Record<RecordingCueKind, Note[]> = {
     { frequency: 311.13, offset: 0, duration: 0.1, type: 'triangle' },
     { frequency: 233.08, offset: 0.14, duration: 0.1, type: 'triangle' },
     { frequency: 311.13, offset: 0.28, duration: 0.12, type: 'triangle' },
+  ],
+  success: [
+    { frequency: 523.25, offset: 0, duration: 0.1, type: 'sine' },
+    { frequency: 659.25, offset: 0.09, duration: 0.1, type: 'sine' },
+    { frequency: 783.99, offset: 0.18, duration: 0.16, type: 'sine' },
+  ],
+  failure: [
+    { frequency: 392, offset: 0, duration: 0.12, type: 'triangle' },
+    { frequency: 293.66, offset: 0.12, duration: 0.18, type: 'triangle' },
+  ],
+  retake: [
+    { frequency: 440, offset: 0, duration: 0.08, type: 'square' },
+    { frequency: 440, offset: 0.16, duration: 0.08, type: 'square' },
+  ],
+  save: [{ frequency: 880, offset: 0, duration: 0.055, type: 'sine' }],
+  invalid: [
+    { frequency: 196, offset: 0, duration: 0.08, type: 'square' },
+    { frequency: 196, offset: 0.12, duration: 0.08, type: 'square' },
+  ],
+  error: [
+    { frequency: 311.13, offset: 0, duration: 0.12, type: 'sawtooth' },
+    { frequency: 233.08, offset: 0.14, duration: 0.12, type: 'sawtooth' },
+    { frequency: 174.61, offset: 0.28, duration: 0.2, type: 'sawtooth' },
   ],
 };
 

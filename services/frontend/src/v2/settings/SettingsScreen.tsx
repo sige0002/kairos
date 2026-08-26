@@ -26,6 +26,7 @@ import { RobotsSection } from './RobotsSection';
 import { PlansSection } from './PlansSection';
 import { FailureReasonsSection } from './FailureReasonsSection';
 import { ExternalControlsSection } from './ExternalControlsSection';
+import { AudioSection } from './AudioSection';
 import { OperatorsSection } from './OperatorsSection';
 import { RecordingSection } from './RecordingSection';
 import { DataQualitySection } from './DataQualitySection';
@@ -69,6 +70,8 @@ export function SettingsScreen() {
         <FailureReasonsSection settings={settings} />
       ) : label === 'External controls' ? (
         <ExternalControlsSection />
+      ) : label === 'Audio' ? (
+        <AudioSection />
       ) : label === 'Operators' ? (
         <OperatorsSection settings={settings} />
       ) : label === 'Recording' ? (

@@ -685,8 +685,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     [],
   );
   const pickFailure = useCallback(
-    () => dispatch({ type: 'PICK_RESULT', result: 'fail' }),
-    [],
+    () => {
+      dispatch({ type: 'PICK_RESULT', result: 'fail' });
+      recordingCues.emit('failure');
+    },
+    [recordingCues],
   );
   const pickFailReason = useCallback(
     (reason: string) => dispatch({ type: 'PICK_FAIL_REASON', reason }),
@@ -849,6 +852,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
             quality: localQuality,
             index: storedIndex,
           });
+          recordingCues.emit(isFail ? 'failure_reason' : 'success', reason);
+          recordingCues.emit('save');
           // The capture now carries a review, so it is no longer an unsaved
           // take.
           void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
@@ -915,6 +920,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       showToast,
       flashSaved,
       queryClient,
+      recordingCues,
     ],
   );
 
@@ -1050,7 +1056,10 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         // discard (toast already shown) must not leave an armed auto-start:
         // the moment this machine next reaches READY it would fire a second
         // recording on top of the take that still exists.
-        if (discarded) setRetakeQueued(true);
+        if (discarded) {
+          recordingCues.emit('retake');
+          setRetakeQueued(true);
+        }
       });
   }, [episodeDiscard, recordingCues, splitDeploy]);
   useEffect(() => {
@@ -1301,6 +1310,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     saveSuccess,
     saveFailureWithReason,
     showToast,
+    onInvalidAction: () => recordingCues.emit('invalid'),
   });
 
   const stats: BatchStats = useMemo(() => {
