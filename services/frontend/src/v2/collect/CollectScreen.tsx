@@ -149,7 +149,10 @@ export function CollectScreen() {
   return (
     <div
       data-testid="collect-layout"
-      className={cn('flex flex-col lg:h-full lg:min-h-0 lg:w-full', COL_GAP)}
+      className={cn(
+        'collect-large-screen-type flex flex-col lg:h-full lg:min-h-0 lg:w-full',
+        COL_GAP,
+      )}
     >
       <ScreenTitle>Collect</ScreenTitle>
       <ContextBar machine={machine} />

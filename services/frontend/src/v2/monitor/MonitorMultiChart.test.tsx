@@ -65,7 +65,7 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
-test('Topics gives more vertical space to the table than the chart area', async () => {
+test('Topics splits desktop height evenly between charts and the table', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);
   fireEvent.click(await screen.findByTestId('mon-nav-Topics'));
@@ -73,9 +73,9 @@ test('Topics gives more vertical space to the table than the chart area', async 
 
   const charts = screen.getByTestId('chart-panels');
   const table = screen.getByTestId('topics-table');
-  expect(charts.className).toContain('lg:flex-[2_1_0%]');
-  expect(charts.className).toContain('lg:max-h-[420px]');
-  expect(table.className).toContain('lg:flex-[3_1_0%]');
+  expect(charts.className).toContain('lg:flex-[1_1_0%]');
+  expect(charts.className).not.toContain('lg:max-h-[420px]');
+  expect(table.className).toContain('lg:flex-[1_1_0%]');
   expect(table.className).toContain('lg:min-h-[270px]');
   expect(table.className).toContain('lg:max-h-none');
 });

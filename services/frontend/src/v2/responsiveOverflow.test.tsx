@@ -85,6 +85,7 @@ test('Collect stays fluid with a proportional sidebar and bounded grid row', asy
   expect(layout.className).toContain('lg:w-full');
   expect(layout.className).not.toContain('max-w-');
   expect(layout.className).not.toContain('justify-center');
+  expect(layout.className).toContain('collect-large-screen-type');
   expect(grid.className).toContain(
     'lg:grid-cols-[minmax(340px,0.3fr)_minmax(0,1fr)]',
   );

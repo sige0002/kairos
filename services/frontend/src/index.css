@@ -25,3 +25,57 @@
 ::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/*
+ * Collect is operated at a glance from a large display rather than read at a
+ * desk. Browsers expose CSS viewport dimensions, not the panel's physical size
+ * or viewing distance, so a near-native 4K viewport is the practical signal.
+ * Scale typography only: the Collect grid, cards, spacing, and camera layout
+ * keep their established geometry. At higher browser zoom the CSS viewport
+ * drops below this threshold, avoiding a second layer of magnification.
+ */
+@media (min-width: 3200px) and (min-height: 1800px) {
+  .collect-large-screen-type .text-\[9\.5px\] {
+    font-size: 14.25px;
+  }
+  .collect-large-screen-type .text-\[10px\] {
+    font-size: 15px;
+  }
+  .collect-large-screen-type .text-\[10\.5px\] {
+    font-size: 15.75px;
+  }
+  .collect-large-screen-type .text-\[11px\] {
+    font-size: 16.5px;
+  }
+  .collect-large-screen-type .text-\[11\.5px\] {
+    font-size: 17.25px;
+  }
+  .collect-large-screen-type .text-xs,
+  .collect-large-screen-type .text-\[12px\] {
+    font-size: 18px;
+  }
+  .collect-large-screen-type .text-\[12\.5px\] {
+    font-size: 18.75px;
+  }
+  .collect-large-screen-type .text-\[13px\] {
+    font-size: 19.5px;
+  }
+  .collect-large-screen-type .text-sm {
+    font-size: 21px;
+  }
+  .collect-large-screen-type .text-\[15px\] {
+    font-size: 22.5px;
+  }
+  .collect-large-screen-type .text-\[17px\] {
+    font-size: 25.5px;
+  }
+  .collect-large-screen-type .text-lg {
+    font-size: 27px;
+  }
+  .collect-large-screen-type .text-xl {
+    font-size: 30px;
+  }
+  .collect-large-screen-type .text-\[34px\] {
+    font-size: 51px;
+  }
+}

@@ -12,6 +12,7 @@
 //     overlaid set (v1 Graph parity); charted rows carry a swatch in their
 //     series colour and are highlighted.
 
+import { useMemo, useState } from 'react';
 import {
   formatBandwidth,
   formatBaseline,
@@ -62,12 +63,32 @@ export function TopicsTable({
   // empty table instead of just... being empty (honesty principle).
   const monitorBridge = useUiStore((s) => s.monitorBridge);
   const atCap = chartedTopics.length >= MAX_SERIES;
+  const [query, setQuery] = useState('');
+  const normalizedQuery = query.trim().toLowerCase();
+  const filteredRows = useMemo(
+    () =>
+      normalizedQuery
+        ? rows.filter((row) => row.name.toLowerCase().includes(normalizedQuery))
+        : rows,
+    [normalizedQuery, rows],
+  );
 
   return (
     <Card
       data-testid="topics-table"
-      className="flex max-h-[270px] shrink-0 flex-col lg:min-h-[270px] lg:max-h-none lg:flex-[3_1_0%]"
+      className="flex max-h-[270px] shrink-0 flex-col lg:min-h-[270px] lg:max-h-none lg:flex-[1_1_0%]"
     >
+      <div className="border-b border-gray-100 px-[18px] py-2">
+        <input
+          type="search"
+          aria-label="Search topics"
+          data-testid="topics-search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search topics…"
+          className="h-8 w-full rounded-control border border-gray-200 bg-white px-3 font-mono text-[12px] text-gray-700 outline-none placeholder:font-sans placeholder:text-gray-400 focus:border-teal-600 focus:ring-1 focus:ring-teal-100"
+        />
+      </div>
       <div
         className={cn(
           'grid gap-2 border-b border-gray-100 px-[18px] py-2.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500',
@@ -102,8 +123,15 @@ export function TopicsTable({
               ? 'Robot offline — no topics discovered (the monitor on the robot side is unreachable).'
               : 'No topics discovered yet.'}
           </p>
+        ) : filteredRows.length === 0 ? (
+          <p
+            data-testid="topics-table-no-results"
+            className="px-[18px] py-6 text-center text-xs text-gray-500"
+          >
+            No topics match “{query.trim()}”.
+          </p>
         ) : (
-          rows.map((row) => {
+          filteredRows.map((row) => {
             const chartIdx = chartedTopics.indexOf(row.name);
             const charted = chartIdx >= 0;
             const recChecked = recordSelected.has(row.name);

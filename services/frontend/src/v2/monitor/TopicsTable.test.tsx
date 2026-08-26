@@ -29,6 +29,33 @@ test('empty state blames the robot bridge when it is reported down', () => {
   expect(screen.getByTestId('topics-table-empty')).toHaveTextContent('Robot offline');
 });
 
+test('search filters topic names case-insensitively without changing row actions', () => {
+  const rows = [row({ name: '/Camera/Color' }), row({ name: '/joint_states' })];
+  const onToggle = vi.fn();
+  render(
+    <TopicsTable
+      rows={rows}
+      isDiscovering={false}
+      chartedTopics={[]}
+      onToggle={onToggle}
+    />,
+  );
+
+  const search = screen.getByRole('searchbox', { name: 'Search topics' });
+  fireEvent.change(search, { target: { value: 'camera' } });
+  expect(screen.getByTestId('topic-row-/Camera/Color')).toBeInTheDocument();
+  expect(screen.queryByTestId('topic-row-/joint_states')).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByTestId('topic-row-/Camera/Color'));
+  expect(onToggle).toHaveBeenCalledWith('/Camera/Color');
+
+  fireEvent.change(search, { target: { value: 'missing' } });
+  expect(screen.getByTestId('topics-table-no-results')).toHaveTextContent(
+    'No topics match “missing”.',
+  );
+  expect(screen.queryByTestId('topics-table-empty')).not.toBeInTheDocument();
+});
+
 test('threshold -> status chip mapping: ok/warning/danger/inactive/unmeasured', () => {
   const rows = [
     row({ name: '/ok', status: 'ok', hz: 29.8, expected_hz: 30 }),
