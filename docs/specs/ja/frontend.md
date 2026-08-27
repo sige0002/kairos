@@ -44,6 +44,7 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。タブは技術
 - **タブは frontend 固定の 6 枚**（`V2_TABS`）。v1 の「backend の `tabs` レジストリ駆動」は**廃止** — `GET /api/v1/config` の `tabs` フィールドは互換のため残るが、v2 は表示・順序に使わない。
 - **旧タブ id は全てリダイレクト**して deep link を保つ: `live`→`collect`、`graph`/`probe`→`monitor`、`runs`→`review`、`dataset`→`datasets`、`config`→`settings`。
 - 各タブは URL でアドレス可能（`?tab=<id>`）。**`?tab=<id>&solo=1` はそのタブだけをタブバー無しで描画**する（タブ毎の ↗ ボタンで別ウィンドウに開ける。複数チャートを並べたい時のマルチウィンドウ手段）。Solo は URL の tab を初期表示として優先し、Collect では保存済み operator の hydration 完了後に batch 復元を始める。Collect から別タブへ移動しても `solo=1` を保つ。
+- **表示文言は application state ではない**: quality / task result / review lane / eligibility reason / tab は、domain・view-model・URL・API・分岐では language-neutral な安定 code / ID を使う。オペレーター向けの英語（将来の翻訳を含む）は描画境界で format する。翻訳済み文字列を state、key、route ID、API 値、分岐条件に使わない。Task / Condition / Operator / failure reason のようなユーザー入力は翻訳・code 化しない。
 - **ヘッダ（全タブ共通）**: 6 タブ・**ROS_DOMAIN_ID バッジ**・**接続チップ**（SSE の接続状態）・**OP チップ** = クリックで operator 名を設定（localStorage 永続。以後の全録画で `/record/start` の `operator` として送信）。Solo Collect にも OP チップを置く。
 
 ## 全画面で共有する部品（v2）

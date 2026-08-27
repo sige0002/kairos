@@ -48,9 +48,9 @@ test('a capture that did not finish cleanly is Not usable whatever its review sa
       review_status: 'adopted',
     }),
   ]);
-  expect(rows[0]!.quality).toBe('Not usable');
+  expect(rows[0]!.quality).toBe('not_usable');
   expect(rows[0]!.task).toBeNull();
-  expect(rows[0]!.issues).toBe('Recording did not complete cleanly');
+  expect(rows[0]!.issue).toBe('recording_incomplete');
 });
 
 test('review fields come straight off the capture', () => {
@@ -65,8 +65,8 @@ test('review fields come straight off the capture', () => {
     }),
   ]);
   expect(rows[0]).toMatchObject({
-    quality: 'Needs review',
-    task: 'Failure',
+    quality: 'needs_review',
+    task: 'failure',
     failReason: 'gripper slipped',
     reviewStatus: 'excluded',
     reviewRevision: 4,
@@ -253,7 +253,7 @@ test('a capture with no local replica still maps, and says its copy is awaited',
   ]);
   expect(rows).toHaveLength(1);
   expect(rows[0]!.transfer).toBe('awaiting');
-  expect(rows[0]!.quality).toBe('Good');
+  expect(rows[0]!.quality).toBe('good');
 });
 
 test('duration is derived from the real timestamps, and stays unset when it cannot be', () => {

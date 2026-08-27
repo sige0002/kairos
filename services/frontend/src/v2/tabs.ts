@@ -7,17 +7,26 @@
 // defaults; it just no longer drives which tabs exist or their order).
 
 export const V2_TABS = [
-  { id: 'collect', label: 'Collect' },
-  { id: 'review', label: 'Review' },
-  { id: 'datasets', label: 'Datasets' },
-  { id: 'validation', label: 'Validation' },
-  { id: 'monitor', label: 'Monitor' },
-  { id: 'settings', label: 'Settings' },
+  { id: 'collect', labelKey: 'collect' },
+  { id: 'review', labelKey: 'review' },
+  { id: 'datasets', labelKey: 'datasets' },
+  { id: 'validation', labelKey: 'validation' },
+  { id: 'monitor', labelKey: 'monitor' },
+  { id: 'settings', labelKey: 'settings' },
 ] as const;
 
 export type V2TabId = (typeof V2_TABS)[number]['id'];
 
 export const DEFAULT_TAB: V2TabId = 'collect';
+
+const TAB_LABEL: Record<(typeof V2_TABS)[number]['labelKey'], string> = {
+  collect: 'Collect',
+  review: 'Review',
+  datasets: 'Datasets',
+  validation: 'Validation',
+  monitor: 'Monitor',
+  settings: 'Settings',
+};
 
 // Deep-link ids from the old Live/Graph/Probe/Recordings/Datasets/Config IA,
 // redirected to their v2 home so bookmarks and pop-out windows keep working.
@@ -47,5 +56,6 @@ export function resolveTabId(id: string | null): V2TabId {
 }
 
 export function tabLabel(id: V2TabId): string {
-  return V2_TABS.find((t) => t.id === id)?.label ?? id;
+  const tab = V2_TABS.find((candidate) => candidate.id === id);
+  return tab ? TAB_LABEL[tab.labelKey] : id;
 }

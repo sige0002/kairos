@@ -138,7 +138,7 @@ function TabNav({ active }: { active: V2TabId }) {
                 : 'font-medium text-text-secondary hover:text-text-primary',
             )}
           >
-            {tab.label}
+            {tabLabel(tab.id)}
           </button>
         );
       })}

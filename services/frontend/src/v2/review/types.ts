@@ -12,11 +12,15 @@
 // server speaks `not_usable`, the operator reads "Not usable", and letting the
 // wire format leak into table cells is how the two drift.
 
-import type { CaptureListItem, CaptureState, ReviewStatus } from '../../api/types';
+import type {
+  CaptureListItem,
+  CaptureState,
+  Quality,
+  ReviewStatus,
+  TaskResult,
+} from '../../api/types';
 import type { CaptureConditionView } from '../captures/recordingCondition';
 
-export type DisplayQuality = 'Good' | 'Needs review' | 'Not usable';
-export type DisplayTaskResult = 'Success' | 'Failure';
 /** What the operator decides about a capture. `review` = keep it in review. */
 export type Decision = 'adopted' | 'review' | 'excluded';
 
@@ -24,6 +28,8 @@ export type Decision = 'adopted' | 'review' | 'excluded';
  *  clicks; NEEDS CHECK is the exception queue to look at; EXCLUDED is set
  *  aside. READY = not excluded AND (quality Good OR adopted). */
 export type ReviewLane = 'ready' | 'needs_check' | 'excluded';
+/** A fact about a recording that needs operator-facing explanatory copy. */
+export type ReviewIssue = 'recording_incomplete';
 
 /**
  * Whether a capture's bytes have reached this machine yet.
@@ -73,8 +79,8 @@ export interface EpisodeRow {
   /** The backend's own verdict wins: a capture that ended `failed` or
    *  `interrupted` is "Not usable" whatever the review says, because no review
    *  can make an incomplete recording usable. */
-  quality: DisplayQuality | null;
-  task: DisplayTaskResult | null;
+  quality: Quality | null;
+  task: TaskResult | null;
   /** WHY the task failed — the operator's reason, picked at save time. */
   failReason: string | null;
   reviewStatus: ReviewStatus;
@@ -83,8 +89,8 @@ export interface EpisodeRow {
   /** Real on-disk size; null when unknown. Shown in the delete confirmation so
    *  the operator sees how much storage is actually reclaimed. */
   bytes: number | null;
-  /** Real issue note when the recording itself failed; null for a clean one. */
-  issues: string | null;
+  /** Real recording issue code; null for a clean one. */
+  issue: ReviewIssue | null;
   transfer: TransferPhase;
   /** The capture this row was built from — the source for the availability
    *  chip, the deletion dialogs (which are obliged to state count and bytes)
@@ -95,8 +101,8 @@ export interface EpisodeRow {
 /** An EpisodeRow plus the session state layered on top: the operator's
  *  in-flight decision, the lane it lands in, and its transfer slot. */
 export interface DecoratedEpisode extends EpisodeRow {
-  effectiveQuality: DisplayQuality | null;
-  effectiveTask: DisplayTaskResult | null;
+  effectiveQuality: Quality | null;
+  effectiveTask: TaskResult | null;
   /** True when this capture is set aside (`review_status === 'excluded'`). */
   isExcluded: boolean;
   decision: Decision | null;

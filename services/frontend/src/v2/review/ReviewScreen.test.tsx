@@ -490,7 +490,7 @@ test('a refused review save raises the conflict banner with what is stored now',
 
   const banner = await screen.findByTestId('review-conflict-banner');
   expect(banner.textContent).toMatch(/Reload/i);
-  expect(screen.getByTestId('review-conflict-current').textContent).toMatch(/good/);
+  expect(screen.getByTestId('review-conflict-current').textContent).toMatch(/Good/);
   fireEvent.click(screen.getByTestId('review-conflict-dismiss'));
   await waitFor(() =>
     expect(screen.queryByTestId('review-conflict-banner')).toBeNull(),

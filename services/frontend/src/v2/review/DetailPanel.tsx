@@ -18,17 +18,13 @@ import { queryKeys } from '../../api/queryKeys';
 import { Badge, cn, type Tone } from '../../components/ui';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { availabilityOf } from '../captures/availability';
+import { qualityLabel, qualityTone, taskResultLabel } from '../episodeChips';
 import { CaptureInspection } from './CaptureInspection';
 import type { CaptureLabels, LabelEditing } from './LabelRows';
 import { episodeLabel } from './types';
-import type { DisplayQuality, ReviewLane } from './types';
+import type { Quality } from '../../api/types';
+import type { ReviewLane, ReviewIssue } from './types';
 import type { ReviewState } from './useReviewState';
-
-function qualityTone(q: DisplayQuality): Tone {
-  if (q === 'Good') return 'green';
-  if (q === 'Needs review') return 'amber';
-  return 'red';
-}
 
 // Header badge: the exception-review lane (READY / NEEDS CHECK / EXCLUDED) — the
 // same vocabulary as the row chip, so the detail header and the list agree.
@@ -128,13 +124,17 @@ function DecisionButton({
 }
 
 /** A quality badge, or a muted "—" when unset. */
-function QualityValue({ quality }: { quality: DisplayQuality | null }) {
+function QualityValue({ quality }: { quality: Quality | null }) {
   if (!quality) return <span className="text-[12.5px] text-text-muted">—</span>;
   return (
     <Badge tone={qualityTone(quality)} className="w-fit">
-      {quality}
+      {qualityLabel(quality)}
     </Badge>
   );
+}
+
+function issueLabel(issue: ReviewIssue | null): string | null {
+  return issue === 'recording_incomplete' ? 'Recording did not complete cleanly' : null;
 }
 
 export function DetailPanel({ rv }: { rv: ReviewState }) {
@@ -341,9 +341,9 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               <span className="text-[10px] text-text-muted">✎</span>
             </div>
             <span className="text-[12.5px] font-medium text-text-primary">
-              {sel.effectiveTask ?? '—'}
+              {taskResultLabel(sel.effectiveTask) ?? '—'}
             </span>
-            {sel.effectiveTask === 'Failure' && sel.failReason && (
+            {sel.effectiveTask === 'failure' && sel.failReason && (
               <span
                 data-testid="review-fail-reason"
                 className="text-[11px] leading-snug text-status-danger-text"
@@ -359,10 +359,10 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             <span
               className={cn(
                 'text-[12.5px] font-medium',
-                sel.issues ? 'text-status-warning-text' : 'text-text-muted',
+                sel.issue ? 'text-status-warning-text' : 'text-text-muted',
               )}
             >
-              {sel.issues ?? '—'}
+              {issueLabel(sel.issue) ?? '—'}
             </span>
           </div>
         </div>
@@ -489,7 +489,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               be sent back to the queue. Hidden for good-quality READY (no-op). */}
           {(sel.reviewLane === 'excluded' ||
             (sel.effectiveReviewStatus === 'adopted' &&
-              sel.effectiveQuality !== 'Good')) && (
+              sel.effectiveQuality !== 'good')) && (
             <DecisionButton
               tone="review"
               testId="review-return-to-review"

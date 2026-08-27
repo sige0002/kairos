@@ -348,7 +348,7 @@ test('a 409 review_conflict raises the reload banner and reverts the optimistic 
   // The refused value is gone from the row: the screen never keeps showing
   // something the server rejected.
   expect(result.current.rows.find((r) => r.captureId === 'c1')!.effectiveQuality).toBe(
-    'Needs review',
+    'needs_review',
   );
   // A conflict is never retried behind the operator's back.
   expect(server.reviewCalls).toHaveLength(1);
@@ -795,7 +795,7 @@ test('a second decision taken while the first save is in flight is never sent', 
   act(() => result.current.cycleFinalQuality());
   await waitFor(() => expect(server.reviewCalls).toHaveLength(1));
   expect(result.current.rows.find((r) => r.captureId === 'c1')!.effectiveQuality).toBe(
-    'Needs review',
+    'needs_review',
   );
 
   // The operator clicks again before the answer arrives. The tile invites it:
@@ -811,7 +811,7 @@ test('a second decision taken while the first save is in flight is never sent', 
   // FIRST save's value with it — the row would snap back to Good while the
   // save that is writing "Needs review" is still unanswered.
   expect(result.current.rows.find((r) => r.captureId === 'c1')!.effectiveQuality).toBe(
-    'Needs review',
+    'needs_review',
   );
 
   await act(async () => {
@@ -848,7 +848,7 @@ test('two decisions dispatched in the same tick still send one, and keep the ove
 
   expect(server.reviewCalls).toHaveLength(1);
   expect(result.current.rows.find((r) => r.captureId === 'c1')!.effectiveQuality).toBe(
-    'Needs review',
+    'needs_review',
   );
   await act(async () => {
     server.releaseReviews();

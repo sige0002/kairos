@@ -10,31 +10,25 @@
 
 import type { CaptureListItem, Quality, TaskResult } from '../api/types';
 import { Badge, type Tone } from '../components/ui';
-import type {
-  DisplayQuality,
-  DisplayTaskResult,
-  ReviewLane,
-} from './review/types';
+import type { ReviewLane } from './review/types';
 
-// Server vocabulary -> the display vocabulary the chips speak. Kept here so
-// every surface that renders a capture's labels maps identically.
-const QUALITY_FROM_SERVER: Record<Quality, DisplayQuality> = {
+// Presentation vocabulary is deliberately kept at the rendering boundary.
+// The rest of v2 carries the API's stable codes (`good`, `needs_review`, …).
+const QUALITY_LABEL: Record<Quality, string> = {
   good: 'Good',
   needs_review: 'Needs review',
   not_usable: 'Not usable',
 };
-const TASK_FROM_SERVER: Record<TaskResult, DisplayTaskResult> = {
+const TASK_RESULT_LABEL: Record<TaskResult, string> = {
   success: 'Success',
   failure: 'Failure',
 };
 
-export function displayQuality(q: Quality | null | undefined): DisplayQuality | null {
-  return q ? QUALITY_FROM_SERVER[q] : null;
+export function qualityLabel(q: Quality | null | undefined): string | null {
+  return q ? QUALITY_LABEL[q] : null;
 }
-export function displayTaskResult(
-  t: TaskResult | null | undefined,
-): DisplayTaskResult | null {
-  return t ? TASK_FROM_SERVER[t] : null;
+export function taskResultLabel(t: TaskResult | null | undefined): string | null {
+  return t ? TASK_RESULT_LABEL[t] : null;
 }
 
 const LANE_TONE: Record<ReviewLane, Tone> = {
@@ -60,17 +54,17 @@ export function LaneChip({ lane, testId }: { lane: ReviewLane; testId?: string }
   );
 }
 
-function qualityTone(q: DisplayQuality): Tone {
-  if (q === 'Good') return 'green';
-  if (q === 'Needs review') return 'amber';
+export function qualityTone(q: Quality): Tone {
+  if (q === 'good') return 'green';
+  if (q === 'needs_review') return 'amber';
   return 'red';
 }
 
-export function QualityChip({ quality }: { quality: DisplayQuality | null }) {
+export function QualityChip({ quality }: { quality: Quality | null }) {
   if (!quality) return <span className="font-mono text-xs text-text-muted">—</span>;
   return (
     <Badge tone={qualityTone(quality)} className="w-fit whitespace-nowrap">
-      {quality.toUpperCase()}
+      {qualityLabel(quality)!.toUpperCase()}
     </Badge>
   );
 }
@@ -79,20 +73,20 @@ export function TaskResultChip({
   task,
   reason,
 }: {
-  task: DisplayTaskResult | null;
+  task: TaskResult | null;
   /** The operator's failure reason (`failure_reason`) — surfaces as the FAILURE
    *  chip's tooltip so the WHY is one hover away wherever the chip appears. */
   reason?: string | null;
 }) {
   if (!task) return <span className="font-mono text-xs text-text-muted">—</span>;
-  const title = task === 'Failure' && reason ? `Failure reason: ${reason}` : undefined;
+  const title = task === 'failure' && reason ? `Failure reason: ${reason}` : undefined;
   return (
     <span title={title} className="w-fit">
       <Badge
-        tone={task === 'Success' ? 'teal' : 'gray'}
+        tone={task === 'success' ? 'teal' : 'gray'}
         className="w-fit whitespace-nowrap"
       >
-        {task.toUpperCase()}
+        {taskResultLabel(task)!.toUpperCase()}
       </Badge>
     </span>
   );
@@ -154,10 +148,10 @@ export function CaptureLabelChips({
     <div data-testid={testId} className="flex flex-wrap items-center gap-1.5">
       <BatchChip batchSeq={batchSeq} isoDate={isoFallback ?? capture.started_at} />
       <TaskResultChip
-        task={displayTaskResult(capture.task_result)}
+        task={capture.task_result ?? null}
         reason={capture.failure_reason}
       />
-      <QualityChip quality={displayQuality(capture.quality)} />
+      <QualityChip quality={capture.quality ?? null} />
     </div>
   );
 }

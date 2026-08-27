@@ -188,8 +188,8 @@ export function EpisodeTable({ rv }: { rv: ReviewState }) {
   const nReady = rv.rows.filter((r) => r.reviewLane === 'ready').length;
   const nCheck = rv.rows.filter((r) => r.reviewLane === 'needs_check').length;
   const nExcluded = rv.rows.filter((r) => r.reviewLane === 'excluded').length;
-  const nSuccess = rv.rows.filter((r) => r.task === 'Success').length;
-  const nFail = rv.rows.filter((r) => r.task === 'Failure').length;
+  const nSuccess = rv.rows.filter((r) => r.task === 'success').length;
+  const nFail = rv.rows.filter((r) => r.task === 'failure').length;
   return (
     <div className="flex min-w-0 flex-col overflow-hidden rounded-card border border-border bg-surface shadow-card">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-border px-[18px] py-3">
