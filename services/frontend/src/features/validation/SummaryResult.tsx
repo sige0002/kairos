@@ -39,7 +39,7 @@ function formatScalar(value: unknown): string {
 }
 
 function Scalar({ value }: { value: unknown }) {
-  return <span className="break-words font-mono text-[12.5px] text-gray-700">{formatScalar(value)}</span>;
+  return <span className="break-words font-mono text-[12.5px] text-text-primary">{formatScalar(value)}</span>;
 }
 
 /** Render one summary value: scalar inline, object as nested rows, array smartly. */
@@ -52,7 +52,7 @@ function Value({ value }: { value: unknown }): ReactNode {
       return <Scalar value={value.map(formatScalar).join(', ')} />;
     }
     return (
-      <pre className="overflow-x-auto rounded-control bg-gray-50 p-2 font-mono text-[11px] text-gray-600">
+      <pre className="overflow-x-auto rounded-control bg-surface-muted p-2 font-mono text-[11px] text-text-secondary">
         {JSON.stringify(value, null, 2)}
       </pre>
     );
@@ -79,7 +79,7 @@ export function artifactHref(path: string): string | null {
 function Artifact({ path }: { path: string }) {
   const href = artifactHref(path);
   if (!href) {
-    return <p className="truncate font-mono text-[11px] text-gray-500">{path}</p>;
+    return <p className="truncate font-mono text-[11px] text-text-muted">{path}</p>;
   }
   if (IMAGE_EXT.test(path)) {
     return (
@@ -88,9 +88,9 @@ function Artifact({ path }: { path: string }) {
           src={href}
           alt={path}
           loading="lazy"
-          className="max-h-64 max-w-full rounded-control border border-gray-100"
+          className="max-h-64 max-w-full rounded-control border border-border"
         />
-        <figcaption className="mt-0.5 truncate font-mono text-[11px] text-gray-500">
+        <figcaption className="mt-0.5 truncate font-mono text-[11px] text-text-muted">
           {path}
         </figcaption>
       </figure>
@@ -102,7 +102,7 @@ function Artifact({ path }: { path: string }) {
         href={href}
         target="_blank"
         rel="noreferrer"
-        className="text-teal-700 underline decoration-dotted hover:text-teal-800"
+        className="text-accent underline decoration-dotted hover:text-accent"
       >
         {path}
       </a>
@@ -118,9 +118,9 @@ function KeyValueRows({ data, nested = false }: { data: Record<string, unknown>;
       {entries.map(([key, value]) => (
         <div
           key={key}
-          className="grid grid-cols-[minmax(0,168px)_1fr] items-start gap-3 border-b border-gray-50 py-2 last:border-b-0"
+          className="grid grid-cols-[minmax(0,168px)_1fr] items-start gap-3 border-b border-border py-2 last:border-b-0"
         >
-          <span className="truncate font-mono text-[11.5px] text-gray-500">{key}</span>
+          <span className="truncate font-mono text-[11.5px] text-text-muted">{key}</span>
           <div className="min-w-0">
             <Value value={value} />
           </div>
@@ -153,9 +153,9 @@ export function SummaryResult({
 
   return (
     <Card className="overflow-hidden">
-      <div className="flex flex-wrap items-center gap-2.5 border-b border-gray-100 px-[18px] py-4">
+      <div className="flex flex-wrap items-center gap-2.5 border-b border-border px-[18px] py-4">
         <SectionLabel>Result</SectionLabel>
-        <span className="font-mono text-[11.5px] text-gray-500">
+        <span className="font-mono text-[11.5px] text-text-muted">
           {name}
           {summary.version != null && ` · v${summary.version}`}
         </span>
@@ -168,7 +168,7 @@ export function SummaryResult({
       </div>
 
       {typeof summary.message === 'string' && (
-        <p className="border-b border-gray-100 px-[18px] py-4 font-mono text-[15px] text-gray-800">
+        <p className="border-b border-border px-[18px] py-4 font-mono text-[15px] text-text-primary">
           {summary.message}
         </p>
       )}
@@ -180,17 +180,17 @@ export function SummaryResult({
       )}
 
       {artifacts.length > 0 && (
-        <div className="border-t border-gray-100 px-[18px] py-3">
-          <p className="mb-1 text-[10px] uppercase tracking-[0.05em] text-gray-500">Artifacts</p>
+        <div className="border-t border-border px-[18px] py-3">
+          <p className="mb-1 text-[10px] uppercase tracking-[0.05em] text-text-muted">Artifacts</p>
           {artifacts.map((path) => (
             <Artifact key={path} path={path} />
           ))}
         </div>
       )}
 
-      <details className="border-t border-gray-100 px-[18px] py-3">
-        <summary className="cursor-pointer text-[11px] text-gray-500">Raw summary.json</summary>
-        <pre className="mt-2 overflow-x-auto rounded-control bg-gray-50 p-2 font-mono text-[11px] text-gray-600">
+      <details className="border-t border-border px-[18px] py-3">
+        <summary className="cursor-pointer text-[11px] text-text-muted">Raw summary.json</summary>
+        <pre className="mt-2 overflow-x-auto rounded-control bg-surface-muted p-2 font-mono text-[11px] text-text-secondary">
           {JSON.stringify(summary, null, 2)}
         </pre>
       </details>

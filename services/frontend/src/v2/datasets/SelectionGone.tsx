@@ -33,7 +33,7 @@ export function DatasetGoneNote({
   return (
     <p
       data-testid={testId}
-      className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] leading-relaxed text-amber-900"
+      className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12.5px] leading-relaxed text-status-warning-text"
     >
       This dataset is no longer in the catalog — it was removed outside this
       screen (another browser, the API, or a rebuild).{' '}
@@ -53,7 +53,7 @@ export function DatasetGonePane({ state }: { state: DatasetsState }) {
   return (
     <div
       data-testid="dataset-center"
-      className="flex min-h-0 min-w-0 flex-col items-center justify-center gap-3 rounded-card border border-gray-200 bg-white p-8 shadow-card"
+      className="flex min-h-0 min-w-0 flex-col items-center justify-center gap-3 rounded-card border border-border bg-surface p-8 shadow-card"
     >
       <div className="max-w-[420px]">
         <DatasetGoneNote testId="dataset-selection-gone" datasetId={state.selectedDatasetId} />
@@ -62,7 +62,7 @@ export function DatasetGonePane({ state }: { state: DatasetsState }) {
         type="button"
         data-testid="dataset-selection-gone-clear"
         onClick={state.clearDataset}
-        className="rounded-chip border border-gray-200 px-[11px] py-[5px] text-xs font-semibold text-gray-600 hover:bg-gray-50"
+        className="rounded-chip border border-border px-[11px] py-[5px] text-xs font-semibold text-text-secondary hover:bg-surface-muted"
       >
         Back to the dataset list
       </button>

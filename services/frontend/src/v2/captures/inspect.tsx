@@ -171,11 +171,11 @@ export function spanMs(
 export function JsonBlock({ label, value }: { label: string; value: unknown }) {
   if (value === undefined || value === null) return null;
   return (
-    <details className="rounded-control border border-gray-200 p-2">
-      <summary className="cursor-pointer text-sm font-medium text-gray-700">
+    <details className="rounded-control border border-border p-2">
+      <summary className="cursor-pointer text-sm font-medium text-text-primary">
         {label}
       </summary>
-      <pre className="mt-2 max-h-80 overflow-auto rounded-control bg-gray-50 p-2 font-mono text-xs">
+      <pre className="mt-2 max-h-80 overflow-auto rounded-control bg-surface-muted p-2 font-mono text-xs">
         {JSON.stringify(value, null, 2)}
       </pre>
     </details>
@@ -188,19 +188,19 @@ export function fmtNum(value?: number | null, digits = 1): string {
 
 // Loss tone: amber when any is lost, green when clean, gray when uncomputable.
 function lossTone(loss?: number | null): { text: string; cls: string } {
-  if (loss === undefined || loss === null) return { text: '—', cls: 'text-gray-500' };
-  if (loss > 0) return { text: `${(loss * 100).toFixed(1)}%`, cls: 'text-amber-700' };
-  return { text: '0%', cls: 'text-green-700' };
+  if (loss === undefined || loss === null) return { text: '—', cls: 'text-text-muted' };
+  if (loss > 0) return { text: `${(loss * 100).toFixed(1)}%`, cls: 'text-status-warning-text' };
+  return { text: '0%', cls: 'text-status-success-text' };
 }
 
 export function LossTable({ topics }: { topics: LossTopic[] }) {
   if (topics.length === 0)
-    return <p className="text-xs text-gray-500">No topics to analyze.</p>;
+    return <p className="text-xs text-text-muted">No topics to analyze.</p>;
   return (
-    <div className="overflow-auto rounded-control border border-gray-200">
+    <div className="overflow-auto rounded-control border border-border">
       <table className="w-full text-xs">
         <thead>
-          <tr className="border-b border-gray-100 text-[10px] uppercase tracking-[0.05em] text-gray-500">
+          <tr className="border-b border-border text-[10px] uppercase tracking-[0.05em] text-text-muted">
             <th className="px-2 py-1.5 text-left font-medium">Topic</th>
             <th className="px-2 py-1.5 text-right font-medium">Hz</th>
             <th className="px-2 py-1.5 text-right font-medium">Loss</th>
@@ -211,14 +211,14 @@ export function LossTable({ topics }: { topics: LossTopic[] }) {
           {topics.map((t) => {
             const tone = lossTone(t.loss_rate);
             return (
-              <tr key={t.name} className="border-t border-gray-50">
+              <tr key={t.name} className="border-t border-border">
                 <td
-                  className="truncate px-2 py-1.5 font-mono text-gray-700"
+                  className="truncate px-2 py-1.5 font-mono text-text-primary"
                   title={t.name}
                 >
                   {t.name}
                 </td>
-                <td className="px-2 py-1.5 text-right font-mono text-gray-500">
+                <td className="px-2 py-1.5 text-right font-mono text-text-muted">
                   {fmtNum(t.hz)}
                 </td>
                 <td
@@ -226,7 +226,7 @@ export function LossTable({ topics }: { topics: LossTopic[] }) {
                 >
                   {tone.text}
                 </td>
-                <td className="px-2 py-1.5 text-right font-mono text-gray-500">
+                <td className="px-2 py-1.5 text-right font-mono text-text-muted">
                   {fmtNum(t.gap_max_ms, 0)}
                 </td>
               </tr>
@@ -253,7 +253,7 @@ function formatOffset(ms: number): string {
 export function LossEventTable({ events }: { events: LossEvent[] }) {
   if (events.length === 0) {
     return (
-      <p className="rounded-control border border-green-200 bg-green-50 px-2.5 py-2 text-[11.5px] text-green-700">
+      <p className="rounded-control border border-status-success-border bg-status-success-bg px-2.5 py-2 text-[11.5px] text-status-success-text">
         No interval exceeded the configured gap threshold.
       </p>
     );
@@ -261,14 +261,14 @@ export function LossEventTable({ events }: { events: LossEvent[] }) {
   return (
     <div data-testid="loss-events" className="flex flex-col gap-1.5">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h4 className="text-[12px] font-semibold text-gray-700">
+        <h4 className="text-[12px] font-semibold text-text-primary">
           Gap events ({events.length})
         </h4>
-        <span className="text-[10.5px] text-gray-500">capture-relative time</span>
+        <span className="text-[10.5px] text-text-muted">capture-relative time</span>
       </div>
-      <div className="max-h-64 overflow-auto rounded-control border border-gray-200">
+      <div className="max-h-64 overflow-auto rounded-control border border-border">
         <table className="w-full text-[11.5px]">
-          <thead className="sticky top-0 bg-gray-50 text-[10px] uppercase tracking-[0.04em] text-gray-500">
+          <thead className="sticky top-0 bg-surface-muted text-[10px] uppercase tracking-[0.04em] text-text-muted">
             <tr>
               <th className="px-2 py-1.5 text-left font-medium">Time band</th>
               <th className="px-2 py-1.5 text-left font-medium">Topic</th>
@@ -280,23 +280,23 @@ export function LossEventTable({ events }: { events: LossEvent[] }) {
             {events.map((event, index) => (
               <tr
                 key={`${event.topic}-${event.start_offset_ms}-${index}`}
-                className="border-t border-gray-100"
+                className="border-t border-border"
               >
-                <td className="whitespace-nowrap px-2 py-1.5 font-mono text-gray-600">
+                <td className="whitespace-nowrap px-2 py-1.5 font-mono text-text-secondary">
                   {formatOffset(event.start_offset_ms)}–
                   {formatOffset(event.end_offset_ms)}
                 </td>
                 <td
-                  className="max-w-64 truncate px-2 py-1.5 font-mono text-gray-700"
+                  className="max-w-64 truncate px-2 py-1.5 font-mono text-text-primary"
                   title={event.topic}
                 >
                   {event.topic}
                 </td>
-                <td className="whitespace-nowrap px-2 py-1.5 text-right font-mono text-amber-700">
+                <td className="whitespace-nowrap px-2 py-1.5 text-right font-mono text-status-warning-text">
                   {fmtNum(event.gap_ms, 0)} ms
-                  <span className="ml-1 text-gray-400">×{fmtNum(event.gap_ratio)}</span>
+                  <span className="ml-1 text-text-muted">×{fmtNum(event.gap_ratio)}</span>
                 </td>
-                <td className="px-2 py-1.5 text-right font-mono font-semibold text-gray-700">
+                <td className="px-2 py-1.5 text-right font-mono font-semibold text-text-primary">
                   ≈{event.estimated_missing}
                 </td>
               </tr>
@@ -304,7 +304,7 @@ export function LossEventTable({ events }: { events: LossEvent[] }) {
           </tbody>
         </table>
       </div>
-      <p className="text-[10.5px] leading-relaxed text-gray-500">
+      <p className="text-[10.5px] leading-relaxed text-text-muted">
         Estimated from each topic&apos;s median cadence. A row proves an unusually long
         interval between two recorded messages; it does not identify where the loss
         occurred.
@@ -452,7 +452,7 @@ export function VideoPlayer({
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="truncate font-mono text-[11px] text-gray-600" title={topic}>
+      <div className="truncate font-mono text-[11px] text-text-secondary" title={topic}>
         {topic}
       </div>
       {/* Both failures get the same treatment (#9): the reading rather than the
@@ -492,9 +492,9 @@ export function VideoPlayer({
                 e.currentTarget.duration,
               )
             }
-            className="w-full rounded-control border border-gray-200 bg-black"
+            className="w-full rounded-control border border-border bg-black"
           />
-          <p className="text-[10px] text-gray-500">
+          <p className="text-[10px] text-text-muted">
             {summary.frames} frames · {fmtNum(summary.fps, 0)}fps
             {summary.truncated
               ? ` · head only (${summary.total_messages ?? '?'} msgs in the episode)`
@@ -504,7 +504,7 @@ export function VideoPlayer({
               <button
                 type="button"
                 onClick={reencodeFull}
-                className="ml-1.5 font-semibold text-teal-700 hover:underline"
+                className="ml-1.5 font-semibold text-accent hover:underline"
               >
                 Re-encode full episode
               </button>
@@ -512,11 +512,11 @@ export function VideoPlayer({
           </p>
         </>
       ) : summary ? (
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-text-muted">
           {summary.note ?? 'Could not generate video from this topic.'}
         </p>
       ) : (
-        <p className="text-xs text-gray-500">Generating…</p>
+        <p className="text-xs text-text-muted">Generating…</p>
       )}
     </div>
   );
@@ -544,21 +544,21 @@ export function VideoCheckSection({
   if (cameras.length === 0)
     return (
       <section>
-        <h3 className="mb-1.5 text-sm font-medium text-gray-700">Video check</h3>
-        <p className="text-xs text-gray-500">No camera topics.</p>
+        <h3 className="mb-1.5 text-sm font-medium text-text-primary">Video check</h3>
+        <p className="text-xs text-text-muted">No camera topics.</p>
       </section>
     );
 
   return (
     <section>
       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-sm font-medium text-gray-700">Video check</h3>
+        <h3 className="text-sm font-medium text-text-primary">Video check</h3>
         <div className="flex items-center gap-2">
           <select
             aria-label="camera topic"
             value={topic}
             onChange={(e) => setTopic(e.target.value)}
-            className="max-w-[180px] truncate rounded-control border border-gray-200 px-2 py-1 font-mono text-xs text-gray-700"
+            className="max-w-[180px] truncate rounded-control border border-border px-2 py-1 font-mono text-xs text-text-primary"
           >
             {cameras.map((t) => (
               <option key={t.name} value={t.name}>
@@ -571,7 +571,7 @@ export function VideoCheckSection({
             onClick={() => topic && setPlayers([topic])}
             disabled={!topic || !!blockedReason}
             title={blockedReason ?? undefined}
-            className="rounded-control border border-teal-200 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-50 disabled:opacity-50"
+            className="rounded-control border border-accent px-2.5 py-1 text-xs font-semibold text-accent hover:bg-interaction-selected disabled:opacity-50"
           >
             Generate mp4
           </button>
@@ -580,19 +580,19 @@ export function VideoCheckSection({
             onClick={() => setPlayers(cameras.map((c) => c.name))}
             disabled={cameras.length === 0 || !!blockedReason}
             title={blockedReason ?? undefined}
-            className="rounded-control border border-gray-200 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50 disabled:opacity-50"
+            className="rounded-control border border-border px-2.5 py-1 text-xs font-semibold text-text-secondary hover:bg-surface-muted disabled:opacity-50"
           >
             All cameras
           </button>
         </div>
       </div>
       {blockedReason && (
-        <p className="text-[11.5px] text-amber-700" data-testid="video-blocked">
+        <p className="text-[11.5px] text-status-warning-text" data-testid="video-blocked">
           {blockedReason}
         </p>
       )}
       {players.length === 0 ? (
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-text-muted">
           Preview the leading frames of a camera topic as an mp4 — one camera, or all at
           once.
         </p>

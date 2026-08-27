@@ -17,14 +17,14 @@ export function PipelineRail({
 }) {
   return (
     <Card className="flex min-h-0 flex-col overflow-auto">
-      <div className="flex items-center gap-2.5 border-b border-gray-100 px-4 py-[13px]">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <div className="flex items-center gap-2.5 border-b border-border px-4 py-[13px]">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Pipelines
         </h2>
       </div>
       <div className="flex flex-col gap-[7px] p-3">
         {pipelines.length === 0 && (
-          <p className="px-1 py-2 text-[11.5px] text-gray-500">
+          <p className="px-1 py-2 text-[11.5px] text-text-muted">
             No pipelines available.
           </p>
         )}
@@ -42,17 +42,17 @@ export function PipelineRail({
               }}
               className={cn(
                 'flex cursor-pointer flex-col gap-1 rounded-[11px] border p-[10px_13px] text-left',
-                selected ? 'border-teal-200 bg-teal-50' : 'border-gray-100',
+                selected ? 'border-accent bg-interaction-selected' : 'border-border',
               )}
             >
               <div className="flex items-center gap-2">
-                <span className="font-mono text-[12.5px] font-semibold text-gray-900">
+                <span className="font-mono text-[12.5px] font-semibold text-text-primary">
                   {p.id}
                 </span>
               </div>
               {p.description && (
                 <span
-                  className="truncate text-[11.5px] text-gray-500"
+                  className="truncate text-[11.5px] text-text-muted"
                   title={p.description}
                 >
                   {p.description}
@@ -62,7 +62,7 @@ export function PipelineRail({
           );
         })}
       </div>
-      <div className="border-t border-gray-100 px-4 py-[11px] text-[11.5px] leading-relaxed text-gray-500">
+      <div className="border-t border-border px-4 py-[11px] text-[11.5px] leading-relaxed text-text-muted">
         This list shows pipelines enabled by the server. Lifecycle and promotion are not
         configured in this console.
       </div>

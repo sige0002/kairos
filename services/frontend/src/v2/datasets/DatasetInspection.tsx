@@ -81,14 +81,14 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
       <section>
         <div className="mb-1.5 flex items-center justify-between gap-2">
           <span className="flex items-baseline gap-1.5">
-            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
               Loss report
             </h3>
             {/* Dated for the same reason as Review's (#9): a table a failed
                 attempt calls "the last completed report" has to be datable, or
                 the operator cannot tell which run produced it. */}
             {topics && (
-              <span data-testid="dataset-loss-checked" className="text-[11px] text-gray-500">
+              <span data-testid="dataset-loss-checked" className="text-[11px] text-text-muted">
                 {lossCheckedAt
                   ? `checked ${formatWhen(lossCheckedAt)}`
                   : 'last completed report'}
@@ -105,7 +105,7 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
                 ? undefined
                 : 'The recording is not readable on this machine, so there is nothing to analyze here.'
             }
-            className="rounded-[9px] border border-teal-200 px-2.5 py-1 text-xs font-bold text-teal-700 hover:bg-teal-50 disabled:opacity-50"
+            className="rounded-[9px] border border-accent px-2.5 py-1 text-xs font-bold text-accent hover:bg-interaction-selected disabled:opacity-50"
           >
             {lossJobId ? 'Analyzing…' : lossMutation.isPending ? 'Starting…' : 'Run loss report'}
           </button>
@@ -129,7 +129,7 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
         {topics ? (
           <LossTable topics={topics} />
         ) : (
-          <p className="text-xs leading-relaxed text-gray-500">
+          <p className="text-xs leading-relaxed text-text-muted">
             Per-topic loss rate (gap-based estimate) computed straight from the MCAP.
             Shortfalls are an observed estimate, not confirmed packet loss.
           </p>
@@ -140,10 +140,10 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
         <VideoCheckSection topics={detail.topics ?? []} captureId={captureId} />
       ) : (
         <section>
-          <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
             Video check
           </h3>
-          <p className="mt-1.5 text-xs leading-relaxed text-gray-500">
+          <p className="mt-1.5 text-xs leading-relaxed text-text-muted">
             No readable copy of this recording on this machine, so there are no frames
             to decode. The membership is unaffected — a dataset may cite a capture
             whose bytes live elsewhere.
@@ -152,14 +152,14 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
       )}
 
       <section className="flex flex-col gap-2">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Sidecars
         </h3>
         <JsonBlock label="Object manifest" value={detail.manifest} />
         <JsonBlock label="Record (review)" value={detail.record} />
         <JsonBlock label="Validation" value={detail.validation} />
         {!detail.manifest && !detail.record && !detail.validation && (
-          <p className="text-xs text-gray-500">No JSON sidecars present for this capture.</p>
+          <p className="text-xs text-text-muted">No JSON sidecars present for this capture.</p>
         )}
       </section>
     </div>

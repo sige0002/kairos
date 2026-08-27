@@ -800,7 +800,7 @@ export function ValidationScreen() {
           selectedIndex={0}
           onSelect={selectPipeline}
         />
-        <Card className="flex items-center justify-center p-8 text-sm text-gray-500">
+        <Card className="flex items-center justify-center p-8 text-sm text-text-muted">
           {pipelinesQuery.isPending ? 'Loading pipelines…' : 'No enabled pipelines.'}
         </Card>
       </div>
@@ -873,7 +873,7 @@ export function ValidationScreen() {
               <Card
                 role="alert"
                 data-testid="validation-run-unavailable"
-                className="flex flex-col gap-2 border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+                className="flex flex-col gap-2 border-status-warning-border bg-status-warning-bg p-4 text-sm text-status-warning-text"
               >
                 <span className="font-semibold">Run not available</span>
                 <span>

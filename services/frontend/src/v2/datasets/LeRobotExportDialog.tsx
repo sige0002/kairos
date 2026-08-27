@@ -30,9 +30,9 @@ import type { ExportProfile } from '../../api/types';
 import type { LeRobotExportState } from './useLeRobotExport';
 
 const FIELD_LABEL =
-  'text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500';
+  'text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted';
 const FIELD_INPUT =
-  'rounded-control border border-gray-200 bg-white px-2 py-1.5 text-[12.5px] text-gray-700';
+  'rounded-control border border-border bg-surface px-2 py-1.5 text-[12.5px] text-text-primary';
 
 function episodes(n: number): string {
   return `${n} episode${n === 1 ? '' : 's'}`;
@@ -59,24 +59,24 @@ function ProfileInfo({
   if (profile.source) facts.push(profile.source);
   return (
     <>
-      <span data-testid="lerobot-export-profile-info" className="text-[11px] text-gray-500">
-        {profile.valid === true && <span className="text-teal-700">✓ valid</span>}
+      <span data-testid="lerobot-export-profile-info" className="text-[11px] text-text-muted">
+        {profile.valid === true && <span className="text-accent">✓ valid</span>}
         {profile.valid == null && (
-          <span className="text-amber-700">
+          <span className="text-status-warning-text">
             {validatorUnavailable
               ? 'not verified — the exporter has no converter installed to check with'
               : 'not verified — nothing has checked this profile'}
           </span>
         )}
         {profile.valid === false && (
-          <span className="text-red-700 font-semibold">does not validate</span>
+          <span className="text-status-danger-text font-semibold">does not validate</span>
         )}
         {facts.length > 0 && <> · {facts.join(' · ')}</>}
       </span>
       {profile.valid === false && (
         <ul
           data-testid="lerobot-export-profile-errors"
-          className="flex flex-col gap-0.5 rounded-control border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11.5px] leading-relaxed text-red-800"
+          className="flex flex-col gap-0.5 rounded-control border border-status-danger-border bg-status-danger-bg px-2.5 py-1.5 text-[11.5px] leading-relaxed text-status-danger-text"
         >
           {(profile.errors ?? ['The converter gave no reason.']).map((error) => (
             <li key={error}>{error}</li>
@@ -96,18 +96,18 @@ function TaskSummary({ state }: { state: LeRobotExportState }) {
   const values = Object.entries(tasks.values);
   if (values.length <= 1 && tasks.unlabeled === 0) return null;
   return (
-    <p data-testid="lerobot-export-tasks" className="text-[11.5px] text-gray-600">
+    <p data-testid="lerobot-export-tasks" className="text-[11.5px] text-text-secondary">
       Task labels:{' '}
       {values.map(([label, count], i) => (
         <span key={label}>
           {i > 0 && ' · '}
-          <span className="font-semibold text-gray-800">{label}</span> ×{count}
+          <span className="font-semibold text-text-primary">{label}</span> ×{count}
         </span>
       ))}
       {tasks.unlabeled > 0 && (
         <>
           {values.length > 0 && ' · '}
-          <span className="text-amber-700">{tasks.unlabeled} unlabeled</span>
+          <span className="text-status-warning-text">{tasks.unlabeled} unlabeled</span>
         </>
       )}
     </p>
@@ -129,7 +129,7 @@ function PreflightPanel({ state }: { state: LeRobotExportState }) {
     return (
       <p
         data-testid="lerobot-export-preflight"
-        className="rounded-control border border-gray-100 bg-gray-50 px-3 py-2 text-[12px] text-gray-500"
+        className="rounded-control border border-border bg-surface-muted px-3 py-2 text-[12px] text-text-muted"
       >
         Checking what this profile would convert…
       </p>
@@ -144,10 +144,10 @@ function PreflightPanel({ state }: { state: LeRobotExportState }) {
   return (
     <div
       data-testid="lerobot-export-preflight"
-      className="flex flex-col gap-1.5 rounded-control border border-gray-100 bg-gray-50 px-3 py-2"
+      className="flex flex-col gap-1.5 rounded-control border border-border bg-surface-muted px-3 py-2"
     >
-      <p data-testid="lerobot-export-included" className="text-[12.5px] text-gray-700">
-        <span className="font-semibold text-gray-900">
+      <p data-testid="lerobot-export-included" className="text-[12.5px] text-text-primary">
+        <span className="font-semibold text-text-primary">
           {preflight.included} of {preflight.member_total}
         </span>{' '}
         member{preflight.member_total === 1 ? '' : 's'} would be converted.
@@ -158,7 +158,7 @@ function PreflightPanel({ state }: { state: LeRobotExportState }) {
             key={why}
             data-testid={`lerobot-export-dropped-${why.replace(/\s+/g, '-')}`}
             title={ids.map(shortCaptureId).join(', ')}
-            className="text-[11.5px] text-gray-600"
+            className="text-[11.5px] text-text-secondary"
           >
             {ids.length} left out — {why}.
           </p>
@@ -168,7 +168,7 @@ function PreflightPanel({ state }: { state: LeRobotExportState }) {
       {preflight.missing_topics.length > 0 && (
         <div
           data-testid="lerobot-export-missing-topics"
-          className="flex flex-col gap-0.5 rounded-control border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11.5px] leading-relaxed text-red-800"
+          className="flex flex-col gap-0.5 rounded-control border border-status-danger-border bg-status-danger-bg px-2.5 py-1.5 text-[11.5px] leading-relaxed text-status-danger-text"
         >
           <span className="font-semibold">
             {preflight.missing_topics.length === 1
@@ -191,7 +191,7 @@ function PreflightPanel({ state }: { state: LeRobotExportState }) {
       {preflight.coverage_unknown.length > 0 && (
         <p
           data-testid="lerobot-export-coverage-unknown"
-          className="text-[11.5px] leading-relaxed text-gray-600"
+          className="text-[11.5px] leading-relaxed text-text-secondary"
         >
           {preflight.coverage_unknown.length} recording
           {preflight.coverage_unknown.length === 1 ? "'s" : "s'"} manifest could
@@ -212,7 +212,7 @@ function RecordingCaution() {
   return (
     <p
       data-testid="lerobot-export-recording-caution"
-      className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900"
+      className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
     >
       A recording is live right now. Converting reads and re-encodes on this
       same machine, so the two share CPU and disk — it is allowed, but a take
@@ -225,11 +225,11 @@ function FormBody({ state, datasetName }: { state: LeRobotExportState; datasetNa
   const preflight = state.preflight;
   return (
     <div className="flex flex-col gap-3">
-      <p className="break-words text-[13px] leading-relaxed text-gray-600">
-        <span className="font-semibold text-gray-900">{datasetName}</span> is
+      <p className="break-words text-[13px] leading-relaxed text-text-secondary">
+        <span className="font-semibold text-text-primary">{datasetName}</span> is
         converted to a LeRobot v3 dataset written under{' '}
-        <span className="font-mono text-gray-700">exports/</span>.{' '}
-        <span className="font-semibold text-gray-800">
+        <span className="font-mono text-text-primary">exports/</span>.{' '}
+        <span className="font-semibold text-text-primary">
           Nothing here changes:
         </span>{' '}
         the recordings are read where they are, and the dataset keeps its
@@ -262,7 +262,7 @@ function FormBody({ state, datasetName }: { state: LeRobotExportState; datasetNa
             validatorUnavailable={state.validatorUnavailable}
           />
         )}
-        <span className="text-[11px] text-gray-500">
+        <span className="text-[11px] text-text-muted">
           fps, camera set and resampling belong to the profile — to change one,
           pick another profile.
         </span>
@@ -270,7 +270,7 @@ function FormBody({ state, datasetName }: { state: LeRobotExportState; datasetNa
 
       <label className="flex flex-col gap-1">
         <span className={FIELD_LABEL}>
-          Memo <span className="font-normal normal-case text-gray-500">(optional)</span>
+          Memo <span className="font-normal normal-case text-text-muted">(optional)</span>
         </span>
         <input
           data-testid="lerobot-export-memo"
@@ -284,18 +284,18 @@ function FormBody({ state, datasetName }: { state: LeRobotExportState; datasetNa
         />
       </label>
 
-      <div className="flex flex-col gap-1 rounded-control border border-gray-100 bg-gray-50 px-3 py-2">
+      <div className="flex flex-col gap-1 rounded-control border border-border bg-surface-muted px-3 py-2">
         <span className={FIELD_LABEL}>Writes to</span>
         <span
           data-testid="lerobot-export-output"
-          className="break-all font-mono text-[12px] text-gray-800"
+          className="break-all font-mono text-[12px] text-text-primary"
         >
           {preflight?.output ?? '—'}
         </span>
         {preflight?.output_exists && (
           <span
             data-testid="lerobot-export-output-exists"
-            className="text-[11.5px] font-semibold leading-relaxed text-red-700"
+            className="text-[11.5px] font-semibold leading-relaxed text-status-danger-text"
           >
             That folder already exists and is not empty — change the memo, or
             delete the old export first. Nothing is overwritten.
@@ -319,7 +319,7 @@ function FormBody({ state, datasetName }: { state: LeRobotExportState; datasetNa
             placeholder="e.g. pick and place the red block"
             className={FIELD_INPUT}
           />
-          <span className="text-[11px] leading-relaxed text-gray-500">
+          <span className="text-[11px] leading-relaxed text-text-muted">
             {(state.preflight?.tasks.unlabeled ?? 0) === 1
               ? 'Used only for the one recording that carries no task label of its own'
               : `Used only for the ${state.preflight?.tasks.unlabeled ?? 0} recordings that carry no task label of their own`}
@@ -339,7 +339,7 @@ function ProgressBody({ state }: { state: LeRobotExportState }) {
   const status = state.status;
   if (!status) {
     return (
-      <p data-testid="lerobot-export-progress" className="text-[12.5px] text-gray-600">
+      <p data-testid="lerobot-export-progress" className="text-[12.5px] text-text-secondary">
         The conversion was accepted. Waiting for the exporter's first report…
       </p>
     );
@@ -353,28 +353,28 @@ function ProgressBody({ state }: { state: LeRobotExportState }) {
         <Badge tone={status.stalled ? 'amber' : 'teal'}>{status.state}</Badge>
         <span
           data-testid="lerobot-export-progress-count"
-          className="font-mono text-[13px] font-semibold text-gray-900"
+          className="font-mono text-[13px] font-semibold text-text-primary"
         >
           {status.done} / {status.total}
         </span>
-        <span className="text-[12px] text-gray-500">episodes converted</span>
+        <span className="text-[12px] text-text-muted">episodes converted</span>
       </div>
 
       {queued ? (
-        <p data-testid="lerobot-export-queue" className="text-[12px] text-gray-600">
+        <p data-testid="lerobot-export-queue" className="text-[12px] text-text-secondary">
           {status.queue_position != null
             ? `Waiting its turn — number ${status.queue_position} in the exporter's queue.`
             : 'Waiting its turn in the exporter’s queue.'}
         </p>
       ) : (
         <>
-          <div className="h-2 overflow-hidden rounded-full bg-gray-100">
+          <div className="h-2 overflow-hidden rounded-full bg-surface-muted">
             <div
-              className={status.stalled ? 'h-full bg-amber-400' : 'h-full bg-teal-500'}
+              className={status.stalled ? 'h-full bg-status-warning-accent' : 'h-full bg-accent'}
               style={{ width: fraction == null ? '0%' : `${Math.round(fraction * 100)}%` }}
             />
           </div>
-          <p className="text-[12px] text-gray-500">
+          <p className="text-[12px] text-text-muted">
             {fraction == null
               ? 'The exporter has not reported an episode count yet, so there is no share of the whole to show.'
               : typeof pct === 'number' && pct > 0 && pct < 100
@@ -387,7 +387,7 @@ function ProgressBody({ state }: { state: LeRobotExportState }) {
       {status.stalled && (
         <p
           data-testid="lerobot-export-stalled"
-          className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900"
+          className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
         >
           No progress has been reported for a while — the converter may be stuck
           on this episode. Nothing has been cancelled; this is what the exporter
@@ -395,16 +395,16 @@ function ProgressBody({ state }: { state: LeRobotExportState }) {
         </p>
       )}
       {status.failed > 0 && (
-        <p data-testid="lerobot-export-failed-count" className="text-[12px] text-red-700">
+        <p data-testid="lerobot-export-failed-count" className="text-[12px] text-status-danger-text">
           {episodes(status.failed)} failed to convert so far.
         </p>
       )}
       {status.message && (
-        <p className="break-words text-[12px] leading-relaxed text-gray-600">
+        <p className="break-words text-[12px] leading-relaxed text-text-secondary">
           {status.message}
         </p>
       )}
-      <p className="break-all font-mono text-[11px] text-gray-500">→ {status.output}</p>
+      <p className="break-all font-mono text-[11px] text-text-muted">→ {status.output}</p>
       {state.cancelError != null && <ErrorMessage error={state.cancelError} />}
     </div>
   );
@@ -423,24 +423,24 @@ function ResultBody({ state }: { state: LeRobotExportState }) {
         <Badge tone={complete ? 'teal' : status.state === 'canceled' ? 'gray' : 'red'}>
           {status.state}
         </Badge>
-        <span className="font-mono text-[13px] font-semibold text-gray-900">
+        <span className="font-mono text-[13px] font-semibold text-text-primary">
           {status.done} / {status.total}
         </span>
-        <span className="text-[12px] text-gray-500">episodes converted</span>
+        <span className="text-[12px] text-text-muted">episodes converted</span>
       </div>
       {complete ? (
-        <p className="text-[12.5px] leading-relaxed text-gray-700">
+        <p className="text-[12.5px] leading-relaxed text-text-primary">
           {episodes(status.done)} written to{' '}
           <span
             data-testid="lerobot-export-result-output"
-            className="break-all font-mono text-gray-900"
+            className="break-all font-mono text-text-primary"
           >
             {status.output}
           </span>
           {status.failed > 0 && (
             <>
               {' '}
-              <span className="text-red-700">
+              <span className="text-status-danger-text">
                 ({episodes(status.failed)} failed — the converter's log has the
                 reason.)
               </span>
@@ -450,7 +450,7 @@ function ResultBody({ state }: { state: LeRobotExportState }) {
       ) : (
         <p
           data-testid="lerobot-export-result-message"
-          className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] leading-relaxed text-amber-900"
+          className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12.5px] leading-relaxed text-status-warning-text"
         >
           {status.message ??
             (status.state === 'canceled'
@@ -566,7 +566,7 @@ export function LeRobotExportDialog({
       {!running && !result && state.blockedReason && !state.preflightError && (
         <p
           data-testid="lerobot-export-blocked"
-          className="mt-2 text-[12px] leading-relaxed text-gray-600"
+          className="mt-2 text-[12px] leading-relaxed text-text-secondary"
         >
           {state.blockedReason}
         </p>

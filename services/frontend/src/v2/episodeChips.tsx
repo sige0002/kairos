@@ -67,7 +67,7 @@ function qualityTone(q: DisplayQuality): Tone {
 }
 
 export function QualityChip({ quality }: { quality: DisplayQuality | null }) {
-  if (!quality) return <span className="font-mono text-xs text-gray-500">—</span>;
+  if (!quality) return <span className="font-mono text-xs text-text-muted">—</span>;
   return (
     <Badge tone={qualityTone(quality)} className="w-fit whitespace-nowrap">
       {quality.toUpperCase()}
@@ -84,7 +84,7 @@ export function TaskResultChip({
    *  chip's tooltip so the WHY is one hover away wherever the chip appears. */
   reason?: string | null;
 }) {
-  if (!task) return <span className="font-mono text-xs text-gray-500">—</span>;
+  if (!task) return <span className="font-mono text-xs text-text-muted">—</span>;
   const title = task === 'Failure' && reason ? `Failure reason: ${reason}` : undefined;
   return (
     <span title={title} className="w-fit">

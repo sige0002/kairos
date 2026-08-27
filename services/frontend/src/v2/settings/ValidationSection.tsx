@@ -60,23 +60,23 @@ export function ValidationSection() {
   return (
     <Card className="flex min-w-0 flex-col gap-5 overflow-auto p-[18px] lg:col-span-2" data-testid="settings-validation">
       <div className="flex items-center gap-2.5">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Validation
         </h2>
         {data && (
-          <span className="font-mono text-[13px] font-semibold text-gray-900">{data.active_robot}</span>
+          <span className="font-mono text-[13px] font-semibold text-text-primary">{data.active_robot}</span>
         )}
       </div>
 
       {/* Aspect selection */}
       <div className="flex flex-col gap-2.5" data-testid="validation-aspects">
-        <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+        <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
           Active options
         </h3>
         {optionsQuery.isError ? (
           <ErrorMessage error={optionsQuery.error} />
         ) : !data ? (
-          <p className="text-sm text-gray-500">Loading options…</p>
+          <p className="text-sm text-text-muted">Loading options…</p>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {ASPECTS.map(({ id, label, immediate }) => {
@@ -85,17 +85,17 @@ export function ValidationSection() {
               return (
                 <label key={id} className="flex flex-col gap-1.5 text-sm">
                   <span className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-gray-700">{label}</span>
+                    <span className="font-medium text-text-primary">{label}</span>
                     <Badge tone={immediate ? 'green' : 'gray'} dot>
                       {immediate ? 'applies immediately' : 'applies on restart'}
                     </Badge>
                   </span>
                   {options.length === 0 ? (
-                    <span className="text-[12.5px] text-gray-500">No options for this robot.</span>
+                    <span className="text-[12.5px] text-text-muted">No options for this robot.</span>
                   ) : (
                     <select
                       aria-label={`${id} option`}
-                      className="rounded-control border border-gray-200 px-2 py-1.5 font-mono text-[12.5px] focus:border-teal-600 focus:outline-none disabled:opacity-50"
+                      className="rounded-control border border-border px-2 py-1.5 font-mono text-[12.5px] focus:border-accent focus:outline-none disabled:opacity-50"
                       value={state.active}
                       disabled={selectMutation.isPending}
                       onChange={(e) => selectMutation.mutate({ category: id, id: e.target.value })}
@@ -118,15 +118,15 @@ export function ValidationSection() {
 
       {/* One-click presets (read-only) */}
       <div className="flex flex-col gap-2.5">
-        <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+        <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
           One-click presets
         </h3>
         {presetsQuery.isError ? (
           <ErrorMessage error={presetsQuery.error} />
         ) : presetsQuery.isPending ? (
-          <p className="text-sm text-gray-500">Loading presets…</p>
+          <p className="text-sm text-text-muted">Loading presets…</p>
         ) : presets.length === 0 ? (
-          <p className="text-[12.5px] text-gray-500" data-testid="validation-presets-empty">
+          <p className="text-[12.5px] text-text-muted" data-testid="validation-presets-empty">
             No presets configured — add them to <code>config/&lt;robot&gt;/validation_presets.yaml</code>.
           </p>
         ) : (
@@ -135,16 +135,16 @@ export function ValidationSection() {
               <div
                 key={p.id}
                 data-testid={`preset-${p.id}`}
-                className="flex items-center gap-3 rounded-control border border-gray-200 px-3.5 py-2.5"
+                className="flex items-center gap-3 rounded-control border border-border px-3.5 py-2.5"
               >
                 <div className="flex min-w-0 flex-col">
-                  <span className="text-[13px] font-semibold text-gray-800">{p.name}</span>
+                  <span className="text-[13px] font-semibold text-text-primary">{p.name}</span>
                   {p.description && (
-                    <span className="truncate text-[11.5px] text-gray-500" title={p.description}>
+                    <span className="truncate text-[11.5px] text-text-muted" title={p.description}>
                       {p.description}
                     </span>
                   )}
-                  <span className="font-mono text-[11px] text-gray-500">pipeline: {p.pipeline}</span>
+                  <span className="font-mono text-[11px] text-text-muted">pipeline: {p.pipeline}</span>
                 </div>
                 <div className="flex-1" />
                 {p.pending > 0 ? (
@@ -160,8 +160,8 @@ export function ValidationSection() {
         )}
       </div>
 
-      <div className="flex items-center gap-2 rounded-control border border-gray-200 bg-gray-50 px-3.5 py-2.5">
-        <span className="text-[12px] text-gray-500">
+      <div className="flex items-center gap-2 rounded-control border border-border bg-surface-muted px-3.5 py-2.5">
+        <span className="text-[12px] text-text-muted">
           Run pipelines and see results in the Validation tab.
         </span>
         <div className="flex-1" />
@@ -169,7 +169,7 @@ export function ValidationSection() {
           type="button"
           data-testid="validation-goto-tab"
           onClick={() => setActiveTab('validation')}
-          className="rounded-control bg-teal-700 px-3.5 py-1.5 text-[12.5px] font-semibold text-white hover:bg-teal-800"
+          className="rounded-control bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-text-inverse hover:bg-accent-strong"
         >
           Open Validation tab →
         </button>

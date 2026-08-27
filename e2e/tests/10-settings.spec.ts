@@ -34,10 +34,12 @@ import { expect, test } from "@playwright/test";
 import { api } from "../fixtures/api";
 import { repoConfig } from "../fixtures/config";
 import {
+  elapsedSeconds,
   ensureOperator,
   openRecordingJsonEditor,
   openRecordingSettings,
   openTab,
+  phaseTitle,
 } from "../fixtures/ui";
 
 test.describe.configure({ mode: "serial" });
@@ -53,9 +55,11 @@ test("Settings: appearance follows System and persists explicit Dark locally", a
   await expect(section).toBeVisible();
   await expect(section.getByTestId("appearance-system")).toBeChecked();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await expect(section).toHaveCSS("background-color", "rgb(255, 255, 255)");
 
   await section.getByTestId("appearance-dark").click();
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(section).toHaveCSS("background-color", "rgb(30, 41, 59)");
   await expect(section.getByTestId("appearance-status")).toContainText(
     "Using dark appearance",
   );
@@ -72,6 +76,74 @@ test("Settings: appearance follows System and persists explicit Dark locally", a
   await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
   await page.emulateMedia({ colorScheme: "dark" });
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+
+  // Appearance is a browser-local presentation preference: carrying a Collect
+  // preference through Settings must not reset that frontend state.
+  await openTab(page, "collect");
+  const soundToggle = page.getByTestId("recording-sounds-toggle");
+  const before = await soundToggle.getAttribute("aria-label");
+  await openTab(page, "settings");
+  await page.getByRole("button", { name: "Appearance", exact: true }).click();
+  await page.getByTestId("appearance-light").click();
+  await openTab(page, "collect");
+  await expect(soundToggle).toHaveAttribute("aria-label", before ?? "");
+});
+
+test("Settings: changing appearance leaves an active Collect recording alone", async ({ page }) => {
+  test.setTimeout(5 * 60_000);
+  const recordRequests: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (/\/api\/v1\/record\/(?:start|stop)$/.test(path)) recordRequests.push(path);
+  });
+
+  let recordingStarted = false;
+  try {
+    await openTab(page, "collect");
+    await ensureOperator(page);
+    const before = new Set((await api.allCaptures(true)).map((capture) => capture.capture_id));
+
+    await expect(phaseTitle(page)).toHaveText("READY", { timeout: 90_000 });
+    await page.getByRole("button", { name: /Start recording/ }).click();
+    recordingStarted = true;
+    await expect(phaseTitle(page)).toHaveText("RECORDING", { timeout: 120_000 });
+    await expect.poll(() => elapsedSeconds(page), { timeout: 60_000 }).toBeGreaterThanOrEqual(1);
+
+    const live = (await api.allCaptures(true)).filter((capture) => !before.has(capture.capture_id));
+    expect(live, "starting Collect did not create one live capture").toHaveLength(1);
+    const captureId = live[0].capture_id;
+    const commandsBeforeAppearance = [...recordRequests];
+
+    // Use the shell tabs, not `page.goto`: this is the in-app journey an
+    // operator takes while a take is live, so its local machine must survive.
+    await page.locator("#tab-settings").click();
+    await expect(page.locator("#tab-settings")).toHaveAttribute("aria-selected", "true");
+    await page.getByRole("button", { name: "Appearance", exact: true }).click();
+    await page.getByTestId("appearance-dark").click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    await page.getByTestId("appearance-light").click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    expect(recordRequests, "appearance sent a recorder command").toEqual(commandsBeforeAppearance);
+
+    await page.locator("#tab-collect").click();
+    await expect(page.locator("#tab-collect")).toHaveAttribute("aria-selected", "true");
+    await expect(phaseTitle(page)).toHaveText("RECORDING");
+    await expect.poll(() => elapsedSeconds(page), { timeout: 60_000 }).toBeGreaterThanOrEqual(2);
+    const afterAppearance = await api.allCaptures(true);
+    expect(afterAppearance.map((capture) => capture.capture_id)).toContain(captureId);
+    expect(recordRequests, "returning from Settings sent a recorder command").toEqual(commandsBeforeAppearance);
+
+    await page.getByRole("button", { name: /Stop recording/ }).click();
+    await expect(phaseTitle(page)).toHaveText(/result$/, { timeout: 180_000 });
+    recordingStarted = false;
+    await page.getByTestId("save-episode").click();
+    await expect(phaseTitle(page)).not.toHaveText(/result$/, { timeout: 60_000 });
+    expect(recordRequests.filter((path) => path.endsWith("/stop"))).toHaveLength(1);
+  } finally {
+    if (recordingStarted && (await page.getByRole("button", { name: /Stop recording/ }).count())) {
+      await page.getByRole("button", { name: /Stop recording/ }).click();
+    }
+  }
 });
 
 test("Settings: Audio is opt-in, independently configurable, and resettable", async ({

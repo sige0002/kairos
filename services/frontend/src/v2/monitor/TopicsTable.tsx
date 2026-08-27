@@ -78,7 +78,7 @@ export function TopicsTable({
       data-testid="topics-table"
       className="flex max-h-[270px] shrink-0 flex-col lg:min-h-[270px] lg:max-h-none lg:flex-[1_1_0%]"
     >
-      <div className="border-b border-gray-100 px-[18px] py-2">
+      <div className="border-b border-border px-[18px] py-2">
         <input
           type="search"
           aria-label="Search topics"
@@ -86,12 +86,12 @@ export function TopicsTable({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search topics…"
-          className="h-8 w-full rounded-control border border-gray-200 bg-white px-3 font-mono text-[12px] text-gray-700 outline-none placeholder:font-sans placeholder:text-gray-400 focus:border-teal-600 focus:ring-1 focus:ring-teal-100"
+          className="h-8 w-full rounded-control border border-border bg-surface px-3 font-mono text-[12px] text-text-primary outline-none placeholder:font-sans placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-focus"
         />
       </div>
       <div
         className={cn(
-          'grid gap-2 border-b border-gray-100 px-[18px] py-2.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500',
+          'grid gap-2 border-b border-border px-[18px] py-2.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted',
           GRID_COLS,
         )}
       >
@@ -106,18 +106,18 @@ export function TopicsTable({
       {atCap && (
         <p
           data-testid="topics-table-cap"
-          className="border-b border-amber-100 bg-amber-50 px-[18px] py-1 text-[10.5px] text-amber-700"
+          className="border-b border-status-warning-border bg-status-warning-bg px-[18px] py-1 text-[10.5px] text-status-warning-text"
         >
           Charting {MAX_SERIES}/{MAX_SERIES} topics — deselect one to overlay another.
         </p>
       )}
       <div className="overflow-auto">
         {isDiscovering ? (
-          <p className="px-[18px] py-6 text-center text-xs text-gray-500">Discovering topics…</p>
+          <p className="px-[18px] py-6 text-center text-xs text-text-muted">Discovering topics…</p>
         ) : rows.length === 0 ? (
           <p
             data-testid="topics-table-empty"
-            className="px-[18px] py-6 text-center text-xs text-gray-500"
+            className="px-[18px] py-6 text-center text-xs text-text-muted"
           >
             {monitorBridge === 'down'
               ? 'Robot offline — no topics discovered (the monitor on the robot side is unreachable).'
@@ -126,7 +126,7 @@ export function TopicsTable({
         ) : filteredRows.length === 0 ? (
           <p
             data-testid="topics-table-no-results"
-            className="px-[18px] py-6 text-center text-xs text-gray-500"
+            className="px-[18px] py-6 text-center text-xs text-text-muted"
           >
             No topics match “{query.trim()}”.
           </p>
@@ -154,9 +154,9 @@ export function TopicsTable({
                   }
                 }}
                 className={cn(
-                  'grid w-full cursor-pointer items-center gap-2 border-b border-gray-50 px-[18px] py-2 text-left transition-colors hover:bg-gray-50',
+                  'grid w-full cursor-pointer items-center gap-2 border-b border-border px-[18px] py-2 text-left transition-colors hover:bg-surface-muted',
                   GRID_COLS,
-                  charted && 'bg-teal-50 hover:bg-teal-50',
+                  charted && 'bg-interaction-selected hover:bg-interaction-selected',
                 )}
               >
                 <span className="flex items-center">
@@ -169,7 +169,7 @@ export function TopicsTable({
                     // chart-toggle handler (separate targets).
                     onClick={(e) => e.stopPropagation()}
                     onChange={() => onToggleRec(row.name)}
-                    className="h-3.5 w-3.5 cursor-pointer accent-teal-600"
+                    className="h-3.5 w-3.5 cursor-pointer accent-accent"
                   />
                 </span>
                 <span className="flex min-w-0 items-center gap-2">
@@ -179,21 +179,24 @@ export function TopicsTable({
                     style={
                       charted
                         ? { background: paletteColor(chartIdx), borderColor: paletteColor(chartIdx) }
-                        : { background: 'transparent', borderColor: '#e5e7eb' }
+                        : {
+                            background: 'transparent',
+                            borderColor: 'rgb(var(--color-border-default))',
+                          }
                     }
                   />
-                  <span className="truncate font-mono text-[12.5px] text-gray-900">{row.name}</span>
+                  <span className="truncate font-mono text-[12.5px] text-text-primary">{row.name}</span>
                 </span>
-                <span className="font-mono text-[12.5px] text-gray-700">
+                <span className="font-mono text-[12.5px] text-text-primary">
                   {row.hz != null ? row.hz.toFixed(1) : '—'}
                 </span>
-                <span className="font-mono text-[12.5px] text-gray-500">
+                <span className="font-mono text-[12.5px] text-text-muted">
                   {row.expected_hz != null ? row.expected_hz : (formatBaseline(row) ?? '—')}
                 </span>
-                <span className="font-mono text-[12.5px] text-gray-700">
+                <span className="font-mono text-[12.5px] text-text-primary">
                   {formatBandwidth(row.bandwidth_bps)}
                 </span>
-                <span className="font-mono text-[12.5px] text-gray-700">{formatGap(row)}</span>
+                <span className="font-mono text-[12.5px] text-text-primary">{formatGap(row)}</span>
                 <Badge tone={rowTone(row)}>{statusLabel(row)}</Badge>
               </div>
             );

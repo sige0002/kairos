@@ -36,7 +36,7 @@ function SlotMeaning({
       className="flex min-w-0 flex-col items-center gap-1 text-center"
       data-testid={`ext-action-${slot}`}
     >
-      <span className="text-[10.5px] font-bold uppercase tracking-[0.08em] text-gray-400">
+      <span className="text-[10.5px] font-bold uppercase tracking-[0.08em] text-text-muted">
         {slot}
       </span>
       <span
@@ -45,10 +45,10 @@ function SlotMeaning({
         className={cn(
           'truncate text-[12px] font-bold uppercase tracking-wide',
           meaning.kind === 'unassigned'
-            ? 'normal-case text-amber-600'
+            ? 'normal-case text-status-warning-text'
             : emphasized
-              ? 'text-gray-800'
-              : 'font-normal text-gray-300',
+              ? 'text-text-primary'
+              : 'font-normal text-text-muted',
         )}
       >
         {externalActionMeaningLabel(meaning)}
@@ -71,23 +71,23 @@ export function ExternalActionHud({
   );
   return (
     <Card
-      className={cn('shrink-0 border-gray-200', CARD_PAD)}
+      className={cn('shrink-0 border-border', CARD_PAD)}
       data-testid="ext-action-hud"
     >
       <div className="flex items-baseline gap-2">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           {inFailureReasonMode ? 'Failure reason' : 'External controls'}
         </h3>
         {inFailureReasonMode && taskName && (
           <span
-            className="truncate text-[11.5px] font-semibold text-gray-700"
+            className="truncate text-[11.5px] font-semibold text-text-primary"
             data-testid="ext-action-task-name"
           >
             {taskName}
           </span>
         )}
         <div className="flex-1" />
-        <span className="hidden text-[10.5px] text-gray-400 [@media(min-width:1280px)]:block">
+        <span className="hidden text-[10.5px] text-text-muted [@media(min-width:1280px)]:block">
           Ctrl+Alt+1/2/3
         </span>
       </div>

@@ -46,11 +46,11 @@ export function EventsView() {
 
   return (
     <Card className="flex flex-1 flex-col lg:min-h-0" data-testid="monitor-events">
-      <div className="flex flex-wrap items-center gap-2.5 border-b border-gray-100 px-4 py-3">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-600">
+      <div className="flex flex-wrap items-center gap-2.5 border-b border-border px-4 py-3">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-secondary">
           Incidents
         </h2>
-        <span data-testid="events-firing-count" className="font-mono text-[11.5px] text-gray-600">
+        <span data-testid="events-firing-count" className="font-mono text-[11.5px] text-text-secondary">
           {firingCount} firing · {total} total
         </span>
         <div className="flex-1" />
@@ -61,9 +61,9 @@ export function EventsView() {
           placeholder="Filter by topic…"
           aria-label="filter incidents by topic"
           data-testid="events-filter"
-          className="w-44 rounded-control border border-gray-200 px-2.5 py-1 text-[12px] focus:border-teal-600 focus:outline-none"
+          className="w-44 rounded-control border border-border px-2.5 py-1 text-[12px] focus:border-accent focus:outline-none"
         />
-        <div className="flex gap-[3px] rounded-control border border-gray-200 bg-gray-100 p-1">
+        <div className="flex gap-[3px] rounded-control border border-border bg-surface-muted p-1">
           {STATE_FILTERS.map((f) => (
             <button
               key={f}
@@ -73,7 +73,7 @@ export function EventsView() {
               onClick={() => setStateFilter(f)}
               className={cn(
                 'rounded-chip px-2.5 py-0.5 text-[11px] font-medium capitalize transition-colors',
-                f === stateFilter ? 'bg-white text-teal-700 shadow-sm' : 'text-gray-600 hover:text-gray-700',
+                f === stateFilter ? 'bg-surface text-accent shadow-sm' : 'text-text-secondary hover:text-text-primary',
               )}
             >
               {f}
@@ -82,18 +82,18 @@ export function EventsView() {
         </div>
       </div>
 
-      <p className="border-b border-gray-100 px-4 py-2 text-[11px] leading-relaxed text-gray-600">
+      <p className="border-b border-border px-4 py-2 text-[11px] leading-relaxed text-text-secondary">
         Incidents accumulate from when you opened Monitor (session-local). Each row is one
         (topic, metric) breach; ×N counts distinct firing episodes (refires) seen this session.
       </p>
 
       <div className="flex flex-col gap-0.5 overflow-auto p-2.5">
         {incidents.length === 0 ? (
-          <p data-testid="events-empty" className="px-1.5 py-8 text-center text-[12px] text-gray-600">
+          <p data-testid="events-empty" className="px-1.5 py-8 text-center text-[12px] text-text-secondary">
             No alerts yet — threshold breaches from the monitor will appear here.
           </p>
         ) : filtered.length === 0 ? (
-          <p data-testid="events-no-match" className="px-1.5 py-8 text-center text-[12px] text-gray-600">
+          <p data-testid="events-no-match" className="px-1.5 py-8 text-center text-[12px] text-text-secondary">
             No incidents match the current filter.
           </p>
         ) : (
@@ -103,7 +103,7 @@ export function EventsView() {
               data-testid="events-row"
               className={cn(
                 'flex items-start gap-2.5 rounded-control px-2.5 py-2.5',
-                i.state === 'firing' && 'bg-red-50',
+                i.state === 'firing' && 'bg-status-danger-bg',
               )}
             >
               <StatusDot tone={i.tone} className="mt-[5px]" />
@@ -113,17 +113,17 @@ export function EventsView() {
                     outside its card. Here it is LATENT rather than reproduced:
                     this view is full-width, so the 118-char name that broke the
                     330px rail still fits. Same cause, one column wider. */}
-                <span className="break-words text-[12.5px] font-semibold text-gray-700">
+                <span className="break-words text-[12.5px] font-semibold text-text-primary">
                   {i.title}
-                  {i.detail && <span className="font-normal text-gray-600"> · {i.detail}</span>}
+                  {i.detail && <span className="font-normal text-text-secondary"> · {i.detail}</span>}
                 </span>
-                <span className="font-mono text-[11px] text-gray-600">
+                <span className="font-mono text-[11px] text-text-secondary">
                   {i.state} · since {i.time}
                 </span>
               </div>
               {i.refires > 1 && (
                 <span
-                  className="shrink-0 rounded-chip bg-gray-100 px-1.5 py-0.5 font-mono text-[10.5px] font-semibold text-gray-600"
+                  className="shrink-0 rounded-chip bg-surface-muted px-1.5 py-0.5 font-mono text-[10.5px] font-semibold text-text-secondary"
                   title={`${i.refires} distinct firing episodes this session`}
                 >
                   ×{i.refires}

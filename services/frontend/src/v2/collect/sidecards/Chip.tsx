@@ -8,11 +8,11 @@ import { cn } from '../../../components/ui';
 export type Tone = 'green' | 'amber' | 'red' | 'teal' | 'gray';
 
 const CHIP_TONE: Record<Tone, string> = {
-  green: 'bg-green-100 text-green-700',
-  amber: 'bg-amber-100 text-amber-800',
-  red: 'bg-red-50 text-red-700 border border-red-200',
-  teal: 'bg-teal-100 text-teal-700',
-  gray: 'bg-gray-100 text-gray-600',
+  green: 'bg-status-success-bg text-status-success-text',
+  amber: 'bg-status-warning-bg text-status-warning-text',
+  red: 'bg-status-danger-bg text-status-danger-text border border-status-danger-border',
+  teal: 'bg-interaction-selected text-accent',
+  gray: 'bg-surface-muted text-text-secondary',
 };
 
 export function Chip({ tone, children }: { tone: Tone; children: React.ReactNode }) {

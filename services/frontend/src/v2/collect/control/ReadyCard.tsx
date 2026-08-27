@@ -36,28 +36,28 @@ export function ReadyCard({
   return (
     <Card
       className={cn(
-        'flex shrink-0 flex-col gap-2.5 border-2 border-teal-200',
+        'flex shrink-0 flex-col gap-2.5 border-2 border-accent',
         CARD_GAP_COMPACT,
         CARD_PAD,
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-teal-600" />
+        <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-accent" />
         <h2
           ref={titleRef}
           data-testid="phase-title"
           tabIndex={-1}
-          className="text-[17px] font-bold text-teal-700 outline-none"
+          className="text-[17px] font-bold text-accent outline-none"
         >
           READY
         </h2>
         <div className="flex-1" />
-        <span className="font-mono text-xs text-gray-500">
+        <span className="font-mono text-xs text-text-muted">
           Ep {stats.epNext} / {machine.targetEpisodes}
         </span>
       </div>
       {/* Real next-start summary (was a fabricated "12/12 topics live"). */}
-      <span className="text-xs text-gray-500">
+      <span className="text-xs text-text-muted">
         Next recording captures{' '}
         {machine.selection.customized
           ? `${machine.selection.count} selected topic${machine.selection.count === 1 ? '' : 's'}`
@@ -70,9 +70,9 @@ export function ReadyCard({
         {machine.preArmed && (
           <span
             data-testid="prearmed-note"
-            className="ml-1.5 inline-flex items-center gap-1 font-medium text-teal-700"
+            className="ml-1.5 inline-flex items-center gap-1 font-medium text-accent"
           >
-            <span className="inline-block h-1.5 w-1.5 rounded-full bg-teal-500" />
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />
             pre-armed · instant start
           </span>
         )}
@@ -83,7 +83,7 @@ export function ReadyCard({
       {!machine.preArmed && machine.preArmDegraded && (
         <span
           data-testid="prearm-degraded-note"
-          className="text-xs font-medium text-amber-700"
+          className="text-xs font-medium text-status-warning-text"
         >
           Pre-arm is failing — Start will do a full (slower) start.{' '}
           {machine.preArmDegraded}
@@ -126,11 +126,11 @@ export function ReadyCard({
         className={cn(
           'flex h-[52px] items-center justify-center gap-2 rounded-control text-[15px] font-bold shadow-btn [@media(max-height:860px)]:h-[44px]',
           blocked
-            ? 'cursor-not-allowed bg-gray-200 text-gray-400'
-            : 'bg-teal-700 text-white hover:bg-teal-800',
+            ? 'cursor-not-allowed bg-surface-muted text-text-muted'
+            : 'bg-accent text-text-inverse hover:bg-accent-strong',
         )}
       >
-        <span className="h-2.5 w-2.5 rounded-full bg-white" />
+        <span className="h-2.5 w-2.5 rounded-full bg-surface" />
         Start recording
         <span className="text-[11px] font-medium opacity-70">· R</span>
       </button>
@@ -138,7 +138,7 @@ export function ReadyCard({
         <span
           id={NO_SELECTION_NOTE_ID}
           data-testid="no-selection-note"
-          className="text-[11px] font-medium text-amber-700"
+          className="text-[11px] font-medium text-status-warning-text"
         >
           Every topic is cleared — select at least one in Monitor to record.
         </span>
@@ -147,7 +147,7 @@ export function ReadyCard({
         <span
           id={OPERATOR_NOTE_ID}
           data-testid="operator-gate-note"
-          className="text-[11px] font-medium text-amber-700"
+          className="text-[11px] font-medium text-status-warning-text"
         >
           {OPERATOR_GATE_HINT}
         </span>

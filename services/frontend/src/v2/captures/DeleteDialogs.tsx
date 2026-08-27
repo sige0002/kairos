@@ -185,7 +185,7 @@ function BlockedByJobs({
             data-testid="busy-cancel-retry"
             disabled={clearing}
             onClick={onClear}
-            className="mt-2 rounded-control bg-red-600 px-3 py-1.5 text-[12px] font-bold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="mt-2 rounded-control bg-status-danger-accent px-3 py-1.5 text-[12px] font-bold text-status-danger-contrast hover:bg-status-danger-text disabled:cursor-not-allowed disabled:opacity-50"
           >
             {clearing
               ? 'Cancelling…'
@@ -239,7 +239,7 @@ function DialogError({
     <div
       data-testid={testId}
       data-error-code={reading.code}
-      className="mt-3 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-[12.5px] text-red-700"
+      className="mt-3 rounded-control border border-status-danger-border bg-status-danger-bg px-3 py-2 text-[12.5px] text-status-danger-text"
     >
       <p className="font-semibold">{reading.message}</p>
       {reading.guidance && <p className="mt-1">{reading.guidance}</p>}
@@ -348,7 +348,7 @@ export function DiscardDialog({
       }
     >
       <div data-testid="discard-dialog">
-        <p className="font-semibold text-red-700" data-testid="discard-irreversible">
+        <p className="font-semibold text-status-danger-text" data-testid="discard-irreversible">
           This cannot be undone. The recordings are removed from this machine and
           there is no restore.
         </p>
@@ -357,13 +357,13 @@ export function DiscardDialog({
           {bytes === null && ' (size unknown)'}
         </p>
         {identityLines(captures).map((line) => (
-          <p key={line} className="mt-1 font-mono text-[12px] text-gray-600" data-testid="discard-identity">
+          <p key={line} className="mt-1 font-mono text-[12px] text-text-secondary" data-testid="discard-identity">
             {line}
           </p>
         ))}
         {splitDeploy && (
           <p
-            className="mt-2 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] text-amber-800"
+            className="mt-2 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12.5px] text-status-warning-text"
             data-testid="discard-split-note"
           >
             This deployment records on a separate robot. Discarding removes the
@@ -371,7 +371,7 @@ export function DiscardDialog({
             kairos does not delete it.
           </p>
         )}
-        <span className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <span className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Reason (required)
         </span>
         <div className="mt-1.5 flex flex-wrap gap-1.5" data-testid="discard-reason-chips">
@@ -388,8 +388,8 @@ export function DiscardDialog({
                 className={cn(
                   'rounded-chip border px-2.5 py-1 text-[12.5px] font-semibold transition-colors disabled:opacity-50',
                   on
-                    ? 'border-red-300 bg-red-50 text-red-700'
-                    : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50',
+                    ? 'border-status-danger-border bg-status-danger-bg text-status-danger-text'
+                    : 'border-border bg-surface text-text-secondary hover:bg-surface-muted',
                 )}
               >
                 {r.label}
@@ -401,8 +401,8 @@ export function DiscardDialog({
             through rather than asked for again. Shown so they can see exactly
             what will be recorded. */}
         {chip !== null && chip !== 'other' && activeDetail && (
-          <p className="mt-1.5 text-[11.5px] text-gray-500" data-testid="discard-reason-detail">
-            Recorded as: <span className="font-mono text-gray-700">{reason}</span>
+          <p className="mt-1.5 text-[11.5px] text-text-muted" data-testid="discard-reason-detail">
+            Recorded as: <span className="font-mono text-text-primary">{reason}</span>
           </p>
         )}
         {chip === 'other' && (
@@ -416,10 +416,10 @@ export function DiscardDialog({
             placeholder="e.g. gripper never closed — unusable takes"
             data-testid="discard-reason"
             aria-label="Reason"
-            className="mt-1.5 w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-600 focus:outline-none"
+            className="mt-1.5 w-full rounded-control border border-border px-2 py-1.5 text-sm focus:border-accent focus:outline-none"
           />
         )}
-        <p className="mt-1 text-[11.5px] text-gray-500">
+        <p className="mt-1 text-[11.5px] text-text-muted">
           Kept in the lifecycle ledger. Once the files are gone this line is the
           only record of why.
         </p>
@@ -487,17 +487,17 @@ export function DeleteDialog({
           {bytes === null && ' (size unknown)'}
         </p>
         {identityLines(captures).map((line) => (
-          <p key={line} className="mt-1 font-mono text-[12px] text-gray-600" data-testid="delete-identity">
+          <p key={line} className="mt-1 font-mono text-[12px] text-text-secondary" data-testid="delete-identity">
             {line}
           </p>
         ))}
-        <p className="mt-2 text-gray-600">
+        <p className="mt-2 text-text-secondary">
           The files are removed from this machine. The catalog keeps a record of
           the capture, so it stays answerable where the recording went.
         </p>
         {splitDeploy && (
           <p
-            className="mt-2 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] text-amber-800"
+            className="mt-2 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12.5px] text-status-warning-text"
             data-testid="delete-split-note"
           >
             A copy may still exist on the robot; kairos does not delete it.
@@ -505,7 +505,7 @@ export function DeleteDialog({
         )}
         <label
           htmlFor="delete-reason"
-          className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500"
+          className="mt-3 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted"
         >
           Reason (optional)
         </label>
@@ -517,7 +517,7 @@ export function DeleteDialog({
           maxLength={500}
           placeholder="e.g. superseded by a re-run"
           data-testid="delete-reason"
-          className="mt-1 w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-600 focus:outline-none"
+          className="mt-1 w-full rounded-control border border-border px-2 py-1.5 text-sm focus:border-accent focus:outline-none"
         />
         <FailureList failures={failures} testId="delete-failures" />
         <DialogError
@@ -547,7 +547,7 @@ function FailureList({
   return (
     <ul
       data-testid={testId}
-      className="mt-3 flex flex-col gap-1 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[11.5px] text-amber-800"
+      className="mt-3 flex flex-col gap-1 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[11.5px] text-status-warning-text"
     >
       {failures.map((f) => (
         <li key={f.captureId}>

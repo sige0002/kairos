@@ -371,7 +371,7 @@ test('a take stopped by its own cap is not shown as a failure', async () => {
   const note = await screen.findByTestId('review-capture-error');
   // The defect itself, asserted first so the failure names it: a take that
   // did what it was told rendered in the red fault box.
-  expect(note.className).not.toMatch(/red/);
+  expect(note.className).not.toContain('status-danger');
   expect(note).toHaveAttribute('data-severity', 'notice');
   // Not a colour-only signal: the classification is also in words, because
   // "why is this box grey" is not a question the colour can answer.
@@ -401,7 +401,7 @@ test('a real recorder fault still reads as one', async () => {
 
   const note = await screen.findByTestId('review-capture-error');
   expect(note).toHaveAttribute('data-severity', 'fault');
-  expect(note.className).toMatch(/red/);
+  expect(note.className).toContain('status-danger');
   expect(note.textContent).not.toMatch(/Stopped at the configured limit/);
 });
 
@@ -418,7 +418,7 @@ test('an unrecognised code keeps the server sentence and stays red', async () =>
 
   const note = await screen.findByTestId('review-capture-error');
   expect(note).toHaveAttribute('data-severity', 'fault');
-  expect(note.className).toMatch(/red/);
+  expect(note.className).toContain('status-danger');
   expect(note.textContent).toContain('the disk went away mid-write');
   expect(note).toHaveTextContent('(some_future_code)');
 });

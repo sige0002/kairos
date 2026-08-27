@@ -94,7 +94,7 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
       <div
         data-testid="store-health-banner"
         data-state="loading"
-        className="my-2.5 flex items-center gap-2 rounded-control border border-gray-200 bg-white px-3 py-2 text-[12px] text-gray-600"
+        className="my-2.5 flex items-center gap-2 rounded-control border border-border bg-surface px-3 py-2 text-[12px] text-text-secondary"
       >
         <span className="animate-pulse" aria-hidden="true">
           ●
@@ -114,12 +114,12 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
         role="status"
         data-testid="store-health-banner"
         data-state="unavailable"
-        className="my-2.5 flex flex-wrap items-center gap-2 rounded-control border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-900"
+        className="my-2.5 flex flex-wrap items-center gap-2 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] text-status-warning-text"
       >
         <span className="font-semibold">Store status unavailable.</span>
         <span>Nothing is known; this is not an all-clear.</span>
         {query.isError && (
-          <span className="text-amber-800">{errorMessage(query.error)}</span>
+          <span className="text-status-warning-text">{errorMessage(query.error)}</span>
         )}
         <button
           type="button"
@@ -164,8 +164,8 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
       className={cn(
         'my-2.5 flex flex-wrap items-center gap-2 rounded-control border px-3 py-2 text-[12px]',
         suspect
-          ? 'border-red-300 bg-red-50 text-red-900'
-          : 'border-amber-300 bg-amber-50 text-amber-900',
+          ? 'border-status-danger-border bg-status-danger-bg text-status-danger-text'
+          : 'border-status-warning-border bg-status-warning-bg text-status-warning-text',
       )}
     >
       {suspect && (

@@ -39,7 +39,7 @@ const CollapseToggle = forwardRef<
       aria-label={collapsed ? 'Expand filters' : 'Collapse filters'}
       title={collapsed ? 'Expand filters' : 'Collapse filters'}
       className={cn(
-        'flex h-7 w-7 items-center justify-center rounded-control text-[15px] leading-none text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-600',
+        'flex h-7 w-7 items-center justify-center rounded-control text-[15px] leading-none text-text-muted transition-colors hover:bg-surface-muted hover:text-text-secondary',
         className,
       )}
     >
@@ -113,14 +113,14 @@ export const FiltersRail = forwardRef<
       {collapsed && (
         <div
           data-testid="review-filters-collapsed"
-          className="hidden min-h-0 flex-1 flex-col items-center gap-1 rounded-card border border-gray-200 bg-white py-2 shadow-card lg:flex"
+          className="hidden min-h-0 flex-1 flex-col items-center gap-1 rounded-card border border-border bg-surface py-2 shadow-card lg:flex"
         >
           <CollapseToggle ref={toggleRef} collapsed onToggle={onToggleCollapsed} />
           {hasActiveFilters && (
             <span
               data-testid="review-filters-active-dot"
               title="Filters are active — expand to see them"
-              className="h-1.5 w-1.5 rounded-full bg-teal-600"
+              className="h-1.5 w-1.5 rounded-full bg-accent"
               aria-label="Filters active"
             />
           )}
@@ -151,7 +151,7 @@ export const FiltersRail = forwardRef<
         <div className="flex flex-col gap-1.5">
           <label
             htmlFor={OPERATOR_SELECT_ID}
-            className="text-[11.5px] font-semibold text-gray-500"
+            className="text-[11.5px] font-semibold text-text-muted"
           >
             Operator
           </label>
@@ -160,7 +160,7 @@ export const FiltersRail = forwardRef<
             data-testid="review-operator-filter"
             value={operatorFilter}
             onChange={(e) => onOperatorChange(e.target.value)}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] text-text-primary"
           >
             <option value={ALL_OPERATORS}>All operators</option>
             {operatorOptions.map((op) => (
@@ -172,18 +172,18 @@ export const FiltersRail = forwardRef<
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-[11.5px] font-semibold text-gray-500">Batch</span>
+          <span className="text-[11.5px] font-semibold text-text-muted">Batch</span>
           {batchFilterLabel ? (
             <div
               data-testid="review-batch-filter-rail"
-              className="flex items-center justify-between gap-2 rounded-control border border-teal-200 bg-teal-50 px-2.5 py-1.5 text-[13px] font-semibold text-teal-800"
+              className="flex items-center justify-between gap-2 rounded-control border border-accent bg-interaction-selected px-2.5 py-1.5 text-[13px] font-semibold text-accent"
             >
               <span className="font-mono">{batchFilterLabel}</span>
               <button
                 type="button"
                 onClick={onClearBatchFilter}
                 title="Show all batches"
-                className="text-teal-700 hover:text-teal-900"
+                className="text-accent hover:text-accent-strong"
               >
                 ✕
               </button>
@@ -191,14 +191,14 @@ export const FiltersRail = forwardRef<
           ) : (
             <div
               title="Click a row's batch chip in the table to filter to that batch"
-              className="flex items-center rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-500"
+              className="flex items-center rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] text-text-muted"
             >
               All batches — click a batch chip
             </div>
           )}
         </div>
 
-        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-gray-500">
+        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-text-muted">
           Data quality
           <select
             data-testid="review-quality-filter"
@@ -206,7 +206,7 @@ export const FiltersRail = forwardRef<
             onChange={(event) =>
               onQualityChange((event.target.value || null) as Quality | null)
             }
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] font-normal text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] font-normal text-text-primary"
           >
             <option value="">All qualities</option>
             <option value="good">Good</option>
@@ -215,7 +215,7 @@ export const FiltersRail = forwardRef<
           </select>
         </label>
 
-        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-gray-500">
+        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-text-muted">
           Task result
           <select
             data-testid="review-result-filter"
@@ -223,7 +223,7 @@ export const FiltersRail = forwardRef<
             onChange={(event) =>
               onResultChange((event.target.value || null) as TaskResult | null)
             }
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] font-normal text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] font-normal text-text-primary"
           >
             <option value="">All results</option>
             <option value="success">Success</option>
@@ -231,13 +231,13 @@ export const FiltersRail = forwardRef<
           </select>
         </label>
 
-        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-gray-500">
+        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-text-muted">
           Condition
           <select
             data-testid="review-condition-filter"
             value={conditionFilter}
             onChange={(event) => onConditionChange(event.target.value)}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] font-normal text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] font-normal text-text-primary"
           >
             <option value="">All conditions</option>
             {conditionOptions.map((condition) => (
@@ -249,7 +249,7 @@ export const FiltersRail = forwardRef<
         </label>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-[11.5px] font-semibold text-gray-500">
+          <span className="text-[11.5px] font-semibold text-text-muted">
             UTC date range
           </span>
           <input
@@ -258,7 +258,7 @@ export const FiltersRail = forwardRef<
             data-testid="review-started-from-filter"
             value={startedFrom?.slice(0, 10) ?? ''}
             onChange={(event) => onStartedFromChange(event.target.value || null)}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] text-text-primary"
           />
           <input
             type="date"
@@ -270,14 +270,14 @@ export const FiltersRail = forwardRef<
                 : ''
             }
             onChange={(event) => onStartedToChange(event.target.value || null)}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] text-text-primary"
           />
         </div>
 
         <button
           type="button"
           onClick={onClearFilters}
-          className="rounded-control border border-gray-200 bg-white px-2 py-1.5 text-[12.5px] font-semibold text-gray-500 transition-colors hover:bg-gray-50"
+          className="rounded-control border border-border bg-surface px-2 py-1.5 text-[12.5px] font-semibold text-text-muted transition-colors hover:bg-surface-muted"
         >
           Clear filters
         </button>

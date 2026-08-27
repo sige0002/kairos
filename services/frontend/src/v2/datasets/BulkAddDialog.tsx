@@ -85,20 +85,20 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
         {state.bulkAddPreflighting && (
           <p
             data-testid="dataset-bulk-add-preflighting"
-            className="rounded-control border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] text-gray-700"
+            className="rounded-control border border-border bg-surface-muted px-3 py-2 text-[12px] text-text-primary"
           >
             Freezing the server match set… no recording will be added until you confirm
             it.
           </p>
         )}
-        <p className="text-[13px] leading-relaxed text-gray-600">
+        <p className="text-[13px] leading-relaxed text-text-secondary">
           Add{' '}
-          <span className="font-semibold text-gray-900">
+          <span className="font-semibold text-text-primary">
             {state.bulkAddTargetCount} matching recording
             {state.bulkAddTargetCount === 1 ? '' : 's'}
           </span>{' '}
           to{' '}
-          <span className="font-semibold text-gray-900">
+          <span className="font-semibold text-text-primary">
             {state.bulkAddTargetDatasetName ?? 'the selected dataset'}
           </span>
           .{' '}
@@ -109,7 +109,7 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
         </p>
 
         {state.bulkAddExpiresAt && (
-          <p className="text-[12px] text-gray-500">
+          <p className="text-[12px] text-text-muted">
             Server snapshot expires at {state.bulkAddExpiresAt}. Refresh it before
             confirming if it expires.
           </p>
@@ -121,7 +121,7 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
           !state.bulkAddBusy && (
             <p
               data-testid="dataset-bulk-add-empty-selection"
-              className="rounded-control border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] leading-relaxed text-gray-700"
+              className="rounded-control border border-border bg-surface-muted px-3 py-2 text-[12px] leading-relaxed text-text-primary"
             >
               Nothing eligible matched this server selection. No membership run can be
               started.
@@ -131,7 +131,7 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
         {state.bulkAddCatalogTruncated && (
           <p
             data-testid="dataset-bulk-add-truncated"
-            className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900"
+            className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
           >
             This adds every matching recording loaded in this catalog sweep. Older
             recordings may exist beyond the sweep limit and are not included.
@@ -144,7 +144,7 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
             <div
               aria-live="polite"
               data-testid="dataset-bulk-add-progress"
-              className="rounded-control border border-teal-200 bg-teal-50 px-3 py-2 text-[12px] text-teal-900"
+              className="rounded-control border border-accent bg-interaction-selected px-3 py-2 text-[12px] text-accent-strong"
             >
               {state.bulkAddDone} / {state.bulkAddTotal} processed. Additions are
               committed one at a time, so this run cannot be canceled safely once it
@@ -156,7 +156,7 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
           <div
             role="alert"
             data-testid="dataset-bulk-add-failures"
-            className="flex flex-col gap-1 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900"
+            className="flex flex-col gap-1 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
           >
             <span className="font-semibold">
               {succeeded} of {state.bulkAddTotal} joined; {state.bulkAddFailures.length}{' '}
@@ -176,7 +176,7 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
         {finishedSuccessfully && (
           <p
             data-testid="dataset-bulk-add-complete"
-            className="rounded-control border border-green-200 bg-green-50 px-3 py-2 text-[12px] leading-relaxed text-green-900"
+            className="rounded-control border border-status-success-border bg-status-success-bg px-3 py-2 text-[12px] leading-relaxed text-status-success-text"
           >
             {state.bulkAddDone} recordings joined. The server saved this run; nothing
             moved on disk.
@@ -186,7 +186,7 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
           <p
             role="alert"
             data-testid="dataset-bulk-add-receipt-failed"
-            className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900"
+            className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
           >
             {retryableMemberFailures > 0
               ? `The provenance receipt was not saved, and ${retryableMemberFailures} membership addition${retryableMemberFailures === 1 ? '' : 's'} failed. Retrying re-attempts only those failed additions, then records the receipt; successful additions stay durable.`
@@ -196,7 +196,7 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
         {finishedWithRunError && !state.bulkAddCanRetryRequest && (
           <p
             role="alert"
-            className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900"
+            className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
           >
             {state.bulkAddSelectionExpired
               ? 'The frozen server selection expired before the run started. Refresh it, review its current count, then confirm again.'

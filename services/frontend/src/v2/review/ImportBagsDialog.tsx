@@ -360,7 +360,7 @@ export function ImportBagsDialog({
       }
     >
       <div className="flex flex-col gap-3" data-testid="import-dialog">
-        <p className="text-[12.5px] leading-relaxed text-gray-600">
+        <p className="text-[12.5px] leading-relaxed text-text-secondary">
           Give the folder your recordings sit in, <strong>as the server sees
           it</strong> (these are multi-GB directories, so nothing is uploaded
           from this browser). Each bag directory — the one holding the{' '}
@@ -386,7 +386,7 @@ export function ImportBagsDialog({
               }
             }}
             placeholder="/data/incoming-bags"
-            className="w-full rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-600 focus:outline-none"
+            className="w-full rounded-control border border-border px-2 py-1.5 font-mono text-sm focus:border-accent focus:outline-none"
           />
           <Button
             data-testid="import-scan"
@@ -398,7 +398,7 @@ export function ImportBagsDialog({
         </div>
 
         {scanError && (
-          <p data-testid="import-scan-error" role="alert" className="text-sm text-red-700">
+          <p data-testid="import-scan-error" role="alert" className="text-sm text-status-danger-text">
             {scanError}
           </p>
         )}
@@ -407,7 +407,7 @@ export function ImportBagsDialog({
           <p
             data-testid="import-stale-scan"
             role="alert"
-            className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800"
+            className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] text-status-warning-text"
           >
             The list below is for <code>{scannedPath}</code>, not the folder in
             the box. Scan again before importing.
@@ -417,13 +417,13 @@ export function ImportBagsDialog({
         {scan && (
           <>
             <div className="flex flex-wrap items-center gap-3">
-              <span className="text-[12.5px] text-gray-600" data-testid="import-summary">
+              <span className="text-[12.5px] text-text-secondary" data-testid="import-summary">
                 {scan.bags.length} director
                 {scan.bags.length === 1 ? 'y' : 'ies'} found · {scan.importable} can be
                 imported
               </span>
               <div className="flex-1" />
-              <label className="flex items-center gap-1.5 text-[12.5px] text-gray-600">
+              <label className="flex items-center gap-1.5 text-[12.5px] text-text-secondary">
                 <input
                   type="radio"
                   name="import-mode"
@@ -433,7 +433,7 @@ export function ImportBagsDialog({
                 />
                 Copy (leaves your folder as it is)
               </label>
-              <label className="flex items-center gap-1.5 text-[12.5px] text-gray-600">
+              <label className="flex items-center gap-1.5 text-[12.5px] text-text-secondary">
                 <input
                   type="radio"
                   name="import-mode"
@@ -449,8 +449,8 @@ export function ImportBagsDialog({
             {/* Applied to every bag in THIS import (the server stamps them on
                 each capture's birth manifest). Said once, above the three
                 fields, rather than three times inside their placeholders. */}
-            <div className="flex flex-col gap-1.5 rounded-control border border-gray-200 bg-gray-50/70 px-3 py-2.5">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+            <div className="flex flex-col gap-1.5 rounded-control border border-border bg-surface-muted/70 px-3 py-2.5">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
                 Labels for every bag in this import (optional)
               </span>
               <div className="grid grid-cols-3 gap-2">
@@ -470,7 +470,7 @@ export function ImportBagsDialog({
                       // The refusal was about what was there before.
                       setTagError(null);
                     }}
-                    className="rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-600 focus:outline-none disabled:bg-gray-100"
+                    className="rounded-control border border-border px-2 py-1 text-[12.5px] text-text-primary focus:border-accent focus:outline-none disabled:bg-surface-muted"
                   />
                 ))}
               </div>
@@ -486,12 +486,12 @@ export function ImportBagsDialog({
                 <span
                   role="alert"
                   data-testid="import-tag-error"
-                  className="rounded-control border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11.5px] text-amber-900"
+                  className="rounded-control border border-status-warning-border bg-status-warning-bg px-2.5 py-1.5 text-[11.5px] text-status-warning-text"
                 >
                   {tagError} Nothing was imported — fix the labels and run it again.
                 </span>
               ) : (
-                <span className="text-[11px] leading-snug text-gray-500">
+                <span className="text-[11px] leading-snug text-text-muted">
                   A bag recorded outside kairos carries no operator or task of its
                   own. Left blank, it arrives without them.
                 </span>
@@ -502,7 +502,7 @@ export function ImportBagsDialog({
               <p
                 data-testid="import-truncated"
                 role="alert"
-                className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] text-amber-800"
+                className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] text-status-warning-text"
               >
                 That folder holds more directories than one scan reports —
                 the list below is INCOMPLETE. Name a subfolder to see the rest.
@@ -512,9 +512,9 @@ export function ImportBagsDialog({
             {(scan.nested?.length ?? 0) > 0 && (
               <div
                 data-testid="import-nested-hint"
-                className="flex flex-col gap-1.5 rounded-control border border-gray-200 bg-gray-50 px-3 py-2.5"
+                className="flex flex-col gap-1.5 rounded-control border border-border bg-surface-muted px-3 py-2.5"
               >
-                <span className="text-[12px] text-gray-700">
+                <span className="text-[12px] text-text-primary">
                   {scan.bags.length === 0
                     ? 'No recordings directly here, but these subfolders hold some:'
                     : 'These subfolders hold more recordings one level down:'}
@@ -527,9 +527,9 @@ export function ImportBagsDialog({
                       data-testid={`import-nested-${n.name}`}
                       disabled={scanning || running}
                       onClick={() => void runScan(n.path)}
-                      className="rounded-control border border-gray-300 bg-white px-2.5 py-1 font-mono text-[11.5px] text-gray-700 hover:bg-gray-100 disabled:opacity-50"
+                      className="rounded-control border border-border-strong bg-surface px-2.5 py-1 font-mono text-[11.5px] text-text-primary hover:bg-surface-muted disabled:opacity-50"
                     >
-                      {n.name} <span className="text-gray-500">({n.bags})</span>
+                      {n.name} <span className="text-text-muted">({n.bags})</span>
                     </button>
                   ))}
                 </div>
@@ -537,11 +537,11 @@ export function ImportBagsDialog({
             )}
 
             <ul
-              className="max-h-72 overflow-auto rounded-control border border-gray-200"
+              className="max-h-72 overflow-auto rounded-control border border-border"
               data-testid="import-list"
             >
               {scan.bags.length === 0 && (
-                <li className="px-3 py-3 text-[12.5px] text-gray-500">
+                <li className="px-3 py-3 text-[12.5px] text-text-muted">
                   No rosbag directly inside that folder. Bag directories are
                   the ones holding the .mcap files; only one level down is
                   checked, so name the folder those directories sit in.
@@ -554,8 +554,8 @@ export function ImportBagsDialog({
                     key={bag.path}
                     data-testid={`import-row-${bag.name}`}
                     className={cn(
-                      'flex items-start gap-2.5 border-t border-gray-50 px-3 py-2 first:border-t-0',
-                      !bag.importable && 'bg-gray-50',
+                      'flex items-start gap-2.5 border-t border-border px-3 py-2 first:border-t-0',
+                      !bag.importable && 'bg-surface-muted',
                     )}
                   >
                     <input
@@ -574,20 +574,20 @@ export function ImportBagsDialog({
                       }
                     />
                     <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="truncate font-mono text-[12.5px] text-gray-800">
+                      <span className="truncate font-mono text-[12.5px] text-text-primary">
                         {bag.name}
                       </span>
                       {bag.importable ? (
-                        <span className="text-[11.5px] text-gray-500">
+                        <span className="text-[11.5px] text-text-muted">
                           {summarize(bag)}
                         </span>
                       ) : (
-                        <span className="text-[11.5px] text-amber-700">
+                        <span className="text-[11.5px] text-status-warning-text">
                           {bag.reason}
                           {bag.remedy && (
                             <>
                               {' '}
-                              <code className="font-mono text-gray-600">
+                              <code className="font-mono text-text-secondary">
                                 {bag.remedy}
                               </code>
                             </>
@@ -597,7 +597,7 @@ export function ImportBagsDialog({
                       {state.phase === 'failed' && (
                         <span
                           data-testid={`import-failed-${bag.name}`}
-                          className="text-[11.5px] font-semibold text-red-700"
+                          className="text-[11.5px] font-semibold text-status-danger-text"
                         >
                           Failed — {state.error}
                         </span>
@@ -605,10 +605,10 @@ export function ImportBagsDialog({
                     </div>
                     <span className="shrink-0 text-[11px] font-semibold">
                       {state.phase === 'importing' && (
-                        <span className="text-teal-700">queueing…</span>
+                        <span className="text-accent">queueing…</span>
                       )}
                       {state.phase === 'copying' && (
-                        <span className="text-teal-700">
+                        <span className="text-accent">
                           copying…
                           {state.total
                             ? ` ${Math.min(
@@ -619,10 +619,10 @@ export function ImportBagsDialog({
                         </span>
                       )}
                       {state.phase === 'done' && (
-                        <span className="text-teal-700">imported ✓</span>
+                        <span className="text-accent">imported ✓</span>
                       )}
                       {state.phase === 'failed' && (
-                        <span className="text-red-700">failed</span>
+                        <span className="text-status-danger-text">failed</span>
                       )}
                     </span>
                   </li>
@@ -631,7 +631,7 @@ export function ImportBagsDialog({
             </ul>
 
             {selectable.length > 0 && !running && (
-              <p className="text-[11.5px] text-gray-500">
+              <p className="text-[11.5px] text-text-muted">
                 Imported recordings arrive with no operator or task — label them
                 in Review. Large folders copy in the background; the recordings
                 appear as each one lands.
@@ -639,7 +639,7 @@ export function ImportBagsDialog({
             )}
 
             {failures > 0 && !running && (
-              <p role="alert" data-testid="import-failures" className="text-sm text-red-700">
+              <p role="alert" data-testid="import-failures" className="text-sm text-status-danger-text">
                 {failures} folder{failures === 1 ? '' : 's'} failed and{' '}
                 {failures === 1 ? 'was' : 'were'} skipped — each one says why
                 above. The rest were imported.

@@ -139,14 +139,14 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
   const validationDetails = formatValidationDetails(saveMutation.error);
 
   if (streamQuery.isError) return <ErrorMessage error={streamQuery.error} />;
-  if (streamQuery.isPending) return <p className="text-sm text-gray-500">Loading…</p>;
+  if (streamQuery.isPending) return <p className="text-sm text-text-muted">Loading…</p>;
 
   const path = streamQuery.data.path;
   const loadError = streamQuery.data.error;
   if (path === null) {
     // No config dir at all: nowhere to read or write, so no editor to offer.
     return (
-      <p data-testid="stream-config-absent" className="text-sm text-gray-500">
+      <p data-testid="stream-config-absent" className="text-sm text-text-muted">
         This robot has no stream config to edit — it has no config folder on the server.
         Create <span className="font-mono">config/&lt;robot&gt;/</span> first.
       </p>
@@ -156,15 +156,15 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
   return (
     <div>
       <dl className="mb-3 grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
-        <dt className="text-gray-500">Robot</dt>
-        <dd className="font-mono text-gray-800">{robot || '—'}</dd>
-        <dt className="text-gray-500">Path</dt>
-        <dd className="font-mono text-xs text-gray-500">{path}</dd>
+        <dt className="text-text-muted">Robot</dt>
+        <dd className="font-mono text-text-primary">{robot || '—'}</dd>
+        <dt className="text-text-muted">Path</dt>
+        <dd className="font-mono text-xs text-text-muted">{path}</dd>
       </dl>
       {loadError && (
         <div
           data-testid="stream-load-error"
-          className="mb-2 rounded-control border border-amber-300 bg-amber-50 p-2 text-sm text-amber-800"
+          className="mb-2 rounded-control border border-status-warning-border bg-status-warning-bg p-2 text-sm text-status-warning-text"
         >
           <p className="font-medium">The file on disk exists but failed to load</p>
           <p className="mt-0.5 font-mono text-xs">{loadError}</p>
@@ -174,10 +174,10 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
           </p>
         </div>
       )}
-      <label className="mb-1 block text-sm font-medium text-gray-700">Config (JSON)</label>
+      <label className="mb-1 block text-sm font-medium text-text-primary">Config (JSON)</label>
       <textarea
         aria-label="stream config json"
-        className="h-48 w-full rounded-control border border-gray-200 p-2 font-mono text-xs focus:border-teal-600 focus:outline-none"
+        className="h-48 w-full rounded-control border border-border p-2 font-mono text-xs focus:border-accent focus:outline-none"
         spellCheck={false}
         value={text}
         disabled={saveMutation.isPending}
@@ -188,15 +188,15 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
       />
 
       {jsonError ? (
-        <p className="mt-2 text-sm text-red-700">Invalid JSON — {jsonError}</p>
+        <p className="mt-2 text-sm text-status-danger-text">Invalid JSON — {jsonError}</p>
       ) : (
-        <p className="mt-2 text-xs text-gray-500">Valid JSON</p>
+        <p className="mt-2 text-xs text-text-muted">Valid JSON</p>
       )}
 
       {pendingServer && (
         <div
           data-testid="stream-server-changed"
-          className="mt-2 flex flex-col gap-2 rounded-control border border-amber-300 bg-amber-50 p-2 text-sm text-amber-800"
+          className="mt-2 flex flex-col gap-2 rounded-control border border-status-warning-border bg-status-warning-bg p-2 text-sm text-status-warning-text"
         >
           <p>
             <span className="font-medium">The stream config changed on the server</span> while
@@ -212,7 +212,7 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
               setPendingServer(null);
               setSaved(false);
             }}
-            className="self-start rounded-control border border-amber-300 bg-white px-2.5 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+            className="self-start rounded-control border border-status-warning-border bg-surface px-2.5 py-1 text-xs font-semibold text-status-warning-text hover:bg-status-warning-bg"
           >
             Load the server copy (discards my edits)
           </button>
@@ -223,7 +223,7 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
         <div className="mt-2">
           <ErrorMessage error={saveMutation.error} />
           {validationDetails.length > 0 && (
-            <ul className="mt-1 list-disc pl-5 text-xs text-red-700">
+            <ul className="mt-1 list-disc pl-5 text-xs text-status-danger-text">
               {validationDetails.map((d, i) => (
                 <li key={i} className="font-mono">
                   {d}
@@ -237,7 +237,7 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
       {saved && !saveMutation.isPending && (
         <div
           data-testid="stream-saved-note"
-          className="mt-2 rounded-control border border-teal-200 bg-teal-50 p-2 text-sm text-teal-800"
+          className="mt-2 rounded-control border border-accent bg-interaction-selected p-2 text-sm text-accent"
         >
           <p className="font-medium">Saved</p>
           <p className="mt-0.5 text-xs">
@@ -255,11 +255,11 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
           aria-label="save stream config"
           onClick={onSave}
           disabled={saveMutation.isPending || jsonError !== null}
-          className="rounded-control bg-teal-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-teal-800 disabled:opacity-50"
+          className="rounded-control bg-accent px-4 py-1.5 text-sm font-medium text-text-inverse hover:bg-accent-strong disabled:opacity-50"
         >
           {saveMutation.isPending ? 'Saving…' : 'Save'}
         </button>
-        <span className="text-xs text-gray-500">
+        <span className="text-xs text-text-muted">
           Edits the active stream file; the server validates on save. Schema:{' '}
           <span className="font-mono">{'{ columns: 1–4, panes: [{ topic }] }'}</span> —
           only <span className="font-mono">panes</span> drives the console.

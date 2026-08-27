@@ -39,14 +39,14 @@ function CellButton({
       title={title}
       className={cn(
         '-my-1 flex flex-col gap-0.5 rounded-control px-6 py-1 text-left transition-colors',
-        disabled ? 'cursor-not-allowed opacity-55' : 'cursor-pointer hover:bg-gray-50',
+        disabled ? 'cursor-not-allowed opacity-55' : 'cursor-pointer hover:bg-surface-muted',
       )}
     >
-      <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
         {label}
       </span>
-      <span className="text-sm font-semibold text-gray-900">
-        {value} <span className="text-[10px] text-gray-500">▾</span>
+      <span className="text-sm font-semibold text-text-primary">
+        {value} <span className="text-[10px] text-text-muted">▾</span>
       </span>
     </button>
   );
@@ -69,22 +69,22 @@ function planCellValue(value: string | null): ReactNode {
   // `null` is the state the machine now holds when there is no catalog; the em
   // dash is the same state as restored from an older persisted blob.
   if (value !== null && value !== NO_PLAN) return value;
-  return <span className="font-normal text-gray-500">no plans configured</span>;
+  return <span className="font-normal text-text-muted">no plans configured</span>;
 }
 
 function StaticCell({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex flex-col gap-0.5 px-6">
-      <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
         {label}
       </span>
-      <span className="font-mono text-sm font-semibold text-gray-900">{value}</span>
+      <span className="font-mono text-sm font-semibold text-text-primary">{value}</span>
     </div>
   );
 }
 
 function Divider() {
-  return <div className="w-px self-stretch bg-gray-100" />;
+  return <div className="w-px self-stretch bg-surface-muted" />;
 }
 
 function PickerPopover({
@@ -99,12 +99,12 @@ function PickerPopover({
   return (
     <div
       className={cn(
-        'absolute z-40 flex w-60 max-w-[calc(100vw-58px)] flex-col gap-0.5 rounded-card border border-gray-200 bg-white p-1.5 shadow-float',
+        'absolute z-40 flex w-60 max-w-[calc(100vw-58px)] flex-col gap-0.5 rounded-card border border-border bg-surface p-1.5 shadow-float',
         className,
       )}
     >
       {heading && (
-        <span className="px-3 pb-0.5 pt-1.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <span className="px-3 pb-0.5 pt-1.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           {heading}
         </span>
       )}
@@ -129,8 +129,8 @@ function PickItem({
       className={cn(
         'rounded-chip px-3 py-2 text-left text-sm transition-colors',
         active
-          ? 'bg-teal-50 font-semibold text-teal-700'
-          : 'font-medium text-gray-700 hover:bg-gray-50',
+          ? 'bg-interaction-selected font-semibold text-accent'
+          : 'font-medium text-text-primary hover:bg-surface-muted',
       )}
     >
       {children}
@@ -157,10 +157,10 @@ function MenuItem({
       className={cn(
         'rounded-chip px-3 py-2 text-left text-sm font-medium',
         disabled
-          ? 'cursor-not-allowed text-gray-300'
+          ? 'cursor-not-allowed text-text-muted'
           : danger
-            ? 'text-gray-700 hover:bg-red-50'
-            : 'text-gray-700 hover:bg-gray-50',
+            ? 'text-text-primary hover:bg-status-danger-bg'
+            : 'text-text-primary hover:bg-surface-muted',
       )}
     >
       {children}
@@ -233,7 +233,7 @@ function RobotCell({
             >
               {r.id}
               {r.local ? (
-                <span className="text-[10px] text-gray-500"> · local</span>
+                <span className="text-[10px] text-text-muted"> · local</span>
               ) : null}
             </PickItem>
           ))}
@@ -295,9 +295,9 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
           machine.batchSeq != null ? (
             `Batch ${machine.batchSeq}`
           ) : (
-            <span className="font-normal text-gray-500">
+            <span className="font-normal text-text-muted">
               next #{machine.predictedSeq ?? 1}
-              <span className="ml-1.5 font-sans text-[11px] font-normal text-gray-500">
+              <span className="ml-1.5 font-sans text-[11px] font-normal text-text-muted">
                 · assigned on first recording
               </span>
             </span>
@@ -319,14 +319,14 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
               </span>
             )}
             {stats.nRecorded} / {machine.targetEpisodes}{' '}
-            <span className="text-teal-700">{epNextText}</span>
+            <span className="text-accent">{epNextText}</span>
           </>
         }
       />
       <Divider />
       <CellButton
         label="Condition"
-        value={<span className="font-medium text-gray-700">{machine.condition}</span>}
+        value={<span className="font-medium text-text-primary">{machine.condition}</span>}
         onClick={machine.openCondModal}
         disabled={!machine.condAllowed}
         title="Change condition (starts a new set once this one has recordings)"
@@ -348,17 +348,17 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
         onClick={machine.goMonitor}
         title="Topics captured on the next recording — open Monitor to change the selection"
         data-testid="rec-topics-chip"
-        className="mr-2.5 inline-flex items-center gap-1.5 rounded-chip border border-teal-200 bg-teal-50 px-2.5 py-1.5 text-[11.5px] font-semibold text-teal-700 hover:bg-teal-100"
+        className="mr-2.5 inline-flex items-center gap-1.5 rounded-chip border border-accent bg-interaction-selected px-2.5 py-1.5 text-[11.5px] font-semibold text-accent hover:bg-interaction-selected"
       >
-        <span className="h-[7px] w-[7px] rounded-full bg-teal-500" />
+        <span className="h-[7px] w-[7px] rounded-full bg-accent" />
         REC {recTopicsLabel}
       </button>
       <button
         type="button"
         onClick={machine.toggleBatchMenu}
-        className="inline-flex items-center gap-1.5 rounded-control border border-gray-200 bg-white px-3.5 py-2 text-[13px] font-semibold text-gray-700 hover:bg-gray-50"
+        className="inline-flex items-center gap-1.5 rounded-control border border-border bg-surface px-3.5 py-2 text-[13px] font-semibold text-text-primary hover:bg-surface-muted"
       >
-        Batch menu <span className="text-[11px] text-gray-500">▾</span>
+        Batch menu <span className="text-[11px] text-text-muted">▾</span>
       </button>
 
       {machine.projPickerOpen && (
@@ -370,7 +370,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
               this popover was a blank rectangle. (The Task picker has always
               had `Custom…`, so it is never a dead end.) */}
           {plans.length === 0 ? (
-            <span className="px-3 pb-1.5 pt-0.5 text-[12px] leading-relaxed text-gray-500">
+            <span className="px-3 pb-1.5 pt-0.5 text-[12px] leading-relaxed text-text-muted">
               No projects in the shared catalog. Add one in Settings &gt; Projects &amp;
               tasks.
             </span>
@@ -412,7 +412,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
               if (entered && entered.trim()) machine.pickCustomTask(entered);
             }}
           >
-            <span className="text-teal-700">Custom…</span>
+            <span className="text-accent">Custom…</span>
           </PickItem>
         </PickerPopover>
       )}

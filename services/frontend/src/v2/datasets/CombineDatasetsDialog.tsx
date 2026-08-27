@@ -54,9 +54,9 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
       }
     >
       <div data-testid="combine-datasets-dialog" className="flex flex-col gap-3">
-        <p className="text-[13px] leading-relaxed text-gray-600">
+        <p className="text-[13px] leading-relaxed text-text-secondary">
           A new dataset listing every recording of the sources you pick.{' '}
-          <span className="font-semibold text-gray-800">
+          <span className="font-semibold text-text-primary">
             The sources are not touched
           </span>{' '}
           — a dataset is a list of captures, and nothing moves on disk. A
@@ -64,7 +64,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
         </p>
 
         <label className="flex flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
             New dataset name
           </span>
           <input
@@ -74,7 +74,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
             maxLength={200}
             autoFocus
             disabled={state.combineBusy}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12.5px] text-text-primary"
           />
         </label>
         <div className="flex gap-1.5">
@@ -88,7 +88,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
             aria-label="New dataset operator (optional)"
             placeholder="Operator (optional)"
             disabled={state.combineBusy}
-            className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-500"
+            className="min-w-0 flex-1 rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12px] text-text-primary placeholder:text-text-muted"
           />
           <input
             data-testid="combine-datasets-task"
@@ -97,17 +97,17 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
             aria-label="New dataset task (optional)"
             placeholder="Task (optional)"
             disabled={state.combineBusy}
-            className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-500"
+            className="min-w-0 flex-1 rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12px] text-text-primary placeholder:text-text-muted"
           />
         </div>
 
         <div className="flex flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
             Sources ({picked} picked)
           </span>
-          <div className="flex max-h-[180px] flex-col gap-1 overflow-y-auto rounded-[10px] border border-gray-100 p-1.5">
+          <div className="flex max-h-[180px] flex-col gap-1 overflow-y-auto rounded-[10px] border border-border p-1.5">
             {state.combineChoices.length === 0 ? (
-              <span className="px-1.5 py-1 text-[12px] text-gray-500">
+              <span className="px-1.5 py-1 text-[12px] text-text-muted">
                 No active dataset to combine from.
               </span>
             ) : (
@@ -119,7 +119,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
                     data-testid={`combine-source-${choice.datasetId}`}
                     className={cn(
                       'flex cursor-pointer items-center gap-2 rounded-[8px] px-1.5 py-1',
-                      order >= 0 ? 'bg-teal-50' : 'hover:bg-gray-50',
+                      order >= 0 ? 'bg-interaction-selected' : 'hover:bg-surface-muted',
                     )}
                   >
                     <input
@@ -128,14 +128,14 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
                       disabled={state.combineBusy}
                       onChange={() => state.toggleCombineSource(choice.datasetId)}
                     />
-                    <span className="min-w-0 flex-1 truncate text-[12.5px] text-gray-800">
+                    <span className="min-w-0 flex-1 truncate text-[12.5px] text-text-primary">
                       {choice.name}
                     </span>
-                    <span className="text-[11px] text-gray-500">
+                    <span className="text-[11px] text-text-muted">
                       {choice.memberCount} member{choice.memberCount === 1 ? '' : 's'}
                     </span>
                     {order >= 0 && (
-                      <span className="text-[10.5px] font-semibold text-teal-700">
+                      <span className="text-[10.5px] font-semibold text-accent">
                         #{order + 1}
                       </span>
                     )}
@@ -144,7 +144,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
               })
             )}
           </div>
-          <span className="text-[10.5px] text-gray-500">
+          <span className="text-[10.5px] text-text-muted">
             Members are numbered source by source, in the order you picked them.
           </span>
         </div>
@@ -152,7 +152,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
         {finishedWithFailures && (
           <div
             data-testid="combine-datasets-failures"
-            className="flex flex-col gap-1 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900"
+            className="flex flex-col gap-1 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
           >
             <span className="font-semibold">
               {state.combineDone - state.combineFailures.length} of{' '}

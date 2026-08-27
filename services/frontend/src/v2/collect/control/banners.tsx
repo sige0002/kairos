@@ -22,7 +22,7 @@ function ErrorBanner({ children }: { children: React.ReactNode }) {
   return (
     <div
       role="alert"
-      className="rounded-control border border-red-200 bg-red-50/70 px-3 py-2 text-[12px] text-red-800"
+      className="rounded-control border border-status-danger-border bg-status-danger-bg/70 px-3 py-2 text-[12px] text-status-danger-text"
     >
       {children}
     </div>
@@ -77,8 +77,8 @@ export function ArmingNote({ arming }: { arming: RecordArming }) {
       className={cn(
         'flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-control border px-3 py-2 text-[12px]',
         ok
-          ? 'border-teal-200 bg-teal-50/60 text-teal-800'
-          : 'border-amber-200 bg-amber-50/70 text-amber-800',
+          ? 'border-accent bg-interaction-selected/60 text-accent'
+          : 'border-status-warning-border bg-status-warning-bg/70 text-status-warning-text',
       )}
     >
       <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
@@ -121,15 +121,15 @@ export function IntegrityBanner({
       className={cn(
         'flex flex-col gap-0.5 rounded-control border-2 px-3 py-2.5',
         failed
-          ? 'border-red-300 bg-red-50 text-red-800'
-          : 'border-amber-300 bg-amber-50 text-amber-900',
+          ? 'border-status-danger-border bg-status-danger-bg text-status-danger-text'
+          : 'border-status-warning-border bg-status-warning-bg text-status-warning-text',
       )}
     >
       <div className="flex items-center gap-2">
         <span
           className={cn(
             'h-2 w-2 shrink-0 rounded-sm',
-            failed ? 'bg-red-600' : 'bg-amber-600',
+            failed ? 'bg-status-danger-accent' : 'bg-status-warning-accent',
           )}
         />
         <span className="text-[13px] font-bold">
@@ -155,7 +155,7 @@ export function QuickCheckReasons({ reasons }: { reasons: string[] }) {
   return (
     <div
       data-testid="quickcheck-reasons"
-      className="flex flex-col gap-1 rounded-control border border-amber-200 bg-amber-50/60 px-3 py-2 text-amber-800"
+      className="flex flex-col gap-1 rounded-control border border-status-warning-border bg-status-warning-bg/60 px-3 py-2 text-status-warning-text"
     >
       <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em]">
         Quick check flagged
@@ -200,8 +200,8 @@ export function SaveErrorBanner({
       className={cn(
         'flex flex-col gap-1 rounded-control px-3 py-2.5 text-[12px]',
         destructive
-          ? 'border-2 border-red-400 bg-red-50 text-red-900'
-          : 'border border-amber-300 bg-amber-50 text-amber-900',
+          ? 'border-2 border-status-danger-border bg-status-danger-bg text-status-danger-text'
+          : 'border border-status-warning-border bg-status-warning-bg text-status-warning-text',
       )}
     >
       <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">

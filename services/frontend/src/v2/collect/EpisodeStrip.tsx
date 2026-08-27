@@ -59,9 +59,9 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
     const recorded = byIndex.get(n);
     if (recorded) {
       const styles: Record<Bucket, string> = {
-        good: 'bg-green-100 text-green-700',
-        review: 'bg-amber-100 text-amber-700',
-        taskFailed: 'bg-red-50 text-red-700',
+        good: 'bg-status-success-bg text-status-success-text',
+        review: 'bg-status-warning-bg text-status-warning-text',
+        taskFailed: 'bg-status-danger-bg text-status-danger-text',
       };
       const glyphs: Record<Bucket, string> = {
         good: '✓',
@@ -85,10 +85,10 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
           className={cn(
             'flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-xs font-bold',
             styles[bucket],
-            justSaved && 'ring-2 ring-teal-500 ring-offset-1',
+            justSaved && 'ring-2 ring-focus ring-offset-1',
             // Dashed outline: this chip describes something the server has no
             // record of, and it must be tellable apart at a glance.
-            notSaved && 'outline outline-2 outline-dashed outline-amber-500',
+            notSaved && 'outline outline-2 outline-dashed outline-status-warning-accent',
           )}
         >
           {glyphs[bucket]}
@@ -103,8 +103,8 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
           className={cn(
             'flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border-2 font-mono text-[11px]',
             recording
-              ? 'border-red-600 bg-red-50 text-red-700'
-              : 'border-teal-600 bg-white text-teal-700',
+              ? 'border-status-danger-border bg-status-danger-bg text-status-danger-text'
+              : 'border-accent bg-surface text-accent',
           )}
         >
           {n}
@@ -118,7 +118,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
         <span
           key={n}
           title={`Episode ${n} — recorded earlier; no longer listed (exported or deleted in Review)`}
-          className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border border-dashed border-gray-300 bg-white font-mono text-[10.5px] text-gray-500"
+          className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border border-dashed border-border-strong bg-surface font-mono text-[10.5px] text-text-muted"
         >
           {n}
         </span>
@@ -128,7 +128,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
       <span
         key={n}
         title={`Episode ${n} — not recorded`}
-        className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-gray-100 font-mono text-[10.5px] text-gray-600"
+        className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-surface-muted font-mono text-[10.5px] text-text-secondary"
       >
         {n}
       </span>
@@ -139,7 +139,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
     <Card className="flex shrink-0 items-center gap-2.5 overflow-x-auto px-4 py-2.5 [@media(max-height:860px)]:py-1.5">
       <span
         data-testid="episode-strip-count"
-        className="font-mono text-[13px] font-semibold text-gray-900"
+        className="font-mono text-[13px] font-semibold text-text-primary"
       >
         {stats.nRecorded} / {targetEpisodes}
       </span>
@@ -154,7 +154,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
             'these takes, so there is nothing on the server to review and they ' +
             'will not survive a reload.'
           }
-          className="shrink-0 rounded-chip bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700"
+          className="shrink-0 rounded-chip bg-status-warning-bg px-2 py-0.5 text-[11px] font-semibold text-status-warning-text"
         >
           {unsynced.map((n) => `#${n}`).join(' ')} not saved
         </span>
@@ -166,12 +166,12 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
             'These captures carry no position within the batch, so they cannot ' +
             'be shown on the strip. They exist and are listed in Review.'
           }
-          className="shrink-0 rounded-chip bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700"
+          className="shrink-0 rounded-chip bg-status-warning-bg px-2 py-0.5 text-[11px] font-semibold text-status-warning-text"
         >
           +{unplaced.length} unplaced
         </span>
       )}
-      <span className="shrink-0 text-[11px] text-gray-500">
+      <span className="shrink-0 text-[11px] text-text-muted">
         ✓ {stats.nGood} · ! {stats.nReview} · ✕ {stats.nTaskFailed}
       </span>
     </Card>

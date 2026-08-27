@@ -23,10 +23,10 @@ export function QuickCheckVerdict({ quickCheck }: { quickCheck?: QuickCheck | nu
   return (
     <section
       data-testid="review-quick-check"
-      className="flex flex-col gap-1.5 rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-2.5"
+      className="flex flex-col gap-1.5 rounded-[10px] border border-border bg-surface-muted px-3 py-2.5"
     >
       <div className="flex items-center gap-2">
-        <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Quick check
         </h3>
         {quality && (
@@ -41,20 +41,20 @@ export function QuickCheckVerdict({ quickCheck }: { quickCheck?: QuickCheck | nu
           {reasons.map((r, i) => (
             <li
               key={`${i}:${r}`}
-              className="text-[11.5px] leading-snug text-amber-800"
+              className="text-[11.5px] leading-snug text-status-warning-text"
             >
               • {r}
             </li>
           ))}
         </ul>
       ) : quality === 'good' ? (
-        <span className="text-[11.5px] text-gray-500">No issues found.</span>
+        <span className="text-[11.5px] text-text-muted">No issues found.</span>
       ) : null}
 
       {(layer0Down || layer1Down) && (
         <div
           data-testid="review-quick-check-unavailable"
-          className="flex flex-col gap-0.5 text-[11px] text-gray-500"
+          className="flex flex-col gap-0.5 text-[11px] text-text-muted"
         >
           {layer0Down && <span>Monitor data unavailable at stop.</span>}
           {layer1Down && (

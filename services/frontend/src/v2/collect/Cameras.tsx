@@ -140,9 +140,9 @@ export function Cameras({
     return (
       <div
         data-testid="collect-camera-grid"
-        className="flex flex-1 items-center justify-center rounded-card border border-gray-200 bg-[#1f2937]"
+        className="flex flex-1 items-center justify-center rounded-card border border-border bg-[#1f2937]"
       >
-        <span className="font-mono text-xs text-gray-500">
+        <span className="font-mono text-xs text-gray-300">
           No cameras configured for this robot.
         </span>
       </div>
@@ -164,7 +164,7 @@ export function Cameras({
       }}
     >
       <div
-        className="relative overflow-hidden rounded-card border border-gray-200 bg-[#1f2937]"
+        className="relative overflow-hidden rounded-card border border-border bg-[#1f2937]"
         style={{ gridColumn: 1, gridRow: `1 / span ${rows}` }}
       >
         {/* The <video> element must stay mounted across phase changes — it
@@ -200,13 +200,13 @@ export function Cameras({
           <span
             className={cn(
               'inline-flex items-center gap-1.5 rounded-chip bg-gray-900/75 px-2.5 py-1 font-mono text-[11.5px] font-bold',
-              recording ? 'text-red-200' : 'text-teal-200',
+              recording ? 'text-status-danger-text' : 'text-accent',
             )}
           >
             <span
               className={cn(
                 'h-[7px] w-[7px] animate-recpulse rounded-sm',
-                recording ? 'bg-red-500' : 'bg-teal-400',
+                recording ? 'bg-status-danger-accent' : 'bg-accent',
               )}
             />
             {recording ? `REC ${elapsedText}` : 'STANDBY'}
@@ -248,7 +248,7 @@ export function Cameras({
                 className={cn(
                   'rounded-chip px-2 py-0.5 font-mono text-[10.5px] font-bold',
                   HIT_AREA_RES_MAIN,
-                  p.label === mainResLabel ? 'bg-teal-300 text-gray-900' : 'text-gray-300',
+                  p.label === mainResLabel ? 'bg-accent-soft text-text-primary' : 'text-gray-300',
                 )}
               >
                 {p.label}

@@ -20,11 +20,11 @@ export function FailureReasonsSection({ settings }: { settings: SettingsState })
       className="flex min-w-0 flex-col overflow-auto lg:col-span-2"
       data-testid="settings-fail-reasons"
     >
-      <div className="flex flex-col gap-1 border-b border-gray-100 px-4 py-[13px]">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <div className="flex flex-col gap-1 border-b border-border px-4 py-[13px]">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Failure reasons
         </h2>
-        <span className="text-[12px] leading-relaxed text-gray-500">
+        <span className="text-[12px] leading-relaxed text-text-muted">
           The options Collect offers when an episode is marked Failure. Shared
           with every terminal (saved with the plan catalog). Edits apply to
           future labels only — already-labeled episodes keep their stored text.
@@ -35,13 +35,13 @@ export function FailureReasonsSection({ settings }: { settings: SettingsState })
           <div
             key={`${reason}-${i}`}
             data-testid={`fail-reason-${i}`}
-            className="flex items-center gap-2 rounded-[11px] border border-gray-100 px-[13px] py-[9px]"
+            className="flex items-center gap-2 rounded-[11px] border border-border px-[13px] py-[9px]"
           >
             <button
               type="button"
               onClick={() => renameFailReason(i)}
               title="Rename"
-              className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-gray-800"
+              className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-text-primary"
             >
               {reason}
             </button>
@@ -54,7 +54,7 @@ export function FailureReasonsSection({ settings }: { settings: SettingsState })
                   ? 'The last reason cannot be removed — marking a Failure requires one.'
                   : 'Remove reason'
               }
-              className="shrink-0 px-0.5 text-xs text-gray-500 enabled:hover:text-gray-700 disabled:cursor-not-allowed disabled:opacity-40"
+              className="shrink-0 px-0.5 text-xs text-text-muted enabled:hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
             >
               ✕
             </button>
@@ -64,7 +64,7 @@ export function FailureReasonsSection({ settings }: { settings: SettingsState })
           type="button"
           onClick={addFailReason}
           data-testid="fail-reason-add"
-          className="rounded-control border border-dashed border-gray-300 bg-white p-2.5 text-[12.5px] font-semibold text-teal-700 hover:bg-teal-50"
+          className="rounded-control border border-dashed border-border-strong bg-surface p-2.5 text-[12.5px] font-semibold text-accent hover:bg-interaction-selected"
         >
           + Add reason
         </button>

@@ -97,9 +97,9 @@ test('clicking a row toggles its topic; charted rows are highlighted and marked 
 
   const a = screen.getByTestId('topic-row-/a');
   const b = screen.getByTestId('topic-row-/b');
-  expect(a.className).toContain('bg-teal-50');
+  expect(a.className).toContain('bg-interaction-selected');
   expect(a).toHaveAttribute('aria-pressed', 'true');
-  expect(b.className).not.toContain('bg-teal-50');
+  expect(b.className).not.toContain('bg-interaction-selected');
   expect(b).toHaveAttribute('aria-pressed', 'false');
 
   // Clicking an already-charted row toggles it (out); the parent decides the set.

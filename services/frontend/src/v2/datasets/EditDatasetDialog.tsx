@@ -58,7 +58,7 @@ export function EditDatasetDialog({ state }: { state: DatasetsState }) {
       {gone ? (
         <div data-testid="edit-dataset-dialog" className="flex flex-col gap-3">
           <DatasetGoneNote testId="edit-dataset-gone" datasetId={state.selectedDatasetId} />
-          <p className="text-[12px] leading-relaxed text-gray-500">
+          <p className="text-[12px] leading-relaxed text-text-muted">
             Nothing was renamed. The labels you typed are not saved anywhere.
           </p>
           {state.editError != null && <ErrorMessage error={state.editError} />}
@@ -74,7 +74,7 @@ function EditForm({ state }: { state: DatasetsState }) {
   return (
     <div data-testid="edit-dataset-dialog" className="flex flex-col gap-3">
       <label className="flex flex-col gap-1">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Name
         </span>
         <input
@@ -83,36 +83,36 @@ function EditForm({ state }: { state: DatasetsState }) {
           onChange={(e) => state.setEditName(e.target.value)}
           maxLength={200}
           autoFocus
-          className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700"
+          className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12.5px] text-text-primary"
         />
       </label>
       <div className="flex gap-1.5">
         <label className="flex min-w-0 flex-1 flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
             Operator{' '}
-            <span className="font-normal normal-case text-gray-500">(optional)</span>
+            <span className="font-normal normal-case text-text-muted">(optional)</span>
           </span>
           <input
             data-testid="edit-dataset-operator"
             value={state.editOperator}
             onChange={(e) => state.setEditOperator(e.target.value)}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12px] text-text-primary"
           />
         </label>
         <label className="flex min-w-0 flex-1 flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
             Task{' '}
-            <span className="font-normal normal-case text-gray-500">(optional)</span>
+            <span className="font-normal normal-case text-text-muted">(optional)</span>
           </span>
           <input
             data-testid="edit-dataset-task"
             value={state.editTask}
             onChange={(e) => state.setEditTask(e.target.value)}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12px] text-text-primary"
           />
         </label>
       </div>
-      <p className="text-[11px] leading-relaxed text-gray-500">
+      <p className="text-[11px] leading-relaxed text-text-muted">
         Labels only: the members and their numbers do not change, and no
         recording moves. Leave operator empty when several people recorded the
         members — each recording keeps its own operator either way, and the

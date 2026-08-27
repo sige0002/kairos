@@ -168,7 +168,7 @@ export function Button({
 } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   const styles: Record<string, string> = {
     primary: 'bg-accent text-text-inverse shadow-btn hover:bg-accent-strong',
-    danger: 'bg-status-danger-accent text-text-inverse shadow-btn-red hover:bg-status-danger-text',
+    danger: 'bg-status-danger-accent text-status-danger-contrast shadow-btn-red hover:bg-status-danger-text',
     ghost: 'border border-border bg-surface text-text-secondary hover:bg-interaction-hover',
   };
   return (

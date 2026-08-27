@@ -34,10 +34,10 @@ function ModeRadio({ state }: { state: DatasetsState }) {
   const shared = state.datasetArchiveSharedCount;
   return (
     <div className="flex flex-col gap-1">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
         What happens to the recordings here
       </span>
-      <label className="flex cursor-pointer items-start gap-2 rounded-[10px] border border-gray-100 px-3 py-2">
+      <label className="flex cursor-pointer items-start gap-2 rounded-[10px] border border-border px-3 py-2">
         <input
           type="radio"
           name="dataset-archive-mode"
@@ -45,13 +45,13 @@ function ModeRadio({ state }: { state: DatasetsState }) {
           checked={state.datasetArchiveMode === 'copy'}
           onChange={() => state.setDatasetArchiveMode('copy')}
         />
-        <span className="text-[12.5px] leading-snug text-gray-700">
-          <span className="font-semibold text-gray-900">Copy out — keep them.</span>{' '}
+        <span className="text-[12.5px] leading-snug text-text-primary">
+          <span className="font-semibold text-text-primary">Copy out — keep them.</span>{' '}
           The dataset is sealed as a record of the export; every recording stays
           here and other datasets keep working. The pick for a combined set.
         </span>
       </label>
-      <label className="flex cursor-pointer items-start gap-2 rounded-[10px] border border-gray-100 px-3 py-2">
+      <label className="flex cursor-pointer items-start gap-2 rounded-[10px] border border-border px-3 py-2">
         <input
           type="radio"
           name="dataset-archive-mode"
@@ -59,8 +59,8 @@ function ModeRadio({ state }: { state: DatasetsState }) {
           checked={state.datasetArchiveMode === 'move'}
           onChange={() => state.setDatasetArchiveMode('move')}
         />
-        <span className="text-[12.5px] leading-snug text-gray-700">
-          <span className="font-semibold text-gray-900">
+        <span className="text-[12.5px] leading-snug text-text-primary">
+          <span className="font-semibold text-text-primary">
             Move out — remove them.
           </span>{' '}
           Each verified recording is deleted from this machine; the disk space
@@ -70,7 +70,7 @@ function ModeRadio({ state }: { state: DatasetsState }) {
       {shared > 0 && (
         <span
           data-testid="dataset-archive-shared-note"
-          className="text-[11px] leading-relaxed text-amber-700"
+          className="text-[11px] leading-relaxed text-status-warning-text"
         >
           {shared} member{shared === 1 ? '' : 's'} also belong to another active
           dataset, so a Move would be refused with the list — Copy is the one
@@ -88,24 +88,24 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
 
   return (
     <div className="flex flex-col gap-3">
-      <p className="break-words text-[13px] leading-relaxed text-gray-600">
+      <p className="break-words text-[13px] leading-relaxed text-text-secondary">
         {/* With no row in view (an external status change can take it off this
             shelf mid-dialog) there is no member count to state — "0 members"
             would be a number nothing measured. */}
         {row ? (
           <>
-            <span className="font-semibold text-gray-900">{row.dataset.name}</span> —{' '}
+            <span className="font-semibold text-text-primary">{row.dataset.name}</span> —{' '}
             {memberCount(row.dataset.member_count)}
           </>
         ) : (
-          <span className="break-all font-mono text-gray-900">
+          <span className="break-all font-mono text-text-primary">
             {state.selectedDatasetId}
           </span>
         )}
         {bytes?.total ? <>, about {formatBytes(bytes.total)}</> : null} — is copied
         to the destination as numbered folders plus a manifest, and every file is
         verified (SHA-256).{' '}
-        <span className="font-semibold text-gray-800">
+        <span className="font-semibold text-text-primary">
           {copying
             ? 'The recordings stay on this machine; the dataset becomes a sealed, read-only record of the export.'
             : 'Each recording that verifies is then removed from this machine, and the dataset becomes read-only for good.'}
@@ -116,7 +116,7 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
       <ModeRadio state={state} />
 
       <label className="flex flex-col gap-1">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Archive root
         </span>
         {state.archiveRoots.length > 1 ? (
@@ -124,7 +124,7 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
             data-testid="dataset-archive-root"
             value={state.datasetArchiveRoot}
             onChange={(e) => state.setDatasetArchiveRoot(e.target.value)}
-            className="rounded-control border border-gray-200 bg-white px-2 py-1.5 text-[12.5px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2 py-1.5 text-[12.5px] text-text-primary"
           >
             {state.archiveRoots.map((root) => (
               <option key={root} value={root}>
@@ -135,7 +135,7 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
         ) : (
           <span
             data-testid="dataset-archive-root"
-            className="rounded-control border border-gray-100 bg-gray-50 px-2 py-1.5 font-mono text-[12px] text-gray-600"
+            className="rounded-control border border-border bg-surface-muted px-2 py-1.5 font-mono text-[12px] text-text-secondary"
           >
             {state.datasetArchiveRoot}
           </span>
@@ -143,7 +143,7 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
       </label>
 
       <label className="flex flex-col gap-1">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Path under the root
         </span>
         <input
@@ -151,30 +151,30 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
           value={state.datasetArchivePath}
           onChange={(e) => state.setDatasetArchivePath(e.target.value)}
           spellCheck={false}
-          className="rounded-control border border-gray-200 bg-white px-2 py-1.5 font-mono text-[12px] text-gray-700"
+          className="rounded-control border border-border bg-surface px-2 py-1.5 font-mono text-[12px] text-text-primary"
         />
-        <span className="text-[11px] text-gray-500">
+        <span className="text-[11px] text-text-muted">
           Yours to rename — the last folder is the dataset's. Prefilled with the
           views shape; a path that already holds files is refused, so two
           exports cannot land on each other.
         </span>
       </label>
 
-      <div className="flex flex-col gap-1 rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <div className="flex flex-col gap-1 rounded-[10px] border border-border bg-surface-muted px-3 py-2">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Destination
         </span>
         <span
           data-testid="dataset-archive-destination"
-          className="break-all font-mono text-[12px] text-gray-800"
+          className="break-all font-mono text-[12px] text-text-primary"
         >
           {state.datasetArchiveDestination || '—'}
         </span>
-        <span className="text-[11px] text-gray-500">
+        <span className="text-[11px] text-text-muted">
           The dataset lands in{' '}
           <span
             data-testid="dataset-archive-final-path"
-            className="break-all font-mono text-gray-700"
+            className="break-all font-mono text-text-primary"
           >
             {state.datasetArchiveFinalDir || '—'}
           </span>
@@ -183,15 +183,15 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
       </div>
 
       <label className="flex flex-col gap-1">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Reason <span className="font-normal normal-case text-gray-500">(optional)</span>
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+          Reason <span className="font-normal normal-case text-text-muted">(optional)</span>
         </span>
         <input
           data-testid="dataset-archive-reason"
           value={state.datasetArchiveReason}
           onChange={(e) => state.setDatasetArchiveReason(e.target.value)}
           placeholder="e.g. training set handed off for cloud training"
-          className="rounded-control border border-gray-200 bg-white px-2 py-1.5 text-[12.5px] text-gray-700"
+          className="rounded-control border border-border bg-surface px-2 py-1.5 text-[12.5px] text-text-primary"
         />
       </label>
 
@@ -229,24 +229,24 @@ function ProgressBody({ state }: { state: DatasetsState }) {
         </Badge>
         <span
           data-testid="dataset-archive-progress-count"
-          className="font-mono text-[13px] font-semibold text-gray-900"
+          className="font-mono text-[13px] font-semibold text-text-primary"
         >
           {done} / {total}
         </span>
-        <span className="text-[12px] text-gray-500">recordings archived</span>
+        <span className="text-[12px] text-text-muted">recordings archived</span>
       </div>
 
-      <div className="h-2 overflow-hidden rounded-full bg-gray-100">
+      <div className="h-2 overflow-hidden rounded-full bg-surface-muted">
         <div
-          className={halted ? 'h-full bg-amber-400' : 'h-full bg-teal-500'}
+          className={halted ? 'h-full bg-status-warning-accent' : 'h-full bg-accent'}
           style={{ width: total > 0 ? `${Math.round((done / total) * 100)}%` : '0%' }}
         />
       </div>
 
       {progress?.running && progress.current_capture_id && (
-        <p className="text-[12px] text-gray-500">
+        <p className="text-[12px] text-text-muted">
           Copying{' '}
-          <span className="font-mono text-gray-700">
+          <span className="font-mono text-text-primary">
             {shortCaptureId(progress.current_capture_id)}
           </span>
           {progress.current_bytes != null && (
@@ -259,14 +259,14 @@ function ProgressBody({ state }: { state: DatasetsState }) {
         </p>
       )}
 
-      <p className="break-all font-mono text-[11px] text-gray-500">
+      <p className="break-all font-mono text-[11px] text-text-muted">
         → {progress?.destination ?? state.selectedDataset?.dataset.archive_destination}
       </p>
 
       {halted && (
         <div
           data-testid="dataset-archive-halt"
-          className="flex flex-col gap-1 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] leading-relaxed text-amber-900"
+          className="flex flex-col gap-1 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12.5px] leading-relaxed text-status-warning-text"
         >
           <span className="font-semibold">
             The run stopped and nothing was rolled back.
@@ -307,9 +307,9 @@ function ProgressBody({ state }: { state: DatasetsState }) {
       {halted && progress.cancelable && (
         <div
           data-testid="dataset-archive-cancel-available"
-          className="flex flex-col gap-1 rounded-control border border-gray-200 bg-gray-50 px-3 py-2 text-[12.5px] leading-relaxed text-gray-700"
+          className="flex flex-col gap-1 rounded-control border border-border bg-surface-muted px-3 py-2 text-[12.5px] leading-relaxed text-text-primary"
         >
-          <span className="font-semibold text-gray-900">
+          <span className="font-semibold text-text-primary">
             No completed recording is recorded for this attempt.
           </span>
           <span>

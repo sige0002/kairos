@@ -20,10 +20,10 @@ import { GeneratedFilesSection } from './GeneratedFilesSection';
 function Row({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex items-baseline gap-3 text-[12.5px]">
-      <span className="text-gray-500">{label}</span>
+      <span className="text-text-muted">{label}</span>
       <div className="flex-1" />
       <span
-        className="max-w-[60%] truncate text-right font-mono font-semibold text-gray-800"
+        className="max-w-[60%] truncate text-right font-mono font-semibold text-text-primary"
         title={value}
       >
         {value}
@@ -35,7 +35,7 @@ function Row({ label, value }: { label: string; value: string }) {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+      <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
         {title}
       </h3>
       {children}
@@ -61,10 +61,10 @@ export function SystemSection({ config }: { config: RuntimeConfig | undefined })
       data-testid="settings-system"
     >
       <div className="flex items-center gap-2.5">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           System
         </h2>
-        <span className="text-[11px] text-gray-500">
+        <span className="text-[11px] text-text-muted">
           deployment facts · GET /api/v1/config
         </span>
       </div>
@@ -75,7 +75,7 @@ export function SystemSection({ config }: { config: RuntimeConfig | undefined })
           label="ROS_DOMAIN_ID"
           value={domain !== undefined ? String(domain) : '—'}
         />
-        <p className="text-[11.5px] text-gray-500">
+        <p className="text-[11.5px] text-text-muted">
           RMW / DDS transport is not exposed by the API — check{' '}
           <code>RMW_IMPLEMENTATION</code> in the service environment.
         </p>
@@ -97,7 +97,7 @@ export function SystemSection({ config }: { config: RuntimeConfig | undefined })
             />
           </>
         ) : (
-          <p className="text-[12.5px] text-gray-500">
+          <p className="text-[12.5px] text-text-muted">
             Disk usage unavailable — the runtime data dir could not be measured.
           </p>
         )}
