@@ -20,6 +20,7 @@ import { CAPTURE_DETAIL_POLL_MS, INSPECTION_JOB_POLL_MS } from '../pollingPolicy
 import type { JobStatus, CaptureDetail } from '../../api/types';
 import { Badge, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
+import { formatNumber } from '../../i18n/format';
 import {
   JsonBlock,
   LossEventTable,
@@ -463,7 +464,7 @@ export function CaptureInspection({
           {formatDuration(spanMs(capture.started_at, capture.ended_at)) || '—'}
         </Row>
         <Row label="Messages">
-          {capture.message_count != null ? capture.message_count.toLocaleString() : '—'}
+          {capture.message_count != null ? formatNumber(capture.message_count) : '—'}
         </Row>
         <Row label="Size">{formatBytes(capture.bytes)}</Row>
         <Row label="Compression">{capture.compression || '—'}</Row>

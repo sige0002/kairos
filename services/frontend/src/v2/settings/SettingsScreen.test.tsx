@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { ErrorBoundary } from '../../components/ErrorBoundary';
@@ -18,6 +18,7 @@ import {
 import { DEFAULT_EXTERNAL_CONTROLS } from '../collect/machine/externalControlConfig';
 import { __resetStopConfirmMs, __setStopConfirmMs } from '../captures/stopConfirm';
 import { expectScreenHeadingOutline } from '../../test/headingOutline';
+import { LOCALE_STORAGE_KEY, i18n } from '../../i18n';
 
 // Runtime config (GET /api/v1/config): the ACTIVE robot's read-only values that
 // the Robots form surfaces (ROS_DOMAIN_ID + recorded topics).
@@ -314,10 +315,18 @@ function selectPosts() {
     .map((c) => JSON.parse(String((c[1] as RequestInit).body)));
 }
 
-beforeEach(() => {
+beforeEach(async () => {
+  // i18next notifies `useTranslation` subscribers asynchronously. Reset it
+  // before mounting the next screen, inside act, so a prior test cannot update
+  // this test's MenuRail after its first assertion.
+  await act(async () => {
+    await i18n.changeLanguage('en');
+  });
   window.history.replaceState(null, '', '/');
   setApiBase('/api/v1');
   window.localStorage.removeItem('kairos.appearance');
+  window.localStorage.removeItem(LOCALE_STORAGE_KEY);
+  document.documentElement.lang = 'en';
   document.documentElement.dataset.theme = 'light';
   recordState = 'created';
   liveReported = true;
@@ -340,9 +349,17 @@ beforeEach(() => {
   __resetPlansStore();
   mockFetch();
 });
-afterEach(() => {
+afterEach(async () => {
+  // RTL's automatic cleanup hook may run in a different registration order
+  // from this file's hook. Unmount now, before changing global i18next state.
+  cleanup();
   __resetStopConfirmMs();
   vi.restoreAllMocks();
+  window.localStorage.removeItem(LOCALE_STORAGE_KEY);
+  await act(async () => {
+    await i18n.changeLanguage('en');
+  });
+  document.documentElement.lang = 'en';
 });
 
 test('lists the real robots and marks the active one', async () => {
@@ -374,6 +391,23 @@ test('Appearance applies immediately in Settings and is browser-local', () => {
   expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(
     fetchCallsBeforeSelection,
   );
+});
+
+test('Language applies immediately, persists separately from Appearance, and keeps the Settings section', async () => {
+  renderWithClient(<SettingsScreen />);
+
+  fireEvent.click(screen.getByTestId('settings-menu-item-language'));
+  expect(screen.getByTestId('settings-language')).toBeInTheDocument();
+  await act(async () => {
+    fireEvent.click(screen.getByTestId('language-ja'));
+    await Promise.resolve();
+  });
+
+  await waitFor(() => expect(screen.getByRole('heading', { name: '言語' })).toBeInTheDocument());
+  expect(document.documentElement.lang).toBe('ja');
+  expect(window.localStorage.getItem(LOCALE_STORAGE_KEY)).toBe('ja');
+  expect(window.localStorage.getItem('kairos.appearance')).toBeNull();
+  expect(screen.getByTestId('settings-language')).toBeInTheDocument();
 });
 
 test('Appearance explains when the browser cannot persist the selection', () => {
@@ -777,9 +811,8 @@ test('groups every settings section under stable category and section IDs', () =
   expect(screen.getByTestId('settings-section-generated-files')).toBeInTheDocument();
   expect(screen.getByTestId('settings-section-appearance')).toBeInTheDocument();
   expect(screen.getByTestId('settings-section-audio')).toBeInTheDocument();
-  // Language is intentionally absent until its implementation exists; General
-  // is its stable destination without presenting a dead control.
-  expect(screen.queryByRole('button', { name: 'Language' })).not.toBeInTheDocument();
+  expect(screen.getByTestId('settings-section-language')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Language' })).toBeInTheDocument();
 });
 
 test('derives complete, non-overlapping category membership from section metadata', () => {

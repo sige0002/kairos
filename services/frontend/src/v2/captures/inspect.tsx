@@ -11,6 +11,7 @@
 // which is the same path whether or not the capture belongs to a dataset.
 
 import { useEffect, useRef, useState } from 'react';
+import { formatDateTime } from '../../i18n/format';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { apiGet, apiPost, getApiBase } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
@@ -129,7 +130,7 @@ export function useJobCompletion({
 export function formatWhen(iso?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-GB', { hour12: false });
+  return Number.isNaN(d.getTime()) ? iso : formatDateTime(d);
 }
 
 /** A pipeline report's own completion instant (`checked_at`), or null when it

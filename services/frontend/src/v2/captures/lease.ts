@@ -13,6 +13,7 @@
 // removes is the case where the answer was already on screen.
 
 import type { CaptureListItem } from '../../api/types';
+import { formatTime } from '../../i18n/format';
 
 export interface LeaseHold {
   owner: string;
@@ -50,7 +51,7 @@ export function liveLease(
 function clockTime(iso: string): string {
   const ms = Date.parse(iso);
   if (Number.isNaN(ms)) return '';
-  return new Date(ms).toLocaleTimeString('en-GB', { hour12: false });
+  return formatTime(new Date(ms));
 }
 
 /**

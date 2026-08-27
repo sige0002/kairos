@@ -7,6 +7,7 @@ import { useUiStore } from '../../store/uiStore';
 import { cn } from '../../components/ui';
 import { useStoreHealth } from './useStoreHealth';
 import type { StoreHealth } from '../../api/types';
+import { formatDateTime } from '../../i18n/format';
 
 function observedBy(health: {
   corrupt_source?: 'rebuild' | 'reconcile' | null;
@@ -17,7 +18,7 @@ function observedBy(health: {
   const date = new Date(health.corrupt_observed_at);
   return Number.isNaN(date.getTime())
     ? `${source} at ${health.corrupt_observed_at}`
-    : `${source} at ${date.toLocaleString('en-GB', { hour12: false })}`;
+    : `${source} at ${formatDateTime(date)}`;
 }
 
 function errorMessage(error: unknown): string {

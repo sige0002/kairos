@@ -26,10 +26,10 @@ import {
   formatCount,
   formatWhen,
   memberCount,
-  memberNoun,
   operatorSegment,
   outcomeBreakdown,
 } from './data';
+import { formatMemberLabel } from '../../i18n/format';
 import type { DatasetAggregate } from './data';
 import type { ScopeSummary as Scope } from './useDatasetsState';
 import type { CaptureSearchQuery } from '../../api/types';
@@ -361,7 +361,7 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
             >
               <StatTile
                 value={formatCount(agg.memberCount)}
-                label={memberNoun(agg.memberCount)}
+                label={formatMemberLabel(agg.memberCount)}
               />
               <StatTile
                 value={formatCount(agg.availability.usable)}

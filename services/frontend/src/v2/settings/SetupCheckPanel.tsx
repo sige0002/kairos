@@ -10,6 +10,7 @@ import type {
 } from '../../api/types';
 import { Badge, Button, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
+import { formatNumber } from '../../i18n/format';
 
 function tone(status: SetupCheckItemStatus | SetupCheckReport['status']) {
   if (status === 'pass' || status === 'ready') return 'green' as const;
@@ -74,7 +75,7 @@ export function SetupCheckPanel() {
               {report.ros_domain_id != null && (
                 <span className="font-mono">ROS_DOMAIN_ID {report.ros_domain_id}</span>
               )}
-              <span>{report.duration_ms.toLocaleString()} ms</span>
+              <span>{formatNumber(report.duration_ms)} ms</span>
             </div>
 
             <ul className="grid grid-cols-1 gap-2 md:grid-cols-2">

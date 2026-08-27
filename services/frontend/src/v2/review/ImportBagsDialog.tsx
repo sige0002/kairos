@@ -20,6 +20,7 @@ import { useOperators } from '../plans';
 import { readCaptureError } from '../captures/errors';
 import { Button, FieldGroup, Modal, Notice, TextInput, cn } from '../../components/ui';
 import { formatBytes } from './format';
+import { formatNumber } from '../../i18n/format';
 
 /** The label rules the import contract states. Mirrored, not re-invented: the
  *  server remains the authority and refuses anything else it dislikes — this
@@ -109,7 +110,7 @@ function summarize(bag: ScannedBag): string {
   const parts: string[] = [];
   if (bag.topics != null) parts.push(`${bag.topics} topics`);
   if (bag.message_count != null)
-    parts.push(`${bag.message_count.toLocaleString()} msgs`);
+    parts.push(`${formatNumber(bag.message_count)} msgs`);
   if (bag.duration_s != null) parts.push(`${Math.round(bag.duration_s)} s`);
   if (bag.bytes != null) parts.push(formatBytes(bag.bytes));
   return parts.join(' · ');

@@ -21,6 +21,7 @@ import { useEffect, useState } from 'react';
 import { Button, Modal, cn } from '../../components/ui';
 import { readCaptureError, type LeaseHolder } from './errors';
 import type { CaptureListItem } from '../../api/types';
+import { formatTime } from '../../i18n/format';
 
 // The size figure the confirmation is obliged to show — the shared decimal
 // formatter (one convention everywhere; see review/format.ts).
@@ -128,7 +129,7 @@ export function composeDiscardReason(
 function expiryClock(iso: string | null): string | null {
   if (!iso) return null;
   const at = new Date(iso);
-  return Number.isNaN(at.getTime()) ? iso : at.toLocaleTimeString();
+  return Number.isNaN(at.getTime()) ? iso : formatTime(at);
 }
 
 /**

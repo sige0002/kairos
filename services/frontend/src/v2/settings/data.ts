@@ -14,6 +14,7 @@ export const SETTINGS_CATEGORIES = [
 export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]['id'];
 
 export const SETTINGS_SECTIONS = [
+  { id: 'language', label: 'Language', categoryId: 'general', legacyIndex: null },
   { id: 'robots', label: 'Robots', categoryId: 'collection', legacyIndex: 0 },
   { id: 'projects-tasks', label: 'Projects & tasks', categoryId: 'workspace', legacyIndex: 1 },
   { id: 'failure-reasons', label: 'Failure reasons', categoryId: 'workspace', legacyIndex: 2 },
