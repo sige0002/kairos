@@ -214,23 +214,16 @@ export interface MemberRow {
 // see the recording to understand why it cannot join — and the control carries
 // the reason instead of the row quietly disappearing.
 
-const ADD_BLOCKED_NOT_HERE =
-  "This recording's bytes are not on this machine, so the dataset's views/ " +
-  'tree would have no file to link to. It can be added once the copy lands ' +
-  'here.';
-
-const ADD_BLOCKED_NOT_ADOPTED =
-  'This recording has not been adopted in Review, so nothing has judged it fit ' +
-  'for a training set. Adopt it in Review first.';
+export type DatasetAddBlockReason = 'bytes_not_local' | 'not_adopted';
 
 /** Why this capture cannot join a dataset right now, or null when it can. Both
  *  causes are named when both apply — fixing one and finding the button still
  *  dead is worse than being told twice. */
-export function addBlockedReason(capture: CaptureListItem): string | null {
-  const reasons: string[] = [];
-  if (!isCapturePresent(capture)) reasons.push(ADD_BLOCKED_NOT_HERE);
-  if (capture.review_status !== 'adopted') reasons.push(ADD_BLOCKED_NOT_ADOPTED);
-  return reasons.length > 0 ? reasons.join(' ') : null;
+export function addBlockedReasons(capture: CaptureListItem): DatasetAddBlockReason[] {
+  const reasons: DatasetAddBlockReason[] = [];
+  if (!isCapturePresent(capture)) reasons.push('bytes_not_local');
+  if (capture.review_status !== 'adopted') reasons.push('not_adopted');
+  return reasons;
 }
 
 /** Members ascending by `display_index` — the order the dataset is read in. */

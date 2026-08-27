@@ -38,7 +38,7 @@ import type {
 import { useUiStore } from '../../store/uiStore';
 import { useCaptureDeletion } from '../captures/useCaptureDeletion';
 import { useBulkRun } from '../shared/useBulkRun';
-import { displayQuality } from '../episodeChips';
+import { qualityLabel, taskResultLabel } from '../episodeChips';
 import { mapCapturesToEpisodes, type BatchSeqLookup } from './mapCaptures';
 import { initialTransferSlot, transferReducer } from './transfer';
 import { setSplitMode, useSplitMode } from '../captures/splitMode';
@@ -52,8 +52,6 @@ import {
 import type {
   DecoratedEpisode,
   Decision,
-  DisplayQuality,
-  DisplayTaskResult,
   EpisodeRow,
   ReviewLane,
   TransferSlot,
@@ -64,7 +62,7 @@ import { readReviewSearch, writeReviewSearch } from './url';
 /** Review's bounded server-search scope, distinct from generic capture lists. */
 const REVIEW_SCOPE = 'review';
 
-const QUALITY_ORDER: DisplayQuality[] = ['Good', 'Needs review', 'Not usable'];
+const QUALITY_ORDER: Quality[] = ['good', 'needs_review', 'not_usable'];
 
 // Default work-queue order: NEEDS CHECK first (the exceptions), then READY,
 // then EXCLUDED.
@@ -81,15 +79,6 @@ const utcDayAfter = (day: string) => {
   return date.toISOString();
 };
 
-// ---- display vocabulary -> the server enums the API takes ------------------
-function toServerQuality(q: DisplayQuality): Quality {
-  if (q === 'Needs review') return 'needs_review';
-  if (q === 'Not usable') return 'not_usable';
-  return 'good';
-}
-function toServerTask(t: DisplayTaskResult): TaskResult {
-  return t === 'Failure' ? 'failure' : 'success';
-}
 function toServerReview(d: Decision): ReviewStatus {
   if (d === 'adopted') return 'adopted';
   if (d === 'excluded') return 'excluded';
@@ -114,7 +103,7 @@ function describePrior(prior: ExcludeUndo['prior']): string {
       : prior.review_status === 'excluded'
         ? 'Excluded'
         : 'Pending';
-  const quality = displayQuality(prior.quality);
+  const quality = qualityLabel(prior.quality);
   return quality ? `${status} · ${quality}` : status;
 }
 
@@ -530,7 +519,7 @@ export function useReviewState(): ReviewState {
   const [pending, setPending] = useState<
     Record<
       string,
-      { quality?: DisplayQuality; task?: DisplayTaskResult; status?: ReviewStatus }
+      { quality?: Quality; task?: TaskResult; status?: ReviewStatus }
     >
   >({});
   const [transfers, setTransfers] = useState<Record<string, TransferSlot>>({});
@@ -562,7 +551,7 @@ export function useReviewState(): ReviewState {
         // good AND still pending); EXCLUDED is set aside.
         const reviewLane: ReviewLane = isExcluded
           ? 'excluded'
-          : effectiveQuality === 'Good' || effectiveReviewStatus === 'adopted'
+          : effectiveQuality === 'good' || effectiveReviewStatus === 'adopted'
             ? 'ready'
             : 'needs_check';
         return {
@@ -735,8 +724,8 @@ export function useReviewState(): ReviewState {
     async (
       row: DecoratedEpisode,
       overlay: {
-        quality?: DisplayQuality;
-        task?: DisplayTaskResult;
+        quality?: Quality;
+        task?: TaskResult;
         status?: ReviewStatus;
       },
       changes: Parameters<ReviewSaveState['save']>[1],
@@ -784,7 +773,7 @@ export function useReviewState(): ReviewState {
       const subject = subjectOf(row);
       void applyReview(
         row,
-        { status: 'excluded', quality: 'Not usable' },
+        { status: 'excluded', quality: 'not_usable' },
         {
           review_status: 'excluded',
           quality: 'not_usable',
@@ -800,7 +789,9 @@ export function useReviewState(): ReviewState {
         // The undo band announces itself (role="status"), so this does not
         // repeat the offer — two live regions saying "Undo available" in the
         // same breath is noise, and the band is the one with the button in it.
-        showToast(`${subject} → Not usable · Excluded (recording kept)`);
+        showToast(
+          `${subject} → ${qualityLabel('not_usable')} · Excluded (recording kept)`,
+        );
       });
     },
     [applyReview, showToast],
@@ -863,7 +854,7 @@ export function useReviewState(): ReviewState {
         // alone, which is right: a prior of "no quality set" cannot be drawn
         // optimistically, and it settles on the server's answer either way.
         ...(memo.prior.quality
-          ? { quality: displayQuality(memo.prior.quality) ?? undefined }
+          ? { quality: memo.prior.quality }
           : {}),
       },
       {
@@ -1004,7 +995,7 @@ export function useReviewState(): ReviewState {
         attempt: async (t) => {
           const { capture, error, skipped } = await applyReview(
             t,
-            { status: 'excluded', quality: 'Not usable' },
+            { status: 'excluded', quality: 'not_usable' },
             {
               review_status: 'excluded',
               quality: 'not_usable',
@@ -1149,23 +1140,24 @@ export function useReviewState(): ReviewState {
     void applyReview(
       selected,
       { quality: next },
-      { quality: toServerQuality(next), quality_source: 'operator' },
+      { quality: next, quality_source: 'operator' },
     ).then(({ capture }) => {
-      if (capture) showToast(`${subjectOf(selected)} quality → ${next}`);
+      if (capture) showToast(`${subjectOf(selected)} quality → ${qualityLabel(next)}`);
     });
   }, [selected, applyReview, showToast]);
 
   const cycleTaskResult = useCallback(() => {
     if (!selected) return;
     // Unset base → the first click sets Success; thereafter it toggles.
-    const next: DisplayTaskResult =
-      selected.effectiveTask === 'Success' ? 'Failure' : 'Success';
+    const next: TaskResult =
+      selected.effectiveTask === 'success' ? 'failure' : 'success';
     void applyReview(
       selected,
       { task: next },
-      { task_result: toServerTask(next) },
+      { task_result: next },
     ).then(({ capture }) => {
-      if (capture) showToast(`${subjectOf(selected)} task result → ${next}`);
+      if (capture)
+        showToast(`${subjectOf(selected)} task result → ${taskResultLabel(next)}`);
     });
   }, [selected, applyReview, showToast]);
 

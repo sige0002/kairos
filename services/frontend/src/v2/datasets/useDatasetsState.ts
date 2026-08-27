@@ -88,7 +88,7 @@ import { useLeRobotExport, type LeRobotExportState } from './useLeRobotExport';
 import {
   ANY_OPERATOR,
   MEMBER_PAGE_SIZE,
-  addBlockedReason,
+  addBlockedReasons,
   aggregate,
   buildDatasetRows,
   candidateMatchesConditions,
@@ -1581,7 +1581,7 @@ export function useDatasetsState(): DatasetsState {
   // flow, so the rail leads with what can actually join — but the blocked
   // count is always stated and one click reveals the rows with their reasons.
   const addableCandidates = useMemo(
-    () => matchedCandidates.filter((c) => addBlockedReason(c) === null),
+    () => matchedCandidates.filter((c) => addBlockedReasons(c).length === 0),
     [matchedCandidates],
   );
   const visibleCandidates = showBlockedCandidates

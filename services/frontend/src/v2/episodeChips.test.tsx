@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
 import { expect, test } from 'vitest';
-import { formatBatchLabel } from './episodeChips';
+import { formatBatchLabel, qualityLabel, taskResultLabel } from './episodeChips';
+
+test('quality and task presentation maps stable values at the rendering boundary', () => {
+  expect(qualityLabel('needs_review')).toBe('Needs review');
+  expect(taskResultLabel('failure')).toBe('Failure');
+});
 
 test('formatBatchLabel renders "MM/DD · #N" from a seq + date', () => {
   expect(formatBatchLabel(3, '2026-07-13T09:00:00Z')).toBe('07/13 · #3');

@@ -30,9 +30,9 @@ import {
   resolveCaptureCondition,
   type LegacyConditionLookup,
 } from '../captures/recordingCondition';
-import { displayQuality, displayTaskResult, formatBatchLabel } from '../episodeChips';
+import { formatBatchLabel } from '../episodeChips';
 import { serverTransferPhase } from './transfer';
-import type { DisplayQuality, DisplayTaskResult, EpisodeRow } from './types';
+import type { EpisodeRow } from './types';
 
 /** CaptureListItem states that can be reviewed: finished, one way or another. */
 const REVIEWABLE = new Set(['completed', 'failed', 'interrupted']);
@@ -79,16 +79,16 @@ export function mapCapturesToEpisodes(
 
   return ordered.map((capture) => {
     const endedBadly = capture.state === 'failed' || capture.state === 'interrupted';
-    let quality: DisplayQuality | null;
-    let task: DisplayTaskResult | null;
+    let quality: CaptureListItem['quality'];
+    let task: CaptureListItem['task_result'];
     let failReason: string | null;
     if (endedBadly) {
-      quality = 'Not usable';
+      quality = 'not_usable';
       task = null;
       failReason = null;
     } else {
-      quality = displayQuality(capture.quality);
-      task = displayTaskResult(capture.task_result);
+      quality = capture.quality ?? null;
+      task = capture.task_result ?? null;
       failReason = capture.failure_reason ?? null;
     }
 
@@ -117,7 +117,7 @@ export function mapCapturesToEpisodes(
       durationMs: spanMs(capture.started_at, capture.ended_at),
       startedAt: capture.started_at ?? undefined,
       bytes: capture.bytes ?? null,
-      issues: endedBadly ? 'Recording did not complete cleanly' : null,
+      issue: endedBadly ? 'recording_incomplete' : null,
       transfer: serverTransferPhase(capture),
       capture,
     };

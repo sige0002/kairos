@@ -21,6 +21,7 @@ import { FiltersRail } from './FiltersRail';
 import { Toast } from '../shared/Toast';
 import { useFiltersCollapsed, toggleFiltersCollapsed } from './filtersRail';
 import { episodeLabel } from './types';
+import { qualityLabel } from '../episodeChips';
 import { formatBytes } from './format';
 import { useReviewState } from './useReviewState';
 import { useRobotCopyMayRemain } from '../captures/useSplitDeploy';
@@ -142,7 +143,9 @@ export function ReviewScreen() {
                 It is now{' '}
                 <strong data-testid="review-conflict-current">
                   {conflict.current.review_status}
-                  {conflict.current.quality ? ` · ${conflict.current.quality}` : ''}
+                  {conflict.current.quality
+                    ? ` · ${qualityLabel(conflict.current.quality)}`
+                    : ''}
                 </strong>
                 .
               </>

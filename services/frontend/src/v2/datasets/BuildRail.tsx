@@ -14,7 +14,7 @@
 // adopted in Review, or bytes not on this host) are folded behind a stated
 // "Show blocked (n)" toggle — hidden by default because they clutter the
 // building flow, but never silently: the count is always on screen, and an
-// expanded row still carries its specific reason (data.ts addBlockedReason),
+// expanded row still carries its specific reason (data.ts addBlockedReasons),
 // so the two causes never read as one vague "unavailable".
 //
 // Archive lives here rather than beside the member detail because here is where
@@ -28,7 +28,7 @@ import { BulkAddDialog } from './BulkAddDialog';
 import { CandidateFilterBuilder } from './CandidateFilterBuilder';
 import { CaptureConditionLabel } from './CaptureConditionLabel';
 import {
-  addBlockedReason,
+  addBlockedReasons,
   captureFacts,
   captureWhen,
   memberCount,
@@ -36,6 +36,21 @@ import {
 } from './data';
 import type { CaptureListItem } from '../../api/types';
 import type { DatasetsState } from './useDatasetsState';
+
+const ADD_BLOCKED_LABEL: Record<ReturnType<typeof addBlockedReasons>[number], string> = {
+  bytes_not_local:
+    "This recording's bytes are not on this machine, so the dataset's views/ " +
+    'tree would have no file to link to. It can be added once the copy lands here.',
+  not_adopted:
+    'This recording has not been adopted in Review, so nothing has judged it fit ' +
+    'for a training set. Adopt it in Review first.',
+};
+
+function addBlockedReasonLabel(
+  reasons: ReturnType<typeof addBlockedReasons>,
+): string | null {
+  return reasons.length > 0 ? reasons.map((reason) => ADD_BLOCKED_LABEL[reason]).join(' ') : null;
+}
 
 function CandidateRow({
   capture,
@@ -50,7 +65,7 @@ function CandidateRow({
   // the server refuses, so the Add control treats it as "no valid target".
   const noTarget =
     state.selectedDatasetId === null || state.isDatasetFrozen(state.selectedDatasetId);
-  const blocked = addBlockedReason(capture);
+  const blocked = addBlockedReasonLabel(addBlockedReasons(capture));
   const facts = captureFacts(capture);
   return (
     <div
