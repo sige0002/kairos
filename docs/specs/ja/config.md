@@ -51,6 +51,7 @@
 | `WEBRTC_PACKET_MAX` | `1150` | RTP ペイロード上限（B）。既定 `1150` は MTU 1280 のトンネル（Tailscale/WireGuard）で断片化しないよう aiortc の 1300B 固定を縮小したもの。MTU 1500 の同一 LAN のみ `1300` に戻して overhead を減らせる |
 | `WEBRTC_KEEP_IPV6` | （未設定） | `1` で answer SDP の IPv6 ICE 候補除外を無効化。既定（未設定）では v6 候補を落とす（断片化 IPv6 が WireGuard/Tailscale でブラックホール化しプレビューが黒くなるのを防ぐ）。v6 でしか到達できない網でだけ `1` にする |
 | `LOG_LEVEL` | `INFO` | ログレベル |
+| `KOKORO_PORT` | `8050` | Kokoro sidecar が host network の `127.0.0.1` で待ち受ける port。変更時は `TTS_KOKORO_URL` の port も同じ値へ変更する |
 | `TTS_KOKORO_URL` | `http://127.0.0.1:8050` | orchestrator から見た単一の Kokoro 82M sidecar API。既定は host network の loopback にだけ bind し、browser はこの port に直接アクセスしない。切替対象の TTS engine は持たない |
 | `KOKORO_THREADS` | `2` | Kokoro CPU inference の thread 数 |
 | `KOKORO_CPUS` | `2` | Kokoro container の CPU 上限。録画開始時は inference worker 自体を終了する |

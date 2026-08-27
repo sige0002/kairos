@@ -54,6 +54,7 @@ The single source of configuration shared across services, and the rules for ext
 | `WEBRTC_PACKET_MAX` | `1150` | RTP payload cap (bytes). The default `1150` shrinks aiortc's hardcoded 1300 B so media does not fragment over a reduced-MTU tunnel (Tailscale/WireGuard = 1280). Restore `1300` only on a same-LAN (MTU 1500) deployment to cut overhead |
 | `WEBRTC_KEEP_IPV6` | (unset) | Set to `1` to disable dropping IPv6 ICE candidates from the answer SDP. By default (unset) v6 candidates are dropped (fragmented IPv6 is black-holed over WireGuard/Tailscale, which would turn the preview black). Set `1` only on a genuinely IPv6-only network |
 | `LOG_LEVEL` | `INFO` | Log level |
+| `KOKORO_PORT` | `8050` | Port where the Kokoro sidecar listens on host-network `127.0.0.1`. When changing it, set the port in `TTS_KOKORO_URL` to the same value |
 | `TTS_KOKORO_URL` | `http://127.0.0.1:8050` | The single Kokoro 82M sidecar API as seen by the orchestrator. It binds only to host-network loopback by default; browsers never access this port directly. There is no selectable alternate TTS engine |
 | `KOKORO_THREADS` | `2` | Thread count for Kokoro CPU inference |
 | `KOKORO_CPUS` | `2` | CPU cap for the Kokoro container. Recording start terminates the inference worker itself |
