@@ -24,6 +24,7 @@
 // level off. No roots configured -> the button that opens this never renders.
 
 import { Badge, Button, Modal } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { readCaptureCode } from '../captures/errors';
 import { ArchiveError } from './ArchiveError';
 import { formatBytes, memberCount, shortCaptureId } from './data';
@@ -31,11 +32,12 @@ import { DatasetGoneNote } from './SelectionGone';
 import type { DatasetsState } from './useDatasetsState';
 
 function ModeRadio({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation(['datasets', 'common']);
   const shared = state.datasetArchiveSharedCount;
   return (
     <div className="flex flex-col gap-1">
       <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-        What happens to the recordings here
+        {t('copyOutKeep')}
       </span>
       <label className="flex cursor-pointer items-start gap-2 rounded-[10px] border border-border px-3 py-2">
         <input
@@ -46,9 +48,8 @@ function ModeRadio({ state }: { state: DatasetsState }) {
           onChange={() => state.setDatasetArchiveMode('copy')}
         />
         <span className="text-[12.5px] leading-snug text-text-primary">
-          <span className="font-semibold text-text-primary">Copy out — keep them.</span>{' '}
-          The dataset is sealed as a record of the export; every recording stays
-          here and other datasets keep working. The pick for a combined set.
+          <span className="font-semibold text-text-primary">{t('archiveKeep')}</span>{' '}
+          {t('archiveKeepDetail')}
         </span>
       </label>
       <label className="flex cursor-pointer items-start gap-2 rounded-[10px] border border-border px-3 py-2">
@@ -60,11 +61,8 @@ function ModeRadio({ state }: { state: DatasetsState }) {
           onChange={() => state.setDatasetArchiveMode('move')}
         />
         <span className="text-[12.5px] leading-snug text-text-primary">
-          <span className="font-semibold text-text-primary">
-            Move out — remove them.
-          </span>{' '}
-          Each verified recording is deleted from this machine; the disk space
-          comes back. Needs members no other dataset cites.
+          <span className="font-semibold text-text-primary">{t('archiveMove')}</span>{' '}
+          {t('archiveMoveDetail')}
         </span>
       </label>
       {shared > 0 && (
@@ -72,9 +70,7 @@ function ModeRadio({ state }: { state: DatasetsState }) {
           data-testid="dataset-archive-shared-note"
           className="text-[11px] leading-relaxed text-status-warning-text"
         >
-          {shared} member{shared === 1 ? '' : 's'} also belong to another active
-          dataset, so a Move would be refused with the list — Copy is the one
-          that can succeed as-is.
+          {t('archiveShared', { count: shared, plural: shared === 1 ? '' : 's' })}
         </span>
       )}
     </div>
@@ -82,6 +78,7 @@ function ModeRadio({ state }: { state: DatasetsState }) {
 }
 
 function ConfirmBody({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation('datasets');
   const row = state.selectedDataset;
   const bytes = row ? row.aggregate.bytes : null;
   const copying = state.datasetArchiveMode === 'copy';
@@ -94,30 +91,28 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
             would be a number nothing measured. */}
         {row ? (
           <>
-            <span className="font-semibold text-text-primary">{row.dataset.name}</span> —{' '}
-            {memberCount(row.dataset.member_count)}
+            <span className="font-semibold text-text-primary">{row.dataset.name}</span>{' '}
+            — {memberCount(row.dataset.member_count)}
           </>
         ) : (
           <span className="break-all font-mono text-text-primary">
             {state.selectedDatasetId}
           </span>
         )}
-        {bytes?.total ? <>, about {formatBytes(bytes.total)}</> : null} — is copied
-        to the destination as numbered folders plus a manifest, and every file is
-        verified (SHA-256).{' '}
+        {bytes?.total ? <>, about {formatBytes(bytes.total)}</> : null} — is copied to
+        the destination as numbered folders plus a manifest, and every file is verified
+        (SHA-256).{' '}
         <span className="font-semibold text-text-primary">
-          {copying
-            ? 'The recordings stay on this machine; the dataset becomes a sealed, read-only record of the export.'
-            : 'Each recording that verifies is then removed from this machine, and the dataset becomes read-only for good.'}
+          {copying ? t('archiveConfirmCopy') : t('archiveConfirmMove')}
         </span>{' '}
-        The catalog keeps the dataset and records where it went.
+        {t('archiveCatalogRecord')}
       </p>
 
       <ModeRadio state={state} />
 
       <label className="flex flex-col gap-1">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          Archive root
+          {t('archiveRoot')}
         </span>
         {state.archiveRoots.length > 1 ? (
           <select
@@ -144,7 +139,7 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
 
       <label className="flex flex-col gap-1">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          Path under the root
+          {t('pathUnderRoot')}
         </span>
         <input
           data-testid="dataset-archive-path"
@@ -153,16 +148,12 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
           spellCheck={false}
           className="rounded-control border border-border bg-surface px-2 py-1.5 font-mono text-[12px] text-text-primary"
         />
-        <span className="text-[11px] text-text-muted">
-          Yours to rename — the last folder is the dataset's. Prefilled with the
-          views shape; a path that already holds files is refused, so two
-          exports cannot land on each other.
-        </span>
+        <span className="text-[11px] text-text-muted">{t('archivePathHelp')}</span>
       </label>
 
       <div className="flex flex-col gap-1 rounded-[10px] border border-border bg-surface-muted px-3 py-2">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          Destination
+          {t('destination')}
         </span>
         <span
           data-testid="dataset-archive-destination"
@@ -171,7 +162,7 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
           {state.datasetArchiveDestination || '—'}
         </span>
         <span className="text-[11px] text-text-muted">
-          The dataset lands in{' '}
+          {t('archiveLandsIn')}{' '}
           <span
             data-testid="dataset-archive-final-path"
             className="break-all font-mono text-text-primary"
@@ -184,13 +175,16 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
 
       <label className="flex flex-col gap-1">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          Reason <span className="font-normal normal-case text-text-muted">(optional)</span>
+          {t('reason')}{' '}
+          <span className="font-normal normal-case text-text-muted">
+            ({t('optional')})
+          </span>
         </span>
         <input
           data-testid="dataset-archive-reason"
           value={state.datasetArchiveReason}
           onChange={(e) => state.setDatasetArchiveReason(e.target.value)}
-          placeholder="e.g. training set handed off for cloud training"
+          placeholder={t('archiveReasonDatasetPlaceholder')}
           className="rounded-control border border-border bg-surface px-2 py-1.5 text-[12.5px] text-text-primary"
         />
       </label>
@@ -205,14 +199,14 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
 }
 
 function ProgressBody({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation('datasets');
   const progress = state.datasetArchiveProgress;
   // Halted = the run is NOT running (and we are not mid-resume) — the same
   // definition the Resume button below uses. This used to also require an
   // error, so a run stopped by an orchestrator restart (no error recorded)
   // wore a teal "archiving" badge for hours next to a Resume button that knew
   // better (S3-8/D5). A copy that is not copying is halted, error or not.
-  const halted =
-    progress != null && !progress.running && !state.datasetArchiveStarting;
+  const halted = progress != null && !progress.running && !state.datasetArchiveStarting;
   const cancellationRecorded = progress?.cancel_blocker === 'archive_canceled';
   const haltGuidance = readCaptureCode(
     progress?.error?.code,
@@ -225,7 +219,7 @@ function ProgressBody({ state }: { state: DatasetsState }) {
     <div className="flex flex-col gap-3" data-testid="dataset-archive-progress">
       <div className="flex items-center gap-2.5">
         <Badge tone={halted ? 'amber' : 'teal'}>
-          {halted ? 'halted' : 'archiving'}
+          {halted ? t('halted') : t('archiveLive')}
         </Badge>
         <span
           data-testid="dataset-archive-progress-count"
@@ -233,7 +227,7 @@ function ProgressBody({ state }: { state: DatasetsState }) {
         >
           {done} / {total}
         </span>
-        <span className="text-[12px] text-text-muted">recordings archived</span>
+        <span className="text-[12px] text-text-muted">{t('recordingsArchived')}</span>
       </div>
 
       <div className="h-2 overflow-hidden rounded-full bg-surface-muted">
@@ -245,17 +239,14 @@ function ProgressBody({ state }: { state: DatasetsState }) {
 
       {progress?.running && progress.current_capture_id && (
         <p className="text-[12px] text-text-muted">
-          Copying{' '}
-          <span className="font-mono text-text-primary">
-            {shortCaptureId(progress.current_capture_id)}
-          </span>
-          {progress.current_bytes != null && (
-            <> — {formatBytes(progress.current_bytes)} so far</>
-          )}
-          .{' '}
-          {progress.mode === 'copy'
-            ? 'Every file is verified as it lands; nothing here changes.'
-            : 'Each file is verified before the source is removed.'}
+          {t('copyingCapture', {
+            capture: shortCaptureId(progress.current_capture_id),
+            bytes:
+              progress.current_bytes != null
+                ? ` — ${formatBytes(progress.current_bytes)} so far`
+                : '',
+          })}{' '}
+          {progress.mode === 'copy' ? t('copyVerifyKeep') : t('archiveRemovedCheck')}
         </p>
       )}
 
@@ -268,17 +259,17 @@ function ProgressBody({ state }: { state: DatasetsState }) {
           data-testid="dataset-archive-halt"
           className="flex flex-col gap-1 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12.5px] leading-relaxed text-status-warning-text"
         >
-          <span className="font-semibold">
-            The run stopped and nothing was rolled back.
-          </span>
+          <span className="font-semibold">{t('runStopped')}</span>
           <span data-testid="dataset-archive-halt-message">
-            {progress.error?.message ?? 'The run halted.'}
+            {progress.error?.message ?? t('runHalted')}
             {progress.error?.capture_id && (
               <>
                 {' '}
-                (<span className="font-mono">
+                (
+                <span className="font-mono">
                   {shortCaptureId(progress.error.capture_id)}
-                </span>)
+                </span>
+                )
               </>
             )}
           </span>
@@ -296,10 +287,10 @@ function ProgressBody({ state }: { state: DatasetsState }) {
           )}
           <span>
             {cancellationRecorded
-              ? 'Cancellation is recorded durably. This attempt cannot resume; close this dialog and rebuild the catalog if the dataset remains Archiving.'
+              ? t('cancellationDurable')
               : progress.cancelable
-              ? 'Resume retries from the first recording.'
-              : 'Recordings already archived stay archived; Resume continues from the first unfinished one.'}
+                ? t('resumeFirst')
+                : t('resumeUnfinished')}
           </span>
         </div>
       )}
@@ -310,12 +301,9 @@ function ProgressBody({ state }: { state: DatasetsState }) {
           className="flex flex-col gap-1 rounded-control border border-border bg-surface-muted px-3 py-2 text-[12.5px] leading-relaxed text-text-primary"
         >
           <span className="font-semibold text-text-primary">
-            No completed recording is recorded for this attempt.
+            {t('archiveCancelAvailableTitle')}
           </span>
-          <span>
-            Canceling releases the frozen destination and returns the dataset to
-            Active. It does not delete anything already present at the destination.
-          </span>
+          <span>{t('archiveCancelAvailableDetail')}</span>
         </div>
       )}
 
@@ -334,6 +322,7 @@ function ProgressBody({ state }: { state: DatasetsState }) {
 }
 
 export function DatasetArchiveDialog({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation(['datasets', 'common']);
   const status = state.selectedDataset?.dataset.status ?? 'active';
   const inProgress = status === 'archiving';
   const halted =
@@ -352,7 +341,7 @@ export function DatasetArchiveDialog({ state }: { state: DatasetsState }) {
     <Modal
       open={state.datasetArchiveOpen}
       onClose={state.cancelDatasetArchive}
-      title="Archive dataset"
+      title={t('archiveDataset')}
       footer={
         inProgress && !gone ? (
           <>
@@ -362,30 +351,26 @@ export function DatasetArchiveDialog({ state }: { state: DatasetsState }) {
               disabled={state.datasetArchiveCanceling}
               data-testid="dataset-archive-close"
             >
-              Close
+              {t('close')}
             </Button>
             {halted && state.datasetArchiveProgress?.cancelable && (
               <Button
                 variant="danger"
                 onClick={state.cancelDatasetArchiveRun}
-                disabled={
-                  state.datasetArchiveStarting || state.datasetArchiveCanceling
-                }
+                disabled={state.datasetArchiveStarting || state.datasetArchiveCanceling}
                 data-testid="dataset-archive-cancel-run"
               >
-                {state.datasetArchiveCanceling ? 'Canceling…' : 'Cancel archive run'}
+                {state.datasetArchiveCanceling ? t('canceling') : t('cancelArchiveRun')}
               </Button>
             )}
             {halted && !cancellationRecorded && (
               <Button
                 variant="primary"
                 onClick={state.resumeDatasetArchive}
-                disabled={
-                  state.datasetArchiveStarting || state.datasetArchiveCanceling
-                }
+                disabled={state.datasetArchiveStarting || state.datasetArchiveCanceling}
                 data-testid="dataset-archive-resume"
               >
-                {state.datasetArchiveStarting ? 'Resuming…' : 'Resume'}
+                {state.datasetArchiveStarting ? t('resuming') : t('resume')}
               </Button>
             )}
           </>
@@ -397,7 +382,7 @@ export function DatasetArchiveDialog({ state }: { state: DatasetsState }) {
               disabled={state.datasetArchiveStarting}
               data-testid="dataset-archive-cancel"
             >
-              {gone ? 'Close' : 'Cancel'}
+              {gone ? t('close') : t('common:actions.cancel')}
             </Button>
             <Button
               variant="primary"
@@ -411,10 +396,10 @@ export function DatasetArchiveDialog({ state }: { state: DatasetsState }) {
               data-testid="dataset-archive-confirm"
             >
               {state.datasetArchiveStarting
-                ? 'Starting…'
+                ? t('starting')
                 : state.datasetArchiveMode === 'copy'
-                  ? 'Copy, verify, then seal'
-                  : 'Copy, verify, then remove'}
+                  ? t('copyVerifySeal')
+                  : t('copyVerifyRemove')}
             </Button>
           </>
         )

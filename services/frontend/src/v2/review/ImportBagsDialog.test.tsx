@@ -14,8 +14,24 @@ const SCAN = {
   path: '/data/incoming',
   importable: 2,
   bags: [
-    { path: '/data/incoming/a', name: 'a', importable: true, bytes: 91_000_000, topics: 16, message_count: 27016, duration_s: 44 },
-    { path: '/data/incoming/b', name: 'b', importable: true, bytes: 12_000_000, topics: 8, message_count: 900, duration_s: 12 },
+    {
+      path: '/data/incoming/a',
+      name: 'a',
+      importable: true,
+      bytes: 91_000_000,
+      topics: 16,
+      message_count: 27016,
+      duration_s: 44,
+    },
+    {
+      path: '/data/incoming/b',
+      name: 'b',
+      importable: true,
+      bytes: 12_000_000,
+      topics: 8,
+      message_count: 900,
+      duration_s: 12,
+    },
     {
       path: '/data/incoming/broken',
       name: 'broken',
@@ -32,20 +48,23 @@ const SCAN = {
  *  modelling the real registry (S3-2: the 202 is "queued", not "done"). */
 function mockFetch(failing: string[] = [], copyFails: string[] = []) {
   const posts: { source_path: string; move: boolean }[] = [];
-  const records: Record<
-    string,
-    { source: string; reads: number; fails: boolean }
-  > = {};
+  const records: Record<string, { source: string; reads: number; fails: boolean }> = {};
   let nextImport = 1;
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     if (url.includes('/imports/scan')) return Promise.resolve(jsonResponse(SCAN));
     if (url.includes('/imports') && (init?.method ?? 'GET') === 'POST') {
-      const body = JSON.parse(String(init?.body)) as { source_path: string; move: boolean };
+      const body = JSON.parse(String(init?.body)) as {
+        source_path: string;
+        move: boolean;
+      };
       posts.push(body);
       if (failing.includes(body.source_path)) {
         return Promise.resolve(
-          jsonResponse({ error: { code: 'import_no_mcap', message: 'No .mcap file.' } }, 400),
+          jsonResponse(
+            { error: { code: 'import_no_mcap', message: 'No .mcap file.' } },
+            400,
+          ),
         );
       }
       const importId = `imp-${nextImport++}`;
@@ -110,9 +129,7 @@ afterEach(() => {
 });
 
 function open() {
-  renderWithClient(
-    <ImportBagsDialog open onClose={() => {}} onImported={() => {}} />,
-  );
+  renderWithClient(<ImportBagsDialog open onClose={() => {}} onImported={() => {}} />);
   fireEvent.change(screen.getByTestId('import-path'), {
     target: { value: '/data/incoming' },
   });
@@ -142,7 +159,9 @@ test('a failing bag is skipped and named — the rest of the run still completes
 
   fireEvent.click(screen.getByTestId('import-run'));
 
-  await waitFor(() => expect(screen.getByTestId('import-failures')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('import-failures')).toBeInTheDocument(),
+  );
   // Both were attempted: the failure did not abort the run.
   expect(posts.map((p) => p.source_path)).toEqual([
     '/data/incoming/a',
@@ -203,7 +222,6 @@ test('a scan error is surfaced, not swallowed', async () => {
   );
 });
 
-
 test('a folder whose bags are one level down offers the way in, not a dead end', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
@@ -212,7 +230,16 @@ test('a folder whose bags are one level down offers the way in, not a dead end',
         jsonResponse({
           path: '/data/incoming/2026-08-04',
           importable: 1,
-          bags: [{ path: '/data/incoming/2026-08-04/s1', name: 's1', importable: true, bytes: 1, topics: 2, message_count: 3 }],
+          bags: [
+            {
+              path: '/data/incoming/2026-08-04/s1',
+              name: 's1',
+              importable: true,
+              bytes: 1,
+              topics: 2,
+              message_count: 3,
+            },
+          ],
           nested: [],
         }),
       );
@@ -246,11 +273,12 @@ test('a folder whose bags are one level down offers the way in, not a dead end',
   expect(screen.getByTestId('import-path')).toHaveValue('/data/incoming/2026-08-04');
 });
 
-
 test('a double-click on Import does not import everything twice', async () => {
   const posts = mockFetch();
   renderWithClient(<ImportBagsDialog open onClose={() => {}} onImported={() => {}} />);
-  fireEvent.change(screen.getByTestId('import-path'), { target: { value: '/data/incoming' } });
+  fireEvent.change(screen.getByTestId('import-path'), {
+    target: { value: '/data/incoming' },
+  });
   fireEvent.click(screen.getByTestId('import-scan'));
   await screen.findByTestId('import-list');
 
@@ -262,7 +290,7 @@ test('a double-click on Import does not import everything twice', async () => {
   fireEvent.click(run);
 
   await waitFor(() => expect(posts.length).toBeGreaterThan(0));
-  await new Promise((r) => setTimeout(r, 50));
+  await waitFor(() => expect(screen.getByTestId('import-run')).not.toBeDisabled());
   expect(posts.map((p) => p.source_path)).toEqual([
     '/data/incoming/a',
     '/data/incoming/b',
@@ -278,7 +306,10 @@ test('closing the dialog mid-run stops queueing further imports', async () => {
     const url = String(input);
     if (url.includes('/imports/scan')) return Promise.resolve(jsonResponse(SCAN));
     if (url.includes('/imports') && (init?.method ?? 'GET') === 'POST') {
-      const body = JSON.parse(String(init?.body)) as { source_path: string; move: boolean };
+      const body = JSON.parse(String(init?.body)) as {
+        source_path: string;
+        move: boolean;
+      };
       posts.push(body);
       if (posts.length === 1) {
         return new Promise<Response>((resolve) => {
@@ -293,7 +324,9 @@ test('closing the dialog mid-run stops queueing further imports', async () => {
   const { unmount } = renderWithClient(
     <ImportBagsDialog open onClose={() => {}} onImported={() => {}} />,
   );
-  fireEvent.change(screen.getByTestId('import-path'), { target: { value: '/data/incoming' } });
+  fireEvent.change(screen.getByTestId('import-path'), {
+    target: { value: '/data/incoming' },
+  });
   fireEvent.click(screen.getByTestId('import-scan'));
   await screen.findByTestId('import-list');
   fireEvent.click(screen.getByTestId('import-run'));
@@ -307,7 +340,6 @@ test('closing the dialog mid-run stops queueing further imports', async () => {
   // never queued behind a screen nobody is watching.
   expect(posts.map((p) => p.source_path)).toEqual(['/data/incoming/a']);
 });
-
 
 test('a second scan cannot be started while one is in flight', async () => {
   // The reachable half of the out-of-order-scan concern: overlapping scans
@@ -341,12 +373,16 @@ test('a second scan cannot be started while one is in flight', async () => {
 test('editing the path after a scan blocks the import until it is rescanned', async () => {
   mockFetch();
   renderWithClient(<ImportBagsDialog open onClose={() => {}} onImported={() => {}} />);
-  fireEvent.change(screen.getByTestId('import-path'), { target: { value: '/data/incoming' } });
+  fireEvent.change(screen.getByTestId('import-path'), {
+    target: { value: '/data/incoming' },
+  });
   fireEvent.click(screen.getByTestId('import-scan'));
   await screen.findByTestId('import-list');
   expect(screen.getByTestId('import-run')).toBeEnabled();
 
-  fireEvent.change(screen.getByTestId('import-path'), { target: { value: '/data/other' } });
+  fireEvent.change(screen.getByTestId('import-path'), {
+    target: { value: '/data/other' },
+  });
 
   // The list still describes the OLD folder; importing it while the box says
   // another one is the confusion, so the button waits for a rescan.

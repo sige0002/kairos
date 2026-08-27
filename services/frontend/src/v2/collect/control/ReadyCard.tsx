@@ -11,9 +11,9 @@
 // fresh install, so this is the first thing a new operator meets.
 
 import { Card, cn } from '../../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { CARD_PAD } from '../compact';
 import type { BatchMachine } from '../useBatchMachine';
-import { OPERATOR_GATE_HINT } from '../machine/types';
 import { MachineErrorBanner } from './banners';
 import { CARD_GAP_COMPACT } from './shared';
 
@@ -31,6 +31,7 @@ export function ReadyCard({
    *  and the phase would otherwise leave it on <body> (D-4). */
   titleRef: React.Ref<HTMLHeadingElement>;
 }) {
+  const { t } = useTranslation('collect');
   const { stats } = machine;
   const blocked = machine.noSelection || machine.operatorMissing;
   return (
@@ -49,21 +50,24 @@ export function ReadyCard({
           tabIndex={-1}
           className="text-[17px] font-bold text-accent outline-none"
         >
-          READY
+          {t('ready')}
         </h2>
         <div className="flex-1" />
         <span className="font-mono text-xs text-text-muted">
-          Ep {stats.epNext} / {machine.targetEpisodes}
+          {t('episodeProgress', {
+            current: String(stats.epNext),
+            target: String(machine.targetEpisodes),
+          })}
         </span>
       </div>
       {/* Real next-start summary (was a fabricated "12/12 topics live"). */}
       <span className="text-xs text-text-muted">
-        Next recording captures{' '}
+        {t('nextRecordingCaptures')}{' '}
         {machine.selection.customized
-          ? `${machine.selection.count} selected topic${machine.selection.count === 1 ? '' : 's'}`
+          ? t('selectedTopicCount', { count: machine.selection.count })
           : machine.selection.topics === 'all'
-            ? 'all topics'
-            : `${machine.selection.count} configured topics`}
+            ? t('allTopics')
+            : t('configuredTopicCount', { count: machine.selection.count })}
         {/* Server-reported pre-armed (two-phase start): the recorder is
             spawned + subscribed, so this Start is a near-instant resume.
             Shown only when the recorder actually says so. */}
@@ -73,7 +77,7 @@ export function ReadyCard({
             className="ml-1.5 inline-flex items-center gap-1 font-medium text-accent"
           >
             <span className="inline-block h-1.5 w-1.5 rounded-full bg-accent" />
-            pre-armed · instant start
+            {t('preArmedInstantStart')}
           </span>
         )}
       </span>
@@ -85,8 +89,7 @@ export function ReadyCard({
           data-testid="prearm-degraded-note"
           className="text-xs font-medium text-status-warning-text"
         >
-          Pre-arm is failing — Start will do a full (slower) start.{' '}
-          {machine.preArmDegraded}
+          {t('preArmDegradedBefore')} {machine.preArmDegraded}
         </span>
       )}
       <button
@@ -131,7 +134,7 @@ export function ReadyCard({
         )}
       >
         <span className="h-2.5 w-2.5 rounded-full bg-surface" />
-        Start recording
+        {t('startRecording')}
         <span className="text-[11px] font-medium opacity-70">· R</span>
       </button>
       {machine.noSelection && (
@@ -140,7 +143,7 @@ export function ReadyCard({
           data-testid="no-selection-note"
           className="text-[11px] font-medium text-status-warning-text"
         >
-          Every topic is cleared — select at least one in Monitor to record.
+          {t('noTopicsSelected')}
         </span>
       )}
       {machine.operatorMissing && (
@@ -149,11 +152,11 @@ export function ReadyCard({
           data-testid="operator-gate-note"
           className="text-[11px] font-medium text-status-warning-text"
         >
-          {OPERATOR_GATE_HINT}
+          {t('operatorGateHint')}
         </span>
       )}
       {machine.startError && (
-        <MachineErrorBanner label="Start failed" error={machine.startError} />
+        <MachineErrorBanner label={t('startFailed')} error={machine.startError} />
       )}
     </Card>
   );

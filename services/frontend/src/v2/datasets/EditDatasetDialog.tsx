@@ -19,11 +19,13 @@
 // one the screen can state as fact from the list, so `gone` stands Save down.
 
 import { Button, Modal } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { DatasetGoneNote } from './SelectionGone';
 import type { DatasetsState } from './useDatasetsState';
 
 export function EditDatasetDialog({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation(['datasets', 'common', 'collect']);
   // Deleted underneath the form. This dialog is not destructive, but it is the
   // fourth door onto the same row and it now outlives that row's disappearance
   // like the other three (DatasetCenter.tsx), so it owes the same answer: say
@@ -33,7 +35,7 @@ export function EditDatasetDialog({ state }: { state: DatasetsState }) {
     <Modal
       open={state.editOpen}
       onClose={state.cancelEdit}
-      title="Edit dataset labels"
+      title={t('datasets:editDatasetLabels')}
       footer={
         <>
           <Button
@@ -42,7 +44,7 @@ export function EditDatasetDialog({ state }: { state: DatasetsState }) {
             disabled={state.editing}
             data-testid="edit-dataset-cancel"
           >
-            {gone ? 'Close' : 'Cancel'}
+            {gone ? t('common:actions.close') : t('common:actions.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -50,14 +52,17 @@ export function EditDatasetDialog({ state }: { state: DatasetsState }) {
             disabled={state.editing || gone || state.editName.trim() === ''}
             data-testid="edit-dataset-submit"
           >
-            {state.editing ? 'Saving…' : 'Save labels'}
+            {state.editing ? t('collect:saving') : t('datasets:saveLabels')}
           </Button>
         </>
       }
     >
       {gone ? (
         <div data-testid="edit-dataset-dialog" className="flex flex-col gap-3">
-          <DatasetGoneNote testId="edit-dataset-gone" datasetId={state.selectedDatasetId} />
+          <DatasetGoneNote
+            testId="edit-dataset-gone"
+            datasetId={state.selectedDatasetId}
+          />
           <p className="text-[12px] leading-relaxed text-text-muted">
             Nothing was renamed. The labels you typed are not saved anywhere.
           </p>
@@ -113,10 +118,10 @@ function EditForm({ state }: { state: DatasetsState }) {
         </label>
       </div>
       <p className="text-[11px] leading-relaxed text-text-muted">
-        Labels only: the members and their numbers do not change, and no
-        recording moves. Leave operator empty when several people recorded the
-        members — each recording keeps its own operator either way, and the
-        browsable views/ tree follows the new labels on its own.
+        Labels only: the members and their numbers do not change, and no recording
+        moves. Leave operator empty when several people recorded the members — each
+        recording keeps its own operator either way, and the browsable views/ tree
+        follows the new labels on its own.
       </p>
       {state.editError != null && <ErrorMessage error={state.editError} />}
     </div>

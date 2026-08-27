@@ -10,36 +10,26 @@
 
 import type { CaptureListItem, Quality, TaskResult } from '../api/types';
 import { Badge, type Tone } from '../components/ui';
+import { formatShortDate } from '../i18n/format';
+import { i18n } from '../i18n';
 import type { ReviewLane } from './review/types';
 
 // Presentation vocabulary is deliberately kept at the rendering boundary.
 // The rest of v2 carries the API's stable codes (`good`, `needs_review`, …).
-const QUALITY_LABEL: Record<Quality, string> = {
-  good: 'Good',
-  needs_review: 'Needs review',
-  not_usable: 'Not usable',
-};
-const TASK_RESULT_LABEL: Record<TaskResult, string> = {
-  success: 'Success',
-  failure: 'Failure',
-};
-
 export function qualityLabel(q: Quality | null | undefined): string | null {
-  return q ? QUALITY_LABEL[q] : null;
+  if (q === 'good') return i18n.t('common:status.good');
+  if (q === 'needs_review') return i18n.t('common:status.needsReview');
+  return q === 'not_usable' ? i18n.t('common:status.notUsable') : null;
 }
 export function taskResultLabel(t: TaskResult | null | undefined): string | null {
-  return t ? TASK_RESULT_LABEL[t] : null;
+  if (t === 'success') return i18n.t('common:status.success');
+  return t === 'failure' ? i18n.t('common:status.failure') : null;
 }
 
 const LANE_TONE: Record<ReviewLane, Tone> = {
   ready: 'green',
   needs_check: 'amber',
   excluded: 'red',
-};
-const LANE_LABEL: Record<ReviewLane, string> = {
-  ready: 'READY',
-  needs_check: 'NEEDS CHECK',
-  excluded: 'EXCLUDED',
 };
 
 /** Exception-review lane chip (READY / NEEDS CHECK / EXCLUDED) — the primary
@@ -48,7 +38,11 @@ export function LaneChip({ lane, testId }: { lane: ReviewLane; testId?: string }
   return (
     <span data-testid={testId} className="w-fit">
       <Badge tone={LANE_TONE[lane]} className="w-fit whitespace-nowrap">
-        {LANE_LABEL[lane]}
+        {lane === 'ready'
+          ? i18n.t('common:status.ready')
+          : lane === 'needs_check'
+            ? i18n.t('common:status.needsCheck')
+            : i18n.t('common:status.excluded')}
       </Badge>
     </span>
   );
@@ -79,7 +73,10 @@ export function TaskResultChip({
   reason?: string | null;
 }) {
   if (!task) return <span className="font-mono text-xs text-text-muted">—</span>;
-  const title = task === 'failure' && reason ? `Failure reason: ${reason}` : undefined;
+  const title =
+    task === 'failure' && reason
+      ? i18n.t('common:status.failureReason', { reason })
+      : undefined;
   return (
     <span title={title} className="w-fit">
       <Badge
@@ -102,10 +99,7 @@ export function formatBatchLabel(
 ): string {
   if (batchSeq == null) return fallback;
   const d = isoDate ? new Date(isoDate) : null;
-  const datePart =
-    d && !Number.isNaN(d.getTime())
-      ? `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} · `
-      : '';
+  const datePart = d && !Number.isNaN(d.getTime()) ? `${formatShortDate(d)} · ` : '';
   return `${datePart}#${batchSeq}`;
 }
 

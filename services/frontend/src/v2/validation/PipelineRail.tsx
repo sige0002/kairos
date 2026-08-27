@@ -4,6 +4,7 @@
 // only facts the server reports: the pipeline id and description. Lifecycle is
 // deliberately absent until the backend owns that state.
 import { Card, cn } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import type { PipelineInfo } from '../../api/types';
 
 export function PipelineRail({
@@ -15,17 +16,18 @@ export function PipelineRail({
   selectedIndex: number;
   onSelect: (index: number) => void;
 }) {
+  const { t } = useTranslation('validation');
   return (
     <Card className="flex min-h-0 flex-col overflow-auto">
       <div className="flex items-center gap-2.5 border-b border-border px-4 py-[13px]">
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          Pipelines
+          {t('pipelines')}
         </h2>
       </div>
       <div className="flex flex-col gap-[7px] p-3">
         {pipelines.length === 0 && (
           <p className="px-1 py-2 text-[11.5px] text-text-muted">
-            No pipelines available.
+            {t('noPipelinesAvailable')}
           </p>
         )}
         {pipelines.map((p, i) => {
@@ -63,8 +65,7 @@ export function PipelineRail({
         })}
       </div>
       <div className="border-t border-border px-4 py-[11px] text-[11.5px] leading-relaxed text-text-muted">
-        This list shows pipelines enabled by the server. Lifecycle and promotion are not
-        configured in this console.
+        {t('pipelineNote')}
       </div>
     </Card>
   );

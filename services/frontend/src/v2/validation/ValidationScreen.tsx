@@ -15,6 +15,7 @@
 // dataset has no directory to aim a job at (§6), so there is no second kind of
 // target — a dataset's captures are validated as the captures they are.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   useMutation,
   useQuery,
@@ -161,6 +162,7 @@ function clientRunState(job: ValidationRun['jobs'][number]): JobProbeUpdate {
 }
 
 export function ValidationScreen() {
+  const { t } = useTranslation('validation');
   const queryClient = useQueryClient();
   // Null until the operator picks one, so a screen that has not been chosen
   // for can defer to the run in progress (see selectedIndex below).
@@ -794,14 +796,14 @@ export function ValidationScreen() {
   if (!selectedPipeline) {
     return (
       <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[290px_1fr]">
-        <ScreenTitle>Validation</ScreenTitle>
+        <ScreenTitle>{t('title')}</ScreenTitle>
         <PipelineRail
           pipelines={pipelines}
           selectedIndex={0}
           onSelect={selectPipeline}
         />
         <Card className="flex items-center justify-center p-8 text-sm text-text-muted">
-          {pipelinesQuery.isPending ? 'Loading pipelines…' : 'No enabled pipelines.'}
+          {pipelinesQuery.isPending ? t('loading') : t('noEnabledPipelines')}
         </Card>
       </div>
     );
@@ -809,7 +811,7 @@ export function ValidationScreen() {
 
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[290px_1fr]">
-      <ScreenTitle>Validation</ScreenTitle>
+      <ScreenTitle>{t('title')}</ScreenTitle>
       <PipelineRail
         pipelines={pipelines}
         selectedIndex={selectedIndex}
@@ -875,10 +877,8 @@ export function ValidationScreen() {
                 data-testid="validation-run-unavailable"
                 className="flex flex-col gap-2 border-status-warning-border bg-status-warning-bg p-4 text-sm text-status-warning-text"
               >
-                <span className="font-semibold">Run not available</span>
-                <span>
-                  Jobs were not assumed. Select an active run or start a new one.
-                </span>
+                <span className="font-semibold">{t('runNotAvailable')}</span>
+                <span>{t('runNotAvailableHelp')}</span>
                 <button
                   type="button"
                   onClick={() => {
@@ -891,7 +891,7 @@ export function ValidationScreen() {
                   }}
                   className="self-start text-xs font-semibold underline"
                 >
-                  Clear unavailable run
+                  {t('clearUnavailableRun')}
                 </button>
               </Card>
             </div>

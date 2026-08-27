@@ -1,15 +1,16 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
 
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { expect, test, vi } from 'vitest';
+import { renderWithClient } from '../../test/renderWithClient';
 import { RecordingSoundControl } from './RecordingSoundControl';
 
 test('sound settings explain the three cues and expose opt-in controls', () => {
   const setEnabled = vi.fn();
   const setVolume = vi.fn();
   const preview = vi.fn();
-  render(
+  renderWithClient(
     <RecordingSoundControl
       open
       onToggle={vi.fn()}
@@ -39,7 +40,7 @@ test('sound settings explain the three cues and expose opt-in controls', () => {
 test('enabled settings can preview cues and change volume', () => {
   const setVolume = vi.fn();
   const preview = vi.fn();
-  render(
+  renderWithClient(
     <RecordingSoundControl
       open
       onToggle={vi.fn()}
@@ -71,7 +72,7 @@ test('the dialog takes focus, closes with Escape and returns focus', () => {
     setVolume: vi.fn(),
     preview: vi.fn(),
   };
-  const { rerender } = render(
+  const { rerender } = renderWithClient(
     <RecordingSoundControl open settings={settings} onToggle={onToggle} />,
   );
 
@@ -93,7 +94,7 @@ test('blocked and unsupported playback are not presented as sound-on', () => {
     setVolume: vi.fn(),
     preview: vi.fn(),
   };
-  const { rerender } = render(
+  const { rerender } = renderWithClient(
     <RecordingSoundControl
       open={false}
       onToggle={vi.fn()}
@@ -135,7 +136,7 @@ test('an external overlay close does not steal focus back to the speaker', () =>
       <RecordingSoundControl open={open} settings={settings} onToggle={vi.fn()} />
     </>
   );
-  const { rerender } = render(view(true));
+  const { rerender } = renderWithClient(view(true));
   const other = screen.getByRole('button', { name: 'Other control' });
   other.focus();
 

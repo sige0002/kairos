@@ -18,6 +18,7 @@ import type { StreamFailure } from '../../features/stream/useWebRtcStream';
 import type { MonitorRow } from '../../features/monitor/useMonitorRows';
 import { matchesTopic } from '../../features/record/topics';
 import { toAlertRows, type AlertRow } from '../monitor/alerts';
+import { i18n } from '../../i18n';
 
 /**
  * The firing alert rows the Collect card shows, restricted to the topics this
@@ -64,31 +65,33 @@ export interface ArmingWarning {
  * Returns null when every target is matched.
  */
 export function armingWarning(arming: RecordArming | null): ArmingWarning | null {
+  const t = i18n.getFixedT(i18n.language, 'collect');
   const missing = arming?.missing_topics ?? [];
   const unsubscribed = arming?.unsubscribed_topics ?? [];
   const topics = [...missing, ...unsubscribed];
   if (topics.length === 0) return null;
   const n = topics.length;
-  const plural = n === 1 ? '' : 's';
   if (unsubscribed.length === 0) {
     return {
       topics,
-      title: `${n} target topic${plural} not publishing`,
-      detail: "Recording continues, but these won't be captured until they appear.",
+      title: t('armingTopicsNotPublishing', { count: n }),
+      detail: t('armingTopicsNotPublishingDetail'),
     };
   }
   if (missing.length === 0) {
     return {
       topics,
-      title: `${n} target topic${plural} not subscribed yet`,
-      detail:
-        'These are publishing — the recorder has not subscribed yet (discovery).',
+      title: t('armingTopicsNotSubscribed', { count: n }),
+      detail: t('armingTopicsNotSubscribedDetail'),
     };
   }
   return {
     topics,
-    title: `${n} target topic${plural} not being captured`,
-    detail: `${missing.length} not publishing, ${unsubscribed.length} awaiting subscription.`,
+    title: t('armingTopicsNotCaptured', { count: n }),
+    detail: t('armingTopicsNotCapturedDetail', {
+      missing: String(missing.length),
+      unsubscribed: String(unsubscribed.length),
+    }),
   };
 }
 
@@ -301,11 +304,12 @@ export interface CameraSummary {
  *  diagnosis, and the three causes send the operator to three different places:
  *  the streamer service, the network, or this browser. */
 function streamFaultReason(fault: StreamFailure | 'mixed' | null): string | null {
+  const t = i18n.getFixedT(i18n.language, 'collect');
   if (fault === null) return null;
-  if (fault === 'mixed') return 'more than one reason';
-  if (fault === 'signaling') return 'the streamer did not answer';
-  if (fault === 'peer') return 'the network connection dropped';
-  return 'this browser has no WebRTC';
+  if (fault === 'mixed') return t('streamFaultMixed');
+  if (fault === 'signaling') return t('streamFaultSignaling');
+  if (fault === 'peer') return t('streamFaultPeer');
+  return t('streamFaultUnsupported');
 }
 
 /**
@@ -324,6 +328,7 @@ function streamFaultReason(fault: StreamFailure | 'mixed' | null): string | null
  * stale-frame report from the main tile.
  */
 export function cameraSummary(input: CameraSummaryInput): CameraSummary {
+  const t = i18n.getFixedT(i18n.language, 'collect');
   const {
     totalCameras,
     streamsDown,
@@ -332,29 +337,33 @@ export function cameraSummary(input: CameraSummaryInput): CameraSummary {
     unmonitoredTopics,
     framesStale,
   } = input;
-  if (totalCameras === 0) return { value: 'none open', chip: '—', tone: 'gray' };
-  const gap = unmonitoredTopics > 0 ? ` · ${unmonitoredTopics} not monitored` : '';
+  if (totalCameras === 0)
+    return { value: t('camerasNoneOpen'), chip: '—', tone: 'gray' };
+  const gap =
+    unmonitoredTopics > 0 ? t('camerasNotMonitored', { count: unmonitoredTopics }) : '';
 
   if (silentTopics > 0) {
     return {
-      value: `${silentTopics} of ${totalCameras} cameras: topic silent${gap}`,
-      chip: 'CHECK',
+      value: t('camerasTopicSilent', {
+        affected: String(silentTopics),
+        total: String(totalCameras),
+        coverage: String(gap),
+      }),
+      chip: t('statusCheck'),
       tone: 'amber',
     };
   }
   if (streamsDown > 0) {
     const reason = streamFaultReason(input.streamFault);
     return {
-      value:
-        `${streamsDown} of ${totalCameras} cameras: no video` +
-        (reason ? ` — ${reason}` : '') +
-        gap,
-      title:
-        'Each camera negotiates its own stream, so this counts every pane, not ' +
-        'just the main one. The reason comes from where the connection failed: ' +
-        'the streamer not answering is a service to restart, a dropped ' +
-        'connection is the network between here and it.',
-      chip: 'CHECK',
+      value: t('camerasNoVideo', {
+        affected: String(streamsDown),
+        total: String(totalCameras),
+        reason: reason ? ` — ${reason}` : '',
+        coverage: String(gap),
+      }),
+      title: t('camerasNoVideoTitle'),
+      chip: t('statusCheck'),
       tone: 'amber',
     };
   }
@@ -366,38 +375,39 @@ export function cameraSummary(input: CameraSummaryInput): CameraSummary {
   // diagnosis, which is the rule the mixed-cause case already follows.
   if (streamsNoVideo > 0) {
     return {
-      value: `${streamsNoVideo} of ${totalCameras} cameras: no video — still connecting${gap}`,
-      title:
-        'These panes have been negotiating longer than connecting normally ' +
-        'takes and have never carried a frame. Why is not established yet: ' +
-        'the streamer answered, and the connection has not reported a failure ' +
-        '— it simply has not delivered video.',
-      chip: 'CHECK',
+      value: t('camerasNoVideoConnecting', {
+        affected: String(streamsNoVideo),
+        total: String(totalCameras),
+        coverage: String(gap),
+      }),
+      title: t('camerasConnectingTitle'),
+      chip: t('statusCheck'),
       tone: 'amber',
     };
   }
   if (framesStale) {
     return {
-      value: `main stream: no frames${gap}`,
-      chip: 'CHECK',
+      value: t('camerasMainNoFrames', { coverage: gap }),
+      chip: t('statusCheck'),
       tone: 'amber',
     };
   }
   if (unmonitoredTopics > 0) {
     const known = totalCameras - unmonitoredTopics;
     return {
-      value: `${known} of ${totalCameras} cameras OK${gap}`,
-      title:
-        'These panes are outside the monitored set, so nothing measures ' +
-        'whether their source topics are still publishing. The preview keeps ' +
-        'showing frames either way.',
+      value: t('camerasCoverageGap', {
+        known: String(known),
+        total: String(totalCameras),
+        coverage: String(gap),
+      }),
+      title: t('camerasCoverageTitle'),
       chip: '—',
       tone: 'gray',
     };
   }
   return {
-    value: `${totalCameras} camera${totalCameras === 1 ? '' : 's'} OK`,
-    chip: 'OK',
+    value: t('camerasOk', { count: totalCameras }),
+    chip: t('statusOk'),
     tone: 'green',
   };
 }

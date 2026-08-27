@@ -19,7 +19,9 @@
 // to convey about an imported bag: that the blank is yours to fill in.
 
 import { Fragment, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '../../components/ui';
+import { i18n } from '../../i18n';
 import type { CaptureConditionView } from '../captures/recordingCondition';
 
 export interface CaptureLabels {
@@ -37,11 +39,11 @@ export interface LabelEditing {
   saving: boolean;
 }
 
-const FIELDS: { key: keyof CaptureLabels; label: string; placeholder: string }[] = [
-  { key: 'operator', label: 'Operator', placeholder: 'Set operator…' },
-  { key: 'task', label: 'Task', placeholder: 'Set task…' },
-  { key: 'robot', label: 'Robot', placeholder: 'Set robot…' },
-];
+const FIELDS = [
+  { key: 'operator', placeholder: 'setOperator' },
+  { key: 'task', placeholder: 'setTask' },
+  { key: 'robot', placeholder: 'setRobot' },
+] as const;
 
 /** Trimmed, or null when nothing is left. Null is the contract's "clear it",
  *  which returns the field to whatever the manifest said; an empty string
@@ -55,10 +57,10 @@ export function displayCondition(
   condition: string | null,
   status: CaptureConditionView['status'] | undefined,
 ): string {
-  if (status === 'loading') return 'Loading…';
-  if (status === 'unavailable') return 'Unavailable';
-  if (status === 'not-recorded') return 'Not recorded';
-  return condition ?? 'Not recorded';
+  if (status === 'loading') return i18n.t('review:loading');
+  if (status === 'unavailable') return i18n.t('review:unavailable');
+  if (status === 'not-recorded') return i18n.t('review:notRecorded');
+  return condition ?? i18n.t('review:notRecorded');
 }
 
 export function LabelRows({
@@ -73,6 +75,7 @@ export function LabelRows({
   conditionStatus?: CaptureConditionView['status'];
   editing: LabelEditing;
 }) {
+  const { t } = useTranslation('review');
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<Record<keyof CaptureLabels, string>>({
     operator: '',
@@ -117,19 +120,19 @@ export function LabelRows({
           const value = values[field.key];
           return (
             <Fragment key={field.key}>
-              <RowFrame label={field.label}>
+              <RowFrame label={t(field.key)}>
                 <button
                   type="button"
                   data-testid={`label-edit-${field.key}`}
                   onClick={startEditing}
-                  title="Edit operator, task and robot"
+                  title={t('editCaptureLabels')}
                   className={cn(
                     'group inline-flex items-center gap-1.5 rounded-[5px] px-1 py-0.5 text-left hover:bg-surface-muted',
                     value ? 'text-text-primary' : 'text-text-muted',
                   )}
                 >
                   <span className={cn(!value && 'italic')}>
-                    {value || field.placeholder}
+                    {value || t(field.placeholder)}
                   </span>
                   <span
                     aria-hidden="true"
@@ -140,7 +143,7 @@ export function LabelRows({
                 </button>
               </RowFrame>
               {field.key === 'task' && (
-                <RowFrame label="Condition">
+                <RowFrame label={t('inspectionCondition')}>
                   <span data-testid="review-condition">{displayedCondition}</span>
                 </RowFrame>
               )}
@@ -155,13 +158,13 @@ export function LabelRows({
     <>
       {FIELDS.map((field) => (
         <Fragment key={field.key}>
-          <RowFrame label={field.label}>
+          <RowFrame label={t(field.key)}>
             <input
               type="text"
               data-testid={`label-input-${field.key}`}
-              aria-label={field.label}
+              aria-label={t(field.key)}
               value={draft[field.key]}
-              placeholder={field.placeholder}
+              placeholder={t(field.placeholder)}
               disabled={editing.saving}
               onChange={(e) =>
                 setDraft((cur) => ({ ...cur, [field.key]: e.target.value }))
@@ -170,7 +173,7 @@ export function LabelRows({
             />
           </RowFrame>
           {field.key === 'task' && (
-            <RowFrame label="Condition">
+            <RowFrame label={t('inspectionCondition')}>
               <span data-testid="review-condition">{displayedCondition}</span>
             </RowFrame>
           )}
@@ -195,7 +198,7 @@ export function LabelRows({
             disabled={editing.saving}
             className="h-8 rounded-control bg-accent px-3 text-[12px] font-bold text-text-inverse hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {editing.saving ? 'Saving…' : 'Save labels'}
+            {editing.saving ? t('saving') : t('saveLabels')}
           </button>
           <button
             type="button"
@@ -204,12 +207,11 @@ export function LabelRows({
             disabled={editing.saving}
             className="h-8 rounded-control border border-border bg-surface px-3 text-[12px] font-semibold text-text-secondary hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
-            Cancel
+            {t('cancel')}
           </button>
         </div>
         <span className="text-[11px] leading-snug text-text-muted">
-          Clearing a field returns it to whatever the recording&apos;s own manifest
-          said.
+          {t('clearLabelHelp')}
         </span>
       </dd>
     </>

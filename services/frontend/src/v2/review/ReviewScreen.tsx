@@ -10,6 +10,7 @@
 // deployments — gated behind captures/splitMode.ts, off by default.
 
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useQueryClient } from '@tanstack/react-query';
 import { queryKeys } from '../../api/queryKeys';
 import { Button, Modal, cn } from '../../components/ui';
@@ -36,6 +37,7 @@ const GRID_EXPANDED = 'lg:grid-cols-[216px_minmax(580px,0.8fr)_minmax(400px,1.2f
 const GRID_COLLAPSED = 'lg:grid-cols-[44px_minmax(580px,0.8fr)_minmax(400px,1.2fr)]';
 
 export function ReviewScreen() {
+  const { t } = useTranslation(['common', 'review']);
   const rv = useReviewState();
   // §12 disclosure for the removal dialogs, failed SAFE: while the split
   // probe is unanswered or failing this stays true (the note shows), and only
@@ -68,11 +70,13 @@ export function ReviewScreen() {
 
   return (
     <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
-      <ScreenTitle>Review</ScreenTitle>
+      <ScreenTitle>{t('review:title')}</ScreenTitle>
       <div className="flex flex-wrap items-center gap-2.5">
         <p data-testid="review-page-scope" className="text-xs text-text-muted">
-          Page scope: {rv.rows.length} shown of {rv.serverTotal} matching. Lane and bulk
-          actions apply only to this page.
+          {t('review:pageScope', {
+            shown: String(rv.rows.length),
+            total: String(rv.serverTotal),
+          })}
         </p>
         <div className="flex-1" />
         <div className="flex items-center gap-1">
@@ -83,7 +87,7 @@ export function ReviewScreen() {
             onClick={rv.previousPage}
             className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12.5px] font-semibold text-text-secondary disabled:cursor-not-allowed disabled:text-text-muted"
           >
-            Previous
+            {t('common:actions.previous')}
           </button>
           <button
             type="button"
@@ -92,7 +96,7 @@ export function ReviewScreen() {
             onClick={rv.nextPage}
             className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12.5px] font-semibold text-text-secondary disabled:cursor-not-allowed disabled:text-text-muted"
           >
-            Next
+            {t('common:actions.next')}
           </button>
         </div>
         <button
@@ -101,7 +105,7 @@ export function ReviewScreen() {
           onClick={() => setImportOpen(true)}
           className="rounded-control border border-border bg-surface px-3 py-1.5 text-[12.5px] font-semibold text-text-primary hover:bg-surface-muted"
         >
-          ↧ Import bags…
+          ↧ {t('review:importBags')}
         </button>
       </div>
       <ImportBagsDialog
@@ -140,7 +144,7 @@ export function ReviewScreen() {
             {conflict.current && (
               <>
                 {' '}
-                It is now{' '}
+                {t('review:conflictItIsNow')}{' '}
                 <strong data-testid="review-conflict-current">
                   {conflict.current.review_status}
                   {conflict.current.quality
@@ -156,7 +160,7 @@ export function ReviewScreen() {
             data-testid="review-conflict-dismiss"
             onClick={rv.reviewSave.dismissConflict}
           >
-            Dismiss
+            {t('common:actions.dismiss')}
           </Button>
         </div>
       )}
@@ -171,7 +175,7 @@ export function ReviewScreen() {
           className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-status-danger-border bg-status-danger-bg px-3 py-2 text-sm text-status-danger-text"
         >
           <span>
-            <strong>Not saved.</strong>{' '}
+            <strong>{t('review:notSaved')}</strong>{' '}
             {failureCaptureId && (
               <>
                 <strong data-testid="review-save-failure-subject">
@@ -187,7 +191,7 @@ export function ReviewScreen() {
             data-testid="review-save-failure-dismiss"
             onClick={rv.reviewSave.dismissFailure}
           >
-            Dismiss
+            {t('common:actions.dismiss')}
           </Button>
         </div>
       )}
@@ -201,39 +205,39 @@ export function ReviewScreen() {
           {rv.retentionFilterActive ? (
             <>
               <span data-testid="review-retention-message">
-                Showing {rv.retentionCandidateCount} recording
-                {rv.retentionCandidateCount === 1 ? '' : 's'} older than{' '}
-                {rv.retentionDays} days (
-                <span className="font-mono">{formatBytes(rv.retentionTotalBytes)}</span>
-                ).
+                {t('review:retentionShowing', {
+                  count: rv.retentionCandidateCount,
+                  days: String(rv.retentionDays),
+                  bytes: formatBytes(rv.retentionTotalBytes),
+                })}
               </span>
               <Button
                 variant="ghost"
                 data-testid="review-retention-show-all"
                 onClick={rv.clearRetentionFilter}
               >
-                Show all
+                {t('common:actions.showAll')}
               </Button>
             </>
           ) : (
             <>
               <span data-testid="review-retention-message">
-                {rv.retentionCandidateCount} recording
-                {rv.retentionCandidateCount === 1 ? '' : 's'} older than{' '}
-                {rv.retentionDays} days (
-                <span className="font-mono">{formatBytes(rv.retentionTotalBytes)}</span>
-                ) — review and remove what you no longer need.
+                {t('review:retentionReview', {
+                  count: rv.retentionCandidateCount,
+                  days: String(rv.retentionDays),
+                  bytes: formatBytes(rv.retentionTotalBytes),
+                })}
               </span>
               <div className="flex items-center gap-1.5">
                 <Button
                   data-testid="review-retention-review"
                   onClick={rv.applyRetentionFilter}
                 >
-                  Review these ({rv.retentionCandidateCount})
+                  {t('review:reviewThese', { count: rv.retentionCandidateCount })}
                 </Button>
                 <button
                   type="button"
-                  aria-label="Dismiss retention notice"
+                  aria-label={t('review:dismissRetentionNotice')}
                   data-testid="review-retention-dismiss"
                   className="rounded-control px-1.5 text-lg leading-none text-status-warning-text hover:bg-status-warning-bg"
                   onClick={rv.dismissRetentionBanner}
@@ -322,7 +326,11 @@ export function ReviewScreen() {
       <Modal
         open={rv.excludeBatchOpen}
         onClose={rv.cancelExcludeBatch}
-        title={`Exclude batch ${rv.batchFilterLabel ?? ''} — ${rv.batchExcludable.length} episode${rv.batchExcludable.length === 1 ? '' : 's'}?`}
+        title={t('review:excludeBatchTitle', {
+          batch: rv.batchFilterLabel ?? '',
+          count: rv.batchExcludable.length,
+          plural: rv.batchExcludable.length === 1 ? '' : 's',
+        })}
         footer={
           <>
             <Button
@@ -331,8 +339,8 @@ export function ReviewScreen() {
               disabled={rv.excludeBatchRunning}
             >
               {rv.excludeBatchFailures.length > 0 && !rv.excludeBatchRunning
-                ? 'Close'
-                : 'Cancel'}
+                ? t('common:actions.close')
+                : t('common:actions.cancel')}
             </Button>
             <Button
               variant="danger"
@@ -341,18 +349,16 @@ export function ReviewScreen() {
               disabled={rv.excludeBatchRunning || rv.batchExcludable.length === 0}
             >
               {rv.excludeBatchRunning
-                ? `Excluding… (${rv.excludeBatchDone}/${rv.batchExcludable.length})`
-                : `Exclude ${rv.batchExcludable.length}`}
+                ? t('review:excluding', {
+                    done: String(rv.excludeBatchDone),
+                    total: String(rv.batchExcludable.length),
+                  })
+                : t('review:excludeCount', { count: rv.batchExcludable.length })}
             </Button>
           </>
         }
       >
-        <p>
-          Marks every not-yet-excluded episode of this batch{' '}
-          <strong>Not usable · Excluded</strong> — e.g. after a failed batch validation.
-          The recordings are <strong>kept on disk</strong> and this is reversible (↺
-          Return batch, or per episode).
-        </p>
+        <p>{t('review:excludeBatchDescription')}</p>
         <ul
           data-testid="review-exclude-batch-list"
           className="mt-2 max-h-48 overflow-auto rounded-control border border-border text-xs"
@@ -370,8 +376,11 @@ export function ReviewScreen() {
                   {episodeLabel(r.ep)} · {r.runId ?? r.captureId}
                 </span>
                 {failure ? (
-                  <span className="shrink-0 text-status-danger-text" title={failure.error}>
-                    failed
+                  <span
+                    className="shrink-0 text-status-danger-text"
+                    title={failure.error}
+                  >
+                    {t('review:failed')}
                   </span>
                 ) : (
                   <span className="shrink-0 font-mono text-text-muted">

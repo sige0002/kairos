@@ -4,11 +4,13 @@
 // offers the way back.
 
 import { Card, cn } from '../../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { CARD_PAD } from '../compact';
 import type { BatchMachine } from '../useBatchMachine';
 import { CARD_GAP_COMPACT } from './shared';
 
 export function PausedCard({ machine }: { machine: BatchMachine }) {
+  const { t } = useTranslation('collect');
   return (
     <Card
       className={cn(
@@ -20,7 +22,7 @@ export function PausedCard({ machine }: { machine: BatchMachine }) {
       <div className="flex items-center gap-2">
         <span className="h-[9px] w-[9px] rounded-sm bg-text-disabled" />
         <h2 data-testid="phase-title" className="text-[17px] font-bold text-text-muted">
-          PAUSED
+          {t('paused')}
         </h2>
       </div>
       <span className="text-[12.5px] text-text-muted">
@@ -31,7 +33,7 @@ export function PausedCard({ machine }: { machine: BatchMachine }) {
         onClick={machine.resumeBatch}
         className="h-[46px] rounded-control bg-accent text-sm font-bold text-text-inverse hover:bg-accent-strong"
       >
-        Resume set
+        {t('resumeSet')}
       </button>
     </Card>
   );

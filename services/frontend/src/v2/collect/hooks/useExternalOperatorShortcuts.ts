@@ -11,6 +11,7 @@
 // allowed simply has nothing to dispatch.
 
 import { useEffect, useRef } from 'react';
+import { i18n } from '../../../i18n';
 import {
   externalActionSlotForCode,
   externalActionSlotForEvent,
@@ -124,8 +125,12 @@ export function useExternalOperatorShortcuts({
           // Visible feedback, no save, no silent fallback (#36 / #37).
           const name = taskNameRef.current;
           actions.showToast(
-            `${slot.toUpperCase()} is unassigned${name ? ` for ${name}` : ''} — ` +
-              'set the failure shortcut in Settings → Projects & tasks. Nothing was saved.',
+            i18n.t('collect:externalUnassignedToast', {
+              slot: slot.toUpperCase(),
+              task: name
+                ? i18n.t('collect:externalUnassignedTask', { task: name })
+                : '',
+            }),
           );
           break;
         }

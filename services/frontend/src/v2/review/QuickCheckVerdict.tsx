@@ -9,8 +9,10 @@
 
 import type { QuickCheck } from '../../api/types';
 import { Badge } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 
 export function QuickCheckVerdict({ quickCheck }: { quickCheck?: QuickCheck | null }) {
+  const { t } = useTranslation('review');
   if (!quickCheck) return null;
   const { verdict, layer0, layer1 } = quickCheck;
   const quality = verdict?.quality;
@@ -27,11 +29,11 @@ export function QuickCheckVerdict({ quickCheck }: { quickCheck?: QuickCheck | nu
     >
       <div className="flex items-center gap-2">
         <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          Quick check
+          {t('quickCheck')}
         </h3>
         {quality && (
           <Badge tone={quality === 'good' ? 'green' : 'amber'} dot>
-            {quality === 'good' ? 'GOOD' : 'NEEDS REVIEW'}
+            {quality === 'good' ? t('quickCheckGood') : t('quickCheckNeedsReview')}
           </Badge>
         )}
       </div>
@@ -48,7 +50,7 @@ export function QuickCheckVerdict({ quickCheck }: { quickCheck?: QuickCheck | nu
           ))}
         </ul>
       ) : quality === 'good' ? (
-        <span className="text-[11.5px] text-text-muted">No issues found.</span>
+        <span className="text-[11.5px] text-text-muted">{t('quickCheckNoIssues')}</span>
       ) : null}
 
       {(layer0Down || layer1Down) && (
@@ -56,10 +58,8 @@ export function QuickCheckVerdict({ quickCheck }: { quickCheck?: QuickCheck | nu
           data-testid="review-quick-check-unavailable"
           className="flex flex-col gap-0.5 text-[11px] text-text-muted"
         >
-          {layer0Down && <span>Monitor data unavailable at stop.</span>}
-          {layer1Down && (
-            <span>Bag summary missing — recording may have ended uncleanly.</span>
-          )}
+          {layer0Down && <span>{t('quickCheckMonitorUnavailable')}</span>}
+          {layer1Down && <span>{t('quickCheckBagSummaryMissing')}</span>}
         </div>
       )}
     </section>

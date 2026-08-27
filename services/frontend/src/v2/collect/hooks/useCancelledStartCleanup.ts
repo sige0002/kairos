@@ -62,6 +62,7 @@ import {
 } from '../../../api/types';
 import { captureErrorText, readCaptureError } from '../../captures/errors';
 import { CANCELLED_START_DISCARD_REASON } from '../machine/types';
+import { i18n } from '../../../i18n';
 
 /** How long to keep re-offering a discard that is refused with `capture_busy`.
  *  The holder we expect is the digest the stop just queued, and the digest of a
@@ -194,8 +195,8 @@ export function useCancelledStartCleanup({
         await queryClient.invalidateQueries({ queryKey: queryKeys.captures });
         onToast(
           stopFailed
-            ? 'Cancelled, but the recorder did not answer the stop — check Review for a leftover take'
-            : 'Cancelled — the recorder had already started, but named no capture to remove',
+            ? i18n.t('collect:cancelledStartStopUnanswered')
+            : i18n.t('collect:cancelledStartUnnamedCapture'),
         );
         return;
       }
@@ -214,7 +215,7 @@ export function useCancelledStartCleanup({
         onToast(captureErrorText(failure, 'delete'));
         return;
       }
-      onToast('Cancelled — the take the recorder had begun was discarded');
+      onToast(i18n.t('collect:cancelledStartDiscarded'));
     },
     [discardWithRetry, onToast, queryClient],
   );

@@ -13,6 +13,7 @@
 // the next Space press scrolls the page instead of reaching the flow.
 
 import { Card, cn } from '../../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { CARD_PAD } from '../compact';
 import type { BatchMachine } from '../useBatchMachine';
 import { ArmingNote } from './banners';
@@ -29,6 +30,7 @@ export function ArmingCard({
    *  the hand-off from this to the Cancel button. */
   titleRef: React.Ref<HTMLHeadingElement>;
 }) {
+  const { t } = useTranslation(['collect', 'common']);
   const armed = machine.canCancelArming;
   return (
     <Card
@@ -46,11 +48,11 @@ export function ArmingCard({
           tabIndex={-1}
           className="text-[17px] font-bold text-status-warning-text outline-none"
         >
-          ARMING…
+          {t('collect:arming')}
         </h2>
       </div>
       <span className="text-[12.5px] leading-relaxed text-status-warning-text">
-        Hold still. Recording starts automatically once the recorder confirms.
+        {t('collect:holdStill')}
       </span>
       <button
         ref={cancelRef}
@@ -63,7 +65,7 @@ export function ArmingCard({
           armed ? 'hover:bg-surface-muted' : 'cursor-not-allowed opacity-50',
         )}
       >
-        Cancel
+        {t('common:actions.cancel')}
       </button>
       {machine.arming && <ArmingNote arming={machine.arming} />}
     </Card>

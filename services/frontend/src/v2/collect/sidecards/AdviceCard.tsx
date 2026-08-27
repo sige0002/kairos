@@ -4,10 +4,12 @@
 // title says that it is static rather than implying episode-specific analysis.
 
 import { Card, cn } from '../../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { ADVICE_ITEMS, type BatchMachine } from '../useBatchMachine';
 import { SIDE_PAD } from '../compact';
 
 export function AdviceCard({ machine }: { machine: BatchMachine }) {
+  const { t } = useTranslation('collect');
   const advice = ADVICE_ITEMS[machine.adviceIdx] ?? ADVICE_ITEMS[0]!;
   const single = ADVICE_ITEMS.length <= 1;
   return (
@@ -19,7 +21,7 @@ export function AdviceCard({ machine }: { machine: BatchMachine }) {
     >
       <div className="flex items-center gap-2">
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          General tip · static guidance
+          {t('generalTipStatic')}
         </h2>
         <div className="flex-1" />
         {/* With one tip the pager is not a disabled control, it is a costume —
@@ -31,7 +33,7 @@ export function AdviceCard({ machine }: { machine: BatchMachine }) {
             <button
               type="button"
               onClick={machine.advicePrev}
-              aria-label="previous advice"
+              aria-label={t('previousAdvice')}
               className="flex h-[22px] w-[22px] items-center justify-center rounded-chip border border-border bg-surface text-[11px] text-text-muted"
             >
               ‹
@@ -42,7 +44,7 @@ export function AdviceCard({ machine }: { machine: BatchMachine }) {
             <button
               type="button"
               onClick={machine.adviceNext}
-              aria-label="next advice"
+              aria-label={t('nextAdvice')}
               className="flex h-[22px] w-[22px] items-center justify-center rounded-chip border border-border bg-surface text-[11px] text-text-muted"
             >
               ›

@@ -5,6 +5,7 @@
 // unchanged).
 
 import type { ReviewStatus } from '../../../api/types';
+import { i18n } from '../../../i18n';
 
 export type Phase =
   | 'ready'
@@ -76,20 +77,27 @@ export function describeTaskOutcome(
   pendingTask: 'ok' | 'fail' | null,
   failReason: string,
 ): string {
-  if (pendingTask === 'ok') return 'Success.';
+  const t = i18n.getFixedT(i18n.language, 'collect');
+  if (pendingTask === 'ok') return t('taskOutcomeSuccess');
   if (pendingTask === 'fail') {
     return failReason
-      ? `Failed — ${failReason.toLowerCase()}.`
-      : 'Failed — choose a reason below.';
+      ? t('taskOutcomeFailed', { reason: failReason })
+      : t('taskOutcomeChooseReason');
   }
   return '—';
 }
 
 /** Human labels for the effective quality shown on the result panel. */
 export const QUALITY_LABEL: Record<QualityOverride, string> = {
-  good: 'Good',
-  review: 'Needs review',
-  notusable: 'Not usable',
+  get good() {
+    return i18n.getFixedT(i18n.language, 'collect')('qualityLabelGood');
+  },
+  get review() {
+    return i18n.getFixedT(i18n.language, 'collect')('qualityLabelNeedsReview');
+  },
+  get notusable() {
+    return i18n.getFixedT(i18n.language, 'collect')('qualityNotUsable');
+  },
 };
 
 /**
@@ -155,11 +163,15 @@ export interface AdviceItem {
 // item, per the design decision (see the Collect task brief).
 export const ADVICE_ITEMS: AdviceItem[] = [
   {
-    badge: 'GENERAL',
-    title: 'Hold still for ~1 s before starting',
-    detail:
-      'The first second after Start stabilizes the initial state the model learns ' +
-      'from — a brief pause before moving improves this episode.',
+    get badge() {
+      return i18n.getFixedT(i18n.language, 'collect')('adviceGeneral');
+    },
+    get title() {
+      return i18n.getFixedT(i18n.language, 'collect')('adviceTitle');
+    },
+    get detail() {
+      return i18n.getFixedT(i18n.language, 'collect')('adviceDetail');
+    },
   },
 ];
 
@@ -199,20 +211,3 @@ export const COLLECT_UNSAVED_DISCARD_REASON =
 // so the sub-second bag it wrote is discarded rather than left in the catalog
 // as a take nobody meant to make (#8). The ledger says which gesture it was.
 export const CANCELLED_START_DISCARD_REASON = 'Start cancelled during arming (Collect)';
-
-/**
- * Why Start is refused when nobody has said who is recording (#11).
- *
- * One string for two surfaces — the note under the disabled Start button, and
- * the toast when the R shortcut walks around that button — because a gate the
- * operator meets on their very first visit cannot afford two different
- * accounts of itself.
- *
- * Written for someone who has never seen this console: the condition first (so
- * it reads as a state, not a scolding), then the control BY THE LABEL PRINTED
- * ON IT, then why it is worth the extra step. "OP" is what the chip in the
- * header actually says while empty, so pointing at it needs no jargon.
- */
-export const OPERATOR_GATE_HINT =
-  'No name set yet — click OP at the top right to add yours. ' +
-  'Every recording has to say who made it.';

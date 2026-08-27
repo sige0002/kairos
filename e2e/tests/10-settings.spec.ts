@@ -185,22 +185,22 @@ test("Settings: changing language leaves an active Collect recording alone", asy
     // Tab IDs are semantic navigation identities, so the return path does not
     // depend on translated display text.
     await page.locator("#tab-collect").click();
-    await expect(phaseTitle(page)).toHaveText("RECORDING");
+    await expect(phaseTitle(page)).toHaveText("録画中");
     await expect.poll(() => elapsedSeconds(page), { timeout: 60_000 }).toBeGreaterThanOrEqual(2);
     expect((await api.allCaptures(true)).map((capture) => capture.capture_id)).toContain(captureId);
     expect(recordRequests, "returning from Settings sent a recorder command").toEqual(
       commandsBeforeLanguage,
     );
 
-    await page.getByRole("button", { name: /Stop recording/ }).click();
-    await expect(phaseTitle(page)).toHaveText(/result$/, { timeout: 180_000 });
+    await page.getByRole("button", { name: "録画を停止" }).click();
+    await expect(phaseTitle(page)).toHaveText(/結果$/, { timeout: 180_000 });
     recordingStarted = false;
     await page.getByTestId("save-episode").click();
-    await expect(phaseTitle(page)).not.toHaveText(/result$/, { timeout: 60_000 });
+    await expect(phaseTitle(page)).not.toHaveText(/結果$/, { timeout: 60_000 });
     expect(recordRequests.filter((path) => path.endsWith("/stop"))).toHaveLength(1);
   } finally {
-    if (recordingStarted && (await page.getByRole("button", { name: /Stop recording/ }).count())) {
-      await page.getByRole("button", { name: /Stop recording/ }).click();
+    if (recordingStarted && (await page.getByRole("button", { name: "録画を停止" }).count())) {
+      await page.getByRole("button", { name: "録画を停止" }).click();
     }
     await page.locator("#tab-settings").click();
     await page.getByTestId("settings-menu-item-language").click();

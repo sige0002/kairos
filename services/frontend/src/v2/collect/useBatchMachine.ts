@@ -65,7 +65,6 @@ export * from './machine/contract';
 import {
   ARMING_CANCEL_GUARD_MS,
   COLLECT_DISCARD_REASON,
-  OPERATOR_GATE_HINT,
   COLLECT_UNSAVED_DISCARD_REASON,
   RETAKE_DISCARD_REASON,
   SAVED_FLASH_MS,
@@ -98,6 +97,7 @@ import { useBatchLifecycle } from './hooks/useBatchLifecycle';
 import { useCollectContext } from './hooks/useCollectContext';
 import { useUnsavedTakeRecovery } from './hooks/useUnsavedTakeRecovery';
 import { useRecordingCues } from './hooks/useRecordingCues';
+import { i18n } from '../../i18n';
 
 /** Normalise a thrown error to a MachineError. A backend code passes through; a
  *  5xx or a transport failure (no code) is treated as an unreachable recorder so
@@ -123,6 +123,7 @@ const SERVER_QUALITY: Record<QualityOverride, ServerQuality> = {
 };
 
 export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMachine {
+  const t = i18n.getFixedT(i18n.language, 'collect');
   // State lives in the module-level store above (survives tab-switch unmounts);
   // `dispatch` is the module dispatch, `state` is this component's subscription.
   const state = useBatchState();
@@ -474,7 +475,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
           type: 'START_FAILED',
           error: capture?.error
             ? { code: capture.error.code, message: capture.error.message }
-            : { code: null, message: 'the recorder rejected the start' },
+            : { code: null, message: t('recorderRejectedStart') },
         });
         return;
       }
@@ -553,7 +554,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     if (operatorMissing) {
       // Guarded here as well as on the control: R reaches startRecording
       // without passing the disabled button.
-      showToast(OPERATOR_GATE_HINT);
+      showToast(t('operatorGateHint'));
       return;
     }
     if (startInFlightRef.current) return;
@@ -744,9 +745,15 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
             recordingCues.emit('save');
             flashSaved(pendingCompletion.index);
             const batchSeq = getStoreSnapshot().batchSeq;
-            const seqPart = batchSeq != null ? ` of Batch ${batchSeq}` : '';
             showToast(
-              `Saved — Episode ${pendingCompletion.index}${seqPart}${operator.trim() ? ` · ${operator.trim()}` : ''}`,
+              t('savedEpisode', {
+                episode: String(pendingCompletion.index),
+                batch:
+                  batchSeq != null ? t('batchPart', { batch: String(batchSeq) }) : '',
+                operator: operator.trim()
+                  ? t('operatorPart', { operator: operator.trim() })
+                  : '',
+              }),
             );
           })
           .catch((err) => {
@@ -791,9 +798,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         // bare "Saved".
         dispatch({ type: 'CONFIRM_EPISODE', quality: localQuality });
         flashSaved(nextIndex);
-        showToast(
-          `Episode ${nextIndex} labeled on screen only — the recorder named no capture`,
-        );
+        showToast(t('savedScreenOnly', { episode: String(nextIndex) }));
         return;
       }
 
@@ -848,7 +853,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
               });
             } catch (err) {
               throw new Error(
-                `The review was saved, but batch completion was not confirmed. Retry Save to finish the batch. (${toMachineError(err).message})`,
+                t('completionConfirmFailed', { error: toMachineError(err).message }),
               );
             }
           }
@@ -870,11 +875,15 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
           void queryClient.invalidateQueries({ queryKey: queryKeys.batches });
           flashSaved(storedIndex);
           const batchSeq = getStoreSnapshot().batchSeq;
-          const seqPart = batchSeq != null ? ` of Batch ${batchSeq}` : '';
           showToast(
             batchId
-              ? `Saved — Episode ${storedIndex}${seqPart}${op ? ` · ${op}` : ''}`
-              : `Saved — Episode ${storedIndex}, not grouped into a set (no batch)`,
+              ? t('savedEpisode', {
+                  episode: String(storedIndex),
+                  batch:
+                    batchSeq != null ? t('batchPart', { batch: String(batchSeq) }) : '',
+                  operator: op ? t('operatorPart', { operator: op }) : '',
+                })
+              : t('savedEpisodeNoBatch', { episode: String(storedIndex) }),
           );
           // Say what validation makes of the take while the operator can still
           // act on it — a needs_review verdict discovered days later in Review
@@ -883,9 +892,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
           void getCapture(captureId)
             .then((detail) => {
               if (detail.verdict === 'needs_review') {
-                showToast(
-                  `Episode ${storedIndex}: validation failed — Review can override it with a reason`,
-                );
+                showToast(t('validationFailedToast', { episode: String(storedIndex) }));
               }
             })
             .catch(() => {});
@@ -1018,7 +1025,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     if (!captureId) {
       // Nothing was persisted for this take, so there is nothing to discard.
       dispatch({ type: 'RETRY_EPISODE' });
-      showToast('Nothing was recorded for this take — re-record when ready');
+      showToast(t('nothingRecordedRetake'));
       return;
     }
     // §12's split-mode disclosure (a discard removes only THIS machine's copy)
@@ -1026,9 +1033,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     void episodeDiscard.discardNow(
       { capture_id: captureId },
       COLLECT_DISCARD_REASON,
-      splitDeploy
-        ? 'Take discarded from this machine — a copy may remain on the robot'
-        : 'Take discarded — ready to re-record',
+      splitDeploy ? t('takeDiscardedSplit') : t('takeDiscarded'),
     );
   }, [episodeDiscard, splitDeploy, showToast]);
 
@@ -1053,9 +1058,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       .discardNow(
         { capture_id: captureId },
         RETAKE_DISCARD_REASON,
-        splitDeploy
-          ? 'Take discarded from this machine — a copy may remain on the robot; recording the retake'
-          : 'Take discarded — recording the retake',
+        splitDeploy ? t('takeDiscardedRetakeSplit') : t('takeDiscardedRetake'),
       )
       .then((discarded) => {
         // Queue the restart ONLY when the take is actually gone. A failed
@@ -1094,9 +1097,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       setTakeoverStopModalOpen(false);
     },
     onError: (err) => {
-      showToast(
-        `Stop recording was not completed — it may still be running. Retry Stop recording. (${toMachineError(err).message})`,
-      );
+      showToast(t('stopTakeoverFailed', { error: toMachineError(err).message }));
     },
   });
   const openTakeoverStopModal = useCallback(() => setTakeoverStopModalOpen(true), []);
@@ -1119,9 +1120,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     void unsavedDiscard.discardNow(
       unsavedCapture,
       COLLECT_UNSAVED_DISCARD_REASON,
-      splitDeploy
-        ? 'Interrupted take discarded from this machine — a copy may remain on the robot'
-        : 'Interrupted take discarded',
+      splitDeploy ? t('interruptedDiscardedSplit') : t('interruptedDiscarded'),
     );
   }, [unsavedCapture, unsavedDiscard, splitDeploy]);
   // "Later" hides the banner, and hiding it must mean hiding it: dismissing

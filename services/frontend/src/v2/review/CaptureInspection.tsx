@@ -11,6 +11,7 @@
 // are gone still returns cleanly and simply shows nothing for them.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { getConfigOptions } from '../../api/config';
@@ -153,6 +154,7 @@ function reportSignature(report: unknown): string | null {
  *  reading "nothing has checked this" as a pass is the exact confusion this
  *  feature exists to end. */
 function ValidationVerdict({ capture }: { capture: CaptureDetail }) {
+  const { t } = useTranslation('review');
   const queryClient = useQueryClient();
   const verdict = capture.verdict ?? null;
   const override = capture.validation_override ?? null;
@@ -176,10 +178,10 @@ function ValidationVerdict({ capture }: { capture: CaptureDetail }) {
     verdict === 'pass' ? 'green' : verdict === 'needs_review' ? 'red' : 'gray';
   const label =
     verdict === 'pass'
-      ? 'VALIDATION PASSED'
+      ? t('validationPassed')
       : verdict === 'needs_review'
-        ? 'VALIDATION FAILED'
-        : 'NOT VALIDATED';
+        ? t('validationFailed')
+        : t('notValidated');
 
   return (
     <section className="flex flex-col gap-1.5" data-testid="review-verdict">
@@ -187,7 +189,7 @@ function ValidationVerdict({ capture }: { capture: CaptureDetail }) {
         <Badge tone={tone}>{label}</Badge>
         {verdict === 'unknown' && (
           <span className="text-[11.5px] text-text-muted">
-            No gating validator has reported on this recording yet.
+            {t('noGatingValidator')}
           </span>
         )}
         {override && (
@@ -195,31 +197,27 @@ function ValidationVerdict({ capture }: { capture: CaptureDetail }) {
             data-testid="review-verdict-override"
             className="text-[11.5px] text-status-warning-text"
           >
-            Overridden: {override}
+            {t('validationOverridden', { reason: override })}
           </span>
         )}
       </div>
       {verdict === 'needs_review' && !override && (
         <div className="flex flex-col gap-1.5 rounded-control border border-status-danger-border bg-status-danger-bg px-3 py-2.5">
           <span className="text-[12px] text-status-danger-text">
-            Datasets refuse this recording while validation says it is broken.
-            Overriding is allowed — with a reason, which is kept in the ledger.
+            {t('validationOverrideHelp')}
           </span>
           <button
             type="button"
             data-testid="review-verdict-override-btn"
             disabled={overrideMutation.isPending}
             onClick={() => {
-              const reason = window.prompt(
-                'Why should this recording be usable despite the failed validation?',
-                '',
-              );
+              const reason = window.prompt(t('validationOverridePrompt'), '');
               if (!reason || !reason.trim()) return;
               overrideMutation.mutate(reason.trim());
             }}
             className="self-start rounded-control border border-status-danger-border bg-surface px-2.5 py-1 text-[11.5px] font-semibold text-status-danger-text hover:bg-status-danger-bg disabled:opacity-50"
           >
-            Override with a reason…
+            {t('overrideWithReason')}
           </button>
         </div>
       )}
@@ -231,7 +229,7 @@ function ValidationVerdict({ capture }: { capture: CaptureDetail }) {
           onClick={() => overrideMutation.mutate(null)}
           className="self-start text-[11px] text-text-muted hover:text-text-secondary disabled:opacity-50"
         >
-          Withdraw the override
+          {t('withdrawOverride')}
         </button>
       )}
     </section>
@@ -241,6 +239,7 @@ function ValidationVerdict({ capture }: { capture: CaptureDetail }) {
 /** The recorder's own account of a recording, coloured by what its code means
  *  rather than by the field being populated at all. */
 function CaptureNote({ error }: { error: NonNullable<CaptureDetail['error']> }) {
+  const { t } = useTranslation('review');
   const note = readCaptureNote(error.code);
   return (
     <p
@@ -259,7 +258,7 @@ function CaptureNote({ error }: { error: NonNullable<CaptureDetail['error']> }) 
        *  otherwise be told it failed — latent today (the one notice code always
        *  carries the recorder's sentence), and wrong the moment it is not. */}
       <span>
-        {error.message || (note.severity === 'fault' ? 'This recording failed.' : '')}
+        {error.message || (note.severity === 'fault' ? t('recordingFailed') : '')}
       </span>
       {error.code && (
         <span className="mt-0.5 block font-mono text-[11px] opacity-70">
@@ -284,6 +283,7 @@ export function CaptureInspection({
    *  editable. Absent elsewhere, which leaves them read-only. */
   labels?: LabelEditing;
 }) {
+  const { t } = useTranslation('review');
   const detailQuery = useQuery({
     queryKey: queryKeys.capture(captureId),
     queryFn: ({ signal }) => getCapture(captureId, signal),
@@ -315,7 +315,7 @@ export function CaptureInspection({
   );
 
   if (detailQuery.isPending)
-    return <p className="text-[12.5px] text-text-muted">Loading capture…</p>;
+    return <p className="text-[12.5px] text-text-muted">{t('loadingCapture')}</p>;
   if (detailQuery.isError) return <ErrorMessage error={detailQuery.error} />;
   const capture = detailQuery.data;
   const tombstoned = isTombstoned(capture);
@@ -363,17 +363,18 @@ export function CaptureInspection({
   const staleValidationNote = !validationResult
     ? undefined
     : validation.reportMovedOn
-      ? 'A check completed after this attempt failed — the badge above is that ' +
-        'newer result, possibly this attempt having landed after all.'
-      : `The ${validationResult.toUpperCase()} badge above is the last completed check` +
-        `${validationCheckedAt ? ` (${formatWhen(validationCheckedAt)})` : ''}, not this attempt.`;
+      ? t('newerValidationResult')
+      : t('staleValidationResult', {
+          result: validationResult.toUpperCase(),
+          when: validationCheckedAt ? ` (${formatWhen(validationCheckedAt)})` : '',
+        });
   const staleLossNote = !capture.loss?.topics
     ? undefined
     : loss.reportMovedOn
-      ? 'A loss report completed after this attempt failed — the table below is ' +
-        'that newer result, possibly this attempt having landed after all.'
-      : `The table below is the last completed loss report` +
-        `${lossCheckedAt ? ` (${formatWhen(lossCheckedAt)})` : ''}, not this attempt.`;
+      ? t('newerLossResult')
+      : t('staleLossResult', {
+          when: lossCheckedAt ? ` (${formatWhen(lossCheckedAt)})` : '',
+        });
 
   return (
     <div data-testid="review-inspection" className="flex flex-col gap-3">
@@ -385,20 +386,19 @@ export function CaptureInspection({
         >
           <span className="font-semibold">
             {capture.state === 'delete_pending'
-              ? 'This recording is being removed.'
+              ? t('recordingBeingRemoved')
               : capture.delete_kind === 'discard'
-                ? 'This recording was discarded.'
-                : 'This recording was deleted.'}
+                ? t('recordingDiscarded')
+                : t('recordingDeleted')}
           </span>
           <span>
             {capture.delete_reason
-              ? `Reason given: ${capture.delete_reason}`
-              : 'No reason was recorded.'}
+              ? t('reasonGiven', { reason: capture.delete_reason })
+              : t('noReasonRecorded')}
             {capture.deleted_at ? ` · ${formatWhen(capture.deleted_at)}` : ''}
           </span>
           <span className="text-[11.5px] text-status-warning-text">
-            Its details are kept so the record stays answerable, but nothing can be run
-            against it any more.
+            {t('tombstoneDetailHelp')}
           </span>
         </div>
       )}
@@ -422,13 +422,13 @@ export function CaptureInspection({
       )}
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5">
-        <Row label="State">{capture.state}</Row>
+        <Row label={t('status')}>{capture.state}</Row>
         {/* Both identities: run_id is what the operator recognises, capture_id
             is what every log line and API call uses. */}
-        <Row label="Run">
+        <Row label={t('run')}>
           <span className="font-mono">{capture.run_id || '—'}</span>
         </Row>
-        <Row label="Capture">
+        <Row label={t('capture')}>
           <span className="font-mono text-[11.5px] text-text-muted">
             {capture.capture_id}
           </span>
@@ -450,24 +450,26 @@ export function CaptureInspection({
           />
         ) : (
           <>
-            <Row label="Operator">{capture.operator || '—'}</Row>
-            <Row label="Task">{capture.task || '—'}</Row>
+            <Row label={t('operator')}>{capture.operator || '—'}</Row>
+            <Row label={t('task')}>{capture.task || '—'}</Row>
             {condition !== undefined && (
-              <Row label="Condition">{displayCondition(condition, conditionStatus)}</Row>
+              <Row label={t('inspectionCondition')}>
+                {displayCondition(condition, conditionStatus)}
+              </Row>
             )}
-            <Row label="Robot">{capture.robot || '—'}</Row>
+            <Row label={t('robot')}>{capture.robot || '—'}</Row>
           </>
         )}
-        <Row label="Started">{formatWhen(capture.started_at)}</Row>
-        <Row label="Ended">{formatWhen(capture.ended_at)}</Row>
-        <Row label="Duration">
+        <Row label={t('started')}>{formatWhen(capture.started_at)}</Row>
+        <Row label={t('ended')}>{formatWhen(capture.ended_at)}</Row>
+        <Row label={t('duration')}>
           {formatDuration(spanMs(capture.started_at, capture.ended_at)) || '—'}
         </Row>
-        <Row label="Messages">
+        <Row label={t('messages')}>
           {capture.message_count != null ? formatNumber(capture.message_count) : '—'}
         </Row>
-        <Row label="Size">{formatBytes(capture.bytes)}</Row>
-        <Row label="Compression">{capture.compression || '—'}</Row>
+        <Row label={t('size')}>{formatBytes(capture.bytes)}</Row>
+        <Row label={t('compression')}>{capture.compression || '—'}</Row>
       </dl>
 
       {/* Dataset membership is a property of the capture, so it is answerable
@@ -476,8 +478,7 @@ export function CaptureInspection({
       {(capture.memberships?.length ?? 0) > 0 && (
         <section data-testid="review-memberships">
           <h3 className="mb-1.5 text-[12.5px] font-medium text-text-primary">
-            In {capture.memberships!.length} dataset
-            {capture.memberships!.length === 1 ? '' : 's'}
+            {t('membershipCount', { count: capture.memberships!.length })}
           </h3>
           <ul className="rounded-control border border-border text-[11.5px]">
             {capture.memberships!.map((m) => (
@@ -502,7 +503,7 @@ export function CaptureInspection({
           data-testid="review-capture-busy"
           className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12.5px] text-status-warning-text"
         >
-          {leaseReason}. Reports and previews can be run once it finishes.
+          {t('captureBusyHelp', { reason: leaseReason })}
         </p>
       )}
 
@@ -517,9 +518,7 @@ export function CaptureInspection({
           blockedReason={leaseReason}
         />
       ) : (
-        <p className="text-[12px] text-text-muted">
-          Video preview is available once a recording completes.
-        </p>
+        <p className="text-[12px] text-text-muted">{t('videoAfterComplete')}</p>
       )}
 
       {completed && (
@@ -532,14 +531,14 @@ export function CaptureInspection({
 
       <section>
         <h3 className="mb-1.5 text-[12.5px] font-medium text-text-primary">
-          Topics ({topics.length})
+          {t('topicsCount', { count: topics.length })}
         </h3>
         <ul
           data-testid="review-topics"
           className="max-h-40 overflow-auto rounded-control border border-border text-[11px]"
         >
           {topics.length === 0 ? (
-            <li className="px-2 py-1 text-text-muted">No topics recorded.</li>
+            <li className="px-2 py-1 text-text-muted">{t('noTopicsRecorded')}</li>
           ) : (
             topics.map((t) => (
               <li
@@ -558,7 +557,9 @@ export function CaptureInspection({
         <section>
           <div className="mb-1.5 flex items-center justify-between gap-2">
             <span className="flex items-baseline gap-1.5">
-              <h3 className="text-[12.5px] font-medium text-text-primary">Loss report</h3>
+              <h3 className="text-[12.5px] font-medium text-text-primary">
+                {t('lossReport')}
+              </h3>
               {/* Dated for the same reason as the validation badge: a table
                   called "the last completed report" by a failed attempt has to
                   be datable, or the operator cannot tell which run it is. */}
@@ -568,8 +569,8 @@ export function CaptureInspection({
                   className="text-[11px] text-text-muted"
                 >
                   {lossCheckedAt
-                    ? `checked ${formatWhen(lossCheckedAt)}`
-                    : 'last completed report'}
+                    ? t('checkedAt', { when: formatWhen(lossCheckedAt) })
+                    : t('lastCompletedReport')}
                 </span>
               )}
             </span>
@@ -581,7 +582,7 @@ export function CaptureInspection({
               title={leaseReason ?? undefined}
               className="rounded-control border border-accent px-2.5 py-1 text-[11.5px] font-semibold text-accent transition-colors hover:bg-interaction-selected disabled:opacity-50"
             >
-              {loss.running ? 'Analyzing…' : 'Run loss report'}
+              {loss.running ? t('analysing') : t('runLossReport')}
             </button>
           </div>
           {/* Same shape as the validation section below: a failed attempt sits
@@ -592,7 +593,7 @@ export function CaptureInspection({
             staleNote={staleLossNote}
             onRetry={() => loss.run({})}
             retryDisabled={loss.running || !!leaseReason}
-            retryLabel="Retry loss report"
+            retryLabel={t('retryLossReport')}
           />
           {capture.loss?.topics ? (
             <div className="flex flex-col gap-2">
@@ -600,9 +601,7 @@ export function CaptureInspection({
               {capture.loss.events && <LossEventTable events={capture.loss.events} />}
             </div>
           ) : (
-            <p className="text-[11.5px] text-text-muted">
-              Computes a per-topic loss estimate (gap-based).
-            </p>
+            <p className="text-[11.5px] text-text-muted">{t('lossReportHelp')}</p>
           )}
         </section>
       )}
@@ -611,7 +610,7 @@ export function CaptureInspection({
         <section>
           <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
             <h3 className="text-[12.5px] font-medium text-text-primary">
-              Standard validation
+              {t('standardValidation')}
             </h3>
             <div className="flex items-center gap-2">
               {validationResult && (
@@ -636,8 +635,8 @@ export function CaptureInspection({
                     className="text-[11px] text-text-muted"
                   >
                     {validationCheckedAt
-                      ? `checked ${formatWhen(validationCheckedAt)}`
-                      : 'last completed check'}
+                      ? t('checkedAt', { when: formatWhen(validationCheckedAt) })
+                      : t('lastCompletedCheck')}
                   </span>
                 </span>
               )}
@@ -649,12 +648,12 @@ export function CaptureInspection({
                 title={
                   leaseReason ??
                   (template
-                    ? `template: ${template}`
-                    : 'No validation template configured')
+                    ? t('validationTemplate', { template })
+                    : t('noValidationTemplate'))
                 }
                 className="rounded-control border border-accent px-2.5 py-1 text-[11.5px] font-semibold text-accent transition-colors hover:bg-interaction-selected disabled:opacity-50"
               >
-                {validation.running ? 'Validating…' : 'Run validation'}
+                {validation.running ? t('validating') : t('runValidation')}
               </button>
             </div>
           </div>
@@ -664,30 +663,29 @@ export function CaptureInspection({
             staleNote={staleValidationNote}
             onRetry={template ? () => validation.run({ template }) : undefined}
             retryDisabled={validation.running || !!leaseReason}
-            retryLabel="Retry validation"
+            retryLabel={t('retryValidation')}
           />
           {!template && !optionsQuery.isPending && (
             <p className="text-[11.5px] text-text-muted">
-              No validation template is configured for the active robot.
+              {t('noActiveValidationTemplate')}
             </p>
           )}
           {!capture.validation && template && (
             <p className="text-[11.5px] text-text-muted">
-              Runs the <span className="font-mono">fast_validation</span> pipeline
-              {` (${template})`} — checks the recording against the required topics.
+              {t('validationHelpBefore')}{' '}
+              <span className="font-mono">fast_validation</span>
+              {t('validationHelpAfter', { template })}
             </p>
           )}
         </section>
       )}
 
       <section className="flex flex-col gap-1.5">
-        <JsonBlock label="Manifest" value={capture.manifest} />
-        <JsonBlock label="Record" value={capture.record} />
-        <JsonBlock label="Validation" value={capture.validation} />
+        <JsonBlock label={t('manifestSidecar')} value={capture.manifest} />
+        <JsonBlock label={t('recordSidecar')} value={capture.record} />
+        <JsonBlock label={t('validationSidecar')} value={capture.validation} />
         {!capture.manifest && !capture.record && !capture.validation && (
-          <p className="text-[11.5px] text-text-muted">
-            No manifest / record / validation sidecars yet.
-          </p>
+          <p className="text-[11.5px] text-text-muted">{t('noInspectionSidecars')}</p>
         )}
       </section>
     </div>

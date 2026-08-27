@@ -213,6 +213,28 @@ The active robot has a manual **Setup check** (`POST /api/v1/system/setup-check`
 - **System** (read-only): deployment facts (ROS_DOMAIN_ID, endpoints, data dir/storage, component health). The version row is omitted because the client has no honest version source. RMW/DDS is not exposed by the API, so only a note is shown.
 - **Appearance** (per terminal and browser): choose System / Light / Dark. The default is System, which follows `prefers-color-scheme` and reacts to OS/browser changes while System is selected. Light / Dark override it. The choice is saved only in browser localStorage and applies immediately; at startup the resolved theme is applied to the document before React to avoid a light flash. If browser storage is unavailable, the choice still applies to the current page and the UI explains that it must be selected again after reload. This is presentation preference only and never changes recording, backend, shared-catalog, or store state.
 - **Language** (per terminal and browser): choose English / 日本語 in Settings > General. Save it to `kairos.locale` and apply it immediately; `document.documentElement.lang`, shared-shell copy, and shared date, number, list, and count displays re-render using the same selected locale as the source of truth. English is the fallback; resources are divided into the stable namespaces `common` / `collect` / `review` / `datasets` / `validation` / `monitor` / `settings`, and each locale's key shape is tested. `navigator.language` is not used as input for the UI language (`localeGuard`, which repairs POSIX forms, exists only for third-party `Intl` compatibility). Switching does not reset or change the React state of Collect / Review / Datasets, recording, backend, or shared catalog. If browser storage is unavailable, switching still works on the current page, and the status indicates that it must be selected again after reload. User-created Project / Task / Condition / Operator / dataset names and raw server diagnostics are not translated; only surrounding labels owned by Kairos are translated. Migration of full-screen body text is staged incrementally as a follow-up.
+- **Operator-facing EN/JA glossary (primary workflow)**
+
+  Use the following wording for UI copy owned by Kairos. Do not use different terms for the same concept in Review and Datasets. Project / Task / Condition / Operator names, dataset names, failure reasons, run / capture IDs, and raw diagnostic text returned by the server are user/external-system values and are not translated.
+
+  | English | Japanese | Operational meaning |
+  | --- | --- | --- |
+  | Collect | 収録 | The Collect tab and the work of making a recording. |
+  | Review | レビュー | The work of judging completed recordings by quality and labels. |
+  | Datasets | データセット | A set that logically organizes captures. |
+  | Validation | 検証 | Mechanical validation by a pipeline. |
+  | recording | 録画 | An in-progress operation handled by the recorder. Use in state and start/stop contexts. |
+  | capture | 収録 | The unit saved, reviewed, or added to a dataset. Do not confuse it with an in-progress recording. |
+  | episode | エピソード | The result of one work instance within a batch. |
+  | batch | バッチ | The work unit grouping episodes under the same recording context. |
+  | Start / Stop recording | 録画を開始 / 録画を停止 | Recorder control operations. |
+  | Success / Failure | 成功 / 失敗 | The task outcome. Separate from the data-quality judgment. |
+  | Good / Needs review / Not usable | 良好 / 要レビュー / 使用不可 | The data-quality judgment. `Not usable` entails a decision to exclude it. |
+  | Ready / Needs check / Excluded | 準備完了 / 要確認 / 除外済み | The recording work state in Review / Datasets. |
+  | Adopt / Exclude / Return to review | 採用 / 除外 / レビューに戻す | Operations that advance or reverse the decision on whether to add data to a dataset. |
+  | Retake | 撮り直し | Make another recording without using the current one. |
+  | Active / Frozen | 有効 / 凍結 | The states of an editable dataset and an unchangeable dataset. |
+  | rebuilt counter lower bound | 再構築後の件数は下限 | An explanation that the displayed count may be lower than the actual count because past recordings lost during rebuilding cannot be counted. |
 - **Semantic color tokens**: CSS variables in `index.css` and semantic Tailwind utilities define app / surface (card, muted, elevated, control) / text / border and interaction / accent / focus / modal scrim, plus background, border, text, and accent for success / warning / danger / info / live / recording / paused / adopted / needs-review / excluded / suspect. Light and Dark always define both values. The shared shell, Card, Button, Modal, and Badge use this layer; migration of the remaining literal palette utilities on feature screens is a follow-up. Color is never the only expression of state: existing labels, icons, and text remain the source of meaning.
 - **Honest placeholders**: **Dataset profiles** (awaiting the Phase 3 recipe model) and **Users & permissions** (nothing to manage in the single-LAN, no-auth scope) are placeholders that state their reason and nothing more (no dead controls).
 

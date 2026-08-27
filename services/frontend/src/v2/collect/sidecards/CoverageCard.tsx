@@ -10,6 +10,7 @@ import { findTask, resolvePlanIds, usePlans } from '../../plans';
 import { useUiStore } from '../../../store/uiStore';
 import type { BatchMachine } from '../useBatchMachine';
 import { SIDE_PAD } from '../compact';
+import { useTranslation } from 'react-i18next';
 
 /** Per-condition coverage for the CURRENT task — "what to record next" as a
  *  data decision (2026-07-14 batch-label decision, coverage in Collect).
@@ -30,6 +31,7 @@ import { SIDE_PAD } from '../compact';
  *  source left — and a coverage number nobody can derive is worse than no
  *  number at all. */
 export function CoverageCard({ machine }: { machine: BatchMachine }) {
+  const { t } = useTranslation('collect');
   const plans = usePlans();
   const task = machine.task;
   const project = machine.project ?? null;
@@ -72,7 +74,10 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
   // and possibly more, and there is no way to say which part is uncertain. So
   // the flag propagates through the addition rather than being shown per batch
   // — the operator reads the total, not the batches behind it.
-  const rowsByCondition = new Map<string, { name: string; recorded: number; isFloor: boolean }>();
+  const rowsByCondition = new Map<
+    string,
+    { name: string; recorded: number; isFloor: boolean }
+  >();
   const bump = (key: string, cond: string, n: number, isFloor: boolean) => {
     if (!cond || cond === '—') return;
     const cur = rowsByCondition.get(key) ?? { name: cond, recorded: 0, isFloor: false };
@@ -87,7 +92,9 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
     // A rolling deployment may answer the legacy row shape without
     // condition_id. Reuse the current plan's identity for the same name so a
     // server upgrade cannot briefly render duplicate condition rows.
-    const matchingPlan = planConditions.find((condition) => condition.name === row.condition);
+    const matchingPlan = planConditions.find(
+      (condition) => condition.name === row.condition,
+    );
     bump(
       row.condition_id ?? matchingPlan?.condition_id ?? row.condition,
       row.condition,
@@ -104,7 +111,7 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
       data-testid="coverage-card"
     >
       <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-        Coverage — {task}
+        {t('coverageTitle', { task: task ?? '—' })}
       </h2>
       <div className="flex flex-col gap-1">
         {rows.map(([key, { name: cond, recorded, isFloor }]) => (
@@ -129,24 +136,27 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
             </span>
             <span
               className="shrink-0 font-mono text-[11.5px] text-text-primary"
-              title={
-                isFloor
-                  ? 'At least this many — part of this total was rebuilt from the recordings still on disk, so takes deleted after review are not counted.'
-                  : undefined
-              }
+              title={isFloor ? t('coverageFloorTitle') : undefined}
             >
               {isFloor ? '\u2265 ' : ''}
               {recorded}
             </span>
-            <span className="shrink-0 text-[10.5px] text-text-muted">rec</span>
+            <span className="shrink-0 text-[10.5px] text-text-muted">
+              {t('recordingsAbbr')}
+            </span>
           </div>
         ))}
       </div>
       <p className="text-[10.5px] leading-snug text-text-muted">
         {scopeReady
-          ? `Scope: ${project ?? 'custom project'} / ${task} · ${robot} · ${operator}`
-          : 'Coverage waits for the active robot and operator scope.'}{' '}
-        rec counts every take reviewed into this task&apos;s sets — it never drops when a recording is later excluded or deleted
+          ? t('coverageScope', {
+              project: project ?? t('customProject'),
+              task: task ?? '—',
+              robot: robot ?? '—',
+              operator: operator ?? '—',
+            })
+          : t('coverageWaitsForScope')}{' '}
+        {t('coverageFootnote')}
       </p>
     </Card>
   );

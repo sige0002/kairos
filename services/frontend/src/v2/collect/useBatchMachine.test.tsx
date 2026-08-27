@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { setApiBase } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
+import { i18n } from '../../i18n';
 import { makeTestClient, jsonResponse } from '../../test/renderWithClient';
 import { __setPreArmRetryBaseMs } from './hooks/usePreArm';
 import {
@@ -25,7 +26,6 @@ import {
   __setStopConfirmMs,
   __rehydrateBatchStore,
   EPISODES_PER_BATCH,
-  OPERATOR_GATE_HINT,
 } from './useBatchMachine';
 import { getStoreSnapshot } from './machine/store';
 import { getOperators } from '../plans';
@@ -1328,8 +1328,8 @@ test('startRecording is refused with no operator, and says so', async () => {
     false,
   );
   // And the refusal explains itself rather than reading as a dead button.
-  expect(result.current.toast).toBe(OPERATOR_GATE_HINT);
-  expect(result.current.toast).toContain('OP');
+  expect(result.current.toast).toBe(i18n.t('collect:operatorGateHint'));
+  expect(result.current.toast).toContain('operator control');
 });
 
 // The gate is not the roster's any more: it holds in the shipped default,

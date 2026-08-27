@@ -19,7 +19,9 @@ function WorkflowProbe() {
     <div>
       <output data-testid="locale">{locale}</output>
       <output data-testid="tab">{i18n.t('common:tabs.collect')}</output>
-      <output data-testid="date">{formatDateTime(new Date('2026-08-12T11:26:03Z'))}</output>
+      <output data-testid="date">
+        {formatDateTime(new Date('2026-08-12T11:26:03Z'))}
+      </output>
       <output data-testid="number">{formatNumber(1204)}</output>
       <output data-testid="members">{formatMemberCount(1204)}</output>
       <output data-testid="list">{formatList(['A', 'B', 'C'])}</output>
@@ -90,6 +92,20 @@ test('plural messages retain locale-formatted counts in both supported languages
   expect(formatMemberCount(1204)).toBe('1,204 members');
   await i18n.changeLanguage('ja');
   expect(formatMemberCount(1204)).toBe('1,204 件');
+});
+
+test('localizes primary workflow terminology while preserving raw diagnostics', async () => {
+  await i18n.changeLanguage('ja');
+  expect(i18n.t('collect:title')).toBe('収録');
+  expect(i18n.t('review:title')).toBe('レビュー');
+  expect(i18n.t('datasets:title')).toBe('データセット');
+  expect(i18n.t('validation:title')).toBe('検証');
+  expect(i18n.t('common:status.needsCheck')).toBe('要確認');
+  expect(i18n.t('common:status.excluded')).toBe('除外済み');
+  expect(i18n.t('collect:retake')).toBe('撮り直し');
+  expect(i18n.t('common:status.failureReason', { reason: 'raw backend detail' })).toBe(
+    '失敗理由: raw backend detail',
+  );
 });
 
 test('keeps an in-page selection when browser storage is unavailable', async () => {

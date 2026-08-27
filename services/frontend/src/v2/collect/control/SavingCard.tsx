@@ -5,6 +5,7 @@
 // the title and the line under it differ.
 
 import { Card, cn } from '../../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { CARD_PAD } from '../compact';
 import type { BatchMachine } from '../useBatchMachine';
 import { MachineErrorBanner } from './banners';
@@ -19,6 +20,7 @@ export function SavingCard({
   phase: 'saving' | 'quickcheck';
   titleRef: React.Ref<HTMLHeadingElement>;
 }) {
+  const { t } = useTranslation('collect');
   const saving = phase === 'saving';
   return (
     <Card
@@ -37,7 +39,7 @@ export function SavingCard({
           aria-live="polite"
           className="text-[17px] font-bold text-text-primary outline-none"
         >
-          {saving ? 'SAVING…' : 'QUICK CHECK…'}
+          {saving ? t('saving') : t('quickCheck')}
         </h2>
       </div>
       <span className="text-[12.5px] leading-relaxed text-text-muted">
@@ -46,9 +48,9 @@ export function SavingCard({
             ? // The wait is the recorder draining its cache — normal, measured
               // in seconds, and shown as progress rather than dressed as an
               // error (the error only appears past the full escalation budget).
-              `Finalizing the recording — the recorder is flushing (${machine.stopFlushSeconds}s)…`
-            : 'Finalizing the recording…'
-          : 'Reading recorded counts, gaps and integrity.'}
+              t('finalizingFlush', { seconds: String(machine.stopFlushSeconds) })
+            : t('finalizingRecording')
+          : t('readingIntegrity')}
       </span>
       {/* Indeterminate progress — the real duration isn't known, so no fake %. */}
       <div className="h-1.5 overflow-hidden rounded-full bg-surface-muted">
@@ -56,13 +58,13 @@ export function SavingCard({
       </div>
       {machine.stopError && (
         <>
-          <MachineErrorBanner label="Stop failed" error={machine.stopError} />
+          <MachineErrorBanner label={t('stopFailed')} error={machine.stopError} />
           <button
             type="button"
             onClick={machine.retryStop}
             className="h-10 rounded-control bg-status-danger-accent text-[13px] font-bold text-status-danger-contrast hover:bg-status-danger-text"
           >
-            Retry stop
+            {t('retryStop')}
           </button>
         </>
       )}

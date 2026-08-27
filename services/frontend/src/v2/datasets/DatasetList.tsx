@@ -17,6 +17,7 @@
 // confused while both are still in living memory.
 
 import { useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Badge, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { CombineDatasetsDialog } from './CombineDatasetsDialog';
@@ -43,7 +44,9 @@ function SummaryLine({ segments }: { segments: SummarySegment[] }) {
       {segments.map((s, i) => (
         <span key={i} title={s.title} className="whitespace-nowrap">
           {i > 0 && <span className="mr-1.5 text-text-muted">·</span>}
-          <span className={cn(s.warn && 'font-semibold text-status-warning-text')}>{s.text}</span>
+          <span className={cn(s.warn && 'font-semibold text-status-warning-text')}>
+            {s.text}
+          </span>
         </span>
       ))}
     </div>
@@ -70,7 +73,9 @@ function DatasetListRow({ row, state }: { row: DatasetRow; state: DatasetsState 
       }}
       className={cn(
         'flex cursor-pointer flex-col gap-[3px] rounded-[10px] border px-[11px] py-[9px]',
-        selected ? 'border-accent bg-interaction-selected' : 'border-border hover:bg-surface-muted',
+        selected
+          ? 'border-accent bg-interaction-selected'
+          : 'border-border hover:bg-surface-muted',
       )}
     >
       <span className="flex items-center gap-1.5 truncate text-[12.5px] font-semibold text-text-primary">
@@ -104,10 +109,17 @@ function DatasetListRow({ row, state }: { row: DatasetRow; state: DatasetsState 
  *  a form landmark: findable by landmark navigation, honest about what it is.
  *  What it does owe the keyboard is the dismissal the Cancel button offers the
  *  mouse — Escape leaves without creating, and hands the cursor back. */
-function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () => void }) {
+function CreateForm({
+  state,
+  onDismiss,
+}: {
+  state: DatasetsState;
+  onDismiss: () => void;
+}) {
+  const { t } = useTranslation('datasets');
   return (
     <form
-      aria-label="New dataset"
+      aria-label={t('newDataset')}
       data-testid="new-dataset-form"
       onSubmit={(e) => {
         e.preventDefault();
@@ -136,8 +148,8 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
         data-testid="new-dataset-name"
         value={state.newName}
         onChange={(e) => state.setNewName(e.target.value)}
-        aria-label="Dataset name"
-        placeholder="Dataset name"
+        aria-label={t('datasetName')}
+        placeholder={t('datasetName')}
         maxLength={200}
         autoFocus
         className="w-full rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12.5px] text-text-primary placeholder:text-text-muted"
@@ -147,23 +159,21 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
           data-testid="new-dataset-operator"
           value={state.newOperator}
           onChange={(e) => state.setNewOperator(e.target.value)}
-          aria-label="Operator (optional)"
-          placeholder="Operator (optional)"
+          aria-label={t('operatorOptional')}
+          placeholder={t('operatorOptional')}
           className="min-w-0 flex-1 rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12px] text-text-primary placeholder:text-text-muted"
         />
         <input
           data-testid="new-dataset-task"
           value={state.newTask}
           onChange={(e) => state.setNewTask(e.target.value)}
-          aria-label="Task (optional)"
-          placeholder="Task (optional)"
+          aria-label={t('taskOptional')}
+          placeholder={t('taskOptional')}
           className="min-w-0 flex-1 rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12px] text-text-primary placeholder:text-text-muted"
         />
       </div>
       <p className="text-[10.5px] leading-relaxed text-text-muted">
-        A dataset is a named set of recordings. Creating one writes nothing under
-        objects/ and moves no recording; the browsable views/ tree is regenerated
-        by the server.
+        {t('createDatasetHelp')}
       </p>
       {state.createError != null && <ErrorMessage error={state.createError} />}
       <div className="flex items-center gap-1.5">
@@ -173,7 +183,7 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
           disabled={state.newName.trim() === '' || state.creating}
           className="rounded-chip bg-accent px-[11px] py-[5px] text-xs font-bold text-text-inverse hover:bg-accent-strong disabled:opacity-40"
         >
-          {state.creating ? 'Creating…' : 'Create'}
+          {state.creating ? t('creatingDataset') : t('createDataset')}
         </button>
         <button
           type="button"
@@ -182,7 +192,7 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
           disabled={state.creating}
           className="rounded-chip border border-border px-[11px] py-[5px] text-xs font-semibold text-text-secondary hover:bg-surface disabled:opacity-40"
         >
-          Cancel
+          {t('close')}
         </button>
       </div>
     </form>
@@ -190,6 +200,7 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
 }
 
 export function DatasetList({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation(['datasets', 'common']);
   const hasAny = state.rows.length > 0;
   const searchActive = state.search.trim() !== '';
   const newBtnRef = useRef<HTMLButtonElement>(null);
@@ -207,17 +218,17 @@ export function DatasetList({ state }: { state: DatasetsState }) {
     <div className="flex min-h-0 flex-col overflow-hidden rounded-card border border-border bg-surface shadow-card">
       <div className="flex shrink-0 items-center gap-2.5 border-b border-border px-4 py-[13px]">
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          Datasets
+          {t('datasets:title')}
         </h2>
         <div className="flex-1" />
         <button
           type="button"
           data-testid="combine-datasets-btn"
           onClick={state.openCombine}
-          title="Build a new dataset from existing ones. The sources are not touched."
+          title={t('datasets:combineDatasetsHint')}
           className="rounded-chip border border-border px-[11px] py-[5px] text-xs font-semibold text-text-secondary hover:bg-surface-muted"
         >
-          ⧉ Combine
+          ⧉ {t('datasets:combineDatasets')}
         </button>
         <button
           ref={newBtnRef}
@@ -226,7 +237,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           onClick={state.openCreate}
           className="rounded-chip bg-accent px-[11px] py-[5px] text-xs font-bold text-text-inverse hover:bg-accent-strong"
         >
-          + New
+          + {t('datasets:newDataset')}
         </button>
       </div>
 
@@ -239,8 +250,8 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           data-testid="dataset-search"
           value={state.search}
           onChange={(e) => state.setSearch(e.target.value)}
-          aria-label="Search datasets"
-          placeholder="Search dataset, operator, task…"
+          aria-label={t('datasets:searchDatasets')}
+          placeholder={t('datasets:searchDatasetsPlaceholder')}
           className="w-full rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12.5px] text-text-primary placeholder:text-text-muted"
         />
 
@@ -252,7 +263,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                 type="button"
                 data-testid={`dataset-filter-${f.id}`}
                 onClick={() => state.setTaskResultFilter(f.id)}
-                title="Narrows the members shown in the center pane"
+                title={t('datasets:datasetFilterHint')}
                 className={cn(
                   'rounded-chip px-2 py-0.5 text-[11px] font-semibold',
                   state.taskResultFilter === f.id
@@ -260,7 +271,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                     : 'bg-surface-muted text-text-secondary hover:bg-surface-muted',
                 )}
               >
-                {f.label}
+                {f.id === 'all' ? t('datasets:listAll') : t(`datasets:${f.id}`)}
               </button>
             ))}
           </div>
@@ -271,25 +282,25 @@ export function DatasetList({ state }: { state: DatasetsState }) {
             onClick={state.toggleSort}
             title={
               state.sort === 'recent'
-                ? 'Sorted by most recently created — switch to A–Z'
-                : 'Sorted A–Z — switch to most recently created'
+                ? t('datasets:listSortRecent')
+                : t('datasets:listSortAlpha')
             }
             className="flex items-center gap-1 rounded-chip border border-border px-2 py-0.5 text-[11px] font-semibold text-text-secondary hover:bg-surface-muted"
           >
             <span aria-hidden>⇅</span>
-            {state.sort === 'recent' ? 'Recent' : 'A–Z'}
+            {state.sort === 'recent' ? t('datasets:listRecent') : 'A–Z'}
           </button>
         </div>
 
         {state.operatorOptions.length > 0 && (
           <select
             data-testid="dataset-operator-filter"
-            aria-label="Filter datasets by operator"
+            aria-label={t('datasets:filterDatasetsOperator')}
             value={state.operatorFilter}
             onChange={(e) => state.setOperatorFilter(e.target.value)}
             className="w-full rounded-control border border-border bg-surface px-2 py-1 text-[12px] text-text-secondary"
           >
-            <option value={ANY_OPERATOR}>Any operator</option>
+            <option value={ANY_OPERATOR}>{t('datasets:anyOperator')}</option>
             {state.operatorOptions.map((op) => (
               <option key={op} value={op}>
                 {op}
@@ -299,7 +310,10 @@ export function DatasetList({ state }: { state: DatasetsState }) {
         )}
 
         <span data-testid="dataset-count" className="text-[11px] text-text-muted">
-          showing {state.shown} of {state.total}
+          {t('datasets:showingDatasets', {
+            shown: String(state.shown),
+            total: String(state.total),
+          })}
         </span>
         <div className="flex items-center gap-1">
           <button
@@ -314,14 +328,14 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                 : 'border border-border text-text-secondary hover:bg-surface-muted',
             )}
           >
-            Active ({state.activeDatasetCount})
+            {t('datasets:activeDatasets', { count: state.activeDatasetCount })}
           </button>
           <button
             type="button"
             data-testid="dataset-view-archived"
             aria-pressed={state.datasetView === 'archived'}
             onClick={() => state.setDatasetView('archived')}
-            title="Sealed datasets — the record of what was exported and where"
+            title={t('datasets:archivedDatasetsHint')}
             className={cn(
               'rounded-chip px-2 py-0.5 text-[11px] font-bold',
               state.datasetView === 'archived'
@@ -329,37 +343,47 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                 : 'border border-border text-text-secondary hover:bg-surface-muted',
             )}
           >
-            Archived ({state.archivedDatasetCount})
+            {t('datasets:archivedDatasets', { count: state.archivedDatasetCount })}
           </button>
         </div>
       </div>
 
       {state.isLoading ? (
-        <div className="px-4 py-6 text-sm text-text-muted">Loading datasets…</div>
+        <div className="px-4 py-6 text-sm text-text-muted">
+          {t('datasets:loadingDatasets')}
+        </div>
       ) : (
-        <div data-testid="dataset-list-scroll" className="min-h-0 flex-1 overflow-y-auto p-2.5">
+        <div
+          data-testid="dataset-list-scroll"
+          className="min-h-0 flex-1 overflow-y-auto p-2.5"
+        >
           {!hasAny ? (
-            <div data-testid="dataset-list-empty" className="flex flex-col gap-1 px-1.5 py-4">
+            <div
+              data-testid="dataset-list-empty"
+              className="flex flex-col gap-1 px-1.5 py-4"
+            >
               {searchActive && state.total > 0 ? (
                 <>
-                  <span className="text-sm text-text-muted">No datasets match.</span>
+                  <span className="text-sm text-text-muted">
+                    {t('datasets:noDatasetsMatch')}
+                  </span>
                   <span className="text-xs leading-relaxed text-text-muted">
-                    {state.total} dataset(s) are hidden by the search — clear it to see
-                    them.
+                    {t('datasets:hiddenDatasets', { count: state.total })}
                   </span>
                 </>
               ) : (
                 <>
-                  <span className="text-sm text-text-muted">No datasets yet.</span>
+                  <span className="text-sm text-text-muted">
+                    {t('datasets:noDatasetsYet')}
+                  </span>
                   <span className="text-xs leading-relaxed text-text-muted">
-                    Create one with “+ New”, then add finished recordings to it from the
-                    right-hand rail.
+                    {t('datasets:createDatasetEmpty')}
                   </span>
                 </>
               )}
               {state.isError && (
                 <span className="text-xs text-status-warning-text">
-                  Couldn&apos;t reach the backend just now.
+                  {t('datasets:backendUnavailable')}
                 </span>
               )}
             </div>

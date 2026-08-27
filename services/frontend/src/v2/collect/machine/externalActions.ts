@@ -23,6 +23,7 @@ import type {
   ExternalControlsConfig,
 } from './externalControlConfig';
 import type { Phase } from './types';
+import { i18n } from '../../../i18n';
 
 export const EXTERNAL_ACTION_SLOTS = ['left', 'center', 'right'] as const;
 export type ExternalActionSlot = (typeof EXTERNAL_ACTION_SLOTS)[number];
@@ -218,22 +219,23 @@ export function externalActionSlotForEvent(event: {
 /** The HUD's one-word meaning of a slot, derived from the same resolution the
  *  handler uses ("—" reads as "does nothing here", which is the truth). */
 export function externalActionMeaningLabel(meaning: ExternalSlotMeaning): string {
+  const t = i18n.getFixedT(i18n.language, 'collect');
   switch (meaning.kind) {
     case 'disabled':
       return '—';
     case 'start':
-      return 'Start';
+      return t('externalStart');
     case 'stop':
-      return 'Stop';
+      return t('externalStop');
     case 'pick-failure':
-      return 'Failure';
+      return t('externalFailure');
     case 'retake':
-      return 'Retake';
+      return t('externalRetake');
     case 'save-success':
-      return 'Success + Save';
+      return t('externalSuccessSave');
     case 'save-failure-reason':
       return meaning.reason;
     case 'unassigned':
-      return 'Unassigned';
+      return t('externalUnassigned');
   }
 }

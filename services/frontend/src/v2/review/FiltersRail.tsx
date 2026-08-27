@@ -11,6 +11,7 @@
 // the fact that a filter is on (self-descriptiveness).
 
 import { forwardRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Quality, TaskResult } from '../../api/types';
 import { Card, SectionLabel, cn } from '../../components/ui';
 import { ALL_OPERATORS } from './useReviewState';
@@ -28,6 +29,8 @@ const CollapseToggle = forwardRef<
   HTMLButtonElement,
   { collapsed: boolean; onToggle: () => void; className?: string }
 >(function CollapseToggle({ collapsed, onToggle, className }, ref) {
+  const { t } = useTranslation('review');
+  const label = t(collapsed ? 'expandFilters' : 'collapseFilters');
   return (
     <button
       ref={ref}
@@ -36,8 +39,8 @@ const CollapseToggle = forwardRef<
       onClick={onToggle}
       aria-expanded={!collapsed}
       aria-controls={REGION_ID}
-      aria-label={collapsed ? 'Expand filters' : 'Collapse filters'}
-      title={collapsed ? 'Expand filters' : 'Collapse filters'}
+      aria-label={label}
+      title={label}
       className={cn(
         'flex h-7 w-7 items-center justify-center rounded-control text-[15px] leading-none text-text-muted transition-colors hover:bg-surface-muted hover:text-text-secondary',
         className,
@@ -98,6 +101,7 @@ export const FiltersRail = forwardRef<
   },
   toggleRef,
 ) {
+  const { t } = useTranslation(['review', 'common', 'datasets']);
   const hasActiveFilters =
     operatorFilter !== ALL_OPERATORS ||
     batchFilterLabel !== null ||
@@ -119,9 +123,9 @@ export const FiltersRail = forwardRef<
           {hasActiveFilters && (
             <span
               data-testid="review-filters-active-dot"
-              title="Filters are active — expand to see them"
+              title={t('review:filtersActiveHint')}
               className="h-1.5 w-1.5 rounded-full bg-accent"
-              aria-label="Filters active"
+              aria-label={t('review:filtersActive')}
             />
           )}
         </div>
@@ -137,7 +141,7 @@ export const FiltersRail = forwardRef<
         )}
       >
         <div className="flex items-center justify-between gap-2">
-          <SectionLabel>Filters</SectionLabel>
+          <SectionLabel>{t('review:filters')}</SectionLabel>
           {!collapsed && (
             <CollapseToggle
               ref={toggleRef}
@@ -153,7 +157,7 @@ export const FiltersRail = forwardRef<
             htmlFor={OPERATOR_SELECT_ID}
             className="text-[11.5px] font-semibold text-text-muted"
           >
-            Operator
+            {t('review:operator')}
           </label>
           <select
             id={OPERATOR_SELECT_ID}
@@ -162,7 +166,7 @@ export const FiltersRail = forwardRef<
             onChange={(e) => onOperatorChange(e.target.value)}
             className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] text-text-primary"
           >
-            <option value={ALL_OPERATORS}>All operators</option>
+            <option value={ALL_OPERATORS}>{t('review:allOperators')}</option>
             {operatorOptions.map((op) => (
               <option key={op} value={op}>
                 {op}
@@ -172,7 +176,9 @@ export const FiltersRail = forwardRef<
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-[11.5px] font-semibold text-text-muted">Batch</span>
+          <span className="text-[11.5px] font-semibold text-text-muted">
+            {t('review:batch')}
+          </span>
           {batchFilterLabel ? (
             <div
               data-testid="review-batch-filter-rail"
@@ -182,7 +188,8 @@ export const FiltersRail = forwardRef<
               <button
                 type="button"
                 onClick={onClearBatchFilter}
-                title="Show all batches"
+                title={t('review:showAllBatches')}
+                aria-label={t('review:showAllBatches')}
                 className="text-accent hover:text-accent-strong"
               >
                 ✕
@@ -190,16 +197,16 @@ export const FiltersRail = forwardRef<
             </div>
           ) : (
             <div
-              title="Click a row's batch chip in the table to filter to that batch"
+              title={t('review:batchFilterHint')}
               className="flex items-center rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] text-text-muted"
             >
-              All batches — click a batch chip
+              {t('review:allBatches')}
             </div>
           )}
         </div>
 
         <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-text-muted">
-          Data quality
+          {t('review:dataQuality')}
           <select
             data-testid="review-quality-filter"
             value={qualityFilter ?? ''}
@@ -208,15 +215,15 @@ export const FiltersRail = forwardRef<
             }
             className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] font-normal text-text-primary"
           >
-            <option value="">All qualities</option>
-            <option value="good">Good</option>
-            <option value="needs_review">Needs review</option>
-            <option value="not_usable">Not usable</option>
+            <option value="">{t('review:allQualities')}</option>
+            <option value="good">{t('common:status.good')}</option>
+            <option value="needs_review">{t('common:status.needsReview')}</option>
+            <option value="not_usable">{t('common:status.notUsable')}</option>
           </select>
         </label>
 
         <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-text-muted">
-          Task result
+          {t('datasets:taskResult')}
           <select
             data-testid="review-result-filter"
             value={resultFilter ?? ''}
@@ -225,21 +232,21 @@ export const FiltersRail = forwardRef<
             }
             className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] font-normal text-text-primary"
           >
-            <option value="">All results</option>
-            <option value="success">Success</option>
-            <option value="failure">Failure</option>
+            <option value="">{t('review:allResults')}</option>
+            <option value="success">{t('common:status.success')}</option>
+            <option value="failure">{t('common:status.failure')}</option>
           </select>
         </label>
 
         <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-text-muted">
-          Condition
+          {t('datasets:condition')}
           <select
             data-testid="review-condition-filter"
             value={conditionFilter}
             onChange={(event) => onConditionChange(event.target.value)}
             className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] font-normal text-text-primary"
           >
-            <option value="">All conditions</option>
+            <option value="">{t('review:allConditions')}</option>
             {conditionOptions.map((condition) => (
               <option key={condition} value={condition}>
                 {condition}
@@ -250,11 +257,11 @@ export const FiltersRail = forwardRef<
 
         <div className="flex flex-col gap-1.5">
           <span className="text-[11.5px] font-semibold text-text-muted">
-            UTC date range
+            {t('review:utcDateRange')}
           </span>
           <input
             type="date"
-            aria-label="From UTC date"
+            aria-label={t('review:fromUtcDate')}
             data-testid="review-started-from-filter"
             value={startedFrom?.slice(0, 10) ?? ''}
             onChange={(event) => onStartedFromChange(event.target.value || null)}
@@ -262,7 +269,7 @@ export const FiltersRail = forwardRef<
           />
           <input
             type="date"
-            aria-label="To UTC date"
+            aria-label={t('review:toUtcDate')}
             data-testid="review-started-to-filter"
             value={
               startedTo
@@ -279,7 +286,7 @@ export const FiltersRail = forwardRef<
           onClick={onClearFilters}
           className="rounded-control border border-border bg-surface px-2 py-1.5 text-[12.5px] font-semibold text-text-muted transition-colors hover:bg-surface-muted"
         >
-          Clear filters
+          {t('review:clearFilters')}
         </button>
       </Card>
     </div>
