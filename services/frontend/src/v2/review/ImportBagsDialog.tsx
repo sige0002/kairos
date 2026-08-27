@@ -18,7 +18,7 @@ import { useEffect, useRef, useState } from 'react';
 import { apiGet, apiPost } from '../../api/client';
 import { useOperators } from '../plans';
 import { readCaptureError } from '../captures/errors';
-import { Button, Modal, cn } from '../../components/ui';
+import { Button, FieldGroup, Modal, Notice, TextInput, cn } from '../../components/ui';
 import { formatBytes } from './format';
 
 /** The label rules the import contract states. Mirrored, not re-invented: the
@@ -108,7 +108,8 @@ const IMPORT_WATCH_MS = 1500;
 function summarize(bag: ScannedBag): string {
   const parts: string[] = [];
   if (bag.topics != null) parts.push(`${bag.topics} topics`);
-  if (bag.message_count != null) parts.push(`${bag.message_count.toLocaleString()} msgs`);
+  if (bag.message_count != null)
+    parts.push(`${bag.message_count.toLocaleString()} msgs`);
   if (bag.duration_s != null) parts.push(`${Math.round(bag.duration_s)} s`);
   if (bag.bytes != null) parts.push(formatBytes(bag.bytes));
   return parts.join(' · ');
@@ -361,19 +362,19 @@ export function ImportBagsDialog({
     >
       <div className="flex flex-col gap-3" data-testid="import-dialog">
         <p className="text-[12.5px] leading-relaxed text-text-secondary">
-          Give the folder your recordings sit in, <strong>as the server sees
-          it</strong> (these are multi-GB directories, so nothing is uploaded
-          from this browser). Each bag directory — the one holding the{' '}
-          <code>.mcap</code> files and <code>metadata.yaml</code> — becomes one
-          recording in Review, copied into kairos&apos;s store.{' '}
-          <strong>Only the folders directly inside are checked</strong> — for a
-          tree like <code>incoming/&lt;date&gt;/&lt;session&gt;/</code>, name
-          the <code>&lt;date&gt;</code> folder. Your folder is left untouched
-          unless you choose Move.
+          Give the folder your recordings sit in, <strong>as the server sees it</strong>{' '}
+          (these are multi-GB directories, so nothing is uploaded from this browser).
+          Each bag directory — the one holding the <code>.mcap</code> files and{' '}
+          <code>metadata.yaml</code> — becomes one recording in Review, copied into
+          kairos&apos;s store.{' '}
+          <strong>Only the folders directly inside are checked</strong> — for a tree
+          like <code>incoming/&lt;date&gt;/&lt;session&gt;/</code>, name the{' '}
+          <code>&lt;date&gt;</code> folder. Your folder is left untouched unless you
+          choose Move.
         </p>
 
         <div className="flex gap-2">
-          <input
+          <TextInput
             aria-label="import source folder"
             data-testid="import-path"
             value={path}
@@ -386,7 +387,7 @@ export function ImportBagsDialog({
               }
             }}
             placeholder="/data/incoming-bags"
-            className="w-full rounded-control border border-border px-2 py-1.5 font-mono text-sm focus:border-accent focus:outline-none"
+            className="w-full font-mono"
           />
           <Button
             data-testid="import-scan"
@@ -398,26 +399,30 @@ export function ImportBagsDialog({
         </div>
 
         {scanError && (
-          <p data-testid="import-scan-error" role="alert" className="text-sm text-status-danger-text">
+          <Notice tone="danger" live="assertive" data-testid="import-scan-error">
             {scanError}
-          </p>
+          </Notice>
         )}
 
         {scan && path.trim() !== scannedPath && (
-          <p
+          <Notice
+            tone="warning"
+            live="assertive"
             data-testid="import-stale-scan"
-            role="alert"
-            className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] text-status-warning-text"
+            className="text-[12px]"
           >
-            The list below is for <code>{scannedPath}</code>, not the folder in
-            the box. Scan again before importing.
-          </p>
+            The list below is for <code>{scannedPath}</code>, not the folder in the box.
+            Scan again before importing.
+          </Notice>
         )}
 
         {scan && (
           <>
             <div className="flex flex-wrap items-center gap-3">
-              <span className="text-[12.5px] text-text-secondary" data-testid="import-summary">
+              <span
+                className="text-[12.5px] text-text-secondary"
+                data-testid="import-summary"
+              >
                 {scan.bags.length} director
                 {scan.bags.length === 1 ? 'y' : 'ies'} found · {scan.importable} can be
                 imported
@@ -449,13 +454,26 @@ export function ImportBagsDialog({
             {/* Applied to every bag in THIS import (the server stamps them on
                 each capture's birth manifest). Said once, above the three
                 fields, rather than three times inside their placeholders. */}
-            <div className="flex flex-col gap-1.5 rounded-control border border-border bg-surface-muted/70 px-3 py-2.5">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-                Labels for every bag in this import (optional)
-              </span>
+            <FieldGroup
+              id="import-labels"
+              label="Labels for every bag in this import (optional)"
+              className="rounded-control border border-border bg-surface-muted/70 px-3 py-2.5"
+              error={
+                tagError ? (
+                  <span data-testid="import-tag-error">
+                    {tagError} Nothing was imported — fix the labels and run it again.
+                  </span>
+                ) : undefined
+              }
+              help={
+                tagError
+                  ? undefined
+                  : 'A bag recorded outside kairos carries no operator or task of its own. Left blank, it arrives without them.'
+              }
+            >
               <div className="grid grid-cols-3 gap-2">
                 {TAG_FIELDS.map((field) => (
-                  <input
+                  <TextInput
                     key={field.key}
                     type="text"
                     data-testid={`import-tag-${field.key}`}
@@ -470,7 +488,7 @@ export function ImportBagsDialog({
                       // The refusal was about what was there before.
                       setTagError(null);
                     }}
-                    className="rounded-control border border-border px-2 py-1 text-[12.5px] text-text-primary focus:border-accent focus:outline-none disabled:bg-surface-muted"
+                    className="px-2 py-1 text-[12.5px]"
                   />
                 ))}
               </div>
@@ -482,31 +500,18 @@ export function ImportBagsDialog({
                   <option key={name} value={name} />
                 ))}
               </datalist>
-              {tagError ? (
-                <span
-                  role="alert"
-                  data-testid="import-tag-error"
-                  className="rounded-control border border-status-warning-border bg-status-warning-bg px-2.5 py-1.5 text-[11.5px] text-status-warning-text"
-                >
-                  {tagError} Nothing was imported — fix the labels and run it again.
-                </span>
-              ) : (
-                <span className="text-[11px] leading-snug text-text-muted">
-                  A bag recorded outside kairos carries no operator or task of its
-                  own. Left blank, it arrives without them.
-                </span>
-              )}
-            </div>
+            </FieldGroup>
 
             {scan.truncated && (
-              <p
+              <Notice
+                tone="warning"
+                live="assertive"
                 data-testid="import-truncated"
-                role="alert"
-                className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] text-status-warning-text"
+                className="text-[12px]"
               >
-                That folder holds more directories than one scan reports —
-                the list below is INCOMPLETE. Name a subfolder to see the rest.
-              </p>
+                That folder holds more directories than one scan reports — the list
+                below is INCOMPLETE. Name a subfolder to see the rest.
+              </Notice>
             )}
 
             {(scan.nested?.length ?? 0) > 0 && (
@@ -542,9 +547,9 @@ export function ImportBagsDialog({
             >
               {scan.bags.length === 0 && (
                 <li className="px-3 py-3 text-[12.5px] text-text-muted">
-                  No rosbag directly inside that folder. Bag directories are
-                  the ones holding the .mcap files; only one level down is
-                  checked, so name the folder those directories sit in.
+                  No rosbag directly inside that folder. Bag directories are the ones
+                  holding the .mcap files; only one level down is checked, so name the
+                  folder those directories sit in.
                 </li>
               )}
               {scan.bags.map((bag) => {
@@ -632,18 +637,18 @@ export function ImportBagsDialog({
 
             {selectable.length > 0 && !running && (
               <p className="text-[11.5px] text-text-muted">
-                Imported recordings arrive with no operator or task — label them
-                in Review. Large folders copy in the background; the recordings
-                appear as each one lands.
+                Imported recordings arrive with no operator or task — label them in
+                Review. Large folders copy in the background; the recordings appear as
+                each one lands.
               </p>
             )}
 
             {failures > 0 && !running && (
-              <p role="alert" data-testid="import-failures" className="text-sm text-status-danger-text">
+              <Notice tone="danger" live="assertive" data-testid="import-failures">
                 {failures} folder{failures === 1 ? '' : 's'} failed and{' '}
-                {failures === 1 ? 'was' : 'were'} skipped — each one says why
-                above. The rest were imported.
-              </p>
+                {failures === 1 ? 'was' : 'were'} skipped — each one says why above. The
+                rest were imported.
+              </Notice>
             )}
           </>
         )}

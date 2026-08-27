@@ -50,6 +50,14 @@ Core concept: **recording quality and task result are separate axes** (a failed 
 
 ## Parts shared by every screen (v2)
 
+### Presentation primitives boundary
+
+`src/components/ui.tsx` handles only visuals that have the same **meaning, interaction, and accessibility** across multiple screens. Button / IconButton, Modal, Card, Badge, Notice, single-input Field / multi-input FieldGroup and native input/select/textarea, and SettingsSection are reused here. All content is passed by the caller as a `ReactNode`; operator-facing English is not hardcoded into the primitives. This keeps the same contract for themes, focus, disabled, destructive, and wrapping across all tabs.
+
+- Share: standard controls with the same interaction contract, notification tone / live region, field label/help/error, and Settings headings, supporting descriptions, and action frames. Pass a stable `id` to `FieldGroup` so the fieldset is programmatically associated with its help/error text. Do not wrap a single input in `FieldGroup` as a substitute for its individual label.
+- Do not share: workflows whose wording, confirmation conditions, failure recovery, or state transitions differ, such as capture deletion, import, Collect recording controls, and pipeline execution. Keep these on the screen side and compose only the necessary display primitives.
+- Check existing primitives before adding a new standard control. Do not duplicate focus rings, disabled states, status panels, or accessible names for icon-only controls inside a feature. An exception is a screen-specific density or interaction that is explained in the same place.
+
 ### The Availability chip
 
 Derived from `capture.replica.state` and `capture.digest_state` by a **single decision function**, and drawn as the same chip by Review / Datasets / Validation. "Is it usable" (`usable`) is a value derived from this chip, and it is the shared precondition for running jobs, previewing, and archiving.

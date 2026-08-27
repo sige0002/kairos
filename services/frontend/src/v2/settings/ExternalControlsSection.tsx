@@ -15,7 +15,7 @@
 // current take and re-record) is stated, because it is the one destructive
 // action an operator can bind to a pedal.
 
-import { Card } from '../../components/ui';
+import { Button, Notice, Select, SettingsSection } from '../../components/ui';
 import {
   ALLOWED_ACTIONS,
   EXTERNAL_CONTROL_SLOTS,
@@ -50,32 +50,31 @@ export function ExternalControlsSection() {
     useExternalControlsSettings();
 
   return (
-    <Card
-      className="flex min-w-0 flex-col overflow-auto lg:col-span-2"
-      data-testid="settings-ext-controls"
-    >
-      <div className="flex flex-col gap-1 border-b border-border px-4 py-[13px]">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          External controls
-        </h2>
-        <span className="text-[12px] leading-relaxed text-text-muted">
+    <SettingsSection
+      title="External controls"
+      description={
+        <>
           Which action each external channel (LEFT / CENTER / RIGHT) performs in each
           Collect state. Any device may emit the three logical inputs — a keyboard
           shortcut, a macro pad, or a programmable foot pedal; no specific hardware is
           required. Only the actions each state allows are offered, and an action cannot
           sit on two channels of a state. Changes apply immediately and are shared with
           every terminal.
-        </span>
-      </div>
+        </>
+      }
+      className="lg:col-span-2"
+      data-testid="settings-ext-controls"
+    >
       {invalid && (
-        <div
+        <Notice
+          tone="warning"
+          live="assertive"
           data-testid="ext-controls-invalid"
-          role="alert"
-          className="mx-3 mt-3 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] text-status-warning-text"
+          className="mx-3 mt-3 text-[12px]"
         >
           The saved external-control layout could not be read, so the default layout is
           active. Change any channel below to store a valid layout.
-        </div>
+        </Notice>
       )}
       <div className="flex flex-col gap-3 p-3">
         {EXTERNAL_CONTROL_STATES.map((state) => (
@@ -112,7 +111,7 @@ export function ExternalControlsSection() {
                     <span className="text-[10.5px] font-bold uppercase tracking-[0.08em] text-text-muted">
                       {slot}
                     </span>
-                    <select
+                    <Select
                       data-testid={`ext-control-${state}-${slot}`}
                       value={current}
                       onChange={(event) =>
@@ -122,7 +121,7 @@ export function ExternalControlsSection() {
                           event.target.value as ExternalControlAction,
                         )
                       }
-                      className="h-[34px] min-w-0 rounded-control border border-border bg-surface px-2 text-[12.5px] text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+                      className="h-[34px] w-full px-2 text-[12.5px] disabled:opacity-40"
                     >
                       {(
                         ['none', ...ALLOWED_ACTIONS[state]] as ExternalControlAction[]
@@ -135,23 +134,24 @@ export function ExternalControlsSection() {
                           {ACTION_LABELS[action]}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   </label>
                 );
               })}
             </div>
           </div>
         ))}
-        <button
-          type="button"
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={resetToDefault}
           data-testid="ext-controls-reset"
-          className="self-start rounded-control border border-dashed border-border-strong bg-surface px-3 py-2 text-[12.5px] font-semibold text-accent hover:bg-interaction-selected"
+          className="self-start border-dashed border-border-strong px-3 py-2 text-[12.5px] text-accent hover:bg-interaction-selected"
         >
           Reset to default
-        </button>
+        </Button>
       </div>
       <Toast message={toast} testId="ext-controls-toast" />
-    </Card>
+    </SettingsSection>
   );
 }
