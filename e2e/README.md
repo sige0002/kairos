@@ -129,8 +129,8 @@ loss, container/host CPU snapshots, and completed Voice plays. While recording,
 it calls `POST /api/v1/audio/assets` and records the expected deferred response;
 it never asks Collect to synthesize a phrase. The tool waits for the common
 pre-armed baseline and creates any needed cached assets before the comparison,
-so run it only against a freshly built E2E stack with the local `espeak-ng`
-provider available. It fails when either round reports DDS loss or Audio-on has
+so run it only against a freshly built E2E stack with the local Kokoro sidecar
+available. It fails when either round reports DDS loss or Audio-on has
 no resolved Voice playback. Output is JSON for review; it is a representative
 measurement, not a CI threshold or a replacement for `make test-e2e`.
 

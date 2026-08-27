@@ -43,12 +43,6 @@ ENV VENV=/opt/venv
 ENV PATH="$VENV/bin:$PATH"
 COPY --from=builder /opt/venv /opt/venv
 
-# Local, CPU-only TTS used only while Settings prepares cached voice assets.
-# Collect itself never invokes the engine and only plays already-cached WAVs.
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y espeak-ng \
-    && rm -rf /var/lib/apt/lists/*
-
 # Run as a non-root user (no devices/ROS graph needed here).
 RUN useradd --create-home --uid 10001 appuser
 USER appuser

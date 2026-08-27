@@ -7,7 +7,7 @@ A system that **records, monitors, validates, and converts** ROS 2 robot data. T
 recording format is **MCAP**, and live video, live metrics, and post-hoc validation are all
 organized around this "source of truth."
 
-> **Status:** All 7 core services (frontend included), the optional LeRobot exporter, and the
+> **Status:** All 8 core services (frontend and Kokoro TTS included), the optional LeRobot exporter, and the
 > UI-driven acceptance suite (`make test-e2e`) are implemented. The architecture below is based on the `fig_const/` diagrams.
 
 ## Architecture
@@ -32,6 +32,7 @@ flowchart TB
   end
 
   FE["frontend<br/>Vite + React + TS"]
+  TTS["kokoro<br/>local English/Japanese TTS<br/>outside recording path"]
 
   subgraph store["capture store (/data)"]
     MCAP[("objects/&lt;capture_id&gt;/<br/>*.mcap + object_manifest.json<br/>+ record.json = the source of truth")]
@@ -45,6 +46,7 @@ flowchart TB
   REC --> MCAP
   MCAP --> DR --> OUT
   FE <-->|"REST / SSE / WebRTC"| ORC
+  ORC <-->|"prepare voice assets"| TTS
   ORC <--> REC & MON & PROBE & WEB
   ORC <-->|"POST /jobs"| DR
   ORC -->|"indexes, deletes, regenerates views"| DB
@@ -78,6 +80,7 @@ flowchart LR
 | [api_orchestrator](docs/specs/en/api_orchestrator.md) | The single API hub. Handles job lifecycle, state, configuration, and result aggregation. |
 | [dora_runner](docs/specs/en/dora_runner.md) | Post-recording **validation & conversion** pipeline. Validation runs as a bundled **bagflow flow on real dora**. Enabled: `fast_validation` / `full_validation` / `loss_report` / `video_check` / `signal_report`. |
 | [frontend](docs/specs/en/frontend.md) | A backend-driven Web UI (UI labels in English). Role tabs (Console v2): Collect / Review / Datasets / Validation / Monitor / Settings. |
+| kokoro | Offline CPU English/Japanese TTS sidecar using Kokoro 82M. Settings prepares audio in advance; it never gates the recording path. |
 
 ## Specification docs
 
@@ -156,6 +159,10 @@ cp .env.example .env          # edit as needed
 docker compose --project-directory . -f compose/compose.yaml build
 docker compose --project-directory . -f compose/compose.yaml up
 ```
+
+On a PC that also uses Settings Voice/TTS, enable `COMPOSE_PROFILES=audio` in `.env`
+before running the same `make build` and `make up`. Kokoro is off by default because it
+uses about 1.5 GiB of memory.
 
 > **`make up` does not build** (it only starts). Building needs the network even when nothing changed,
 > so an `up` that always built could not bring the stack up **in the field with no network**. To apply

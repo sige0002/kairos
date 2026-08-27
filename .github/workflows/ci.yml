@@ -38,6 +38,7 @@ jobs:
           - services/api_orchestrator
           - services/dora_runner
           - services/lerobot_exporter
+          - services/kokoro
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -142,12 +143,6 @@ jobs:
           echo "== compose.yaml + archive.yaml + lerobot.yaml =="
           docker compose --project-directory . -f compose/compose.yaml \
             -f compose/archive.yaml -f compose/lerobot.yaml config -q
-          echo "== compose.yaml + voicevox.yaml =="
-          docker compose --project-directory . -f compose/compose.yaml \
-            -f compose/voicevox.yaml config -q
-          echo "== recording.yaml + voicevox.yaml =="
-          docker compose --project-directory . -f compose/recording.yaml \
-            -f compose/voicevox.yaml config -q
           # The exports-relocation overlay requires EXPORTS_DIR (make appends it
           # only when that is set), so render it with one supplied.
           echo "== + lerobot-exports.yaml (EXPORTS_DIR set) =="

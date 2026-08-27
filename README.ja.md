@@ -5,7 +5,7 @@
 ROS 2 のロボットデータを **収録・監視・検証・変換** するシステムです。収録の正本フォーマットは
 **MCAP** であり、ライブ映像・ライブメトリクス・事後検証はすべてこの「正本」を中心に構成されます。
 
-> **ステータス:** 全 7 コアサービス（frontend 含む）＋任意の LeRobot exporter＋UI 駆動の
+> **ステータス:** 全 8 コアサービス（frontend・Kokoro TTS 含む）＋任意の LeRobot exporter＋UI 駆動の
 > 受け入れテスト（`make test-e2e`）を実装済み。以下のアーキテクチャは `fig_const/` の図に基づきます。
 
 ## アーキテクチャ
@@ -30,6 +30,7 @@ flowchart TB
   end
 
   FE["frontend<br/>Vite + React + TS"]
+  TTS["kokoro<br/>local 英日 TTS<br/>録画経路外"]
 
   subgraph store["capture store（/data）"]
     MCAP[("objects/&lt;capture_id&gt;/<br/>*.mcap + object_manifest.json<br/>+ record.json ＝ 正本")]
@@ -43,6 +44,7 @@ flowchart TB
   REC --> MCAP
   MCAP --> DR --> OUT
   FE <-->|"REST / SSE / WebRTC"| ORC
+  ORC <-->|"事前音声生成"| TTS
   ORC <--> REC & MON & PROBE & WEB
   ORC <-->|"POST /jobs"| DR
   ORC -->|"索引・削除・views 再生成"| DB
@@ -75,6 +77,7 @@ flowchart LR
 | [api_orchestrator](docs/specs/ja/api_orchestrator.md) | 単一の API ハブ。ジョブのライフサイクル・状態・設定・結果集約を担う。 |
 | [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン。検証は**実 dora 上の bagflow フロー**（同梱）。有効: `fast_validation` / `full_validation` / `loss_report` / `video_check` / `signal_report`。 |
 | [frontend](docs/specs/ja/frontend.md) | backend-driven な Web UI（UI 表記は英語）。役割タブ構成（Console v2）: Collect / Review / Datasets / Validation / Monitor / Settings。 |
+| kokoro | Kokoro 82M による offline CPU 英日 TTS sidecar。Settings で音声を事前生成し、録画経路は gate しない。 |
 
 ## 仕様ドキュメント
 
@@ -152,6 +155,9 @@ cp .env.example .env          # 必要に応じて編集
 docker compose --project-directory . -f compose/compose.yaml build
 docker compose --project-directory . -f compose/compose.yaml up
 ```
+
+Settings の Voice/TTS も使う PC では `.env` の `COMPOSE_PROFILES=audio` を有効にしてから、
+同じ `make build` と `make up` を実行します。Kokoro は約 1.5 GiB のメモリを使うため既定では起動しません。
 
 > **`make up` はビルドしません**（起動するだけ）。ビルドは変更が無くてもネットワークを必要とする
 > ため、`up` が毎回ビルドしていると**ネットの無い現場でスタックを起動できない**からです。コード変更を

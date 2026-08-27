@@ -1,0 +1,42 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "kairos-kokoro"
+version = "0.1.0"
+description = "Isolated Kokoro-82M TTS sidecar for kairos."
+requires-python = ">=3.12,<3.13"
+license = { text = "Apache-2.0" }
+dependencies = [
+    "fastapi==0.116.1",
+    "pydantic==2.11.7",
+    "uvicorn==0.35.0",
+]
+
+[project.optional-dependencies]
+runtime = [
+    "en-core-web-sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
+    "kokoro==0.9.4",
+    "pyopenjtalk-plus[onnxruntime]==0.4.1.post9",
+    "soundfile==0.13.1",
+    "torch==2.6.0+cpu",
+]
+test = [
+    "httpx==0.28.1",
+    "pytest==8.4.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/kairos_kokoro"]
+
+[tool.hatch.metadata]
+allow-direct-references = true
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }

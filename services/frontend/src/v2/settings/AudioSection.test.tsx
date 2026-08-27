@@ -38,8 +38,8 @@ test('audio is off by default and global controls remain independent', async () 
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(
     jsonResponse({
       available: true,
-      engine: 'test',
-      voices: { en: ['en-us'], ja: ['ja'] },
+      engine: 'kokoro-82m',
+      voices: { en: ['af_heart'], ja: ['jf_alpha'] },
     }),
   );
   renderWithClient(<AudioSection />);
@@ -57,20 +57,25 @@ test('audio is off by default and global controls remain independent', async () 
 
 test('preparing Japanese assets includes configured failure reason text', async () => {
   let posted: {
-    phrases: { key: string; text: string; language: string }[];
+    phrases: { key: string; text: string; language: string; speed: number }[];
   } | null = null;
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     if (String(input).includes('/audio/status'))
       return Promise.resolve(
         jsonResponse({
           available: true,
-          engine: 'espeak-ng',
-          voices: { en: ['en-us'], ja: ['ja'] },
+          engine: 'kokoro-82m',
+          voices: { en: ['af_heart'], ja: ['jf_alpha'] },
         }),
       );
     posted = JSON.parse(String(init?.body));
     return Promise.resolve(
-      jsonResponse({ available: true, engine: 'test', assets: [], errors: [] }),
+      jsonResponse({
+        available: true,
+        engine: 'kokoro-82m',
+        assets: [],
+        errors: [],
+      }),
     );
   });
   renderWithClient(<AudioSection />);
@@ -82,20 +87,21 @@ test('preparing Japanese assets includes configured failure reason text', async 
   await waitFor(() => expect(posted).not.toBeNull());
   expect(posted!.phrases.some((phrase) => phrase.text === 'Grasp missed')).toBe(true);
   expect(posted!.phrases.find((phrase) => phrase.key.startsWith('start:'))?.text).toBe(
-    'ろくがかいし',
+    '録画開始',
   );
   expect(posted!.phrases.find((phrase) => phrase.key.startsWith('error:'))?.text).toBe(
-    'えらあ',
+    'エラー',
   );
   expect(posted!.phrases.every((phrase) => phrase.language === 'ja')).toBe(true);
+  expect(posted!.phrases.every((phrase) => phrase.speed === 1)).toBe(true);
 });
 
 test('sound preview keeps its Web Audio player alive until Settings unmounts', async () => {
   vi.spyOn(globalThis, 'fetch').mockResolvedValue(
     jsonResponse({
       available: true,
-      engine: 'test',
-      voices: { en: ['en-us'], ja: ['test-ja'] },
+      engine: 'kokoro-82m',
+      voices: { en: ['af_heart'], ja: ['jf_alpha'] },
     }),
   );
   const view = renderWithClient(<AudioSection />);
@@ -111,17 +117,17 @@ test('sound preview keeps its Web Audio player alive until Settings unmounts', a
   expect(cuePlayer.dispose).toHaveBeenCalledOnce();
 });
 
-test('preparing after a speaker change sends the selected unique voice', async () => {
+test('preparing after a speaker change sends the selected Kokoro voice', async () => {
   let postedVoice = '';
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     if (String(input).includes('/audio/status'))
       return Promise.resolve(
         jsonResponse({
           available: true,
-          engine: 'voicevox+espeak-ng',
+          engine: 'kokoro-82m',
           voices: {
-            en: ['en-us'],
-            ja: ['3:Operator / Normal', '7:Operator / Calm'],
+            en: ['af_heart'],
+            ja: ['jf_alpha', 'jm_kumo'],
           },
         }),
       );
@@ -132,7 +138,7 @@ test('preparing after a speaker change sends the selected unique voice', async (
     return Promise.resolve(
       jsonResponse({
         available: true,
-        engine: 'voicevox+espeak-ng',
+        engine: 'kokoro-82m',
         assets: [],
         errors: [],
         deferred: false,
@@ -141,34 +147,110 @@ test('preparing after a speaker change sends the selected unique voice', async (
   });
   renderWithClient(<AudioSection />);
 
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: 'Voice' })).toBeEnabled(),
+  );
   fireEvent.change(screen.getByLabelText('Language'), { target: { value: 'ja' } });
   await waitFor(() =>
-    expect(screen.getByLabelText('Voice')).toHaveValue('3:Operator / Normal'),
+    expect(screen.getByRole('combobox', { name: 'Voice' })).toHaveValue('jf_alpha'),
   );
-  expect(screen.getByText('VOICEVOX:Operator · Normal')).toBeVisible();
-  fireEvent.change(screen.getByLabelText('Voice'), {
-    target: { value: '7:Operator / Calm' },
+  fireEvent.change(screen.getByRole('combobox', { name: 'Voice' }), {
+    target: { value: 'jm_kumo' },
   });
+  expect(getAudioSettings().voiceName).toBe('jm_kumo');
+  await waitFor(() =>
+    expect(screen.getByRole('combobox', { name: 'Voice' })).toHaveValue('jm_kumo'),
+  );
   fireEvent.click(screen.getByRole('button', { name: 'Prepare voice assets' }));
 
-  await waitFor(() => expect(postedVoice).toBe('7:Operator / Calm'));
+  await waitFor(() => expect(postedVoice).toBe('jm_kumo'));
 });
 
-test('does not credit VOICEVOX when the active English route uses eSpeak', async () => {
-  vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-    jsonResponse({
-      available: true,
-      engine: 'voicevox+espeak-ng',
-      voices: {
-        en: ['en-us'],
-        ja: ['3:Operator / Normal'],
-      },
-    }),
-  );
+test('speech-rate changes invalidate assets and are sent to prepare', async () => {
+  let postedSpeed = 0;
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    if (String(input).includes('/audio/status'))
+      return Promise.resolve(
+        jsonResponse({
+          available: true,
+          engine: 'kokoro-82m',
+          voices: { en: ['af_heart'], ja: ['jf_alpha'] },
+        }),
+      );
+    const body = JSON.parse(String(init?.body)) as {
+      phrases: { speed: number }[];
+    };
+    postedSpeed = body.phrases[0]?.speed ?? 0;
+    return Promise.resolve(
+      jsonResponse({
+        available: true,
+        engine: 'kokoro-82m',
+        assets: [],
+        errors: [],
+        deferred: false,
+      }),
+    );
+  });
+  setAudioSettings({
+    ...getAudioSettings(),
+    preparedEngine: 'kokoro-82m',
+    assets: { prepared: '/voice.wav' },
+  });
   renderWithClient(<AudioSection />);
 
-  await waitFor(() => expect(screen.getByLabelText('Voice')).toHaveValue('en-us'));
-  expect(screen.queryByText(/^VOICEVOX:/)).not.toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText('Speech rate'), {
+    target: { value: '0.9' },
+  });
+  expect(getAudioSettings().assets).toEqual({});
+  expect(getAudioSettings().preparedEngine).toBeNull();
+  await waitFor(() => expect(screen.getByLabelText('Speech rate')).toHaveValue('0.9'));
+  const prepare = screen.getByRole('button', { name: 'Prepare voice assets' });
+  await waitFor(() => expect(prepare).toBeEnabled());
+  fireEvent.click(prepare);
+  await waitFor(() => expect(postedSpeed).toBe(0.9));
+});
+
+test('an unknown stored voice recovers to the live catalog before prepare', async () => {
+  let postedVoice = '';
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    if (String(input).includes('/audio/status'))
+      return Promise.resolve(
+        jsonResponse({
+          available: true,
+          engine: 'kokoro-82m',
+          model_revision: 'revision-a',
+          voices: { en: ['af_heart'], ja: ['jf_alpha'] },
+        }),
+      );
+    const body = JSON.parse(String(init?.body)) as {
+      phrases: { voice: string }[];
+    };
+    postedVoice = body.phrases[0]?.voice ?? '';
+    return Promise.resolve(
+      jsonResponse({
+        available: true,
+        engine: 'kokoro-82m',
+        assets: [],
+        errors: [],
+        deferred: false,
+      }),
+    );
+  });
+  setAudioSettings({
+    ...getAudioSettings(),
+    voiceName: 'bogus_voice',
+    preparedEngine: 'kokoro-82m',
+    preparedModelRevision: 'old-revision',
+    assets: { stale: '/stale.wav' },
+  });
+  renderWithClient(<AudioSection />);
+
+  await waitFor(() => expect(getAudioSettings().voiceName).toBe('af_heart'));
+  expect(getAudioSettings().assets).toEqual({});
+  expect(getAudioSettings().preparedModelRevision).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare voice assets' }));
+
+  await waitFor(() => expect(postedVoice).toBe('af_heart'));
 });
 
 test('voice preparation merges into current settings instead of stale render state', async () => {
@@ -178,8 +260,8 @@ test('voice preparation merges into current settings instead of stale render sta
       return Promise.resolve(
         jsonResponse({
           available: true,
-          engine: 'test',
-          voices: { en: ['en-us'], ja: ['ja'] },
+          engine: 'kokoro-82m',
+          voices: { en: ['af_heart'], ja: ['jf_alpha'] },
         }),
       );
     return new Promise<Response>((resolve) => {
@@ -196,7 +278,7 @@ test('voice preparation merges into current settings instead of stale render sta
   finishPreparation!(
     jsonResponse({
       available: true,
-      engine: 'test',
+      engine: 'kokoro-82m',
       assets: [{ key: 'success:x', url: '/voice.wav', asset_id: 'x' }],
       errors: [],
     }),
@@ -214,14 +296,14 @@ test('recording deferral names the reason and recovery instead of skipped phrase
       return Promise.resolve(
         jsonResponse({
           available: true,
-          engine: 'test',
-          voices: { en: ['en-us'], ja: ['ja'] },
+          engine: 'kokoro-82m',
+          voices: { en: ['af_heart'], ja: ['jf_alpha'] },
         }),
       );
     return Promise.resolve(
       jsonResponse({
         available: true,
-        engine: 'test',
+        engine: 'kokoro-82m',
         assets: [],
         errors: ['Voice generation is deferred while recording is active'],
         deferred: true,

@@ -37,6 +37,10 @@ x-build-proxy-args: &build-proxy-args
   no_proxy: ${no_proxy:-${NO_PROXY:-}}
 
 services:
+  kokoro:
+    extends:
+      file: compose/compose.yaml
+      service: kokoro
   orchestrator:
     extends:
       file: compose/compose.yaml

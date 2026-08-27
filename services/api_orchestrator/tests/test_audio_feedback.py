@@ -4,19 +4,18 @@
 
 from __future__ import annotations
 
-import subprocess
+import json
 import threading
 import time
 from io import BytesIO
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import urlsplit
 
 import pytest
 from api_orchestrator.audio_feedback import (
     AudioFeedbackService,
-    EspeakProvider,
     GenerationDeferred,
-    VoicevoxProvider,
+    KokoroProvider,
 )
 from fastapi.testclient import TestClient
 
@@ -28,17 +27,18 @@ class FakeTtsProvider:
     voices = {"en": ["test-en"], "ja": ["test-ja"]}
 
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str, str, Path]] = []
+        self.calls: list[tuple[str, str, str, float, Path]] = []
 
     def synthesize(
         self,
         text: str,
         language: str,
         voice: str,
+        speed: float,
         output: Path,
         cancel: threading.Event,
     ) -> None:
-        self.calls.append((text, language, voice, output))
+        self.calls.append((text, language, voice, speed, output))
         output.write_bytes(b"RIFF-test-wave")
 
     def cancel(self) -> None:
@@ -46,7 +46,7 @@ class FakeTtsProvider:
 
 
 class FakeHttpResponse(BytesIO):
-    """Small urllib response stand-in used by the VOICEVOX provider tests."""
+    """Small urllib response stand-in used by the Kokoro provider tests."""
 
     def __enter__(self) -> FakeHttpResponse:
         return self
@@ -55,69 +55,128 @@ class FakeHttpResponse(BytesIO):
         self.close()
 
 
-def test_voicevox_uses_selected_style_id_for_japanese_synthesis(
+def test_kokoro_forwards_language_voice_and_speed(
     tmp_path: Path,
 ) -> None:
     calls: list[tuple[str, str, bytes | None]] = []
 
     def open_request(request, timeout: float):
-        assert timeout == 20.0
+        assert timeout == 90.0
         method = request.get_method()
         url = request.full_url
         body = request.data
         calls.append((method, url, body))
         path = urlsplit(url).path
-        if path == "/speakers":
+        if path == "/voices":
             return FakeHttpResponse(
-                b'[{"name":"Operator","styles":['
-                b'{"name":"Normal","id":3},{"name":"Calm","id":7}]}]'
+                b'{"model_revision":"revision",'
+                b'"voices":{"en":["af_heart"],"ja":["jf_alpha"]}}'
             )
-        if path == "/audio_query":
-            query = parse_qs(urlsplit(url).query)
-            assert query["speaker"] == ["7"]
-            assert query["text"] == ["録画開始"]
-            return FakeHttpResponse(b'{"accent_phrases":[]}')
-        if path == "/synthesis":
-            assert parse_qs(urlsplit(url).query)["speaker"] == ["7"]
-            assert body == b'{"accent_phrases":[]}'
-            return FakeHttpResponse(b"RIFF-voicevox-wave")
+        if path == "/synthesize":
+            assert json.loads(body or b"") == {
+                "text": "録画開始",
+                "language": "ja",
+                "voice": "jf_alpha",
+                "speed": 0.9,
+            }
+            return FakeHttpResponse(b"RIFF-kokoro-wave")
         raise AssertionError(url)
 
-    provider = VoicevoxProvider("http://voicevox.test:50021", open_request=open_request)
-    assert provider.voices == {"ja": ["3:Operator / Normal", "7:Operator / Calm"]}
+    provider = KokoroProvider("http://kokoro.test:8050", open_request=open_request)
+    assert provider.voices == {"en": ["af_heart"], "ja": ["jf_alpha"]}
+    assert provider.model_revision == "revision"
 
     output = tmp_path / "voice.wav"
     provider.synthesize(
         "録画開始",
         "ja",
-        "7:Operator / Calm",
+        "jf_alpha",
+        0.9,
         output,
         threading.Event(),
     )
 
-    assert output.read_bytes() == b"RIFF-voicevox-wave"
+    assert output.read_bytes() == b"RIFF-kokoro-wave"
     assert [urlsplit(url).path for _, url, _ in calls] == [
-        "/speakers",
-        "/audio_query",
-        "/synthesis",
+        "/voices",
+        "/synthesize",
     ]
 
 
-def test_voicevox_style_changes_asset_identity(tmp_path: Path) -> None:
+def test_kokoro_cancel_calls_the_sidecar() -> None:
+    calls: list[tuple[str, float]] = []
+
+    def open_request(request, timeout: float):
+        path = urlsplit(request.full_url).path
+        calls.append((path, timeout))
+        if path == "/voices":
+            return FakeHttpResponse(b'{"voices":{"en":["af_heart"],"ja":["jf_alpha"]}}')
+        assert path == "/cancel"
+        return FakeHttpResponse(b"")
+
+    provider = KokoroProvider("http://kokoro.test:8050", open_request=open_request)
+
+    provider.cancel()
+
+    assert calls == [("/voices", 90.0), ("/cancel", 2.0)]
+
+
+def test_kokoro_refreshes_model_revision() -> None:
+    revisions = iter(("revision-a", "revision-b"))
+
     def open_request(request, _timeout: float):
-        assert urlsplit(request.full_url).path == "/speakers"
+        assert urlsplit(request.full_url).path == "/voices"
+        revision = next(revisions)
         return FakeHttpResponse(
-            b'[{"name":"Operator","styles":['
-            b'{"name":"Normal","id":3},{"name":"Calm","id":7}]}]'
+            json.dumps(
+                {
+                    "model_revision": revision,
+                    "voices": {"en": ["af_heart"], "ja": ["jf_alpha"]},
+                }
+            ).encode()
         )
 
-    provider = VoicevoxProvider("http://voicevox.test:50021", open_request=open_request)
+    provider = KokoroProvider("http://kokoro.test:8050", open_request=open_request)
+
+    provider.refresh()
+
+    assert provider.model_revision == "revision-b"
+
+
+def test_voice_and_speed_change_asset_identity(tmp_path: Path) -> None:
+    def open_request(request, _timeout: float):
+        assert urlsplit(request.full_url).path == "/voices"
+        return FakeHttpResponse(
+            b'{"voices":{"en":["af_heart","af_bella"],"ja":["jf_alpha"]}}'
+        )
+
+    provider = KokoroProvider("http://kokoro.test:8050", open_request=open_request)
     service = AudioFeedbackService(tmp_path / "audio", provider)
 
-    normal = service.asset_id("成功", "ja", "3:Operator / Normal")
-    calm = service.asset_id("成功", "ja", "7:Operator / Calm")
+    normal = service.asset_id("Success", "en", "af_heart", 1.0)
+    other_voice = service.asset_id("Success", "en", "af_bella", 1.0)
+    slower = service.asset_id("Success", "en", "af_heart", 0.9)
+    close_speed = service.asset_id("Success", "en", "af_heart", 0.9001)
 
-    assert normal != calm
+    assert normal != other_voice
+    assert normal != slower
+    assert slower != close_speed
+
+
+def test_model_revision_changes_asset_identity(tmp_path: Path) -> None:
+    first = FakeTtsProvider()
+    first.model_revision = "revision-a"
+    second = FakeTtsProvider()
+    second.model_revision = "revision-b"
+
+    first_id = AudioFeedbackService(tmp_path / "first", first).asset_id(
+        "Success", "en", "test-en", 1.0
+    )
+    second_id = AudioFeedbackService(tmp_path / "second", second).asset_id(
+        "Success", "en", "test-en", 1.0
+    )
+
+    assert first_id != second_id
 
 
 def test_stale_admission_token_cannot_generate_after_recording_reservation(
@@ -131,7 +190,7 @@ def test_stale_admission_token_cannot_generate_after_recording_reservation(
     service.release_recording_reservation()
 
     with pytest.raises(GenerationDeferred):
-        service.prepare("Success", "en", "test-en", token)
+        service.prepare("Success", "en", "test-en", 1.0, token)
     assert provider.calls == []
 
 
@@ -145,6 +204,7 @@ def test_recording_cancellation_prevents_asset_publication(tmp_path: Path) -> No
             text: str,
             language: str,
             voice: str,
+            speed: float,
             output: Path,
             cancel: threading.Event,
         ) -> None:
@@ -158,12 +218,12 @@ def test_recording_cancellation_prevents_asset_publication(tmp_path: Path) -> No
     provider = PausingProvider()
     service = AudioFeedbackService(tmp_path / "audio", provider)
     token = service.admission_token()
-    asset_id = service.asset_id("Success", "en", "test-en")
+    asset_id = service.asset_id("Success", "en", "test-en", 1.0)
     outcome: dict[str, object] = {}
 
     def generate() -> None:
         try:
-            service.prepare("Success", "en", "test-en", token)
+            service.prepare("Success", "en", "test-en", 1.0, token)
         except Exception as exc:
             outcome["error"] = exc
 
@@ -176,89 +236,6 @@ def test_recording_cancellation_prevents_asset_publication(tmp_path: Path) -> No
 
     assert isinstance(outcome.get("error"), GenerationDeferred)
     assert not service.path_for(asset_id).exists()
-
-
-def test_espeak_cancel_escalates_without_blocking() -> None:
-    killed = threading.Event()
-
-    class UnresponsiveProcess:
-        def poll(self) -> None:
-            return None
-
-        def terminate(self) -> None:
-            pass
-
-        def wait(self, timeout: float) -> None:
-            raise subprocess.TimeoutExpired("espeak-ng", timeout)
-
-        def kill(self) -> None:
-            killed.set()
-
-    provider = EspeakProvider("espeak-ng")
-    provider._process = UnresponsiveProcess()  # type: ignore[assignment]
-
-    started_at = time.monotonic()
-    provider.cancel()
-
-    assert time.monotonic() - started_at < 0.1
-    assert killed.wait(timeout=1)
-
-
-def test_espeak_cancel_during_process_creation_still_escalates(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    creation_started = threading.Event()
-    allow_creation = threading.Event()
-    killed = threading.Event()
-
-    class UnresponsiveProcess:
-        args = ["espeak-ng"]
-        returncode = -9
-
-        def poll(self) -> int | None:
-            return -9 if killed.is_set() else None
-
-        def terminate(self) -> None:
-            pass
-
-        def wait(self, timeout: float) -> int:
-            raise subprocess.TimeoutExpired("espeak-ng", timeout)
-
-        def kill(self) -> None:
-            killed.set()
-
-        def communicate(self, timeout: float) -> tuple[bytes, bytes]:
-            assert killed.wait(timeout=1)
-            return b"", b""
-
-    process = UnresponsiveProcess()
-
-    def create_process(*args: object, **kwargs: object) -> UnresponsiveProcess:
-        creation_started.set()
-        assert allow_creation.wait(timeout=5)
-        return process
-
-    monkeypatch.setattr(subprocess, "Popen", create_process)
-    provider = EspeakProvider("espeak-ng")
-    cancel = threading.Event()
-    outcome: dict[str, object] = {}
-
-    def synthesize() -> None:
-        try:
-            provider.synthesize("Success", "en", "en-us", tmp_path / "out.wav", cancel)
-        except Exception as exc:
-            outcome["error"] = exc
-
-    thread = threading.Thread(target=synthesize)
-    thread.start()
-    assert creation_started.wait(timeout=5)
-    cancel.set()
-    provider.cancel()
-    allow_creation.set()
-    thread.join(timeout=5)
-
-    assert killed.is_set()
-    assert isinstance(outcome.get("error"), GenerationDeferred)
 
 
 def test_prepare_assets_generates_once_and_serves_wav(client: TestClient) -> None:
@@ -275,6 +252,7 @@ def test_prepare_assets_generates_once_and_serves_wav(client: TestClient) -> Non
 
     assert first.status_code == 200
     assert second.status_code == 200
+    assert first.json()["model_revision"] is None
     asset = first.json()["assets"][0]
     assert asset["key"] == "success"
     assert asset["url"].startswith("/api/v1/audio/assets/")
@@ -285,16 +263,40 @@ def test_prepare_assets_generates_once_and_serves_wav(client: TestClient) -> Non
     assert wav.content == b"RIFF-test-wave"
 
 
+def test_prepare_assets_accepts_catalog_failure_reason_limit(
+    client: TestClient,
+) -> None:
+    client.app.state.audio_feedback.provider = FakeTtsProvider()
+
+    response = client.post(
+        "/api/v1/audio/assets",
+        json={
+            "phrases": [
+                {
+                    "key": "failure.catalog",
+                    "text": "x" * 200,
+                    "language": "en",
+                    "voice": "test-en",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()["assets"]) == 1
+
+
 def test_unavailable_provider_is_non_fatal(client: TestClient) -> None:
-    client.app.state.audio_feedback.provider = None
-    client.app.state.audio_feedback.configured_provider = "voicevox"
+    service = client.app.state.audio_feedback
+    service.provider = None
+    service._rediscover = None
 
     status = client.get("/api/v1/audio/status")
     assert status.status_code == 200
     assert status.json() == {
         "available": False,
         "engine": None,
-        "configured_provider": "voicevox",
+        "model_revision": None,
         "voices": {},
     }
 
@@ -311,10 +313,25 @@ def test_unavailable_provider_is_non_fatal(client: TestClient) -> None:
     assert response.json() == {
         "available": False,
         "engine": None,
+        "model_revision": None,
         "assets": [],
         "errors": ["TTS engine is unavailable"],
         "deferred": False,
     }
+
+
+def test_status_rediscovers_sidecar_after_late_start(client: TestClient) -> None:
+    provider = FakeTtsProvider()
+    service = client.app.state.audio_feedback
+    service.provider = None
+    service._rediscover = lambda: provider
+
+    response = client.get("/api/v1/audio/status")
+
+    assert response.status_code == 200
+    assert response.json()["available"] is True
+    assert response.json()["engine"] == "fake"
+    assert service.provider is provider
 
 
 def test_prepare_rejects_oversized_or_unsupported_input(client: TestClient) -> None:
@@ -428,12 +445,13 @@ def test_record_start_preempts_in_flight_and_queued_voice_generation(
             text: str,
             language: str,
             voice: str,
+            speed: float,
             output: Path,
             cancel: threading.Event,
         ) -> None:
             entered.set()
             assert release.wait(timeout=5)
-            super().synthesize(text, language, voice, output, cancel)
+            super().synthesize(text, language, voice, speed, output, cancel)
 
         def cancel(self) -> None:
             release.set()

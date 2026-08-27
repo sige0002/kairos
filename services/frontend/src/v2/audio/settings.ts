@@ -28,9 +28,11 @@ export interface AudioSettings {
   soundEffects: boolean;
   voice: boolean;
   volume: number;
+  speechRate: number;
   language: AudioLanguage;
   voiceName: string;
   preparedEngine: string | null;
+  preparedModelRevision: string | null;
   events: Record<AudioFeedbackEvent, EventAudioSetting>;
   assets: Record<string, string>;
 }
@@ -42,8 +44,10 @@ export const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
   voice: true,
   volume: 0.45,
   language: 'en',
-  voiceName: 'en-us',
+  voiceName: 'af_heart',
+  speechRate: 1,
   preparedEngine: null,
+  preparedModelRevision: null,
   events: {
     start: { sound: true, voice: false },
     stop: { sound: true, voice: false },
@@ -68,6 +72,12 @@ function clampVolume(value: unknown): number {
     : DEFAULT_AUDIO_SETTINGS.volume;
 }
 
+function clampSpeechRate(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0.75, Math.min(1.25, value))
+    : DEFAULT_AUDIO_SETTINGS.speechRate;
+}
+
 function normalizeEvent(
   value: unknown,
   fallback: EventAudioSetting,
@@ -86,6 +96,15 @@ function normalizeSettings(value: unknown): AudioSettings {
   const raw = value as Partial<AudioSettings>;
   if (raw.version !== 2) return structuredClone(DEFAULT_AUDIO_SETTINGS);
   const rawEvents = raw.events && typeof raw.events === 'object' ? raw.events : {};
+  const language: AudioLanguage = raw.language === 'ja' ? 'ja' : 'en';
+  const rawVoice = typeof raw.voiceName === 'string' ? raw.voiceName : '';
+  const legacyVoice =
+    rawVoice === 'ja' ||
+    rawVoice === 'en-us' ||
+    rawVoice === 'en-gb' ||
+    /^\d+:/.test(rawVoice);
+  const legacyEngine =
+    typeof raw.preparedEngine === 'string' && raw.preparedEngine !== 'kokoro-82m';
   const events = Object.fromEntries(
     AUDIO_EVENTS.map((event) => [
       event,
@@ -112,14 +131,24 @@ function normalizeSettings(value: unknown): AudioSettings {
         : DEFAULT_AUDIO_SETTINGS.soundEffects,
     voice: typeof raw.voice === 'boolean' ? raw.voice : DEFAULT_AUDIO_SETTINGS.voice,
     volume: clampVolume(raw.volume),
-    language: raw.language === 'ja' ? 'ja' : 'en',
+    speechRate: clampSpeechRate(raw.speechRate),
+    language,
     voiceName:
-      typeof raw.voiceName === 'string' && raw.voiceName
-        ? raw.voiceName
-        : DEFAULT_AUDIO_SETTINGS.voiceName,
-    preparedEngine: typeof raw.preparedEngine === 'string' ? raw.preparedEngine : null,
+      rawVoice && !legacyVoice
+        ? rawVoice
+        : language === 'ja'
+          ? 'jf_alpha'
+          : 'af_heart',
+    preparedEngine:
+      typeof raw.preparedEngine === 'string' && !legacyEngine
+        ? raw.preparedEngine
+        : null,
+    preparedModelRevision:
+      typeof raw.preparedModelRevision === 'string' && !legacyEngine
+        ? raw.preparedModelRevision
+        : null,
     events,
-    assets,
+    assets: legacyEngine || legacyVoice ? {} : assets,
   };
 }
 

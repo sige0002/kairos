@@ -24,6 +24,7 @@ class PhraseRequest(BaseModel):
     text: str = Field(min_length=1, max_length=200)
     language: str = Field(pattern=r"^(en|ja)$")
     voice: str = Field(min_length=1, max_length=40)
+    speed: float = Field(default=1.0, ge=0.75, le=1.25)
 
 
 class PrepareRequest(BaseModel):
@@ -33,11 +34,11 @@ class PrepareRequest(BaseModel):
 @router.get("/status")
 async def get_status(request: Request) -> dict[str, object]:
     service = request.app.state.audio_feedback
-    provider = service.provider
+    provider = await asyncio.to_thread(service.ensure_provider)
     return {
         "available": provider is not None,
         "engine": provider.name if provider else None,
-        "configured_provider": service.configured_provider,
+        "model_revision": getattr(provider, "model_revision", None),
         "voices": provider.voices if provider else {},
     }
 
@@ -45,11 +46,12 @@ async def get_status(request: Request) -> dict[str, object]:
 @router.post("/assets")
 async def prepare_assets(body: PrepareRequest, request: Request) -> dict[str, object]:
     service = request.app.state.audio_feedback
-    provider = service.provider
+    provider = await asyncio.to_thread(service.ensure_provider)
     if provider is None:
         return {
             "available": False,
             "engine": None,
+            "model_revision": None,
             "assets": [],
             "errors": ["TTS engine is unavailable"],
             "deferred": False,
@@ -75,6 +77,7 @@ async def _prepare_assets_serially(
             return {
                 "available": True,
                 "engine": provider.name,
+                "model_revision": getattr(provider, "model_revision", None),
                 "assets": assets,
                 "errors": [
                     "Voice generation is deferred until recorder status is known"
@@ -85,6 +88,7 @@ async def _prepare_assets_serially(
             return {
                 "available": True,
                 "engine": provider.name,
+                "model_revision": getattr(provider, "model_revision", None),
                 "assets": assets,
                 "errors": ["Voice generation is deferred while recording is active"],
                 "deferred": True,
@@ -95,12 +99,14 @@ async def _prepare_assets_serially(
                 phrase.text,
                 phrase.language,
                 phrase.voice,
+                phrase.speed,
                 admission_token,
             )
         except GenerationDeferred:
             return {
                 "available": True,
                 "engine": provider.name,
+                "model_revision": getattr(provider, "model_revision", None),
                 "assets": assets,
                 "errors": [
                     "Voice generation was preempted because recording took priority"
@@ -122,6 +128,7 @@ async def _prepare_assets_serially(
     return {
         "available": True,
         "engine": provider.name,
+        "model_revision": getattr(provider, "model_revision", None),
         "assets": assets,
         "errors": errors,
         "deferred": False,

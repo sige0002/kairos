@@ -33,7 +33,7 @@ function assetKey(event, phrase) {
   return `${event}:${(hash >>> 0).toString(16)}`;
 }
 const PHRASES = PHRASE_EVENTS.map(([event, text]) => ({
-  key: assetKey(event, text), text, language: 'en', voice: 'en-us',
+  key: assetKey(event, text), text, language: 'en', voice: 'af_heart', speed: 1,
 }));
 
 async function json(url, init) {
@@ -99,7 +99,10 @@ async function runRound(page, enabled, assets) {
   await page.evaluate(({ key, enabled, assets, events }) => {
     localStorage.setItem(key, JSON.stringify({
       version: 2, master: enabled, soundEffects: true, voice: true, volume: 0.45,
-      language: 'en', voiceName: 'en-us', events, assets,
+      speechRate: 1, language: 'en', voiceName: 'af_heart',
+      preparedEngine: 'kokoro-82m',
+      preparedModelRevision: audioStatus.model_revision ?? null,
+      events, assets,
     }));
   }, { key: AUDIO_KEY, enabled, assets, events: EVENTS });
   await page.reload();
@@ -159,9 +162,13 @@ async function runRound(page, enabled, assets) {
   };
 }
 
+const audioStatus = await json(`${API}/audio/status`);
 const cachedAssets = Object.fromEntries(PHRASES.map((phrase) => {
   const id = createHash('sha256')
-    .update(['v1', 'espeak-ng', phrase.language, phrase.voice, phrase.text].join('\0'))
+    .update([
+      'v3', 'kokoro-82m', audioStatus.model_revision ?? 'unknown',
+      phrase.language, phrase.voice, '1.0', phrase.text,
+    ].join('\0'))
     .digest('hex');
   return [phrase.key, `/api/v1/audio/assets/${id}.wav`];
 }));

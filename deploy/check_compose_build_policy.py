@@ -19,16 +19,15 @@ PROXY_ARGS = (
     "no_proxy",
 )
 LAYOUTS = {
-    "single-host": ("compose/compose.yaml",),
-    "robot-edge": ("compose/robot.yaml",),
-    "recording-host": ("compose/recording.yaml",),
-    "single-host+lerobot": ("compose/compose.yaml", "compose/lerobot.yaml"),
-    "single-host+voicevox": ("compose/compose.yaml", "compose/voicevox.yaml"),
-    "recording-host+voicevox": (
-        "compose/recording.yaml",
-        "compose/voicevox.yaml",
+    "single-host": (("compose/compose.yaml",), None),
+    "single-host+audio": (("compose/compose.yaml",), "audio"),
+    "robot-edge": (("compose/robot.yaml",), None),
+    "recording-host": (("compose/recording.yaml",), None),
+    "single-host+lerobot": (
+        ("compose/compose.yaml", "compose/lerobot.yaml"),
+        None,
     ),
-    "test-harness": ("deploy/test/compose.yaml",),
+    "test-harness": (("deploy/test/compose.yaml",), None),
 }
 PROXY_CASES = {
     "uppercase": {
@@ -64,11 +63,15 @@ PROXY_CASES = {
 }
 
 
-def render(files: tuple[str, ...], proxy_env: dict[str, str]) -> dict[str, object]:
+def render(
+    files: tuple[str, ...], proxy_env: dict[str, str], profile: str | None
+) -> dict[str, object]:
     env = os.environ.copy()
     for name in PROXY_ARGS:
         env.pop(name, None)
     env.update(proxy_env)
+    if profile is not None:
+        env["COMPOSE_PROFILES"] = profile
     command = ["docker", "compose", "--project-directory", str(ROOT)]
     for path in files:
         command.extend(("-f", path))
@@ -87,12 +90,13 @@ def render(files: tuple[str, ...], proxy_env: dict[str, str]) -> dict[str, objec
 def check_layout(
     name: str,
     files: tuple[str, ...],
+    profile: str | None,
     proxy_case: str,
     proxy_env: dict[str, str],
     expected: dict[str, str],
 ) -> list[str]:
     errors: list[str] = []
-    services = render(files, proxy_env).get("services", {})
+    services = render(files, proxy_env, profile).get("services", {})
     if not isinstance(services, dict):
         return [f"{name}: rendered services are not an object"]
 
@@ -121,11 +125,12 @@ def check_layout(
 def main() -> int:
     errors = [
         error
-        for name, files in LAYOUTS.items()
+        for name, (files, profile) in LAYOUTS.items()
         for proxy_case, case in PROXY_CASES.items()
         for error in check_layout(
             name,
             files,
+            profile,
             proxy_case,
             case["environment"],
             case["expected"],

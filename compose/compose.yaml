@@ -1,7 +1,7 @@
 # =============================================================================
 # kairos — root docker compose entry point.
-# Brings up all 7 services (recorder / monitor / streamer / probe / orchestrator
-# / dora_runner / frontend). Wires env, ports, volumes, DDS networking, and a
+# Brings up 8 services (recorder / monitor / streamer / probe / orchestrator /
+# dora_runner / frontend / Kokoro). Wires env, ports, volumes, DDS networking, and a
 # per-service healthcheck.
 #
 #   cp .env.example .env   # then edit
@@ -250,6 +250,34 @@ services:
     restart: unless-stopped
 
   # ---- Pure-Python services (no rclpy) -------------------------------------
+  kokoro:
+    profiles: [audio]
+    build:
+      context: .
+      dockerfile: services/kokoro/Dockerfile
+      network: host
+      args:
+        <<: *build-proxy-args
+    image: kairos-kokoro:${KAIROS_VERSION:-dev}
+    environment:
+      <<: *no-proxy
+      KOKORO_BIND: 127.0.0.1
+      KOKORO_PORT: ${KOKORO_PORT:-8050}
+      KOKORO_THREADS: ${KOKORO_THREADS:-2}
+    network_mode: host
+    cpus: ${KOKORO_CPUS:-2}
+    cpu_shares: 128
+    mem_limit: ${KOKORO_MEMORY_LIMIT:-2g}
+    healthcheck:
+      <<: *healthcheck
+      start_period: 45s
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${KOKORO_PORT:-8050}/healthz', timeout=2)"
+    restart: unless-stopped
+
   orchestrator:
     build:
       context: .
@@ -290,6 +318,7 @@ services:
       WEBRTC_HOST: ${WEBRTC_HOST:-localhost}
       TOPIC_PROBE_HOST: ${TOPIC_PROBE_HOST:-localhost}
       DORA_RUNNER_HOST: ${DORA_RUNNER_HOST:-localhost}
+      TTS_KOKORO_URL: ${TTS_KOKORO_URL:-http://127.0.0.1:8050}
     # Health = LIVENESS (/healthz), deliberately NOT readiness. The orchestrator's
     # /readyz aggregates downstream services (recorder/monitor/etc.), so wiring the
     # container healthcheck to it would flip the orchestrator to "unhealthy"

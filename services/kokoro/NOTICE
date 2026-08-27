@@ -1,0 +1,13 @@
+kairos Kokoro sidecar
+
+This image contains Kokoro-82M model weights and voice packs from
+https://huggingface.co/hexgrad/Kokoro-82M at revision
+f3ff3571791e39611d31c381e3a41a3af07b4987, licensed under Apache-2.0.
+
+The Kokoro inference library and Misaki grapheme-to-phoneme library are
+Copyright their respective contributors and licensed under Apache-2.0.
+The image also contains their locked transitive dependencies; package license
+metadata is preserved in the Python environment under *.dist-info/licenses.
+
+Kokoro output is generated locally. The model is not used for training or
+voice cloning by kairos.

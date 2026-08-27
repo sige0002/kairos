@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, cn } from '../../components/ui';
 import { getFailReasons } from '../plans';
 import { getAudioStatus, prepareAudioAssets } from '../audio/api';
-import { assetKey, phraseFor, spokenPhraseFor } from '../audio/phrases';
+import { assetKey, phraseFor } from '../audio/phrases';
 import {
   AUDIO_EVENTS,
   getAudioSettings,
@@ -45,20 +45,28 @@ function cueFor(event: AudioFeedbackEvent) {
         : event;
 }
 
-function voicevoxCredit(voice: string): string {
-  const match = /^\d+:(.+?) \/ (.+)$/.exec(voice);
-  return match ? `VOICEVOX:${match[1]} · ${match[2]}` : `VOICEVOX:${voice}`;
-}
+const VOICE_LABELS: Record<string, string> = {
+  af_heart: 'Heart · US female',
+  af_bella: 'Bella · US female',
+  am_michael: 'Michael · US male',
+  bf_emma: 'Emma · UK female',
+  jf_alpha: 'Alpha · 日本語 女性',
+  jf_gongitsune: 'Gongitsune · 日本語 女性',
+  jf_nezumi: 'Nezumi · 日本語 女性',
+  jf_tebukuro: 'Tebukuro · 日本語 女性',
+  jm_kumo: 'Kumo · 日本語 男性',
+};
 
-function phrasesFor(settings: AudioSettings, engine: string | null) {
+function phrasesFor(settings: AudioSettings) {
   const base = AUDIO_EVENTS.filter((event) => event !== 'failure_reason').map(
     (event) => {
       const visibleText = phraseFor(event, settings.language);
       return {
         key: assetKey(event, visibleText),
-        text: spokenPhraseFor(event, settings.language, engine),
+        text: visibleText,
         language: settings.language,
         voice: settings.voiceName,
+        speed: settings.speechRate,
       };
     },
   );
@@ -68,13 +76,20 @@ function phrasesFor(settings: AudioSettings, engine: string | null) {
       text,
       language: settings.language,
       voice: settings.voiceName,
+      speed: settings.speechRate,
     })),
   );
 }
 
 function phraseSetIdentity(phrases: ReturnType<typeof phrasesFor>): string {
   return JSON.stringify(
-    phrases.map(({ key, text, language, voice }) => [key, text, language, voice]),
+    phrases.map(({ key, text, language, voice, speed }) => [
+      key,
+      text,
+      language,
+      voice,
+      speed,
+    ]),
   );
 }
 
@@ -89,37 +104,37 @@ export function AudioSection() {
     queryKey: ['audio-status'],
     queryFn: ({ signal }) => getAudioStatus(signal),
   });
-  const voices = status.data?.voices[settings.language] ?? [];
-  const phrases = useMemo(
-    () => phrasesFor(settings, status.data?.engine ?? null),
-    [settings, status.data?.engine],
-  );
   useEffect(() => {
-    const engine = status.data?.engine;
-    if (!status.data?.available || !engine) return;
+    const catalog = status.data;
+    if (!catalog?.available) return;
     const current = getAudioSettings();
-    const availableVoices = status.data.voices[current.language] ?? [];
-    const voiceName = availableVoices.includes(current.voiceName)
+    const candidates = catalog.voices[current.language] ?? [];
+    const voiceName = candidates.includes(current.voiceName)
       ? current.voiceName
-      : (availableVoices[0] ?? current.voiceName);
-    const providerChanged =
-      current.preparedEngine !== null && current.preparedEngine !== engine;
-    const legacyAssets =
-      current.preparedEngine === null && Object.keys(current.assets).length > 0;
-    if (voiceName === current.voiceName && !providerChanged && !legacyAssets) return;
-    setAudioSettings({
-      ...current,
-      voiceName,
-      preparedEngine: providerChanged || legacyAssets ? null : current.preparedEngine,
-      assets: providerChanged || legacyAssets ? {} : current.assets,
-    });
-    if (providerChanged || legacyAssets)
-      setMessage('Voice engine changed. Prepare voice assets again.');
-  }, [status.data, settings.language]);
+      : candidates[0];
+    if (!voiceName) return;
+    const modelRevision = catalog.model_revision ?? null;
+    const preparedIsStale =
+      current.preparedEngine !== null &&
+      (current.preparedEngine !== catalog.engine ||
+        current.preparedModelRevision !== modelRevision);
+    if (voiceName !== current.voiceName || preparedIsStale) {
+      setAudioSettings({
+        ...current,
+        voiceName,
+        preparedEngine: null,
+        preparedModelRevision: null,
+        assets: {},
+      });
+    }
+  }, [status.data]);
+  const voices = status.data?.voices[settings.language] ?? [];
+  const phrases = useMemo(() => phrasesFor(settings), [settings]);
   const prepare = useMutation({
     mutationFn: (request: {
       language: typeof settings.language;
       voiceName: string;
+      speechRate: number;
       phrases: typeof phrases;
     }) => prepareAudioAssets(request.phrases),
     onSuccess: (result, request) => {
@@ -127,7 +142,8 @@ export function AudioSection() {
       if (
         current.language !== request.language ||
         current.voiceName !== request.voiceName ||
-        phraseSetIdentity(phrasesFor(current, result.engine)) !==
+        current.speechRate !== request.speechRate ||
+        phraseSetIdentity(phrasesFor(current)) !==
           phraseSetIdentity(request.phrases)
       ) {
         setMessage(
@@ -139,7 +155,12 @@ export function AudioSection() {
       result.assets.forEach((asset) => {
         assets[asset.key] = asset.url;
       });
-      setAudioSettings({ ...current, assets, preparedEngine: result.engine });
+      setAudioSettings({
+        ...current,
+        assets,
+        preparedEngine: result.engine,
+        preparedModelRevision: result.model_revision,
+      });
       setMessage(
         result.deferred
           ? `${result.errors[0] ?? 'Voice preparation was deferred.'} Retry after recording stops.`
@@ -240,8 +261,10 @@ export function AudioSection() {
                   voiceName:
                     status.data?.voices[
                       event.target.value === 'ja' ? 'ja' : 'en'
-                    ]?.[0] ?? (event.target.value === 'ja' ? 'ja' : 'en-us'),
+                    ]?.[0] ??
+                    (event.target.value === 'ja' ? 'jf_alpha' : 'af_heart'),
                   preparedEngine: null,
+                  preparedModelRevision: null,
                   assets: {},
                 })
               }
@@ -256,19 +279,45 @@ export function AudioSection() {
             <select
               value={settings.voiceName}
               disabled={!status.data?.available}
-              onChange={(event) =>
-                patch({
-                  voiceName: event.target.value,
+              onChange={(event) => {
+                const voiceName = event.currentTarget.value;
+                setAudioSettings({
+                  ...getAudioSettings(),
+                  voiceName,
                   preparedEngine: null,
+                  preparedModelRevision: null,
                   assets: {},
-                })
-              }
+                });
+              }}
               className="h-9 rounded-control border border-gray-200 px-2 disabled:opacity-50"
             >
               {(voices.length ? voices : [settings.voiceName]).map((voice) => (
-                <option key={voice}>{voice}</option>
+                <option key={voice} value={voice}>
+                  {VOICE_LABELS[voice] ?? voice}
+                </option>
               ))}
             </select>
+          </label>
+          <label className="flex flex-col gap-1 text-[12px] font-semibold text-gray-700">
+            Speech rate · {settings.speechRate.toFixed(2)}×
+            <input
+              aria-label="Speech rate"
+              type="range"
+              min="0.75"
+              max="1.25"
+              step="0.05"
+              value={settings.speechRate}
+              onChange={(event) => {
+                const speechRate = Number(event.currentTarget.value);
+                setAudioSettings({
+                  ...getAudioSettings(),
+                  speechRate,
+                  preparedEngine: null,
+                  preparedModelRevision: null,
+                  assets: {},
+                });
+              }}
+            />
           </label>
         </div>
         <div className="rounded-control border border-gray-100">
@@ -362,6 +411,7 @@ export function AudioSection() {
               prepare.mutate({
                 language: settings.language,
                 voiceName: settings.voiceName,
+                speechRate: settings.speechRate,
                 phrases,
               })
             }
@@ -399,17 +449,12 @@ export function AudioSection() {
               : status.isError
                 ? 'Could not reach the voice service. Retry by reopening Audio settings; Collect is unaffected.'
                 : status.data?.available
-                  ? `Voice engine ready: ${status.data.engine}. Prepare assets after changing language, voice, or failure reasons.`
-                  : `Configured voice provider ${status.data?.configured_provider ?? 'unknown'} is unavailable. Sound effects still work; Collect is unaffected.`)}
-          {status.data?.engine === 'espeak-ng' && settings.language === 'ja' ? (
+                  ? `Voice engine ready: Kokoro 82M. Prepare assets after changing language, voice, rate, or failure reasons.`
+                  : 'Kokoro voice service is unavailable. Enable COMPOSE_PROFILES=audio before make build and make up. Sound effects still work; Collect is unaffected.')}
+          {status.data?.available ? (
             <span className="mt-1 block">
-              eSpeak uses kana for built-in phrases. Write custom failure reasons in
-              hiragana or katakana, or select the VOICEVOX provider.
+              Local CPU model · Apache-2.0 · {VOICE_LABELS[settings.voiceName] ?? settings.voiceName}
             </span>
-          ) : null}
-          {status.data?.engine?.includes('voicevox') &&
-          settings.language === 'ja' ? (
-            <span className="mt-1 block">{voicevoxCredit(settings.voiceName)}</span>
           ) : null}
         </div>
       </div>

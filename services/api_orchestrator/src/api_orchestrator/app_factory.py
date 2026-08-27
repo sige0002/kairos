@@ -436,9 +436,9 @@ def create_orchestrator_app(
     app.state.data_layout = layout
     app.state.audio_feedback = AudioFeedbackService(
         layout.catalog / "audio",
-        provider=discover_provider(settings.tts_provider, settings.tts_voicevox_url),
-        configured_provider=settings.tts_provider,
+        provider=discover_provider(settings.tts_kokoro_url),
         auto_discover=False,
+        rediscover=lambda: discover_provider(settings.tts_kokoro_url),
     )
     # Audio requests may queue behind each other, but recorder Prepare/Start
     # never acquires this lock and instead preempts generation in the service.
