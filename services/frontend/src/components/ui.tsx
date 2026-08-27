@@ -16,7 +16,7 @@ export function Hexagon({ size = 32 }: { size?: number }) {
   return (
     <span
       aria-hidden
-      className="flex items-center justify-center bg-gradient-to-br from-teal-600 to-teal-700 shadow-[0_4px_14px_rgba(13,148,136,.3)]"
+      className="flex items-center justify-center bg-gradient-to-br from-accent to-accent-strong shadow-btn"
       style={{
         width: size,
         height: size,
@@ -25,7 +25,7 @@ export function Hexagon({ size = 32 }: { size?: number }) {
       }}
     >
       <span
-        className="rounded-full bg-white"
+        className="rounded-full bg-surface"
         style={{ width: size * 0.28, height: size * 0.28 }}
       />
     </span>
@@ -41,7 +41,7 @@ export function Card({
   return (
     <div
       className={cn(
-        'rounded-card border border-gray-200 bg-white shadow-card',
+        'rounded-card border border-border bg-surface shadow-card',
         className,
       )}
       {...rest}
@@ -60,7 +60,7 @@ export function CardHeader({
   right?: ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-4">
+    <div className="flex items-center gap-2.5 border-b border-border px-[18px] py-4">
       {typeof title === 'string' ? <SectionLabel>{title}</SectionLabel> : title}
       <div className="flex-1" />
       {right}
@@ -77,7 +77,7 @@ export function CardHeader({
  *  classes below remain the whole appearance. */
 export function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <h2 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+    <h2 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
       {children}
     </h2>
   );
@@ -86,12 +86,12 @@ export function SectionLabel({ children }: { children: ReactNode }) {
 export type Tone = 'teal' | 'green' | 'amber' | 'red' | 'gray' | 'info';
 
 const DOT_BG: Record<Tone, string> = {
-  teal: 'bg-teal-600',
-  green: 'bg-green-600',
-  amber: 'bg-amber-600',
-  red: 'bg-red-600',
-  gray: 'bg-gray-300',
-  info: 'bg-cyan-600',
+  teal: 'bg-status-live-accent',
+  green: 'bg-status-success-accent',
+  amber: 'bg-status-warning-accent',
+  red: 'bg-status-danger-accent',
+  gray: 'bg-text-disabled',
+  info: 'bg-status-info-accent',
 };
 
 /** Status indicator — a rounded 2px SQUARE (brand cue), not a circle. */
@@ -118,12 +118,12 @@ export function StatusDot({
 }
 
 const BADGE_TONE: Record<Tone, string> = {
-  teal: 'bg-teal-100 text-teal-700',
-  green: 'bg-green-100 text-green-700',
-  amber: 'bg-amber-100 text-amber-700',
-  red: 'bg-red-50 text-red-700 border border-red-200',
-  gray: 'bg-gray-100 text-gray-600',
-  info: 'bg-cyan-100 text-cyan-700',
+  teal: 'bg-status-adopted-bg text-status-adopted-text',
+  green: 'bg-status-success-bg text-status-success-text',
+  amber: 'bg-status-warning-bg text-status-warning-text',
+  red: 'border border-status-danger-border bg-status-danger-bg text-status-danger-text',
+  gray: 'bg-surface-muted text-text-secondary',
+  info: 'bg-status-info-bg text-status-info-text',
 };
 
 /** Small status chip. `mono` for IDs/measurements. */
@@ -167,14 +167,14 @@ export function Button({
   variant?: 'primary' | 'danger' | 'ghost';
 } & React.ButtonHTMLAttributes<HTMLButtonElement>) {
   const styles: Record<string, string> = {
-    primary: 'bg-teal-700 text-white shadow-btn hover:bg-teal-800',
-    danger: 'bg-red-600 text-white shadow-btn-red hover:bg-red-700',
-    ghost: 'border border-gray-200 bg-white text-gray-700 hover:bg-gray-50',
+    primary: 'bg-accent text-text-inverse shadow-btn hover:bg-accent-strong',
+    danger: 'bg-status-danger-accent text-text-inverse shadow-btn-red hover:bg-status-danger-text',
+    ghost: 'border border-border bg-surface text-text-secondary hover:bg-interaction-hover',
   };
   return (
     <button
       className={cn(
-        'inline-flex items-center justify-center gap-2 rounded-control px-4 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+        'inline-flex items-center justify-center gap-2 rounded-control px-4 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-app disabled:cursor-not-allowed disabled:opacity-50',
         styles[variant],
         className,
       )}
@@ -348,19 +348,18 @@ export function Modal({
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div aria-hidden className="absolute inset-0 bg-gray-900/30" onClick={onClose} />
+      <div aria-hidden className="absolute inset-0 bg-scrim" onClick={onClose} />
       <div
         ref={dialogRef}
         tabIndex={-1}
         role="dialog"
         aria-modal="true"
-        className="relative z-10 w-full max-w-md rounded-card border border-gray-200 bg-white p-5 shadow-float focus:outline-none"
+        className="relative z-10 w-full max-w-md rounded-card border border-border bg-surface-elevated p-5 shadow-float focus:outline-none"
       >
-        {title && <h2 className="mb-2 text-[15px] font-semibold text-gray-900">{title}</h2>}
-        {children && <div className="text-sm text-gray-600">{children}</div>}
+        {title && <h2 className="mb-2 text-[15px] font-semibold text-text-primary">{title}</h2>}
+        {children && <div className="text-sm text-text-secondary">{children}</div>}
         {footer && <div className="mt-5 flex justify-end gap-2">{footer}</div>}
       </div>
     </div>
   );
 }
-

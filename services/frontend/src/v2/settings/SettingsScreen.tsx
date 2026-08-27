@@ -14,6 +14,7 @@
 //   Data quality      — read-only expected rates + thresholds + required topics
 //   Validation        — aspect selection + one-click presets (run in the Val tab)
 //   System            — deployment facts + honest component health
+//   Appearance        — browser-local System / Light / Dark presentation mode
 // Only Dataset profiles and Users & permissions stay honest placeholders — there
 // is genuinely nothing to configure for them yet (see OtherSection rationale).
 
@@ -33,6 +34,7 @@ import { DataQualitySection } from './DataQualitySection';
 import { ValidationSection } from './ValidationSection';
 import { SystemSection } from './SystemSection';
 import { OtherSection } from './OtherSection';
+import { AppearanceSection } from './AppearanceSection';
 import { Toast } from '../shared/Toast';
 import { useSettingsState } from './useSettingsState';
 import { adoptServerCatalog, usePlansConflict, usePlansUnsynced } from '../plans';
@@ -82,6 +84,8 @@ export function SettingsScreen() {
         <ValidationSection />
       ) : label === 'System' ? (
         <SystemSection config={config} />
+      ) : label === 'Appearance' ? (
+        <AppearanceSection />
       ) : (
         <OtherSection label={label} rationale={PLACEHOLDER_RATIONALE[label] ?? ''} />
       )}
@@ -102,7 +106,7 @@ function CatalogConflictNote() {
     <div
       data-testid="plans-conflict"
       role="alert"
-      className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-control border border-rose-300 bg-rose-50 px-3.5 py-2 text-[12px] text-rose-800 shadow-card"
+      className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-control border border-status-danger-border bg-status-danger-bg px-3.5 py-2 text-[12px] text-status-danger-text shadow-card"
     >
       The shared catalog changed elsewhere. Your local draft was kept and was not
       retried.
@@ -110,7 +114,7 @@ function CatalogConflictNote() {
         type="button"
         data-testid="plans-use-server"
         onClick={adoptServerCatalog}
-        className="rounded border border-rose-300 bg-white px-2 py-1 font-semibold hover:bg-rose-100"
+        className="rounded border border-status-danger-border bg-surface px-2 py-1 font-semibold hover:bg-interaction-hover"
       >
         Use server catalog
       </button>
@@ -131,7 +135,7 @@ function UnsyncedCatalogNote() {
     <div
       data-testid="plans-unsynced"
       role="status"
-      className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-control border border-amber-300 bg-amber-50 px-3.5 py-2 text-[12px] text-amber-800 shadow-card"
+      className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-control border border-status-warning-border bg-status-warning-bg px-3.5 py-2 text-[12px] text-status-warning-text shadow-card"
     >
       Saved on this browser only — the shared catalog could not be reached, so other
       terminals still show the previous one. It is retried on the next edit or reload.

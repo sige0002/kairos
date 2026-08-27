@@ -14,9 +14,9 @@ export function Toast({ message, testId }: { message: string; testId?: string })
       {message ? (
         <div
           data-testid={testId}
-          className="fixed bottom-[26px] left-1/2 z-[60] flex -translate-x-1/2 items-center gap-2 rounded-control bg-gray-900 px-[18px] py-[11px] text-sm font-medium text-gray-50 shadow-float"
+          className="fixed bottom-[26px] left-1/2 z-[60] flex -translate-x-1/2 items-center gap-2 rounded-control bg-text-primary px-[18px] py-[11px] text-sm font-medium text-text-inverse shadow-float"
         >
-          <span className="h-[7px] w-[7px] rounded-sm bg-teal-400" />
+          <span className="h-[7px] w-[7px] rounded-sm bg-status-live-accent" />
           {message}
         </div>
       ) : null}

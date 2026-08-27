@@ -7,6 +7,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { AppearanceProvider } from './theme';
 import './index.css';
 
 // Defaults tuned for this app's constant SSE-fed + short-poll traffic: don't
@@ -30,10 +31,12 @@ if (!rootEl) {
 
 createRoot(rootEl).render(
   <StrictMode>
-    <ErrorBoundary>
-      <QueryClientProvider client={queryClient}>
-        <App />
-      </QueryClientProvider>
-    </ErrorBoundary>
+    <AppearanceProvider>
+      <ErrorBoundary>
+        <QueryClientProvider client={queryClient}>
+          <App />
+        </QueryClientProvider>
+      </ErrorBoundary>
+    </AppearanceProvider>
   </StrictMode>,
 );

@@ -58,7 +58,7 @@ function TabContent({ tabId }: { tabId: V2TabId }) {
     case 'settings':
       return <SettingsScreen />;
     default:
-      return <p className="text-sm text-gray-500">Unknown tab: {tabId}</p>;
+      return <p className="text-sm text-text-muted">Unknown tab: {tabId}</p>;
   }
 }
 
@@ -118,7 +118,7 @@ function TabNav({ active }: { active: V2TabId }) {
       // (HIT_AREA_TAB), so a wrapped nav at narrow widths needs 8px between
       // ROWS or the two rows' targets would overlap. The 3px column gap is
       // untouched — nothing expands sideways.
-      className="flex flex-wrap gap-x-[3px] gap-y-2 rounded-[12px] border border-gray-200 bg-gray-100 p-1"
+      className="flex flex-wrap gap-x-[3px] gap-y-2 rounded-[12px] border border-border bg-surface-muted p-1"
     >
       {V2_TABS.map((tab) => {
         const on = tab.id === active;
@@ -134,8 +134,8 @@ function TabNav({ active }: { active: V2TabId }) {
               'rounded-[9px] px-[18px] py-2 text-[13.5px] transition-colors',
               HIT_AREA_TAB,
               on
-                ? 'bg-teal-700 font-semibold text-white shadow-sm'
-                : 'font-medium text-gray-600 hover:text-gray-800',
+                ? 'bg-accent font-semibold text-text-inverse shadow-sm'
+                : 'font-medium text-text-secondary hover:text-text-primary',
             )}
           >
             {tab.label}
@@ -158,7 +158,7 @@ function TabPanel({ active }: { active: V2TabId }) {
           aria-label={`open ${tabLabel(active)} in a new window`}
           title="Open the current tab in its own window"
           onClick={() => openTabWindow(active)}
-          className="inline-flex items-center gap-1 rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-500 transition-colors hover:bg-white hover:text-teal-700"
+          className="inline-flex items-center gap-1 rounded-control border border-border px-2.5 py-1.5 text-[12.5px] text-text-muted transition-colors hover:bg-surface hover:text-accent"
         >
           ↗<span className="hidden sm:inline">Open in new window</span>
         </button>
@@ -218,10 +218,10 @@ function ConnectionBadge() {
       className={cn(
         'inline-flex items-center gap-2 rounded-control border px-3 py-2',
         live
-          ? 'border-teal-200 bg-teal-100'
+          ? 'border-status-live-border bg-status-live-bg'
           : robotOffline || checkingRobot
-            ? 'border-amber-200 bg-amber-50'
-            : 'border-gray-200 bg-white',
+            ? 'border-status-warning-border bg-status-warning-bg'
+            : 'border-border bg-surface',
       )}
     >
       <StatusDot
@@ -232,10 +232,10 @@ function ConnectionBadge() {
         className={cn(
           'font-mono text-[12.5px] font-semibold',
           live
-            ? 'text-teal-700'
+            ? 'text-status-live-text'
             : robotOffline || checkingRobot
-              ? 'text-amber-700'
-              : 'text-gray-600',
+              ? 'text-status-warning-text'
+              : 'text-text-secondary',
         )}
       >
         {robotOffline
@@ -258,9 +258,9 @@ function DomainChip({ domainId }: { domainId?: number }) {
     <span
       data-testid="ros-domain"
       title={`ROS 2 domain ${domainId} (ROS_DOMAIN_ID)`}
-      className="inline-flex items-center gap-1.5 rounded-control border border-gray-200 bg-white px-3 py-2 font-mono text-[12.5px] font-semibold text-gray-600"
+      className="inline-flex items-center gap-1.5 rounded-control border border-border bg-surface px-3 py-2 font-mono text-[12.5px] font-semibold text-text-secondary"
     >
-      <span className="uppercase tracking-[0.04em] text-gray-500">DOMAIN</span>
+      <span className="uppercase tracking-[0.04em] text-text-muted">DOMAIN</span>
       {domainId}
     </span>
   );
@@ -358,13 +358,13 @@ function OperatorChip() {
           'inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full border px-2 text-xs font-semibold',
           HIT_AREA_CHIP,
           operator.trim()
-            ? 'border-teal-200 bg-teal-50 text-teal-700 hover:border-teal-400'
-            : 'border-gray-200 bg-gray-100 text-gray-600 hover:border-gray-300',
+            ? 'border-status-adopted-border bg-status-adopted-bg text-status-adopted-text hover:border-status-adopted-accent'
+            : 'border-border bg-surface-muted text-text-secondary hover:border-border-strong',
         )}
       >
         <span
           aria-hidden
-          className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-white/70 px-1 font-mono text-[10px]"
+          className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-surface/70 px-1 font-mono text-[10px]"
         >
           {initials}
         </span>
@@ -376,17 +376,17 @@ function OperatorChip() {
         </span>
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-40 mt-2 w-72 rounded-card border border-gray-200 bg-white p-3 shadow-float">
+        <div className="absolute right-0 top-full z-40 mt-2 w-72 rounded-card border border-border bg-surface-elevated p-3 shadow-float">
           <label
             htmlFor="operator-name"
-            className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500"
+            className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted"
           >
             Operator — saved into each recording
           </label>
           {roster.length > 0 ? (
             <div className="flex flex-col gap-1" data-testid="operator-roster">
               {operator.trim() && !roster.includes(operator.trim()) && (
-                <p className="mb-1 rounded-control border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                <p className="mb-1 rounded-control border border-status-warning-border bg-status-warning-bg px-2 py-1 text-[11px] text-status-warning-text">
                   “{operator.trim()}” is not on the roster — pick a name below (Settings
                   &gt; Operators edits the list).
                 </p>
@@ -408,8 +408,8 @@ function OperatorChip() {
                   className={cn(
                     'rounded-control border px-2.5 py-1.5 text-left text-sm',
                     name === operator.trim()
-                      ? 'border-teal-300 bg-teal-50 font-semibold text-teal-700'
-                      : 'border-gray-200 text-gray-700 hover:bg-gray-50',
+                      ? 'border-status-adopted-border bg-status-adopted-bg font-semibold text-status-adopted-text'
+                      : 'border-border text-text-secondary hover:bg-interaction-hover',
                   )}
                 >
                   {name}
@@ -458,12 +458,12 @@ function OperatorChip() {
                 placeholder="e.g. sadasue"
                 autoFocus
                 data-testid="operator-input"
-                className="w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-600 focus:outline-none"
+                className="w-full rounded-control border border-border bg-surface-control px-2 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
               />
               <button
                 type="button"
                 onClick={save}
-                className="rounded-control bg-teal-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-teal-800"
+                className="rounded-control bg-accent px-3 py-1.5 text-sm font-semibold text-text-inverse hover:bg-accent-strong"
               >
                 Save
               </button>
@@ -485,10 +485,10 @@ function Header({ active, config }: { active: V2TabId; config: RuntimeConfig }) 
         href="/"
         aria-label="kairos — recording console (home)"
         title="kairos — recording console (home)"
-        className="flex items-center gap-[11px] rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+        className="flex items-center gap-[11px] rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-focus"
       >
         <Hexagon size={30} />
-        <span className="text-[20px] font-bold tracking-[-0.02em] text-gray-900">
+        <span className="text-[20px] font-bold tracking-[-0.02em] text-text-primary">
           kairos
         </span>
       </a>
@@ -509,7 +509,7 @@ function BatchRestoreNotice() {
     <span
       role="status"
       data-testid="batch-restore-issue"
-      className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-800"
+      className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] font-medium text-status-warning-text"
     >
       More than one active batch matches this operator and robot. No batch was restored.
     </span>
@@ -559,19 +559,19 @@ function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) 
   }, [active, tabId]);
 
   return (
-    <main className="flex h-screen flex-col bg-gray-50 px-[22px] pb-[22px] pt-2.5">
+    <main className="flex h-screen flex-col bg-app px-[22px] pb-[22px] pt-2.5">
       <EventStreamMount url={config.endpoints.events} />
       <header className="mb-2 flex flex-wrap items-center gap-3">
         <a
           href={tabUrl(active, false)}
           title="Back to the kairos console"
-          className="flex items-center gap-2 rounded-control text-gray-600 hover:text-teal-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+          className="flex items-center gap-2 rounded-control text-text-secondary hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-focus"
         >
           <Hexagon size={20} />
-          <span className="text-[15px] font-bold tracking-[-0.02em] text-gray-900">
+          <span className="text-[15px] font-bold tracking-[-0.02em] text-text-primary">
             kairos
           </span>
-          <span className="text-gray-300">/</span>
+          <span className="text-border-strong">/</span>
           <span className="text-[14px] font-semibold">{label}</span>
         </a>
         <div className="flex-1" />
@@ -620,7 +620,7 @@ export function App() {
     return (
       <>
         {operatorHydration}
-        <main className="flex min-h-screen items-center gap-3 bg-gray-50 p-[22px] text-gray-500">
+        <main className="flex min-h-screen items-center gap-3 bg-app p-[22px] text-text-muted">
           <Hexagon size={22} />
           Loading kairos…
         </main>
@@ -631,7 +631,7 @@ export function App() {
     return (
       <>
         {operatorHydration}
-        <main className="min-h-screen bg-gray-50 p-[22px] text-red-700">
+        <main className="min-h-screen bg-app p-[22px] text-status-danger-text">
           Failed to load configuration: {String(error)}
         </main>
       </>
@@ -642,7 +642,7 @@ export function App() {
     return (
       <>
         {operatorHydration}
-        <main className="flex min-h-screen items-center gap-3 bg-gray-50 p-[22px] text-gray-500">
+        <main className="flex min-h-screen items-center gap-3 bg-app p-[22px] text-text-muted">
           <Hexagon size={22} />
           Loading operator context…
         </main>
@@ -669,7 +669,7 @@ export function App() {
   return (
     <>
       {operatorHydration}
-      <main className="min-h-screen bg-gray-50 px-[22px] pb-[22px] pt-2.5 lg:flex lg:h-svh lg:min-h-0 lg:flex-col lg:overflow-hidden">
+      <main className="min-h-screen bg-app px-[22px] pb-[22px] pt-2.5 lg:flex lg:h-svh lg:min-h-0 lg:flex-col lg:overflow-hidden">
         <EventStreamMount url={config.endpoints.events} />
         <Shell config={config} />
       </main>

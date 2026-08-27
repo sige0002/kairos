@@ -42,6 +42,38 @@ import {
 
 test.describe.configure({ mode: "serial" });
 
+test("Settings: appearance follows System and persists explicit Dark locally", async ({
+  page,
+}) => {
+  await page.emulateMedia({ colorScheme: "light" });
+  await openTab(page, "settings");
+  await page.getByRole("button", { name: "Appearance", exact: true }).click();
+
+  const section = page.getByTestId("settings-appearance");
+  await expect(section).toBeVisible();
+  await expect(section.getByTestId("appearance-system")).toBeChecked();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+
+  await section.getByTestId("appearance-dark").click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(section.getByTestId("appearance-status")).toContainText(
+    "Using dark appearance",
+  );
+  expect(await page.evaluate(() => localStorage.getItem("kairos.appearance"))).toBe(
+    "dark",
+  );
+
+  await page.reload();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await page.getByRole("button", { name: "Appearance", exact: true }).click();
+  await expect(page.getByTestId("appearance-dark")).toBeChecked();
+
+  await page.getByTestId("appearance-system").click();
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+});
+
 test("Settings: Audio is opt-in, independently configurable, and resettable", async ({
   page,
 }) => {
