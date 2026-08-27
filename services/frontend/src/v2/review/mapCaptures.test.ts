@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-import { expect, test } from 'vitest';
+import { afterEach, expect, test } from 'vitest';
+import { i18n } from '../../i18n';
 import { mapCapturesToEpisodes } from './mapCaptures';
 import type { CaptureListItem, CaptureState } from '../../api/types';
 
@@ -150,7 +151,11 @@ test('captures without a started_at order by capture_id, which is time-ordered',
   ]);
 });
 
-test('the batch label needs a loaded batch; without one it says "—"', () => {
+afterEach(async () => {
+  await i18n.changeLanguage('en');
+});
+
+test('the batch label follows the selected locale; without a loaded batch it says "—"', async () => {
   const rows = mapCapturesToEpisodes([
     capture({ capture_id: 'c1', batch_id: 'batch_1' }),
   ]);
@@ -161,7 +166,7 @@ test('the batch label needs a loaded batch; without one it says "—"', () => {
     [capture({ capture_id: 'c1', batch_id: 'batch_1' })],
     () => ({ seq: 3, createdAt: '2026-07-13T09:00:00Z' }),
   );
-  expect(labelled[0]!.batch).toBe('07/13 · #3');
+  expect(labelled[0]!.batch).toBe('13/07 · #3');
   expect(labelled[0]!.condition).toBeNull();
 
   const withCondition = mapCapturesToEpisodes(
@@ -173,6 +178,13 @@ test('the batch label needs a loaded batch; without one it says "—"', () => {
     }),
   );
   expect(withCondition[0]!.condition).toBe('Object: left bin');
+
+  await i18n.changeLanguage('ja');
+  const japanese = mapCapturesToEpisodes(
+    [capture({ capture_id: 'c1', batch_id: 'batch_1' })],
+    () => ({ seq: 3, createdAt: '2026-07-13T09:00:00Z' }),
+  );
+  expect(japanese[0]!.batch).toBe('07/13 · #3');
 });
 
 test('the recorded snapshot condition wins over a current Batch relabel', () => {

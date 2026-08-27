@@ -14,11 +14,11 @@
 
 import type { Tone } from './Chip';
 import type { SysRow } from './useSystemRows';
+import { i18n } from '../../../i18n';
 
 /** The chip text a System status row shows when it is not passing. */
-const CHECK = 'CHECK';
-
 export interface NeedsAttentionItem {
+  id?: string;
   /** The System status row this came from, verbatim — so the operator can find
    *  it on the card above rather than wonder whether it is a second finding. */
   label: string;
@@ -49,92 +49,50 @@ export interface NeedsAttentionItem {
  * evidence about what the recorder wrote — so the rate entries below report
  * what the monitor observed and keep the hedge about the recording explicit.
  */
-const COPY: Record<string, { impact: string; action: string }> = {
-  'Required data': {
-    impact:
-      'Some target topics were not being captured when this take started, so ' +
-      'the recording is missing them.',
-    action:
-      'Fix those topics and start again if the take needs them — this snapshot ' +
-      'is not re-checked while the take runs.',
-  },
-  // 'Topic rates' has no entry of its own: the label does not say WHICH of the
-  // four states below the row is in, and one sentence covering all of them was
-  // false for the unreadable-only case (it named a rate shortfall nobody had
-  // measured). A rates row arriving with no `cause` therefore takes the honest
-  // FALLBACK rather than any of these.
-  'rates-shortfall': {
-    impact:
-      'Recording continues. These are live monitor readings and do not confirm ' +
-      'loss in the recorded file.',
-    action:
-      'Open Monitor to inspect the topics before deciding whether to keep this take.',
-  },
-  'rates-unreadable': {
-    impact:
-      'Every topic the monitor could read is at its expected rate, but some ' +
-      'readings arrived in a shape this console could not parse — no usable ' +
-      'topic name — so they count on neither side of that ratio. It describes ' +
-      'what was readable, not everything the robot published.',
-    action:
-      'Nothing is established about those readings either way. Check Monitor, ' +
-      'and if it persists check that the monitor and this console run the same ' +
-      'build.',
-  },
-  'rates-mixed': {
-    impact:
-      'Two things at once: the monitor is receiving some topics below their ' +
-      'expected rate, and some readings arrived in a shape this console could ' +
-      'not parse, so the ratio covers fewer topics than the robot published.',
-    action:
-      'Open Monitor for the topics below rate. The unparseable readings count ' +
-      'on neither side, so treat the ratio as a floor rather than the whole ' +
-      'picture.',
-  },
-  'rates-none-readable': {
-    impact:
-      'No topic here is established either way: the readings this console could ' +
-      'parse have no reference rate yet, and the rest arrived in a shape it ' +
-      'could not parse at all.',
-    action:
-      'Give the monitor a moment to settle its rate references, and check ' +
-      'Monitor if the unparseable readings persist.',
-  },
-  Cameras: {
-    impact:
-      'At least one camera pane has no picture, so nothing here confirms what ' +
-      'those cameras are seeing.',
-    action:
-      'Check the camera and the streamer service — the row above says which ' +
-      'case it is.',
-  },
-  'Monitor link': {
-    impact:
-      'The live monitoring feed is not reaching this console, so the figures ' +
-      'above may be out of date. Recording runs in a separate service and is ' +
-      'not necessarily affected.',
-    action:
-      'Check the monitor service. Until it answers, treat the live rows as ' +
-      'unknown rather than as fine.',
-  },
-  Storage: {
-    impact:
-      'Free space on the recording disk is low. A long take can fill it and end ' +
-      'before you stop it.',
-    action: 'Free space or move finished captures off the disk before recording more.',
-  },
-  Build: {
-    impact:
-      'The robot and this console are running different builds, so what you see ' +
-      'here may not match what the robot actually does.',
-    action: 'Rebuild and restart the robot side so both run the same build.',
-  },
-  Recorder: {
-    impact:
-      'The recorder is not answering, so nothing here can confirm whether a ' +
-      'take is running or being written to disk.',
-    action: 'Check the recorder service before starting — a take may already be running.',
-  },
+const copyFor = (key: string): { impact: string; action: string } => {
+  const t = i18n.getFixedT(i18n.language, 'collect');
+  switch (key) {
+    case 'required-data':
+      return {
+        impact: t('checkRequiredDataImpact'),
+        action: t('checkRequiredDataAction'),
+      };
+    // 'Topic rates' has no entry of its own: the label does not say WHICH of the
+    // four states below the row is in, and one sentence covering all of them was
+    // false for the unreadable-only case (it named a rate shortfall nobody had
+    // measured). A rates row arriving with no `cause` therefore takes the honest
+    // FALLBACK rather than any of these.
+    case 'rates-shortfall':
+      return {
+        impact: t('checkRatesShortfallImpact'),
+        action: t('checkRatesShortfallAction'),
+      };
+    case 'rates-unreadable':
+      return {
+        impact: t('checkRatesUnreadableImpact'),
+        action: t('checkRatesUnreadableAction'),
+      };
+    case 'rates-mixed':
+      return { impact: t('checkRatesMixedImpact'), action: t('checkRatesMixedAction') };
+    case 'rates-none-readable':
+      return {
+        impact: t('checkRatesNoneReadableImpact'),
+        action: t('checkRatesNoneReadableAction'),
+      };
+    case 'cameras':
+      return { impact: t('checkCamerasImpact'), action: t('checkCamerasAction') };
+    case 'monitor-link':
+      return { impact: t('checkMonitorImpact'), action: t('checkMonitorAction') };
+    case 'storage':
+      return { impact: t('checkStorageImpact'), action: t('checkStorageAction') };
+    case 'build':
+    case 'Build':
+      return { impact: t('checkBuildImpact'), action: t('checkBuildAction') };
+    case 'recorder':
+      return { impact: t('checkRecorderImpact'), action: t('checkRecorderAction') };
+    default:
+      return { impact: t('checkFallbackImpact'), action: t('checkFallbackAction') };
+  }
 };
 
 /**
@@ -146,10 +104,6 @@ const COPY: Record<string, { impact: string; action: string }> = {
  * the card cannot silently go back to claiming "no active warnings" over a
  * CHECK. Note what it does NOT cover — see the chip filter below.
  */
-const FALLBACK = {
-  impact: 'This check is not passing, so the take cannot be called clean.',
-  action: 'Read the row on the System status card above before relying on this take.',
-};
 
 export interface NeedsAttentionOptions {
   /**
@@ -175,9 +129,16 @@ export function needsAttentionItems(
       // A row that starts reporting a not-passing state under some other word
       // must either spell it CHECK or be added to this filter, or it will pass
       // through this card in silence — which is the bug this file exists for.
-      .filter((r) => r.chip === CHECK)
-      .filter((r) => !(uncapturedShown && r.label === 'Required data'))
+      .filter((r) => r.status === 'check' || r.chip === 'CHECK')
+      .filter(
+        (r) =>
+          !(
+            uncapturedShown &&
+            (r.id === 'required-data' || r.label === 'Required data')
+          ),
+      )
       .map((r) => ({
+        id: r.id,
         label: r.label,
         value: r.value,
         chip: r.chip,
@@ -187,7 +148,7 @@ export function needsAttentionItems(
         // happened, and the label is only its heading. A cause with no entry
         // falls through to FALLBACK rather than to the label's wording, which
         // could describe a different cause entirely.
-        ...(COPY[r.cause ?? r.label] ?? FALLBACK),
+        ...copyFor(r.cause ?? r.id ?? r.label),
       }))
   );
 }

@@ -3,6 +3,7 @@
 import { render, screen } from '@testing-library/react';
 import { expect, test } from 'vitest';
 import type { QuickCheck } from '../../api/types';
+import '../../i18n';
 import { QuickCheckVerdict } from './QuickCheckVerdict';
 
 test('renders nothing when the run has no quick_check (old runs)', () => {
@@ -41,7 +42,9 @@ test('good verdict with no reasons says so plainly', () => {
   };
   render(<QuickCheckVerdict quickCheck={qc} />);
   expect(screen.getByTestId('review-quick-check')).toHaveTextContent('GOOD');
-  expect(screen.getByTestId('review-quick-check')).toHaveTextContent('No issues found.');
+  expect(screen.getByTestId('review-quick-check')).toHaveTextContent(
+    'No issues found.',
+  );
 });
 
 test('states each layer honestly when it is unavailable', () => {
@@ -53,5 +56,7 @@ test('states each layer honestly when it is unavailable', () => {
   render(<QuickCheckVerdict quickCheck={qc} />);
   const un = screen.getByTestId('review-quick-check-unavailable');
   expect(un).toHaveTextContent('Monitor data unavailable at stop.');
-  expect(un).toHaveTextContent('Bag summary missing — recording may have ended uncleanly.');
+  expect(un).toHaveTextContent(
+    'Bag summary missing — recording may have ended uncleanly.',
+  );
 });

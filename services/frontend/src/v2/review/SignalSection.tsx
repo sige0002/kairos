@@ -16,6 +16,7 @@
 // the whole episode onto its first frames, which would lie.
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
@@ -35,6 +36,7 @@ import { LossEventList } from './LossEventList';
 // POST /jobs → poll status → fetch result lifecycle the VideoPlayer uses, so a
 // missing/failed pipeline surfaces as an honest error instead of a dead view.
 function useSignalReport(captureId: string) {
+  const { t } = useTranslation('review');
   const queryClient = useQueryClient();
   const [jobId, setJobId] = useState<string | null>(null);
   const [report, setReport] = useState<SignalReportExt | null>(null);
@@ -66,9 +68,8 @@ function useSignalReport(captureId: string) {
   // only one whose setState ran — the other spun on "Generating…" forever.
   useJobCompletion({
     jobId,
-    label: 'Integrity report',
-    onSuccess: (result) =>
-      setReport(result.summary as unknown as SignalReportExt),
+    label: t('integrityReport'),
+    onSuccess: (result) => setReport(result.summary as unknown as SignalReportExt),
     onError: setJobError,
     onSettled: () => setJobId(null),
   });
@@ -92,6 +93,7 @@ export function SignalSection({
   /** Why the report cannot be run right now (a held lease, §7.1). */
   blockedReason?: string | null;
 }) {
+  const { t } = useTranslation('review');
   const sig = useSignalReport(captureId);
   const report = sig.report;
 
@@ -139,7 +141,9 @@ export function SignalSection({
   return (
     <section data-testid="review-signals">
       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-[12.5px] font-medium text-text-primary">Data integrity</h3>
+        <h3 className="text-[12.5px] font-medium text-text-primary">
+          {t('dataIntegrity')}
+        </h3>
         <button
           type="button"
           data-testid="review-run-signal"
@@ -149,10 +153,10 @@ export function SignalSection({
           className="rounded-control border border-accent px-2.5 py-1 text-[11.5px] font-semibold text-accent transition-colors hover:bg-interaction-selected disabled:opacity-50"
         >
           {sig.running
-            ? 'Analysing…'
+            ? t('analysing')
             : report
-              ? 'Re-run integrity report'
-              : 'Run integrity report'}
+              ? t('rerunIntegrityReport')
+              : t('runIntegrityReport')}
         </button>
       </div>
 
@@ -172,14 +176,10 @@ export function SignalSection({
         <JobErrorNote
           error={sig.error}
           testId="review-signal-submit-error"
-          staleNote={
-            report
-              ? 'The integrity report below is the last completed run, not this attempt.'
-              : undefined
-          }
+          staleNote={report ? t('integrityStale') : undefined}
           onRetry={sig.run}
           retryDisabled={sig.running || !!blockedReason}
-          retryLabel="Retry integrity report"
+          retryLabel={t('retryIntegrityReport')}
         />
       ) : sig.jobError ? (
         // A job that ran and failed, rather than one that could not be started.
@@ -190,26 +190,25 @@ export function SignalSection({
           testId="review-signal-error"
           onRetry={sig.run}
           retryDisabled={sig.running || !!blockedReason}
-          retryLabel="Retry integrity report"
+          retryLabel={t('retryIntegrityReport')}
         />
       ) : null}
 
       {!report && !sig.running && !sig.jobError && !sig.error && (
-        <p className="text-[11.5px] text-text-muted">
-          Analyses each topic's message timing in the recording (signal_report) to
-          locate gaps, shortfalls and silence — decoding stays isolated in the
-          pipeline.
-        </p>
+        <p className="text-[11.5px] text-text-muted">{t('integrityHelp')}</p>
       )}
       {sig.running && (
-        <p className="text-[11.5px] text-text-muted" data-testid="review-signal-progress">
-          Analysing message timing across the recording…
+        <p
+          className="text-[11.5px] text-text-muted"
+          data-testid="review-signal-progress"
+        >
+          {t('integrityProgress')}
         </p>
       )}
 
       {report && numericTopics.length === 0 && (
         <p className="text-[11.5px] text-text-muted" data-testid="review-signal-empty">
-          No numeric topics in this recording.
+          {t('noNumericTopics')}
         </p>
       )}
 
@@ -221,10 +220,10 @@ export function SignalSection({
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="text-[11px] font-semibold uppercase tracking-[0.04em] text-text-muted">
-                  Synced video
+                  {t('syncedVideo')}
                 </h3>
                 <select
-                  aria-label="sync camera topic"
+                  aria-label={t('syncCameraTopic')}
                   data-testid="review-signal-camera"
                   value={cameraChoice}
                   onChange={(e) => setCameraChoice(e.target.value)}
@@ -243,15 +242,14 @@ export function SignalSection({
                   disabled={!cameraChoice}
                   className="rounded-control border border-accent px-2.5 py-1 text-[11px] font-semibold text-accent hover:bg-interaction-selected disabled:opacity-50"
                 >
-                  {syncCamera === cameraChoice ? 'Loaded' : 'Load synced video'}
+                  {syncCamera === cameraChoice ? t('loaded') : t('loadSyncedVideo')}
                 </button>
               </div>
               {syncCamera && (
                 <>
                   {videoTruncated && (
                     <p className="text-[11px] text-status-warning-text">
-                      Head-only preview — use “Re-encode full episode” below to enable
-                      seeking from the timeline across the whole episode.
+                      {t('headOnlyPreview')}
                     </p>
                   )}
                   <VideoPlayer
@@ -284,10 +282,10 @@ export function SignalSection({
           >
             <thead>
               <tr className="text-left text-[10px] uppercase tracking-[0.03em] text-text-muted">
-                <th className="py-0.5 pr-2 font-medium">Topic</th>
-                <th className="py-0.5 pr-2 font-medium">Messages</th>
-                <th className="py-0.5 pr-2 font-medium">Continuity</th>
-                <th className="py-0.5 font-medium">Loss events</th>
+                <th className="py-0.5 pr-2 font-medium">{t('lossTopic')}</th>
+                <th className="py-0.5 pr-2 font-medium">{t('topicMessages')}</th>
+                <th className="py-0.5 pr-2 font-medium">{t('continuity')}</th>
+                <th className="py-0.5 font-medium">{t('lossEvents')}</th>
               </tr>
             </thead>
             <tbody>
@@ -299,7 +297,11 @@ export function SignalSection({
                   <tr key={name} className="border-t border-border">
                     <td
                       className="py-0.5 pr-2 font-mono text-text-secondary"
-                      title={tr.time_source ? `clock: ${tr.time_source}` : undefined}
+                      title={
+                        tr.time_source
+                          ? t('clockSource', { source: tr.time_source })
+                          : undefined
+                      }
                     >
                       {name}
                     </td>
@@ -308,10 +310,7 @@ export function SignalSection({
                     </td>
                     <td
                       className="cursor-help py-0.5 pr-2 font-mono text-text-muted"
-                      title={
-                        tr.continuity_definition ??
-                        'No continuity definition provided by the pipeline.'
-                      }
+                      title={tr.continuity_definition ?? t('continuityUnavailable')}
                     >
                       {formatContinuity(tr.continuity)} ⓘ
                     </td>
@@ -325,7 +324,7 @@ export function SignalSection({
                       }`}
                     >
                       {events.length}
-                      {majors > 0 ? ` (${majors} major)` : ''}
+                      {majors > 0 ? ` (${t('majorEvents', { count: majors })})` : ''}
                     </td>
                   </tr>
                 );
@@ -336,7 +335,9 @@ export function SignalSection({
           {report.skipped_topics && Object.keys(report.skipped_topics).length > 0 && (
             <details className="text-[11px] text-text-muted">
               <summary className="cursor-pointer">
-                Skipped topics ({Object.keys(report.skipped_topics).length})
+                {t('skippedTopics', {
+                  count: Object.keys(report.skipped_topics).length,
+                })}
               </summary>
               <ul className="mt-1 flex flex-col gap-0.5">
                 {Object.entries(report.skipped_topics).map(([t, reason]) => (

@@ -13,11 +13,14 @@
 // at its first appearance; source order = the order sources were ticked.
 
 import { Button, Modal, cn } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { ErrorMessage } from '../../components/ErrorMessage';
+import { formatMemberCount } from '../../i18n/format';
 import { shortCaptureId } from './data';
 import type { DatasetsState } from './useDatasetsState';
 
 export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation(['datasets', 'common']);
   const picked = state.combineSources.length;
   const ready = picked > 0 && state.combineName.trim() !== '';
   const finishedWithFailures =
@@ -27,7 +30,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
     <Modal
       open={state.combineOpen}
       onClose={state.cancelCombine}
-      title="Combine datasets"
+      title={t('datasets:combineDatasets')}
       footer={
         <>
           <Button
@@ -36,7 +39,9 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
             disabled={state.combineBusy}
             data-testid="combine-datasets-cancel"
           >
-            {finishedWithFailures ? 'Close' : 'Cancel'}
+            {finishedWithFailures
+              ? t('common:actions.close')
+              : t('common:actions.cancel')}
           </Button>
           {!finishedWithFailures && (
             <Button
@@ -46,8 +51,11 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
               data-testid="combine-datasets-submit"
             >
               {state.combineBusy
-                ? `Combining… ${state.combineDone} / ${state.combineTotal}`
-                : 'Combine into a new dataset'}
+                ? t('datasets:combining', {
+                    done: String(state.combineDone),
+                    total: String(state.combineTotal),
+                  })
+                : t('datasets:combineNewDataset')}
             </Button>
           )}
         </>
@@ -55,17 +63,16 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
     >
       <div data-testid="combine-datasets-dialog" className="flex flex-col gap-3">
         <p className="text-[13px] leading-relaxed text-text-secondary">
-          A new dataset listing every recording of the sources you pick.{' '}
+          {t('datasets:combineDescriptionBefore')}{' '}
           <span className="font-semibold text-text-primary">
-            The sources are not touched
+            {t('datasets:combineSourcesUntouched')}
           </span>{' '}
-          — a dataset is a list of captures, and nothing moves on disk. A
-          recording in two sources joins once.
+          {t('datasets:combineDescriptionAfter')}
         </p>
 
         <label className="flex flex-col gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-            New dataset name
+            {t('datasets:newDatasetName')}
           </span>
           <input
             data-testid="combine-datasets-name"
@@ -85,8 +92,8 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
             // Named for the dataset being BUILT, matching the visible "New
             // dataset name" above — and so it is not confusable with the create
             // panel's own operator field, which can be open behind this dialog.
-            aria-label="New dataset operator (optional)"
-            placeholder="Operator (optional)"
+            aria-label={t('datasets:newDatasetOperator')}
+            placeholder={t('datasets:newDatasetOperator')}
             disabled={state.combineBusy}
             className="min-w-0 flex-1 rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12px] text-text-primary placeholder:text-text-muted"
           />
@@ -94,8 +101,8 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
             data-testid="combine-datasets-task"
             value={state.combineTask}
             onChange={(e) => state.setCombineTask(e.target.value)}
-            aria-label="New dataset task (optional)"
-            placeholder="Task (optional)"
+            aria-label={t('datasets:newDatasetTask')}
+            placeholder={t('datasets:newDatasetTask')}
             disabled={state.combineBusy}
             className="min-w-0 flex-1 rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12px] text-text-primary placeholder:text-text-muted"
           />
@@ -103,12 +110,12 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
 
         <div className="flex flex-col gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-            Sources ({picked} picked)
+            {t('datasets:sourcesPicked', { count: picked })}
           </span>
           <div className="flex max-h-[180px] flex-col gap-1 overflow-y-auto rounded-[10px] border border-border p-1.5">
             {state.combineChoices.length === 0 ? (
               <span className="px-1.5 py-1 text-[12px] text-text-muted">
-                No active dataset to combine from.
+                {t('datasets:noActiveDataset')}
               </span>
             ) : (
               state.combineChoices.map((choice) => {
@@ -132,7 +139,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
                       {choice.name}
                     </span>
                     <span className="text-[11px] text-text-muted">
-                      {choice.memberCount} member{choice.memberCount === 1 ? '' : 's'}
+                      {formatMemberCount(choice.memberCount)}
                     </span>
                     {order >= 0 && (
                       <span className="text-[10.5px] font-semibold text-accent">
@@ -145,7 +152,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
             )}
           </div>
           <span className="text-[10.5px] text-text-muted">
-            Members are numbered source by source, in the order you picked them.
+            {t('datasets:combineOrdering')}
           </span>
         </div>
 
@@ -155,8 +162,11 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
             className="flex flex-col gap-1 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
           >
             <span className="font-semibold">
-              {state.combineDone - state.combineFailures.length} of{' '}
-              {state.combineTotal} joined; {state.combineFailures.length} did not:
+              {t('datasets:combineJoined', {
+                done: String(state.combineDone - state.combineFailures.length),
+                total: String(state.combineTotal),
+                failed: String(state.combineFailures.length),
+              })}
             </span>
             {state.combineFailures.map((f) => (
               <span key={f.captureId}>
@@ -164,7 +174,7 @@ export function CombineDatasetsDialog({ state }: { state: DatasetsState }) {
                 {f.message}
               </span>
             ))}
-            <span>The new dataset exists with everything that joined.</span>
+            <span>{t('datasets:combinedDatasetExists')}</span>
           </div>
         )}
         {state.combineError != null && <ErrorMessage error={state.combineError} />}

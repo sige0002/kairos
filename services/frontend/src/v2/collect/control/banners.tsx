@@ -8,15 +8,15 @@ import { cn } from '../../../components/ui';
 import type { RecordArming } from '../../../api/types';
 import { isTransportCode, readCaptureError } from '../../captures/errors';
 import { formatNumber } from '../../../i18n/format';
+import { i18n } from '../../../i18n';
 import type { MachineError } from '../useBatchMachine';
 
 // Operator-facing copy for known recorder error codes (D-8-1). Unknown codes
 // fall through to the raw server message; the code is always shown muted below.
 const ERROR_COPY: Record<string, string> = {
-  already_recording:
-    'A recording is already in progress — stop it before starting a new one.',
-  not_recording: 'No recording is in progress.',
-  recorder_unreachable: "Can't reach the recorder — check the robot connection.",
+  already_recording: i18n.t('collect:alreadyRecordingHelp'),
+  not_recording: i18n.t('collect:noRecordingInProgress'),
+  recorder_unreachable: i18n.t('collect:recorderUnreachableHelp'),
 };
 
 function ErrorBanner({ children }: { children: React.ReactNode }) {
@@ -83,13 +83,17 @@ export function ArmingNote({ arming }: { arming: RecordArming }) {
       )}
     >
       <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
-        Armed
+        {i18n.t('collect:armed')}
       </span>
-      <span className="font-mono">{matched.length} matched</span>
+      <span className="font-mono">
+        {i18n.t('collect:matchedTopicCount', { count: matched.length })}
+      </span>
       {missing.length > 0 && (
         <>
           <span className="opacity-40">·</span>
-          <span className="font-mono font-semibold">{missing.length} missing</span>
+          <span className="font-mono font-semibold">
+            {i18n.t('collect:missingTopicCount', { count: missing.length })}
+          </span>
           <span
             className="truncate font-mono text-[11px] opacity-80"
             title={missing.join('\n')}
@@ -135,14 +139,16 @@ export function IntegrityBanner({
         />
         <span className="text-[13px] font-bold">
           {failed
-            ? 'Recording failed — bag unreadable'
-            : `Data dropped — ${dropped != null ? formatNumber(dropped) : '?'} messages lost`}
+            ? i18n.t('collect:recordingFailedBagUnreadable')
+            : i18n.t('collect:dataDropped', {
+                lost: dropped != null ? formatNumber(dropped) : '?',
+              })}
         </span>
       </div>
       <span className="pl-4 text-xs">
         {failed
-          ? 'The bag could not be verified or read back.'
-          : 'Recorder cache overflowed — raise max_cache_size_mb.'}
+          ? i18n.t('collect:bagCouldNotBeVerified')
+          : i18n.t('collect:recorderCacheOverflow')}
       </span>
     </div>
   );
@@ -159,7 +165,7 @@ export function QuickCheckReasons({ reasons }: { reasons: string[] }) {
       className="flex flex-col gap-1 rounded-control border border-status-warning-border bg-status-warning-bg/60 px-3 py-2 text-status-warning-text"
     >
       <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em]">
-        Quick check flagged
+        {i18n.t('collect:quickCheckFlagged')}
       </span>
       <ul className="flex flex-col gap-0.5">
         {reasons.map((reason, i) => (
@@ -206,7 +212,11 @@ export function SaveErrorBanner({
       )}
     >
       <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
-        {destructive ? 'Not saved' : unanswered ? 'Save not confirmed' : 'Save refused'}
+        {destructive
+          ? i18n.t('collect:notSaved')
+          : unanswered
+            ? i18n.t('collect:saveNotConfirmed')
+            : i18n.t('collect:saveRefused')}
       </span>
       <span className="font-semibold">{reading.message}</span>
       {reading.guidance && <span>{reading.guidance}</span>}
@@ -216,7 +226,7 @@ export function SaveErrorBanner({
         data-testid="save-error-dismiss"
         className="self-start text-[11.5px] font-semibold underline"
       >
-        Dismiss
+        {i18n.t('common:actions.dismiss')}
       </button>
     </div>
   );

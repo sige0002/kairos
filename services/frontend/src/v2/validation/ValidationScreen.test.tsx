@@ -747,7 +747,7 @@ test('a batch target validates every capture of that batch that is here (blast r
   // The batch member whose bytes are elsewhere is excluded from the count.
   expect(
     await screen.findByRole('option', {
-      name: /07\/13 · #4 · pick \(server selection\)/,
+      name: /13\/07 · #4 · pick \(server selection\)/,
     }),
   ).toBeInTheDocument();
 
@@ -770,7 +770,7 @@ test('batch targets survive a list that carries no per-capture rows', async () =
   const target = (await screen.findByLabelText('target')) as HTMLSelectElement;
 
   const option = await screen.findByRole('option', {
-    name: /07\/13 · #4 · pick/,
+    name: /13\/07 · #4 · pick/,
   });
   expect(option).toBeInTheDocument();
   expect((option as HTMLOptionElement).value).toBe('batch:batch_x');
@@ -909,10 +909,14 @@ test('a topic chosen for one capture does not carry to the next one', async () =
 
   // Target defaults to cap_002. Choose its SECOND camera explicitly — an
   // explicit choice is what lands in `overrides`.
-  const select = (await screen.findByLabelText('topic')) as HTMLSelectElement;
-  await waitFor(() =>
-    expect(select.value).toBe('/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed'),
+  await waitFor(
+    () =>
+      expect((screen.getByLabelText('topic') as HTMLSelectElement).value).toBe(
+        '/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed',
+      ),
+    { timeout: 5_000 },
   );
+  const select = screen.getByLabelText('topic') as HTMLSelectElement;
   fireEvent.change(select, {
     target: { value: '/hsrb/hand_camera/image_raw/compressed' },
   });

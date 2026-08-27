@@ -7,6 +7,7 @@
 // pipeline lands in the generic SummaryResult instead. The pass/found/missing
 // computation lives in resultsMapping.buildChecklist (unit-tested there).
 import { Badge, Card, SectionLabel, StatusDot } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import type { Summary } from '../../features/validation/SummaryResult';
 import { buildChecklist, type RequiredTopic } from './resultsMapping';
 
@@ -17,14 +18,15 @@ export function ChecklistCard({
   summary: Summary;
   required: RequiredTopic[];
 }) {
+  const { t } = useTranslation('validation');
   const { rows, found, total, extraCount, pass } = buildChecklist(summary, required);
 
   return (
     <Card className="overflow-hidden" data-testid="fast-validation-checklist">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-border px-[18px] py-4">
-        <SectionLabel>Validation result</SectionLabel>
+        <SectionLabel>{t('validationResult')}</SectionLabel>
         <span className="font-mono text-[11.5px] text-text-muted">
-          {found}/{total} required
+          {found}/{total} {t('required')}
         </span>
         <div className="flex-1" />
         <Badge tone={pass ? 'green' : 'red'} dot>
@@ -33,9 +35,9 @@ export function ChecklistCard({
       </div>
       <div className="px-[18px] py-1.5">
         <div className="grid grid-cols-[1fr_64px_44px] gap-3 border-b border-border py-2 text-[10px] uppercase tracking-[0.05em] text-text-muted">
-          <span>Required topics</span>
-          <span className="text-right">Expected</span>
-          <span className="text-right">Result</span>
+          <span>{t('requiredTopics')}</span>
+          <span className="text-right">{t('expected')}</span>
+          <span className="text-right">{t('result')}</span>
         </div>
         {rows.map((t) => (
           <div
@@ -44,7 +46,10 @@ export function ChecklistCard({
           >
             <span className="flex min-w-0 items-center gap-2.5">
               <StatusDot tone={t.found ? 'green' : 'red'} />
-              <span className="truncate font-mono text-[12.5px] text-text-primary" title={t.name}>
+              <span
+                className="truncate font-mono text-[12.5px] text-text-primary"
+                title={t.name}
+              >
                 {t.name}
               </span>
             </span>
@@ -63,7 +68,7 @@ export function ChecklistCard({
       </div>
       {extraCount > 0 && (
         <p className="px-[18px] py-2.5 font-mono text-[11px] text-text-muted">
-          +{extraCount} extra topics not required
+          {t('extraTopics', { count: extraCount })}
         </p>
       )}
     </Card>

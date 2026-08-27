@@ -6,6 +6,7 @@
 // the Batch menu), not a fixed 30.
 
 import { Card, cn } from '../../components/ui';
+import { i18n } from '../../i18n';
 import type { BatchMachine, EpisodeRecord } from './useBatchMachine';
 
 // The chip's marker is driven by task outcome first (operators think in task
@@ -22,10 +23,13 @@ function bucketOf(e: EpisodeRecord): Bucket {
 function tooltipOf(e: EpisodeRecord, n: number): string {
   const task =
     e.taskResult === 'fail'
-      ? `Task: Failed${e.failReason ? ` (${e.failReason})` : ''}`
-      : 'Task: Success';
-  const quality = e.quality === 'review' ? 'Quality: Needs review' : 'Quality: Good';
-  return `Episode ${n} — ${task} · ${quality}`;
+      ? i18n.t('collect:taskFailedTooltip', { reason: e.failReason ?? '' })
+      : i18n.t('collect:taskSuccessTooltip');
+  const quality =
+    e.quality === 'review'
+      ? i18n.t('collect:qualityNeedsReview')
+      : i18n.t('collect:qualityGood');
+  return i18n.t('collect:episodeTooltip', { number: String(n), task, quality });
 }
 
 export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
@@ -52,7 +56,10 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
   // save toast says so once; the strip has to keep saying it, and has to say
   // WHICH: a bare count leaves the operator unable to tell two such takes
   // apart, and the whole point is knowing what will be missing afterwards.
-  const unsynced = episodes.filter((e) => !e.captureId).map((e) => e.index).sort((a, b) => a - b);
+  const unsynced = episodes
+    .filter((e) => !e.captureId)
+    .map((e) => e.index)
+    .sort((a, b) => a - b);
 
   const nodes = Array.from({ length: targetEpisodes }, (_, i) => {
     const n = i + 1;
@@ -78,8 +85,9 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
           data-testid={notSaved ? `episode-chip-unsaved-${n}` : undefined}
           title={
             notSaved
-              ? `${tooltipOf(recorded, n)} — labeled on screen only; the recorder ` +
-                'named no capture, so this take will not survive a reload'
+              ? i18n.t('collect:unsavedEpisodeTooltip', {
+                  episode: tooltipOf(recorded, n),
+                })
               : tooltipOf(recorded, n)
           }
           className={cn(
@@ -88,7 +96,8 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
             justSaved && 'ring-2 ring-focus ring-offset-1',
             // Dashed outline: this chip describes something the server has no
             // record of, and it must be tellable apart at a glance.
-            notSaved && 'outline outline-2 outline-dashed outline-status-warning-accent',
+            notSaved &&
+              'outline outline-2 outline-dashed outline-status-warning-accent',
           )}
         >
           {glyphs[bucket]}
@@ -99,7 +108,12 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
       return (
         <span
           key={n}
-          title={`Episode ${n} — ${recording ? 'recording' : 'next'}`}
+          title={i18n.t('collect:episodeStateTooltip', {
+            number: String(n),
+            state: recording
+              ? i18n.t('collect:recording').toLowerCase()
+              : i18n.t('collect:nextEpisode'),
+          })}
           className={cn(
             'flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border-2 font-mono text-[11px]',
             recording
@@ -117,7 +131,9 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
       return (
         <span
           key={n}
-          title={`Episode ${n} — recorded earlier; no longer listed (exported or deleted in Review)`}
+          title={i18n.t('collect:episodePreviouslyRecordedTooltip', {
+            number: String(n),
+          })}
           className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border border-dashed border-border-strong bg-surface font-mono text-[10.5px] text-text-muted"
         >
           {n}
@@ -127,7 +143,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
     return (
       <span
         key={n}
-        title={`Episode ${n} — not recorded`}
+        title={i18n.t('collect:episodeNotRecordedTooltip', { number: String(n) })}
         className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-surface-muted font-mono text-[10.5px] text-text-secondary"
       >
         {n}
@@ -149,26 +165,21 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
       {unsynced.length > 0 && (
         <span
           data-testid="episode-strip-unsynced"
-          title={
-            'Labeled on screen only — the recorder never named a capture for ' +
-            'these takes, so there is nothing on the server to review and they ' +
-            'will not survive a reload.'
-          }
+          title={i18n.t('collect:unsavedEpisodesHelp')}
           className="shrink-0 rounded-chip bg-status-warning-bg px-2 py-0.5 text-[11px] font-semibold text-status-warning-text"
         >
-          {unsynced.map((n) => `#${n}`).join(' ')} not saved
+          {i18n.t('collect:unsavedEpisodes', {
+            episodes: unsynced.map((n) => `#${n}`).join(' '),
+          })}
         </span>
       )}
       {unplaced.length > 0 && (
         <span
           data-testid="episode-strip-unplaced"
-          title={
-            'These captures carry no position within the batch, so they cannot ' +
-            'be shown on the strip. They exist and are listed in Review.'
-          }
+          title={i18n.t('collect:unplacedEpisodesHelp')}
           className="shrink-0 rounded-chip bg-status-warning-bg px-2 py-0.5 text-[11px] font-semibold text-status-warning-text"
         >
-          +{unplaced.length} unplaced
+          {i18n.t('collect:unplacedEpisodes', { count: unplaced.length })}
         </span>
       )}
       <span className="shrink-0 text-[11px] text-text-muted">

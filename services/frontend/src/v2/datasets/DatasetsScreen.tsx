@@ -17,6 +17,7 @@
 // underneath it.
 
 import { DeleteDialog, DiscardDialog } from '../captures/DeleteDialogs';
+import { useTranslation } from 'react-i18next';
 import { BlockingFailure } from './BlockingFailure';
 import { BuildRail } from './BuildRail';
 import { DatasetCenter } from './DatasetCenter';
@@ -26,6 +27,7 @@ import { useDatasetsState } from './useDatasetsState';
 import { ScreenTitle } from '../shared/ScreenTitle';
 
 export function DatasetsScreen() {
+  const { t } = useTranslation('datasets');
   const state = useDatasetsState();
   const { deletion } = state;
   // The single row is pinned to the free space (minmax(0,1fr)) so a long list
@@ -34,7 +36,7 @@ export function DatasetsScreen() {
   // older datasets. Columns scroll internally.
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[270px_1fr_330px] lg:grid-rows-[minmax(0,1fr)]">
-      <ScreenTitle>Datasets</ScreenTitle>
+      <ScreenTitle>{t('title')}</ScreenTitle>
       <DatasetList state={state} />
       <DatasetCenter state={state} />
       <BuildRail state={state} />

@@ -17,6 +17,7 @@
 // re-negotiates at the main resolution).
 
 import { useEffect, useMemo, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '../../components/ui';
 import { useWebRtcStream } from '../../features/stream/useWebRtcStream';
 import type { RuntimeConfig } from '../../config';
@@ -67,6 +68,7 @@ export function Cameras({
   /** Reports whether the main camera stream is healthy (System status card). */
   onHealthChange?: (health: CameraHealth) => void;
 }) {
+  const { t } = useTranslation('collect');
   const { panes, mainResLabel, mainPane, mainTopic, mainW, mainH, addOptions } =
     useCameraGrid(config);
   const mainRes = useRovingRadio({
@@ -127,14 +129,16 @@ export function Cameras({
   const recording = machine.phase === 'recording';
   const elapsedText = formatElapsed(machine.elapsedMs);
   const connected = phase === 'connected' && !!mainTopic;
-  const mainLabel = mainTopic ? shortCameraLabel(mainTopic) : 'none';
+  const mainLabel = mainTopic ? shortCameraLabel(mainTopic) : t('noCamera');
   // Bottom line keeps only the identity facts (topic · preset · decoded WxH);
   // the live fps/latency moved to the top-right stats chip (v1 placement).
   const mainDims =
-    stats.width != null && stats.height != null ? ` · ${stats.width}×${stats.height}` : '';
+    stats.width != null && stats.height != null
+      ? ` · ${stats.width}×${stats.height}`
+      : '';
   const topicLine = mainTopic
-    ? `${mainTopic} · ${mainResLabel}${connected ? mainDims : ' · waiting for stream…'}`
-    : 'no camera configured for this robot';
+    ? `${mainTopic} · ${mainResLabel}${connected ? mainDims : ` · ${t('waitingForStream')}`}`
+    : t('noCameraConfigured');
 
   if (panes.length === 0) {
     return (
@@ -143,7 +147,7 @@ export function Cameras({
         className="flex flex-1 items-center justify-center rounded-card border border-border bg-[#1f2937]"
       >
         <span className="font-mono text-xs text-gray-300">
-          No cameras configured for this robot.
+          {t('noCamerasConfigured')}
         </span>
       </div>
     );
@@ -186,12 +190,12 @@ export function Cameras({
             phase={phase}
             error={error}
             onRetry={retry}
-            name={mainTopic ? `${mainLabel} · ${mainTopic}` : 'no camera'}
+            name={mainTopic ? `${mainLabel} · ${mainTopic}` : t('noCamera')}
             className="absolute inset-0"
           />
         )}
         <OverlayBadge className="left-3 top-3 bg-gray-900/75 font-sans text-xs font-semibold text-white">
-          Main camera · {mainLabel}
+          {t('mainCamera')} · {mainLabel}
         </OverlayBadge>
         {/* Top-right overlay stack: REC/STANDBY in the corner, the v1-style
             live stats chip right below it — top-right per the user's request,
@@ -209,7 +213,7 @@ export function Cameras({
                 recording ? 'bg-status-danger-accent' : 'bg-accent',
               )}
             />
-            {recording ? `REC ${elapsedText}` : 'STANDBY'}
+            {recording ? t('recordingElapsed', { elapsed: elapsedText }) : t('standby')}
           </span>
           {connected && <StatsBadge stats={stats} sourceLiveness={mainLiveness} />}
         </div>
@@ -229,12 +233,15 @@ export function Cameras({
             ref={mainRes.groupRef}
             data-testid="main-res-group"
             role="radiogroup"
-            aria-label="Main camera resolution"
+            aria-label={t('mainCameraResolution')}
             onKeyDown={mainRes.onKeyDown}
             className="flex shrink-0 items-center gap-0.5 rounded-chip bg-gray-900/80 p-[3px]"
           >
-            <span aria-hidden className="px-1.5 text-[10px] font-semibold tracking-[0.04em] text-gray-300">
-              RES
+            <span
+              aria-hidden
+              className="px-1.5 text-[10px] font-semibold tracking-[0.04em] text-gray-300"
+            >
+              {t('resolutionAbbr')}
             </span>
             {MAIN_RES_PRESETS.map((p) => (
               <button
@@ -248,7 +255,9 @@ export function Cameras({
                 className={cn(
                   'rounded-chip px-2 py-0.5 font-mono text-[10.5px] font-bold',
                   HIT_AREA_RES_MAIN,
-                  p.label === mainResLabel ? 'bg-accent-soft text-text-primary' : 'text-gray-300',
+                  p.label === mainResLabel
+                    ? 'bg-accent-soft text-text-primary'
+                    : 'text-gray-300',
                 )}
               >
                 {p.label}
@@ -264,14 +273,19 @@ export function Cameras({
           pane={pane}
           config={config}
           onSelect={() => setMainCameraPane(pane.id)}
-          onRemove={pane.source === 'operator' ? () => removeCameraPane(pane.id) : undefined}
+          onRemove={
+            pane.source === 'operator' ? () => removeCameraPane(pane.id) : undefined
+          }
           style={{ gridColumn: 2, gridRow: i + 1 }}
           sourceLiveness={livenessOf(pane.topic)}
           onStreamState={onStreamState}
         />
       ))}
       {addVisible && (
-        <AddCameraTile options={addOptions} style={{ gridColumn: 2, gridRow: subs.length + 1 }} />
+        <AddCameraTile
+          options={addOptions}
+          style={{ gridColumn: 2, gridRow: subs.length + 1 }}
+        />
       )}
     </div>
   );

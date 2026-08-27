@@ -5,11 +5,11 @@
 // is written until Save.
 
 import { Card, cn } from '../../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { formatTimeOfDay } from '../../review/format';
 import { CARD_PAD } from '../compact';
 import {
   describeTaskOutcome,
-  QUALITY_LABEL,
   type BatchMachine,
   type QualityOverride,
 } from '../useBatchMachine';
@@ -30,6 +30,7 @@ export function ResultCard({
   saveRef: React.Ref<HTMLButtonElement>;
   failReasonRef: React.Ref<HTMLButtonElement>;
 }) {
+  const { t } = useTranslation('collect');
   const { stats } = machine;
   const quickGood = machine.autoQuality === 'good';
   const isFail = machine.pendingTask === 'fail';
@@ -38,12 +39,12 @@ export function ResultCard({
     !saving && (machine.pendingTask === 'ok' || (isFail && !!machine.failReason));
   const willComplete = stats.nRecorded + 1 >= machine.targetEpisodes;
   const saveLabel = saving
-    ? 'Saving…'
+    ? t('saving')
     : isFail
-      ? 'Save — failure'
+      ? t('saveFailure')
       : willComplete
-        ? 'Save — success · finishes set'
-        : 'Save — success';
+        ? t('saveSuccessFinishesSet')
+        : t('saveSuccess');
   const effectiveQuality: QualityOverride =
     machine.qualityOverride ?? machine.autoQuality;
   const qualityAuto = machine.qualityOverride == null;
@@ -57,8 +58,11 @@ export function ResultCard({
       )}
     >
       <div className="flex items-center gap-2">
-        <h2 data-testid="phase-title" className="text-[15px] font-bold text-text-primary">
-          Episode {stats.epNext} result
+        <h2
+          data-testid="phase-title"
+          className="text-[15px] font-bold text-text-primary"
+        >
+          {t('episode', { number: String(stats.epNext) })} {t('results')}
         </h2>
         {/* WHICH take this panel is about. The recovery banner above can be
             describing a DIFFERENT unsaved take at the same time, each with its
@@ -73,18 +77,20 @@ export function ResultCard({
           title={machine.currentRunLabel ?? undefined}
         >
           {machine.currentTakeStartedAt
-            ? `started ${formatTimeOfDay(machine.currentTakeStartedAt)}`
-            : 'start time unknown'}
+            ? t('startedAt', { time: formatTimeOfDay(machine.currentTakeStartedAt) })
+            : t('startTimeUnknown')}
           {machine.currentRunLabel ? ` · ${machine.currentRunLabel}` : ''}
         </span>
         <div className="flex-1" />
         <span
           className={cn(
             'rounded-chip px-2 py-0.5 text-[11px] font-bold',
-            quickGood ? 'bg-status-success-bg text-status-success-text' : 'bg-status-warning-bg text-status-warning-text',
+            quickGood
+              ? 'bg-status-success-bg text-status-success-text'
+              : 'bg-status-warning-bg text-status-warning-text',
           )}
         >
-          {quickGood ? 'QUICK: GOOD' : 'QUICK: NEEDS REVIEW'}
+          {quickGood ? t('quickGood') : t('quickNeedsReview')}
         </span>
       </div>
       {(machine.integrity === 'dropped' || machine.integrity === 'failed') && (
@@ -103,23 +109,27 @@ export function ResultCard({
       <div className="flex flex-col gap-1.5">
         <div className="flex items-center gap-2 text-xs">
           <span className="text-text-secondary">
-            Quality:{' '}
+            {t('quality')}:{' '}
             <span
               className={cn(
                 'font-semibold',
                 quickGood ? 'text-status-success-text' : 'text-status-warning-text',
               )}
             >
-              {QUALITY_LABEL[effectiveQuality]}
+              {effectiveQuality === 'good'
+                ? t('qualityGoodValue')
+                : effectiveQuality === 'review'
+                  ? t('qualityNeedsReviewValue')
+                  : t('notUsable')}
             </span>
-            {qualityAuto && <span className="text-text-muted"> · auto</span>}
+            {qualityAuto && <span className="text-text-muted"> · {t('auto')}</span>}
           </span>
           <button
             type="button"
             onClick={onToggleQuality}
             className="text-accent hover:underline"
           >
-            change
+            {t('change')}
           </button>
         </div>
         {/* Honest settlement status (F1): a subtle "running…" note while the
@@ -127,8 +137,11 @@ export function ResultCard({
             carry the call, so nothing lingers here. Never a fabricated value,
             and saving is never blocked on it. */}
         {machine.quickCheck.pending && (
-          <span data-testid="quickcheck-pending" className="text-[11px] text-text-muted">
-            Quick check running…
+          <span
+            data-testid="quickcheck-pending"
+            className="text-[11px] text-text-muted"
+          >
+            {t('quickCheckRunning')}
           </span>
         )}
         {qualityOpen && (
@@ -145,7 +158,11 @@ export function ResultCard({
                     : 'border-border bg-surface font-medium text-text-muted',
                 )}
               >
-                {QUALITY_LABEL[q]}
+                {q === 'good'
+                  ? t('qualityGoodValue')
+                  : q === 'review'
+                    ? t('qualityNeedsReviewValue')
+                    : t('notUsable')}
               </button>
             ))}
           </div>
@@ -153,7 +170,7 @@ export function ResultCard({
       </div>
       <div className="flex flex-col gap-1.5">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          Task result — your call
+          {t('taskResult')}
         </span>
         <div className="flex gap-1.5">
           <button
@@ -166,7 +183,7 @@ export function ResultCard({
                 : 'border border-border bg-surface text-text-muted',
             )}
           >
-            ✓ Success
+            ✓ {t('success')}
           </button>
           <button
             type="button"
@@ -178,14 +195,14 @@ export function ResultCard({
                 : 'border border-border bg-surface text-text-muted',
             )}
           >
-            ✕ Failure
+            ✕ {t('failure')}
           </button>
         </div>
       </div>
       {machine.pendingTask === 'fail' && (
         <div className="flex flex-col gap-1.5 rounded-control border border-status-danger-border bg-status-danger-bg px-3 py-2.5">
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-status-danger-text">
-            What failed? (required)
+            {t('whatFailed')}
           </span>
           <div className="flex flex-wrap gap-1.5">
             {failReasons.map((reason, i) => (
@@ -213,12 +230,10 @@ export function ResultCard({
           className="flex flex-col gap-1 rounded-control border border-border bg-surface-muted px-3 py-2.5 text-xs leading-relaxed text-text-secondary"
         >
           <span>
-            <span className="font-semibold text-text-primary">Task outcome:</span>{' '}
+            <span className="font-semibold text-text-primary">{t('taskOutcome')}:</span>{' '}
             {describeTaskOutcome(machine.pendingTask, machine.failReason)}
           </span>
-          <span className="text-text-muted">
-            Saved onto the recording itself — visible in Review either way.
-          </span>
+          <span className="text-text-muted">{t('savedOnRecordingHelp')}</span>
         </div>
       )}
       {machine.saveError != null && (
@@ -248,10 +263,10 @@ export function ResultCard({
           onClick={machine.retakeEpisode}
           disabled={saving || machine.episodeDiscard.busy}
           data-testid="retake-episode"
-          title="Discards this take (ledger reason: superseded by retake) and immediately starts recording again under the same labels."
+          title={t('retakeHelp')}
           className="h-9 flex-1 rounded-control border border-accent bg-interaction-selected text-[12.5px] font-semibold text-accent hover:bg-interaction-selected disabled:cursor-not-allowed disabled:opacity-50 [@media(max-height:860px)]:h-8"
         >
-          ⟲ Retake — discard &amp; record again
+          ⟲ {t('retakeDiscardRecordAgain')}
         </button>
         <button
           type="button"
@@ -260,7 +275,7 @@ export function ResultCard({
           data-testid="discard-episode"
           className="h-9 flex-1 rounded-control border border-border bg-surface text-[12.5px] font-semibold text-text-muted hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-50 [@media(max-height:860px)]:h-8"
         >
-          Discard only
+          {t('discardOnly')}
         </button>
       </div>
     </Card>

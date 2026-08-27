@@ -208,6 +208,29 @@ v1 の Graph / Probe / Live 健全性パネルの統合先。サブナビは **O
 - **System**（読み取り専用）: デプロイ事実（ROS_DOMAIN_ID・エンドポイント・data dir/storage・コンポーネント健全性）。誠実な version ソースがクライアントに無いため version 行は省略。RMW/DDS は API 非露出のため注記のみ。
 - **Appearance**（端末・ブラウザ単位）: System / Light / Dark を選ぶ。既定は System で、`prefers-color-scheme` を追従し、System 中の OS / browser 設定変更にも追従する。Light / Dark はその選択を上書きする。選択は browser の localStorage にだけ保存して即時適用し、起動時は React の前に解決済み theme を document へ適用して light flash を避ける。browser storage が利用できない場合も現在の page には適用するが、reload 後に再選択が必要なことを UI に明示する。これは presentation preference だけであり、録画・backend・shared catalog・store state を変更しない。
 - **Language**（端末・ブラウザ単位）: Settings > General で English / 日本語を選ぶ。`kairos.locale` に保存して即時反映し、`document.documentElement.lang`、共有 shell の文言、共有の日時・数値・リスト・count 表示は同じ選択ロケールを正本として再描画する。英語を fallback とし、resource は `common` / `collect` / `review` / `datasets` / `validation` / `monitor` / `settings` の安定 namespace に分け、各 locale の key shape をテストする。`navigator.language` は UI 言語の入力に使わない（POSIX 形式を修復する `localeGuard` は third-party `Intl` の互換性だけを担う）。選択中に Collect / Review / Datasets の React state、録画、backend、shared catalog を reset・変更しない。browser storage が使えない場合も当ページでは切替え、reload 後に再選択が必要なことを status で示す。ユーザーが作成した Project / Task / Condition / Operator / dataset 名や server の生診断は翻訳せず、Kairos が所有する周辺ラベルだけを翻訳する。全画面の本文移行は follow-up で段階的に行う。
+
+#### オペレータ向け EN/JA 用語集（primary workflow）
+
+Kairos が所有する UI 文言は以下を使う。同じ概念を Review と Datasets で別の語にしない。Project / Task / Condition / Operator 名、dataset 名、failure reason、run / capture ID、および server が返す生の診断本文はユーザー／外部システムの値なので翻訳しない。
+
+| English | 日本語 | 運用上の意味 |
+| --- | --- | --- |
+| Collect | 収録 | Collect タブと、収録を行う作業。 |
+| Review | レビュー | 完了した収録を品質・ラベルで判断する作業。 |
+| Datasets | データセット | capture を論理的に編成する集合。 |
+| Validation | 検証 | pipeline による機械的な検証。 |
+| recording | 録画 | recorder が進行中の処理。状態・開始／停止の文脈で使う。 |
+| capture | 収録 | 保存・レビュー・データセット投入の単位。進行中の recording と混同しない。 |
+| episode | エピソード | batch 内の 1 回の作業結果。 |
+| batch | バッチ | 同じ収録文脈でまとめるエピソードの作業単位。 |
+| Start / Stop recording | 録画を開始 / 録画を停止 | recorder の制御操作。 |
+| Success / Failure | 成功 / 失敗 | task outcome。データ品質の判定とは別。 |
+| Good / Needs review / Not usable | 良好 / 要レビュー / 使用不可 | データ品質の判断。`Not usable` は除外の判断を伴う。 |
+| Ready / Needs check / Excluded | 準備完了 / 要確認 / 除外済み | Review / Datasets における収録の作業状態。 |
+| Adopt / Exclude / Return to review | 採用 / 除外 / レビューに戻す | データセット投入可否の判断を進める／戻す操作。 |
+| Retake | 撮り直し | 現在の収録を使わず、もう一度収録すること。 |
+| Active / Frozen | 有効 / 凍結 | 編集可能な dataset と、変更不可の dataset の状態。 |
+| rebuilt counter lower bound | 再構築後の件数は下限 | 再構築で失われた過去の収録を数えられないため、表示件数が実際より少ない可能性がある説明。 |
 - **semantic color tokens**: `index.css` の CSS variables と Tailwind semantic utilities が app / surface（card・muted・elevated・control）/ text / border・interaction / accent・focus・modal scrim、ならびに success / warning / danger / info / live / recording / paused / adopted / needs-review / excluded / suspect の background・border・text・accent を定義する。Light / Dark は両方の値を必ず持つ。共有 shell・Card・Button・Modal・Badge はこの layer を使い、残りの各画面の literal palette utility 移行は follow-up とする。状態を色だけで表すことはせず、既存の label・icon・text が意味の正本である。
 - **honest placeholder**: **Dataset profiles**（Phase 3 の recipe モデル待ち）と **Users & permissions**（同一 LAN・無認証スコープのため管理対象なし）は、理由を述べる placeholder のみ（dead な操作は置かない）。
 

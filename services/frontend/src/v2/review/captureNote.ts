@@ -21,6 +21,8 @@
 // simply what happened". A manifest note has no next step for the UI to add
 // (see the comment at the panel) — only a meaning.
 
+import { i18n } from '../../i18n';
+
 export type CaptureNoteSeverity = 'fault' | 'notice';
 
 /**
@@ -29,12 +31,6 @@ export type CaptureNoteSeverity = 'fault' | 'notice';
  * the most, because a genuine fault would arrive dressed as a routine note.
  * A new BENIGN code costs only the next reader adding a line here.
  */
-const NOTICES: Record<string, string> = {
-  // The recorder stopped itself at MAX_RECORD_SECONDS / MAX_RECORD_BYTES. The
-  // take is complete and usable; the cap did the job it was set to do.
-  auto_stopped: 'Stopped at the configured limit',
-};
-
 export interface CaptureNoteReading {
   severity: CaptureNoteSeverity;
   /** Short words for a notice, so the classification does not live in the
@@ -44,6 +40,9 @@ export interface CaptureNoteReading {
 }
 
 export function readCaptureNote(code: string | null | undefined): CaptureNoteReading {
-  const label = code ? NOTICES[code] : undefined;
-  return label ? { severity: 'notice', label } : { severity: 'fault', label: null };
+  // The recorder stopped itself at MAX_RECORD_SECONDS / MAX_RECORD_BYTES. The
+  // take is complete and usable; the cap did the job it was set to do.
+  return code === 'auto_stopped'
+    ? { severity: 'notice', label: i18n.t('review:stoppedAtConfiguredLimit') }
+    : { severity: 'fault', label: null };
 }

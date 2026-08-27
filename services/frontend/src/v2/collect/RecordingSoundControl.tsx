@@ -2,6 +2,7 @@
 // Copyright 2026 Sadasue Yuki
 
 import { useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '../../components/ui';
 import type { RecordingCueKind } from './recordingCues';
 import type { RecordingCueSettings } from './hooks/useRecordingCues';
@@ -26,10 +27,13 @@ function SpeakerIcon({ enabled }: { enabled: boolean }) {
   );
 }
 
-const PREVIEWS: { kind: RecordingCueKind; label: string }[] = [
-  { kind: 'start', label: 'Start' },
-  { kind: 'end', label: 'End' },
-  { kind: 'warning', label: 'Warning' },
+const PREVIEWS: {
+  kind: RecordingCueKind;
+  label: 'soundStart' | 'soundEnd' | 'soundWarning';
+}[] = [
+  { kind: 'start', label: 'soundStart' },
+  { kind: 'end', label: 'soundEnd' },
+  { kind: 'warning', label: 'soundWarning' },
 ];
 
 export function RecordingSoundControl({
@@ -41,6 +45,7 @@ export function RecordingSoundControl({
   open: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useTranslation('collect');
   const triggerRef = useRef<HTMLButtonElement>(null);
   const switchRef = useRef<HTMLButtonElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -68,12 +73,12 @@ export function RecordingSoundControl({
         : 'off';
   const status =
     settings.playbackState === 'unsupported'
-      ? 'Audio is not supported by this browser.'
+      ? t('soundUnsupported')
       : settings.playbackState === 'blocked'
-        ? 'The browser blocked audio. Press a Test button to allow it.'
+        ? t('soundBlocked')
         : settings.enabled
-          ? 'On for this browser.'
-          : 'Off — no recording cues will play.';
+          ? t('soundOn')
+          : t('soundOff');
 
   return (
     <div className="relative mr-2">
@@ -87,8 +92,8 @@ export function RecordingSoundControl({
         }}
         aria-expanded={open}
         aria-haspopup="dialog"
-        aria-label={`Recording sounds ${buttonState}`}
-        title={`Recording sounds: ${buttonState}`}
+        aria-label={t('recordingSoundsState', { state: buttonState })}
+        title={t('recordingSoundsTitle', { state: buttonState })}
         className={cn(
           'inline-flex h-8 w-8 items-center justify-center rounded-control border transition-colors',
           blocked
@@ -103,7 +108,7 @@ export function RecordingSoundControl({
       {open && (
         <div
           role="dialog"
-          aria-label="Recording sound settings"
+          aria-label={t('recordingSoundSettings')}
           data-testid="recording-sounds-menu"
           onKeyDown={(event) => {
             if (event.key !== 'Escape') return;
@@ -117,10 +122,10 @@ export function RecordingSoundControl({
           <div className="flex items-start justify-between gap-3">
             <div>
               <div className="text-[13px] font-bold text-text-primary">
-                Recording sounds
+                {t('recordingSounds')}
               </div>
               <div className="mt-0.5 text-[11px] leading-relaxed text-text-muted">
-                Browser-local and optional. Visual status remains authoritative.
+                {t('soundSettingsHelp')}
               </div>
             </div>
             <div className="flex items-center gap-1.5">
@@ -144,10 +149,10 @@ export function RecordingSoundControl({
                 />
                 <span className="sr-only">
                   {unavailable
-                    ? 'Recording sounds unavailable'
+                    ? t('recordingSoundsUnavailable')
                     : settings.enabled
-                      ? 'Turn recording sounds off'
-                      : 'Turn recording sounds on'}
+                      ? t('turnSoundsOff')
+                      : t('turnSoundsOn')}
                 </span>
               </button>
               <button
@@ -157,7 +162,7 @@ export function RecordingSoundControl({
                   restoreFocusRef.current = true;
                   onToggle();
                 }}
-                aria-label="Close recording sound settings"
+                aria-label={t('closeSoundSettings')}
                 className="rounded-control px-1.5 py-0.5 text-sm text-text-muted hover:bg-surface-muted"
               >
                 ×
@@ -166,7 +171,7 @@ export function RecordingSoundControl({
           </div>
 
           <label className="flex flex-col gap-1 text-[11px] font-semibold text-text-secondary">
-            Volume · {Math.round(settings.volume * 100)}%
+            {t('volume')} · {Math.round(settings.volume * 100)}%
             <input
               type="range"
               min="0"
@@ -181,7 +186,7 @@ export function RecordingSoundControl({
 
           <div>
             <div className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-text-muted">
-              Test cues
+              {t('testCues')}
             </div>
             <div className="grid grid-cols-3 gap-1.5">
               {PREVIEWS.map(({ kind, label }) => (
@@ -194,7 +199,7 @@ export function RecordingSoundControl({
                   onClick={() => settings.preview(kind)}
                   className="rounded-chip border border-border px-2 py-1.5 text-[11px] font-semibold text-text-primary hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  {label}
+                  {t(label)}
                 </button>
               ))}
             </div>
@@ -214,8 +219,7 @@ export function RecordingSoundControl({
             {status}
           </p>
           <p className="border-t border-border pt-2 text-[10.5px] leading-relaxed text-text-muted">
-            Start = live recording confirmed. End = recording finalized, not a data
-            quality result. Warning = check the persistent alert and recovery action.
+            {t('soundCuesHelp')}
           </p>
         </div>
       )}

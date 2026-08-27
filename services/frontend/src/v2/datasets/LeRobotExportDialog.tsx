@@ -24,6 +24,7 @@
 
 import { Badge, Button, Modal } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
+import { useTranslation } from 'react-i18next';
 import { useRecordStatus } from '../captures/useRecordStatus';
 import { shortCaptureId } from './data';
 import type { ExportProfile } from '../../api/types';
@@ -34,8 +35,29 @@ const FIELD_LABEL =
 const FIELD_INPUT =
   'rounded-control border border-border bg-surface px-2 py-1.5 text-[12.5px] text-text-primary';
 
-function episodes(n: number): string {
-  return `${n} episode${n === 1 ? '' : 's'}`;
+function exportStateLabel(
+  t: (
+    key:
+      | 'exportStateQueued'
+      | 'exportStateRunning'
+      | 'exportStateComplete'
+      | 'exportStateCanceled'
+      | 'exportStateFailed',
+  ) => string,
+  state: string,
+): string {
+  switch (state) {
+    case 'queued':
+      return t('exportStateQueued');
+    case 'running':
+      return t('exportStateRunning');
+    case 'complete':
+      return t('exportStateComplete');
+    case 'canceled':
+      return t('exportStateCanceled');
+    default:
+      return t('exportStateFailed');
+  }
 }
 
 /** What a profile says about itself, in one line — and, when it does not
@@ -53,23 +75,31 @@ function ProfileInfo({
   profile: ExportProfile;
   validatorUnavailable: boolean;
 }) {
+  const { t } = useTranslation('datasets');
   const facts: string[] = [];
   if (profile.fps != null) facts.push(`${profile.fps} fps`);
   if (profile.topics?.length) facts.push(`${profile.topics.length} topics`);
   if (profile.source) facts.push(profile.source);
   return (
     <>
-      <span data-testid="lerobot-export-profile-info" className="text-[11px] text-text-muted">
-        {profile.valid === true && <span className="text-accent">✓ valid</span>}
+      <span
+        data-testid="lerobot-export-profile-info"
+        className="text-[11px] text-text-muted"
+      >
+        {profile.valid === true && (
+          <span className="text-accent">{t('profileValid')}</span>
+        )}
         {profile.valid == null && (
           <span className="text-status-warning-text">
             {validatorUnavailable
-              ? 'not verified — the exporter has no converter installed to check with'
-              : 'not verified — nothing has checked this profile'}
+              ? t('profileConverterUnavailable')
+              : t('profileUnverified')}
           </span>
         )}
         {profile.valid === false && (
-          <span className="text-status-danger-text font-semibold">does not validate</span>
+          <span className="text-status-danger-text font-semibold">
+            {t('profileInvalid')}
+          </span>
         )}
         {facts.length > 0 && <> · {facts.join(' · ')}</>}
       </span>
@@ -78,7 +108,7 @@ function ProfileInfo({
           data-testid="lerobot-export-profile-errors"
           className="flex flex-col gap-0.5 rounded-control border border-status-danger-border bg-status-danger-bg px-2.5 py-1.5 text-[11.5px] leading-relaxed text-status-danger-text"
         >
-          {(profile.errors ?? ['The converter gave no reason.']).map((error) => (
+          {(profile.errors ?? [t('converterNoReason')]).map((error) => (
             <li key={error}>{error}</li>
           ))}
         </ul>
@@ -91,13 +121,14 @@ function ProfileInfo({
  *  members — "pick x30 · pour x12 · 3 unlabeled". With a single label and
  *  nothing missing there is nothing to disambiguate, so nothing is said. */
 function TaskSummary({ state }: { state: LeRobotExportState }) {
+  const { t } = useTranslation('datasets');
   const tasks = state.preflight?.tasks;
   if (!tasks) return null;
   const values = Object.entries(tasks.values);
   if (values.length <= 1 && tasks.unlabeled === 0) return null;
   return (
     <p data-testid="lerobot-export-tasks" className="text-[11.5px] text-text-secondary">
-      Task labels:{' '}
+      {t('exportTaskLabels')}{' '}
       {values.map(([label, count], i) => (
         <span key={label}>
           {i > 0 && ' · '}
@@ -107,7 +138,9 @@ function TaskSummary({ state }: { state: LeRobotExportState }) {
       {tasks.unlabeled > 0 && (
         <>
           {values.length > 0 && ' · '}
-          <span className="text-status-warning-text">{tasks.unlabeled} unlabeled</span>
+          <span className="text-status-warning-text">
+            {t('exportUnlabeled', { count: tasks.unlabeled })}
+          </span>
         </>
       )}
     </p>
@@ -117,6 +150,7 @@ function TaskSummary({ state }: { state: LeRobotExportState }) {
 /** Everything the preflight found, in the order it matters: how many come
  *  along, who does not and why, and what is missing from those that do. */
 function PreflightPanel({ state }: { state: LeRobotExportState }) {
+  const { t } = useTranslation('datasets');
   const preflight = state.preflight;
   if (state.preflightError) {
     return (
@@ -131,36 +165,53 @@ function PreflightPanel({ state }: { state: LeRobotExportState }) {
         data-testid="lerobot-export-preflight"
         className="rounded-control border border-border bg-surface-muted px-3 py-2 text-[12px] text-text-muted"
       >
-        Checking what this profile would convert…
+        {t('exportCheckingPreflight')}
       </p>
     );
   }
   const dropped = preflight.dropped;
-  const reasons: Array<[string, string[]]> = [
-    ['not on this machine', dropped.not_local],
-    ['excluded in review', dropped.excluded],
-    ['still recording', dropped.recording],
+  const reasons = [
+    {
+      key: 'not-on-this-machine',
+      ids: dropped.not_local,
+      text: t('exportDroppedNotLocal', { count: dropped.not_local.length }),
+    },
+    {
+      key: 'excluded-in-review',
+      ids: dropped.excluded,
+      text: t('exportDroppedExcluded', { count: dropped.excluded.length }),
+    },
+    {
+      key: 'still-recording',
+      ids: dropped.recording,
+      text: t('exportDroppedRecording', { count: dropped.recording.length }),
+    },
   ];
   return (
     <div
       data-testid="lerobot-export-preflight"
       className="flex flex-col gap-1.5 rounded-control border border-border bg-surface-muted px-3 py-2"
     >
-      <p data-testid="lerobot-export-included" className="text-[12.5px] text-text-primary">
+      <p
+        data-testid="lerobot-export-included"
+        className="text-[12.5px] text-text-primary"
+      >
         <span className="font-semibold text-text-primary">
-          {preflight.included} of {preflight.member_total}
-        </span>{' '}
-        member{preflight.member_total === 1 ? '' : 's'} would be converted.
+          {t('exportIncluded', {
+            included: String(preflight.included),
+            total: String(preflight.member_total),
+          })}
+        </span>
       </p>
-      {reasons.map(([why, ids]) =>
+      {reasons.map(({ key, ids, text }) =>
         ids.length === 0 ? null : (
           <p
-            key={why}
-            data-testid={`lerobot-export-dropped-${why.replace(/\s+/g, '-')}`}
+            key={key}
+            data-testid={`lerobot-export-dropped-${key}`}
             title={ids.map(shortCaptureId).join(', ')}
             className="text-[11.5px] text-text-secondary"
           >
-            {ids.length} left out — {why}.
+            {text}
           </p>
         ),
       )}
@@ -171,21 +222,15 @@ function PreflightPanel({ state }: { state: LeRobotExportState }) {
           className="flex flex-col gap-0.5 rounded-control border border-status-danger-border bg-status-danger-bg px-2.5 py-1.5 text-[11.5px] leading-relaxed text-status-danger-text"
         >
           <span className="font-semibold">
-            {preflight.missing_topics.length === 1
-              ? '1 recording does not contain'
-              : `${preflight.missing_topics.length} recordings do not contain`}{' '}
-            every topic this profile reads:
+            {t('exportMissingTopics', { count: preflight.missing_topics.length })}
           </span>
           {preflight.missing_topics.map((gap) => (
             <span key={gap.capture_id}>
               <span className="font-mono">{shortCaptureId(gap.capture_id)}</span>:
-              missing {gap.topics.join(', ')}
+              {t('exportMissingTopic', { topics: gap.topics.join(', ') })}
             </span>
           ))}
-          <span>
-            The conversion is not blocked, but those episodes are what would
-            fail first.
-          </span>
+          <span>{t('exportMissingTopicsHint')}</span>
         </div>
       )}
       {preflight.coverage_unknown.length > 0 && (
@@ -193,10 +238,7 @@ function PreflightPanel({ state }: { state: LeRobotExportState }) {
           data-testid="lerobot-export-coverage-unknown"
           className="text-[11.5px] leading-relaxed text-text-secondary"
         >
-          {preflight.coverage_unknown.length} recording
-          {preflight.coverage_unknown.length === 1 ? "'s" : "s'"} manifest could
-          not be read, so whether they hold the profile's topics is unknown —
-          not checked, rather than checked and fine.
+          {t('exportCoverageUnknown', { count: preflight.coverage_unknown.length })}
         </p>
       )}
     </div>
@@ -207,6 +249,7 @@ function PreflightPanel({ state }: { state: LeRobotExportState }) {
  *  block: the operator decides, and the recorder's own drop counters remain
  *  the authority on whether anything actually suffered. */
 function RecordingCaution() {
+  const { t } = useTranslation('datasets');
   const record = useRecordStatus();
   if (!record.anyLive) return null;
   return (
@@ -214,30 +257,28 @@ function RecordingCaution() {
       data-testid="lerobot-export-recording-caution"
       className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
     >
-      A recording is live right now. Converting reads and re-encodes on this
-      same machine, so the two share CPU and disk — it is allowed, but a take
-      you care about is worth finishing first.
+      {t('exportRecordingCaution')}
     </p>
   );
 }
 
-function FormBody({ state, datasetName }: { state: LeRobotExportState; datasetName: string }) {
+function FormBody({
+  state,
+  datasetName,
+}: {
+  state: LeRobotExportState;
+  datasetName: string;
+}) {
+  const { t } = useTranslation('datasets');
   const preflight = state.preflight;
   return (
     <div className="flex flex-col gap-3">
       <p className="break-words text-[13px] leading-relaxed text-text-secondary">
-        <span className="font-semibold text-text-primary">{datasetName}</span> is
-        converted to a LeRobot v3 dataset written under{' '}
-        <span className="font-mono text-text-primary">exports/</span>.{' '}
-        <span className="font-semibold text-text-primary">
-          Nothing here changes:
-        </span>{' '}
-        the recordings are read where they are, and the dataset keeps its
-        members and its labels.
+        {t('exportIntroduction', { dataset: datasetName })}
       </p>
 
       <label className="flex flex-col gap-1">
-        <span className={FIELD_LABEL}>Profile</span>
+        <span className={FIELD_LABEL}>{t('profile')}</span>
         {/* Each control names ITSELF. The visible label wraps the field and
             its explanation both — the pattern the other dialogs here use — so
             without this the announced name is the whole paragraph, helper
@@ -245,7 +286,7 @@ function FormBody({ state, datasetName }: { state: LeRobotExportState; datasetNa
             screen (WCAG 2.5.3). */}
         <select
           data-testid="lerobot-export-profile"
-          aria-label="Profile"
+          aria-label={t('profile')}
           value={state.profileName}
           onChange={(e) => state.setProfileName(e.target.value)}
           className={FIELD_INPUT}
@@ -262,30 +303,30 @@ function FormBody({ state, datasetName }: { state: LeRobotExportState; datasetNa
             validatorUnavailable={state.validatorUnavailable}
           />
         )}
-        <span className="text-[11px] text-text-muted">
-          fps, camera set and resampling belong to the profile — to change one,
-          pick another profile.
-        </span>
+        <span className="text-[11px] text-text-muted">{t('exportProfileHelp')}</span>
       </label>
 
       <label className="flex flex-col gap-1">
         <span className={FIELD_LABEL}>
-          Memo <span className="font-normal normal-case text-text-muted">(optional)</span>
+          {t('memo')}{' '}
+          <span className="font-normal normal-case text-text-muted">
+            ({t('optional')})
+          </span>
         </span>
         <input
           data-testid="lerobot-export-memo"
-          aria-label="Memo (optional)"
+          aria-label={`${t('memo')} (${t('optional')})`}
           value={state.memo}
           onChange={(e) => state.setMemo(e.target.value)}
           spellCheck={false}
           maxLength={64}
-          placeholder="e.g. rerun2"
+          placeholder={t('exportMemoPlaceholder')}
           className={FIELD_INPUT}
         />
       </label>
 
       <div className="flex flex-col gap-1 rounded-control border border-border bg-surface-muted px-3 py-2">
-        <span className={FIELD_LABEL}>Writes to</span>
+        <span className={FIELD_LABEL}>{t('writesTo')}</span>
         <span
           data-testid="lerobot-export-output"
           className="break-all font-mono text-[12px] text-text-primary"
@@ -297,8 +338,7 @@ function FormBody({ state, datasetName }: { state: LeRobotExportState; datasetNa
             data-testid="lerobot-export-output-exists"
             className="text-[11.5px] font-semibold leading-relaxed text-status-danger-text"
           >
-            That folder already exists and is not empty — change the memo, or
-            delete the old export first. Nothing is overwritten.
+            {t('exportOutputExists')}
           </span>
         )}
       </div>
@@ -310,20 +350,19 @@ function FormBody({ state, datasetName }: { state: LeRobotExportState; datasetNa
           panel that says so is what makes the field make sense. */}
       {state.taskRequired && (
         <label className="flex flex-col gap-1">
-          <span className={FIELD_LABEL}>Fallback task</span>
+          <span className={FIELD_LABEL}>{t('fallbackTask')}</span>
           <input
             data-testid="lerobot-export-task"
-            aria-label="Fallback task"
+            aria-label={t('fallbackTask')}
             value={state.taskFallback}
             onChange={(e) => state.setTaskFallback(e.target.value)}
-            placeholder="e.g. pick and place the red block"
+            placeholder={t('exportTaskPlaceholder')}
             className={FIELD_INPUT}
           />
           <span className="text-[11px] leading-relaxed text-text-muted">
-            {(state.preflight?.tasks.unlabeled ?? 0) === 1
-              ? 'Used only for the one recording that carries no task label of its own'
-              : `Used only for the ${state.preflight?.tasks.unlabeled ?? 0} recordings that carry no task label of their own`}
-            ; every labelled one keeps the label it has.
+            {t('exportFallbackTask', {
+              count: state.preflight?.tasks.unlabeled ?? 0,
+            })}
           </span>
         </label>
       )}
@@ -336,11 +375,15 @@ function FormBody({ state, datasetName }: { state: LeRobotExportState; datasetNa
 }
 
 function ProgressBody({ state }: { state: LeRobotExportState }) {
+  const { t } = useTranslation('datasets');
   const status = state.status;
   if (!status) {
     return (
-      <p data-testid="lerobot-export-progress" className="text-[12.5px] text-text-secondary">
-        The conversion was accepted. Waiting for the exporter's first report…
+      <p
+        data-testid="lerobot-export-progress"
+        className="text-[12.5px] text-text-secondary"
+      >
+        {t('exportAcceptedWaiting')}
       </p>
     );
   }
@@ -350,36 +393,47 @@ function ProgressBody({ state }: { state: LeRobotExportState }) {
   return (
     <div data-testid="lerobot-export-progress" className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2.5">
-        <Badge tone={status.stalled ? 'amber' : 'teal'}>{status.state}</Badge>
+        <Badge tone={status.stalled ? 'amber' : 'teal'}>
+          {exportStateLabel(t, status.state)}
+        </Badge>
         <span
           data-testid="lerobot-export-progress-count"
           className="font-mono text-[13px] font-semibold text-text-primary"
         >
           {status.done} / {status.total}
         </span>
-        <span className="text-[12px] text-text-muted">episodes converted</span>
+        <span className="text-[12px] text-text-muted">
+          {t('exportEpisodesConverted')}
+        </span>
       </div>
 
       {queued ? (
-        <p data-testid="lerobot-export-queue" className="text-[12px] text-text-secondary">
+        <p
+          data-testid="lerobot-export-queue"
+          className="text-[12px] text-text-secondary"
+        >
           {status.queue_position != null
-            ? `Waiting its turn — number ${status.queue_position} in the exporter's queue.`
-            : 'Waiting its turn in the exporter’s queue.'}
+            ? t('exportQueuePosition', { position: String(status.queue_position) })
+            : t('exportQueueWaiting')}
         </p>
       ) : (
         <>
           <div className="h-2 overflow-hidden rounded-full bg-surface-muted">
             <div
-              className={status.stalled ? 'h-full bg-status-warning-accent' : 'h-full bg-accent'}
-              style={{ width: fraction == null ? '0%' : `${Math.round(fraction * 100)}%` }}
+              className={
+                status.stalled ? 'h-full bg-status-warning-accent' : 'h-full bg-accent'
+              }
+              style={{
+                width: fraction == null ? '0%' : `${Math.round(fraction * 100)}%`,
+              }}
             />
           </div>
           <p className="text-[12px] text-text-muted">
             {fraction == null
-              ? 'The exporter has not reported an episode count yet, so there is no share of the whole to show.'
+              ? t('exportNoCount')
               : typeof pct === 'number' && pct > 0 && pct < 100
-                ? `Current episode ${Math.round(pct)}%.`
-                : 'Working through the episodes.'}
+                ? t('exportCurrentEpisode', { percent: String(Math.round(pct)) })
+                : t('exportWorking')}
           </p>
         </>
       )}
@@ -389,14 +443,15 @@ function ProgressBody({ state }: { state: LeRobotExportState }) {
           data-testid="lerobot-export-stalled"
           className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
         >
-          No progress has been reported for a while — the converter may be stuck
-          on this episode. Nothing has been cancelled; this is what the exporter
-          observes, not a verdict.
+          {t('exportStalled')}
         </p>
       )}
       {status.failed > 0 && (
-        <p data-testid="lerobot-export-failed-count" className="text-[12px] text-status-danger-text">
-          {episodes(status.failed)} failed to convert so far.
+        <p
+          data-testid="lerobot-export-failed-count"
+          className="text-[12px] text-status-danger-text"
+        >
+          {t('exportFailedSoFar', { count: status.failed })}
         </p>
       )}
       {status.message && (
@@ -404,7 +459,9 @@ function ProgressBody({ state }: { state: LeRobotExportState }) {
           {status.message}
         </p>
       )}
-      <p className="break-all font-mono text-[11px] text-text-muted">→ {status.output}</p>
+      <p className="break-all font-mono text-[11px] text-text-muted">
+        → {status.output}
+      </p>
       {state.cancelError != null && <ErrorMessage error={state.cancelError} />}
     </div>
   );
@@ -414,6 +471,7 @@ function ProgressBody({ state }: { state: LeRobotExportState }) {
  *  it is. A failure keeps the exporter's own sentence rather than a summary of
  *  it — that sentence is the only account of what went wrong. */
 function ResultBody({ state }: { state: LeRobotExportState }) {
+  const { t } = useTranslation('datasets');
   const status = state.status;
   if (!status) return null;
   const complete = status.state === 'complete';
@@ -421,16 +479,18 @@ function ResultBody({ state }: { state: LeRobotExportState }) {
     <div data-testid="lerobot-export-result" className="flex flex-col gap-3">
       <div className="flex items-center gap-2.5">
         <Badge tone={complete ? 'teal' : status.state === 'canceled' ? 'gray' : 'red'}>
-          {status.state}
+          {exportStateLabel(t, status.state)}
         </Badge>
         <span className="font-mono text-[13px] font-semibold text-text-primary">
           {status.done} / {status.total}
         </span>
-        <span className="text-[12px] text-text-muted">episodes converted</span>
+        <span className="text-[12px] text-text-muted">
+          {t('exportEpisodesConverted')}
+        </span>
       </div>
       {complete ? (
         <p className="text-[12.5px] leading-relaxed text-text-primary">
-          {episodes(status.done)} written to{' '}
+          {t('exportResultComplete', { count: status.done, output: '' })}{' '}
           <span
             data-testid="lerobot-export-result-output"
             className="break-all font-mono text-text-primary"
@@ -441,8 +501,7 @@ function ResultBody({ state }: { state: LeRobotExportState }) {
             <>
               {' '}
               <span className="text-status-danger-text">
-                ({episodes(status.failed)} failed — the converter's log has the
-                reason.)
+                {t('exportResultPartialFailure', { count: status.failed })}
               </span>
             </>
           )}
@@ -454,8 +513,8 @@ function ResultBody({ state }: { state: LeRobotExportState }) {
         >
           {status.message ??
             (status.state === 'canceled'
-              ? 'Cancelled. The partial output was removed, so there is nothing half-converted left behind.'
-              : 'The conversion failed and the exporter gave no reason.')}
+              ? t('exportCanceled')
+              : t('exportFailedNoReason'))}
         </p>
       )}
       {state.cancelError != null && <ErrorMessage error={state.cancelError} />}
@@ -470,13 +529,14 @@ export function LeRobotExportDialog({
   state: LeRobotExportState;
   datasetName: string;
 }) {
+  const { t } = useTranslation(['datasets', 'common']);
   const running = state.live;
   const result = state.showResult;
   return (
     <Modal
       open={state.open}
       onClose={state.closeDialog}
-      title="Convert to LeRobot"
+      title={t('datasets:convertLeRobot')}
       footer={
         running ? (
           <>
@@ -485,16 +545,18 @@ export function LeRobotExportDialog({
               onClick={state.closeDialog}
               data-testid="lerobot-export-close"
             >
-              Close
+              {t('common:actions.close')}
             </Button>
             <Button
               variant="danger"
               onClick={state.cancel}
               disabled={state.canceling}
-              title="Stop the conversion. The partial output is removed — a cancelled conversion leaves nothing to resume from, so it starts over."
+              title={t('datasets:cancelConversionHint')}
               data-testid="lerobot-export-abort"
             >
-              {state.canceling ? 'Cancelling…' : 'Cancel conversion'}
+              {state.canceling
+                ? t('datasets:canceling')
+                : t('datasets:cancelConversion')}
             </Button>
           </>
         ) : result ? (
@@ -504,14 +566,14 @@ export function LeRobotExportDialog({
               onClick={state.acknowledge}
               data-testid="lerobot-export-again"
             >
-              Convert again…
+              {t('datasets:convertAgain')}
             </Button>
             <Button
               variant="primary"
               onClick={state.closeDialog}
               data-testid="lerobot-export-close"
             >
-              Close
+              {t('common:actions.close')}
             </Button>
           </>
         ) : (
@@ -522,7 +584,7 @@ export function LeRobotExportDialog({
               disabled={state.submitting}
               data-testid="lerobot-export-cancel"
             >
-              Cancel
+              {t('common:actions.cancel')}
             </Button>
             <Button
               variant="primary"
@@ -532,10 +594,10 @@ export function LeRobotExportDialog({
               data-testid="lerobot-export-submit"
             >
               {state.submitting
-                ? 'Starting…'
+                ? t('datasets:starting')
                 : state.preflight
-                  ? `Convert ${episodes(state.preflight.included)}`
-                  : 'Convert'}
+                  ? `${t('datasets:convert')} ${t('datasets:exportEpisode', { count: state.preflight.included })}`
+                  : t('datasets:convert')}
             </Button>
           </>
         )

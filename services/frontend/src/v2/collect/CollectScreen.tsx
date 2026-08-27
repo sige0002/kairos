@@ -8,6 +8,7 @@
 // (.dev/kairos-console-v2.dc.html, "Collect" section).
 
 import { useCallback, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useQuery } from '@tanstack/react-query';
 import { fetchRuntimeConfig } from '../../config';
 import { queryKeys } from '../../api/queryKeys';
@@ -35,6 +36,7 @@ import { ScreenTitle } from '../shared/ScreenTitle';
 // between Stop and Save). Sits above the control card until the operator labels,
 // discards, or dismisses it. All figures are real (or an honest "—").
 function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
+  const { t } = useTranslation('collect');
   const take = machine.unsavedTake;
   if (!take) return null;
   return (
@@ -52,27 +54,36 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
         '[@media(max-height:860px)]:gap-1.5 [@media(max-height:860px)]:py-2',
       )}
     >
-      <span className="text-[13px] text-status-warning-text" data-testid="unsaved-take-identity">
+      <span
+        className="text-[13px] text-status-warning-text"
+        data-testid="unsaved-take-identity"
+      >
         {machine.unsavedTakeCount > 1
-          ? `${machine.unsavedTakeCount} unsaved takes. Most recent: `
+          ? t('unsavedTakesMostRecent', { count: machine.unsavedTakeCount })
           : take.interrupted
-            ? 'Interrupted take from '
-            : 'Unsaved take from '}
+            ? t('interruptedTakeFrom')
+            : t('unsavedTakeFrom')}
         <span className="font-semibold">
           {formatTimeOfDay(take.startedAt ?? undefined)}
         </span>{' '}
-        — {formatBytes(take.bytes)}, {formatHms(take.durationMs ?? undefined)}. Label it
-        now, or discard it.
-        {machine.unsavedTakeCount > 1 && ' “Later” hides them all until a new one appears.'}
+        —{' '}
+        {t('unsavedTakeSummary', {
+          bytes: formatBytes(take.bytes),
+          duration: formatHms(take.durationMs ?? undefined),
+        })}
+        {machine.unsavedTakeCount > 1 && ` ${t('laterHidesAll')}`}
       </span>
       {/* WHY it ended, not just that it exists. A take the operator did not
           stop themselves is the case where the reason is the whole question,
           and a toast has long since gone by the time they look. */}
       {take.interrupted && (
-        <span className="text-[12px] text-status-warning-text" data-testid="unsaved-take-reason">
-          It ended on its own:{' '}
-          {take.reason ?? 'the recorder stopped before the take was finished'}.
-          Whatever it managed to write is still here.
+        <span
+          className="text-[12px] text-status-warning-text"
+          data-testid="unsaved-take-reason"
+        >
+          {t('interruptedTakeReason', {
+            reason: take.reason ?? t('recorderStoppedBeforeFinished'),
+          })}
         </span>
       )}
       <div className="flex gap-2">
@@ -81,7 +92,7 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
           onClick={machine.labelUnsavedTake}
           className="h-9 [@media(max-height:860px)]:h-8 rounded-control bg-accent px-3.5 text-[12.5px] font-bold text-text-inverse hover:bg-accent-strong"
         >
-          Label it
+          {t('labelIt')}
         </button>
         <button
           type="button"
@@ -89,14 +100,14 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
           disabled={machine.unsavedDiscard.busy}
           className="h-9 [@media(max-height:860px)]:h-8 rounded-control border border-border bg-surface px-3.5 text-[12.5px] font-semibold text-text-secondary hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Discard
+          {t('discard')}
         </button>
         <button
           type="button"
           onClick={machine.dismissUnsavedTake}
           className="h-9 [@media(max-height:860px)]:h-8 rounded-control px-2 text-[12.5px] font-semibold text-text-muted hover:underline"
         >
-          Later
+          {t('later')}
         </button>
       </div>
     </Card>
@@ -104,6 +115,7 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
 }
 
 export function CollectScreen() {
+  const { t } = useTranslation('collect');
   // The runtime config is already fetched (and cached under this same key) by
   // the app shell before any tab renders — this just reads that cache instead
   // of threading a `config` prop through Shell/TabPanel/TabContent.
@@ -140,8 +152,8 @@ export function CollectScreen() {
   if (!config) {
     return (
       <>
-        <ScreenTitle>Collect</ScreenTitle>
-        <div className="p-4 text-sm text-text-muted">Loading…</div>
+        <ScreenTitle>{t('title')}</ScreenTitle>
+        <div className="p-4 text-sm text-text-muted">{t('loading')}</div>
       </>
     );
   }
@@ -154,7 +166,7 @@ export function CollectScreen() {
         COL_GAP,
       )}
     >
-      <ScreenTitle>Collect</ScreenTitle>
+      <ScreenTitle>{t('title')}</ScreenTitle>
       <ContextBar machine={machine} />
       <div
         data-testid="collect-main-grid"

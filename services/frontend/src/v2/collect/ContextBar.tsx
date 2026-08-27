@@ -9,6 +9,8 @@
 // default topics and expected-Hz all follow the selection immediately.
 
 import { type ReactNode } from 'react';
+import { useTranslation } from 'react-i18next';
+import { i18n } from '../../i18n';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getConfigOptions, selectConfig } from '../../api/config';
 import { queryKeys } from '../../api/queryKeys';
@@ -39,7 +41,9 @@ function CellButton({
       title={title}
       className={cn(
         '-my-1 flex flex-col gap-0.5 rounded-control px-6 py-1 text-left transition-colors',
-        disabled ? 'cursor-not-allowed opacity-55' : 'cursor-pointer hover:bg-surface-muted',
+        disabled
+          ? 'cursor-not-allowed opacity-55'
+          : 'cursor-pointer hover:bg-surface-muted',
       )}
     >
       <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
@@ -69,7 +73,11 @@ function planCellValue(value: string | null): ReactNode {
   // `null` is the state the machine now holds when there is no catalog; the em
   // dash is the same state as restored from an older persisted blob.
   if (value !== null && value !== NO_PLAN) return value;
-  return <span className="font-normal text-text-muted">no plans configured</span>;
+  return (
+    <span className="font-normal text-text-muted">
+      {i18n.t('collect:noPlansConfigured')}
+    </span>
+  );
 }
 
 function StaticCell({ label, value }: { label: string; value: ReactNode }) {
@@ -178,6 +186,7 @@ function RobotCell({
   open: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useTranslation('collect');
   const queryClient = useQueryClient();
   const options = useQuery({
     queryKey: queryKeys.configOptions,
@@ -208,16 +217,16 @@ function RobotCell({
   return (
     <div className="relative">
       <CellButton
-        label="Robot"
-        value={select.isPending ? 'switching…' : (active ?? '—')}
+        label={t('robot')}
+        value={select.isPending ? t('switching') : (active ?? '—')}
         onClick={onToggle}
         disabled={disabled || robots.length === 0 || select.isPending}
-        title="Switch robot config (disabled while recording)"
+        title={t('switchRobotHelp')}
       />
       {open && (
         <PickerPopover
           className="left-0 top-full mt-1"
-          heading="Robot (applies immediately)"
+          heading={t('robotAppliesImmediately')}
         >
           {robots.map((r) => (
             <PickItem
@@ -233,7 +242,10 @@ function RobotCell({
             >
               {r.id}
               {r.local ? (
-                <span className="text-[10px] text-text-muted"> · local</span>
+                <span className="text-[10px] text-text-muted">
+                  {' '}
+                  · {t('localConfig')}
+                </span>
               ) : null}
             </PickItem>
           ))}
@@ -244,15 +256,16 @@ function RobotCell({
 }
 
 export function ContextBar({ machine }: { machine: BatchMachine }) {
+  const { t } = useTranslation('collect');
   const { phase, stats, selection } = machine;
   // Live shared catalog — a project/task added in Settings shows up here at once.
   const plans = usePlans();
   const epNextText =
     phase === 'completed'
-      ? '· complete'
+      ? `· ${t('complete').toLowerCase()}`
       : phase === 'ended'
-        ? '· ended early'
-        : `· next #${stats.epNext}`;
+        ? `· ${t('endedEarly')}`
+        : `· ${t('next', { number: String(stats.epNext) })}`;
   // This fallback only supplies choices after Settings removed the selected
   // project. Clicking one is an explicit new ID selection; it is never used
   // to resolve task-specific shortcuts for the stale machine context.
@@ -261,27 +274,27 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
   // Real count of what the NEXT recording captures (config defaults + the
   // Monitor picker), mirroring v1 LiveTab's idleTopicLabel.
   const recTopicsLabel = selection.customized
-    ? `${selection.count} topic${selection.count === 1 ? '' : 's'}`
+    ? t('topicCount', { count: selection.count })
     : selection.topics === 'all'
-      ? 'all topics'
-      : `${selection.count} configured`;
+      ? t('allTopics')
+      : t('configuredTopicCount', { count: selection.count });
 
   return (
     <Card className="relative flex shrink-0 flex-wrap items-center gap-y-1 px-[18px] py-2.5 [@media(max-height:860px)]:py-1.5">
       <CellButton
-        label="Project"
+        label={t('project')}
         value={planCellValue(machine.project)}
         onClick={machine.openProjPicker}
         disabled={!machine.ctxEditable}
-        title="Change project (from plan)"
+        title={t('changeProjectHelp')}
       />
       <Divider />
       <CellButton
-        label="Task"
+        label={t('task')}
         value={planCellValue(machine.task)}
         onClick={machine.openTaskPicker}
         disabled={!machine.ctxEditable}
-        title="Change task (from plan)"
+        title={t('changeTaskHelp')}
       />
       <Divider />
       {/* Server batch number, no fabricated "/5"
@@ -290,15 +303,15 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
           rather than a bare "—". The real number is assigned server-side, hence
           "next". */}
       <StaticCell
-        label="Batch"
+        label={t('batch')}
         value={
           machine.batchSeq != null ? (
-            `Batch ${machine.batchSeq}`
+            `${t('batch')} ${machine.batchSeq}`
           ) : (
             <span className="font-normal text-text-muted">
-              next #{machine.predictedSeq ?? 1}
+              {t('next', { number: String(machine.predictedSeq ?? 1) })}
               <span className="ml-1.5 font-sans text-[11px] font-normal text-text-muted">
-                · assigned on first recording
+                · {t('assignedOnFirstRecording')}
               </span>
             </span>
           )
@@ -306,7 +319,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       />
       <Divider />
       <StaticCell
-        label="Episode"
+        label={t('episodeLabel')}
         value={
           <>
             {/* A rebuild reconstructs the counter from the sidecars still on
@@ -314,9 +327,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
                 later deleted. Saying "12 / 30" of a lower bound sends the
                 operator to re-record takes they already have. */}
             {machine.recordedIsFloor && (
-              <span title="At least this many — the count was rebuilt from the recordings still on disk, so takes deleted after review are not counted.">
-                &ge;{' '}
-              </span>
+              <span title={t('reconstructedCountHelp')}>&ge; </span>
             )}
             {stats.nRecorded} / {machine.targetEpisodes}{' '}
             <span className="text-accent">{epNextText}</span>
@@ -325,11 +336,13 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       />
       <Divider />
       <CellButton
-        label="Condition"
-        value={<span className="font-medium text-text-primary">{machine.condition}</span>}
+        label={t('condition')}
+        value={
+          <span className="font-medium text-text-primary">{machine.condition}</span>
+        }
         onClick={machine.openCondModal}
         disabled={!machine.condAllowed}
-        title="Change condition (starts a new set once this one has recordings)"
+        title={t('changeConditionHelp')}
       />
       <Divider />
       <RobotCell
@@ -346,33 +359,32 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       <button
         type="button"
         onClick={machine.goMonitor}
-        title="Topics captured on the next recording — open Monitor to change the selection"
+        title={t('recordingTopicsHelp')}
         data-testid="rec-topics-chip"
         className="mr-2.5 inline-flex items-center gap-1.5 rounded-chip border border-accent bg-interaction-selected px-2.5 py-1.5 text-[11.5px] font-semibold text-accent hover:bg-interaction-selected"
       >
         <span className="h-[7px] w-[7px] rounded-full bg-accent" />
-        REC {recTopicsLabel}
+        {t('recordingTopics', { topics: recTopicsLabel })}
       </button>
       <button
         type="button"
         onClick={machine.toggleBatchMenu}
         className="inline-flex items-center gap-1.5 rounded-control border border-border bg-surface px-3.5 py-2 text-[13px] font-semibold text-text-primary hover:bg-surface-muted"
       >
-        Batch menu <span className="text-[11px] text-text-muted">▾</span>
+        {t('batchMenu')} <span className="text-[11px] text-text-muted">▾</span>
       </button>
 
       {machine.projPickerOpen && (
         <PickerPopover
           className="left-3.5 top-full lg:top-[58px]"
-          heading="Project (from plan)"
+          heading={t('projectFromPlan')}
         >
           {/* The one real dead end on an empty catalog: with nothing to pick
               this popover was a blank rectangle. (The Task picker has always
               had `Custom…`, so it is never a dead end.) */}
           {plans.length === 0 ? (
             <span className="px-3 pb-1.5 pt-0.5 text-[12px] leading-relaxed text-text-muted">
-              No projects in the shared catalog. Add one in Settings &gt; Projects &amp;
-              tasks.
+              {t('noProjectsInCatalog')}
             </span>
           ) : (
             plans.map((p) => (
@@ -390,7 +402,7 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
       {machine.taskPickerOpen && (
         <PickerPopover
           className="left-3.5 top-full lg:left-[210px] lg:top-[58px]"
-          heading="Task (from plan)"
+          heading={t('taskFromPlan')}
         >
           {(curProject?.tasks ?? []).map((t) => (
             <PickItem
@@ -408,26 +420,26 @@ export function ContextBar({ machine }: { machine: BatchMachine }) {
           <PickItem
             active={machine.taskId === null}
             onClick={() => {
-              const entered = window.prompt('Custom task', '');
+              const entered = window.prompt(t('customTask'), '');
               if (entered && entered.trim()) machine.pickCustomTask(entered);
             }}
           >
-            <span className="text-accent">Custom…</span>
+            <span className="text-accent">{t('custom')}</span>
           </PickItem>
         </PickerPopover>
       )}
       {machine.batchMenuOpen && (
         <PickerPopover className="right-3.5 top-full w-56 lg:top-[58px]">
           <MenuItem onClick={machine.pauseBatch} disabled={phase !== 'ready'}>
-            Pause set
+            {t('pauseSet')}
           </MenuItem>
           <MenuItem onClick={machine.openEndModal} danger>
-            End batch early…
+            {t('endBatch')}…
           </MenuItem>
-          <MenuItem onClick={machine.openResetModal}>Reset batch…</MenuItem>
-          <MenuItem onClick={machine.openTargetModal}>Change target…</MenuItem>
+          <MenuItem onClick={machine.openResetModal}>{t('resetBatch')}</MenuItem>
+          <MenuItem onClick={machine.openTargetModal}>{t('changeTarget')}</MenuItem>
           <MenuItem onClick={machine.openCondModal} disabled={!machine.condAllowed}>
-            Change condition…
+            {t('changeCondition')}
           </MenuItem>
         </PickerPopover>
       )}

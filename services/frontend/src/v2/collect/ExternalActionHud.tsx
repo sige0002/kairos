@@ -13,6 +13,7 @@
 // the reasons shown are that task's, and a task switch re-renders them.
 
 import { cn } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { Card } from '../../components/ui';
 import { CARD_PAD } from './compact';
 import {
@@ -64,6 +65,7 @@ export function ExternalActionHud({
   meanings: ExternalActionMeanings;
   taskName: string | null;
 }) {
+  const { t } = useTranslation('collect');
   const inFailureReasonMode = EXTERNAL_ACTION_SLOTS.some(
     (slot) =>
       meanings[slot].kind === 'save-failure-reason' ||
@@ -76,7 +78,7 @@ export function ExternalActionHud({
     >
       <div className="flex items-baseline gap-2">
         <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          {inFailureReasonMode ? 'Failure reason' : 'External controls'}
+          {inFailureReasonMode ? t('failureReason') : t('externalControls')}
         </h3>
         {inFailureReasonMode && taskName && (
           <span

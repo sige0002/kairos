@@ -14,15 +14,19 @@ import { createEvent, fireEvent, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
+import { i18n } from '../../i18n';
 import { useUiStore } from '../../store/uiStore';
 import { CollectScreen } from './CollectScreen';
 import { __resetCameraStore } from './cameraStore';
 import { __resetPlansStore } from '../plans';
 import { __resetBatchStore } from './useBatchMachine';
-import { OPERATOR_GATE_HINT } from './machine/types';
 
 const CONFIG = {
-  endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
+  endpoints: {
+    api: '/api/v1',
+    events: '/api/v1/events',
+    webrtc: 'http://localhost:8002',
+  },
   tabs: [],
   defaults: { default_topics: [] },
   schemas: {},
@@ -69,7 +73,9 @@ const start = () => screen.getByTestId('start-recording');
 test('with no operator, Start is disabled and the note says why and where', async () => {
   mockFetch();
   renderWithClient(<CollectScreen />);
-  await waitFor(() => expect(screen.getByTestId('phase-title')).toHaveTextContent('READY'));
+  await waitFor(() =>
+    expect(screen.getByTestId('phase-title')).toHaveTextContent('READY'),
+  );
 
   expect(start()).toBeDisabled();
 
@@ -77,7 +83,7 @@ test('with no operator, Start is disabled and the note says why and where', asyn
   // the reason it is worth the extra step.
   const note = screen.getByTestId('operator-gate-note');
   expect(note).toHaveTextContent('No name set yet');
-  expect(note).toHaveTextContent('click OP at the top right');
+  expect(note).toHaveTextContent('add yours in the operator control');
   expect(note).toHaveTextContent('has to say who made it');
 
   // And the button POINTS at that note, so the reason is not merely nearby.
@@ -91,7 +97,9 @@ test('with no operator, Start is disabled and the note says why and where', asyn
 test('focus does not fall to the document while the gate is up', async () => {
   mockFetch();
   renderWithClient(<CollectScreen />);
-  await waitFor(() => expect(screen.getByTestId('phase-title')).toHaveTextContent('READY'));
+  await waitFor(() =>
+    expect(screen.getByTestId('phase-title')).toHaveTextContent('READY'),
+  );
 
   expect(document.activeElement).not.toBe(document.body);
   expect(screen.getByTestId('phase-title')).toHaveFocus();
@@ -118,7 +126,9 @@ test('naming an operator lifts the gate and hands focus to Start', async () => {
 test('the R shortcut is refused while the gate is up, and explains itself', async () => {
   const fetchMock = mockFetch();
   renderWithClient(<CollectScreen />);
-  await waitFor(() => expect(screen.getByTestId('phase-title')).toHaveTextContent('READY'));
+  await waitFor(() =>
+    expect(screen.getByTestId('phase-title')).toHaveTextContent('READY'),
+  );
 
   fireEvent.keyDown(window, { key: 'r' });
 
@@ -134,11 +144,13 @@ test('the R shortcut is refused while the gate is up, and explains itself', asyn
   await waitFor(() => {
     const announced = screen
       .getAllByRole('status')
-      .some((region) => region.textContent?.includes(OPERATOR_GATE_HINT));
+      .some((region) =>
+        region.textContent?.includes(i18n.t('collect:operatorGateHint')),
+      );
     expect(announced).toBe(true);
   });
   // Both surfaces, one string — the note and the toast cannot drift apart.
-  expect(screen.getAllByText(OPERATOR_GATE_HINT)).toHaveLength(2);
+  expect(screen.getAllByText(i18n.t('collect:operatorGateHint'))).toHaveLength(2);
 });
 
 test('the R shortcut works once an operator is named', async () => {
@@ -151,9 +163,9 @@ test('the R shortcut works once an operator is named', async () => {
   fireEvent.keyDown(window, { key: 'r' });
 
   await waitFor(() =>
-    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/record/start'))).toBe(
-      true,
-    ),
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).includes('/record/start')),
+    ).toBe(true),
   );
 });
 
@@ -178,5 +190,7 @@ test('a held key cannot start a recording; a real press still can', async () => 
   // The deliberate press is untouched — this must not become a dead button.
   const deliberate = createEvent.keyDown(start(), { key: 'Enter' });
   fireEvent(start(), deliberate);
-  expect(deliberate.defaultPrevented, 'a real Enter on Start was swallowed').toBe(false);
+  expect(deliberate.defaultPrevented, 'a real Enter on Start was swallowed').toBe(
+    false,
+  );
 });

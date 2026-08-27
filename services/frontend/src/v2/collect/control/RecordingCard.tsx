@@ -5,6 +5,7 @@
 // recording is still happening.
 
 import { Card, Notice, cn } from '../../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { formatBytes } from '../../review/format';
 import { CARD_PAD } from '../compact';
 import type { BatchMachine } from '../useBatchMachine';
@@ -18,6 +19,7 @@ export function RecordingCard({
   machine: BatchMachine;
   stopRef: React.Ref<HTMLButtonElement>;
 }) {
+  const { t } = useTranslation('collect');
   const { stats } = machine;
   const elapsedText = formatElapsed(machine.elapsedMs);
   // B1: the recorder has stopped answering. We do NOT know that the recording
@@ -27,12 +29,12 @@ export function RecordingCard({
   const unreachable = machine.recorderUnreachable;
   const staleText =
     machine.recorderStaleMs != null
-      ? `${Math.round(machine.recorderStaleMs / 1000)}s ago`
-      : 'unknown';
+      ? t('secondsAgo', { seconds: String(Math.round(machine.recorderStaleMs / 1000)) })
+      : t('unknown');
   // Real bytes written for this run (from /record/status), not elapsed×rate.
   const writtenText =
     machine.recordingBytes != null
-      ? `${formatBytes(machine.recordingBytes)} written`
+      ? t('bytesWritten', { bytes: formatBytes(machine.recordingBytes) })
       : '—';
   return (
     <Card
@@ -58,11 +60,14 @@ export function RecordingCard({
             unreachable ? 'text-status-warning-text' : 'text-status-danger-text',
           )}
         >
-          {unreachable ? 'RECORDER UNREACHABLE' : 'RECORDING'}
+          {unreachable ? t('recorderUnreachable') : t('recording')}
         </h2>
         <div className="flex-1" />
         <span className="font-mono text-xs text-text-muted">
-          Ep {stats.epNext} / {machine.targetEpisodes}
+          {t('episodeProgress', {
+            current: String(stats.epNext),
+            target: String(machine.targetEpisodes),
+          })}
         </span>
       </div>
       {unreachable && (
@@ -72,14 +77,11 @@ export function RecordingCard({
           data-testid="recorder-unreachable-note"
           className="text-[12.5px]"
         >
-          <p>
-            The recorder is not answering. Whether this take is still running cannot be
-            confirmed from here. Check the recorder connection; after it reconnects,
-            confirm whether this take is still live before continuing.
-          </p>
+          <p>{t('recorderUnreachableRecordingHelp')}</p>
           <p className="mt-1 text-[11.5px] text-status-warning-text" aria-live="off">
-            Last known: <span className="font-semibold">recording</span>, {staleText}.
-            The figures below are the last ones reported, not current.
+            {t('lastKnownBefore')}{' '}
+            <span className="font-semibold">{t('recording').toLowerCase()}</span>,{' '}
+            {staleText}. {t('lastKnownAfter')}
           </p>
         </Notice>
       )}
@@ -90,11 +92,7 @@ export function RecordingCard({
             'font-mono text-[34px] font-semibold',
             unreachable ? 'text-text-muted' : 'text-text-primary',
           )}
-          title={
-            unreachable
-              ? `Frozen at the last confirmed reading (${staleText})`
-              : undefined
-          }
+          title={unreachable ? t('frozenLastConfirmed', { age: staleText }) : undefined}
         >
           {elapsedText}
         </span>
@@ -109,12 +107,7 @@ export function RecordingCard({
         data-testid="stop-recording"
         onClick={machine.stopRecording}
         disabled={!machine.canStop}
-        title={
-          machine.stopBlockedReason === 'floor'
-            ? 'Just started — Stop is available a moment from now, so a ' +
-              'double-click on Start cannot end the take it just began.'
-            : undefined
-        }
+        title={machine.stopBlockedReason === 'floor' ? t('stopFloorHelp') : undefined}
         className={cn(
           'flex h-[52px] items-center justify-center gap-2 rounded-control text-[15px] font-bold shadow-btn-red [@media(max-height:860px)]:h-[44px]',
           machine.canStop
@@ -123,7 +116,7 @@ export function RecordingCard({
         )}
       >
         <span className="h-[11px] w-[11px] rounded-sm bg-surface" />
-        Stop recording
+        {t('stopRecording')}
         <span className="text-[11px] font-medium opacity-70">· S</span>
       </button>
       {machine.arming && <ArmingNote arming={machine.arming} />}

@@ -5,6 +5,7 @@
 // the episodes already recorded survived it.
 
 import { Card, cn } from '../../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { CARD_PAD } from '../compact';
 import type { BatchMachine } from '../useBatchMachine';
 import { CARD_GAP_COMPACT, formatEndSummary } from './shared';
@@ -18,6 +19,7 @@ export function EndedCard({
   confirmNextSet: boolean;
   onStartNextSet: () => void;
 }) {
+  const { t } = useTranslation('collect');
   const endSummary = formatEndSummary(machine.stats);
   return (
     <Card
@@ -33,7 +35,7 @@ export function EndedCard({
         </h2>
         <div className="flex-1" />
         <span className="rounded-chip bg-status-warning-bg px-2 py-0.5 text-[11px] font-bold text-status-warning-text">
-          INCOMPLETE
+          {t('incomplete')}
         </span>
       </div>
       <span className="text-[12.5px] leading-relaxed text-text-muted">
@@ -51,12 +53,11 @@ export function EndedCard({
             : 'bg-accent text-text-inverse hover:bg-accent-strong',
         )}
       >
-        {confirmNextSet ? 'Press again to start the next set' : 'Start next set'}
+        {confirmNextSet ? t('pressAgainStartNextSet') : t('startNextSet')}
       </button>
       {confirmNextSet && (
         <span data-testid="next-set-note" className="text-[11.5px] text-text-muted">
-          This panel starts a fresh set — the recorded episodes stay saved in
-          Review.
+          This panel starts a fresh set — the recorded episodes stay saved in Review.
         </span>
       )}
     </Card>

@@ -18,6 +18,7 @@ import {
   episodeSpanNs,
   formatSecondsShort,
 } from './signalReport';
+import { useTranslation } from 'react-i18next';
 
 const COLOR_CLASS: Record<BinColor, string> = {
   gray: 'bg-surface-muted',
@@ -26,13 +27,17 @@ const COLOR_CLASS: Record<BinColor, string> = {
   red: 'bg-status-danger-accent',
 };
 
-function binTitle(bin: AggregateBin): string {
+function binTitle(
+  bin: AggregateBin,
+  noTopicActive: string,
+  allTopicsOk: string,
+): string {
   const what =
     bin.degraded.length > 0
       ? bin.degraded.join(', ')
       : bin.color === 'gray'
-        ? 'no topic active'
-        : 'all topics ok';
+        ? noTopicActive
+        : allTopicsOk;
   return `${formatSecondsShort(bin.startNs)} · ${what}`;
 }
 
@@ -52,6 +57,7 @@ export function LossTimeline({
   seekEnabled: boolean;
   onSeekGlobal: (globalNs: number) => void;
 }) {
+  const { t } = useTranslation('review');
   const spanNs = episodeSpanNs(report);
   const bins = aggregateBins(report);
   if (spanNs <= 0 || bins.length === 0) return null;
@@ -60,10 +66,10 @@ export function LossTimeline({
     <div data-testid="review-loss-timeline" className="flex flex-col gap-1">
       <div className="flex items-center justify-between">
         <h3 className="text-[10px] font-semibold uppercase tracking-[0.04em] text-text-muted">
-          Integrity timeline
+          {t('integrityTimeline')}
         </h3>
         <span className="font-mono text-[10px] text-text-muted">
-          span {formatSecondsShort(spanNs)}
+          {t('timelineSpan', { span: formatSecondsShort(spanNs) })}
         </span>
       </div>
       <div className="relative">
@@ -78,7 +84,7 @@ export function LossTimeline({
               data-testid="timeline-bin"
               data-color={bin.color}
               disabled={!seekEnabled}
-              title={binTitle(bin)}
+              title={binTitle(bin, t('noTopicActive'), t('allTopicsOk'))}
               onClick={() => onSeekGlobal(bin.startNs)}
               className={`h-full ${COLOR_CLASS[bin.color]} ${
                 seekEnabled ? 'cursor-pointer' : 'cursor-default'
@@ -95,8 +101,8 @@ export function LossTimeline({
         )}
       </div>
       <span className="text-[10px] text-text-muted">
-        green ok · amber minor loss · red major loss / silent · gray no topic active
-        {seekEnabled ? ' — click to seek the video' : ''}
+        {t('timelineLegend')}
+        {seekEnabled ? ` — ${t('clickToSeekVideo')}` : ''}
       </span>
     </div>
   );

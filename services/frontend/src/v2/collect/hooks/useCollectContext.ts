@@ -10,6 +10,7 @@ import { patchBatch } from '../../../api/batches';
 import { getPlans } from '../../plans';
 import { ADVICE_ITEMS } from '../machine/types';
 import { dispatch, getStoreSnapshot } from '../machine/store';
+import { i18n } from '../../../i18n';
 
 export function useCollectContext({
   ctxEditable,
@@ -33,6 +34,7 @@ export function useCollectContext({
   setTaskPickerOpen: (open: boolean) => void;
   setCondModalOpen: (open: boolean) => void;
 }) {
+  const t = i18n.getFixedT(i18n.language, 'collect');
   const [adviceIdx, setAdviceIdx] = useState(0);
   // Context is a server-backed fact once a batch exists. Serialising picker
   // actions prevents a slow first PATCH from landing after a fast second one
@@ -90,8 +92,11 @@ export function useCollectContext({
           closePicker();
           showToast(
             oldSeq != null
-              ? `Set #${oldSeq} closed (${rolloverSuccessLabel}) — next recording starts a new set`
-              : `Set closed (${rolloverSuccessLabel}) — next recording starts a new set`,
+              ? t('contextSetClosed', {
+                  set: String(oldSeq),
+                  change: rolloverSuccessLabel,
+                })
+              : t('contextSetClosedUnnamed', { change: rolloverSuccessLabel }),
           );
           return;
         }
@@ -101,10 +106,11 @@ export function useCollectContext({
         closePicker();
         showToast(emptySuccessToast);
       } catch (err) {
-        const detail = err instanceof Error && err.message ? ` (${err.message})` : '';
-        showToast(
-          `${changeLabel} was not saved — the current context was kept. Retry the change.${detail}`,
-        );
+        const detail =
+          err instanceof Error && err.message
+            ? t('errorPart', { error: err.message })
+            : '';
+        showToast(t('contextNotSaved', { change: changeLabel, error: detail }));
       } finally {
         contextChangeInFlightRef.current = false;
       }
@@ -135,9 +141,9 @@ export function useCollectContext({
         condition: t0?.conditions[0]?.name ?? '—',
       };
       await applyContextChange({
-        changeLabel: 'Project',
+        changeLabel: t('project'),
         rolloverReason: 'Plan change',
-        rolloverSuccessLabel: 'project changed',
+        rolloverSuccessLabel: t('projectChanged'),
         emptyPatch: {
           project_id: next.projectId,
           task_id: next.taskId,
@@ -149,7 +155,7 @@ export function useCollectContext({
         next,
         closePicker: () => setProjPickerOpen(false),
         applyEmpty: () => dispatch({ type: 'SET_PROJECT', ...next }),
-        emptySuccessToast: 'Project switched — plan reloaded',
+        emptySuccessToast: t('projectSwitched'),
       });
     },
     [applyContextChange, ctxEditable, setProjPickerOpen],
@@ -160,23 +166,25 @@ export function useCollectContext({
       const plan = getPlans().find(
         (candidate) => candidate.project_id === selectedProjectId,
       );
-      const t = plan?.tasks.find((candidate) => candidate.task_id === selectedTaskId);
-      if (!plan || !t) return;
+      const selectedTask = plan?.tasks.find(
+        (candidate) => candidate.task_id === selectedTaskId,
+      );
+      if (!plan || !selectedTask) return;
       const next = {
         project: plan.name,
         projectId: plan.project_id,
-        task: t.name,
-        taskId: t.task_id,
-        condition: t.conditions[0]?.name ?? '—',
+        task: selectedTask.name,
+        taskId: selectedTask.task_id,
+        condition: selectedTask.conditions[0]?.name ?? '—',
       };
       await applyContextChange({
-        changeLabel: 'Task',
+        changeLabel: t('task'),
         rolloverReason: 'Task change',
-        rolloverSuccessLabel: 'task changed',
+        rolloverSuccessLabel: t('taskChanged'),
         emptyPatch: {
           project_id: next.projectId,
           task_id: next.taskId,
-          condition_id: t.conditions[0]?.condition_id ?? null,
+          condition_id: selectedTask.conditions[0]?.condition_id ?? null,
           project: next.project,
           task: next.task,
           condition: next.condition !== '—' ? next.condition : null,
@@ -192,7 +200,7 @@ export function useCollectContext({
             taskId: next.taskId,
             condition: next.condition,
           }),
-        emptySuccessToast: 'Task switched',
+        emptySuccessToast: t('taskSwitched'),
       });
     },
     [applyContextChange, ctxEditable, setTaskPickerOpen],
@@ -212,9 +220,9 @@ export function useCollectContext({
         condition: '—',
       };
       await applyContextChange({
-        changeLabel: 'Task',
+        changeLabel: t('task'),
         rolloverReason: 'Task change',
-        rolloverSuccessLabel: 'task changed',
+        rolloverSuccessLabel: t('taskChanged'),
         emptyPatch: {
           project_id: projectId,
           task_id: null,
@@ -226,7 +234,7 @@ export function useCollectContext({
         closePicker: () => setTaskPickerOpen(false),
         applyEmpty: () =>
           dispatch({ type: 'SET_TASK', task: trimmed, taskId: null, condition: '—' }),
-        emptySuccessToast: 'Custom task set',
+        emptySuccessToast: t('customTaskSet'),
       });
     },
     [applyContextChange, ctxEditable, project, projectId, setTaskPickerOpen],
@@ -246,9 +254,9 @@ export function useCollectContext({
         ?.tasks.find((candidate) => candidate.task_id === taskId)
         ?.conditions.find((candidate) => candidate.name === condition);
       await applyContextChange({
-        changeLabel: 'Condition',
+        changeLabel: t('condition'),
         rolloverReason: 'Condition change',
-        rolloverSuccessLabel: 'condition changed',
+        rolloverSuccessLabel: t('conditionChanged'),
         emptyPatch: {
           project_id: projectId,
           task_id: taskId,
@@ -258,7 +266,7 @@ export function useCollectContext({
         next,
         closePicker: () => setCondModalOpen(false),
         applyEmpty: () => dispatch({ type: 'SET_CONDITION', condition }),
-        emptySuccessToast: 'Condition updated',
+        emptySuccessToast: t('conditionUpdated'),
       });
     },
     [
@@ -284,9 +292,9 @@ export function useCollectContext({
         condition: trimmed,
       };
       await applyContextChange({
-        changeLabel: 'Condition',
+        changeLabel: t('condition'),
         rolloverReason: 'Condition change',
-        rolloverSuccessLabel: 'condition changed',
+        rolloverSuccessLabel: t('conditionChanged'),
         emptyPatch: {
           project_id: projectId,
           task_id: taskId,
@@ -296,7 +304,7 @@ export function useCollectContext({
         next,
         closePicker: () => setCondModalOpen(false),
         applyEmpty: () => dispatch({ type: 'SET_CONDITION', condition: trimmed }),
-        emptySuccessToast: 'Condition updated',
+        emptySuccessToast: t('conditionUpdated'),
       });
     },
     [

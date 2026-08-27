@@ -22,6 +22,7 @@ import { formatBatchLabel } from '../episodeChips';
 import { PipelineForm } from '../../features/validation/PipelineForm';
 import { JobErrorNote } from '../captures/JobErrorNote';
 import { Badge } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 
 export const ALL_CAPTURES = '__all__';
 // A batch target value: `batch:<batch_id>` — runs the pipeline over every
@@ -139,38 +140,37 @@ export function ParamsPanel({
   onRetryFailures?: () => void;
   retryBusy?: boolean;
 }) {
+  const { t } = useTranslation('validation');
   return (
     <div className="flex flex-col gap-3 overflow-auto border-r border-border px-[18px] py-4">
       <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-        Parameters
+        {t('parameters')}
       </h3>
 
       <div className="flex flex-col gap-1 text-sm">
         <label htmlFor="validation-target" className="flex items-center gap-2">
-          <span className="text-[11px] font-medium text-text-muted">Target</span>
+          <span className="text-[11px] font-medium text-text-muted">{t('target')}</span>
           {selectedCapture && (
             <AvailabilityChip capture={selectedCapture} testId="target-availability" />
           )}
         </label>
         <select
           id="validation-target"
-          aria-label="target"
+          aria-label={t('targetAria')}
           value={targetId}
           onChange={(e) => onTargetChange(e.target.value)}
           disabled={running}
           className={SELECT_CLASS}
         >
-          <option value="">{capturesLoading ? 'Loading…' : '— Select —'}</option>
-          <optgroup label="Captures">
+          <option value="">{capturesLoading ? t('loading') : t('selectTarget')}</option>
+          <optgroup label={t('captureGroup')}>
             {captures.length === 0 ? (
               <option value="" disabled>
-                No finished captures
+                {t('noFinishedCaptures')}
               </option>
             ) : (
               <>
-                <option value={ALL_CAPTURES}>
-                  — All captures on this host (server selection) —
-                </option>
+                <option value={ALL_CAPTURES}>{t('allCapturesHost')}</option>
                 {captures.map((c) => (
                   <option key={c.capture_id} value={c.capture_id}>
                     {captureOptionLabel(c)}
@@ -179,17 +179,17 @@ export function ParamsPanel({
               </>
             )}
           </optgroup>
-          <optgroup label="Batches (validate every capture of a batch)">
+          <optgroup label={t('batchesGroup')}>
             {batches.length === 0 ? (
               <option value="" disabled>
-                No batches with captures
+                {t('noBatches')}
               </option>
             ) : (
               batches.map((b) => {
                 return (
                   <option key={b.batch_id} value={`${BATCH_VALUE_PREFIX}${b.batch_id}`}>
                     {formatBatchLabel(b.batch_seq, b.created_at)} · {b.task}
-                    {' (server selection)'}
+                    {t('serverSelection')}
                   </option>
                 );
               })
@@ -220,9 +220,7 @@ export function ParamsPanel({
             data-testid="catalog-truncated"
             className="rounded-control border border-status-warning-border bg-status-warning-bg px-2 py-1.5 text-[11px] leading-relaxed text-status-warning-text"
           >
-            This is page {capturePage}. Older individual captures are not offered here
-            until you move to the next page; All and Batch create a server selection
-            instead.
+            {t('catalogPage', { page: String(capturePage) })}
           </span>
         )}
         <div
@@ -236,9 +234,9 @@ export function ParamsPanel({
             onClick={() => onCapturePageChange('previous')}
             className="rounded-chip border border-border px-2 py-0.5 font-semibold hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Previous
+            {t('previous')}
           </button>
-          <span aria-live="polite">Page {capturePage}</span>
+          <span aria-live="polite">{t('page', { page: String(capturePage) })}</span>
           <button
             type="button"
             data-testid="validation-captures-next"
@@ -246,12 +244,10 @@ export function ParamsPanel({
             onClick={() => onCapturePageChange('next')}
             className="rounded-chip border border-border px-2 py-0.5 font-semibold hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Next
+            {t('next')}
           </button>
         </div>
-        <span className="text-[11px] text-text-muted">
-          Validation only — reviewing and dataset membership live in their own screens.
-        </span>
+        <span className="text-[11px] text-text-muted">{t('validationScope')}</span>
       </div>
 
       <PipelineForm
@@ -265,16 +261,12 @@ export function ParamsPanel({
       {/* Real one-click presets (GET /validation/presets): each runs its own
           pipeline over exactly the captures it hasn't validated yet. */}
       <div className="flex flex-col gap-1.5">
-        <span className="text-xs font-semibold text-text-primary">One-click presets</span>
+        <span className="text-xs font-semibold text-text-primary">{t('presets')}</span>
         {presetsLoading ? (
-          <p className="text-[11px] text-text-muted">Loading presets…</p>
+          <p className="text-[11px] text-text-muted">{t('loadingPresets')}</p>
         ) : presets.length === 0 ? (
           <p className="text-[11px] leading-relaxed text-text-muted">
-            No presets configured. Add{' '}
-            <span className="font-mono">
-              config/&lt;robot&gt;/validation_presets.yaml
-            </span>
-            .
+            {t('noPresets')}
           </p>
         ) : (
           presets.map((p) => (
@@ -296,7 +288,9 @@ export function ParamsPanel({
                 </span>
               </span>
               <Badge tone={p.pending > 0 ? 'teal' : 'gray'} dot={p.pending > 0}>
-                {p.pending > 0 ? `${p.pending} pending` : 'up to date'}
+                {p.pending > 0
+                  ? t('presetPending', { count: p.pending })
+                  : t('presetCurrent')}
               </Badge>
             </button>
           ))
@@ -330,7 +324,7 @@ export function ParamsPanel({
           onClick={onRetryFailures}
           className="h-[34px] rounded-[10px] border border-status-warning-border bg-status-warning-bg text-[12.5px] font-semibold text-status-warning-text hover:border-status-warning-border disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {retryBusy ? 'Retrying failures…' : 'Retry failed captures'}
+          {retryBusy ? t('retryingFailures') : t('retryFailedCaptures')}
         </button>
       )}
 
@@ -341,17 +335,17 @@ export function ParamsPanel({
           className="flex flex-col gap-1 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2.5 text-[12px] text-status-warning-text"
         >
           <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
-            Not cancelled
+            {t('notCanceled')}
           </span>
           <span className="font-semibold">{cancelError}</span>
-          <span>The job is still running — try again, or check it in Monitor.</span>
+          <span>{t('jobRunning')}</span>
           <button
             type="button"
             onClick={onDismissCancelError}
             data-testid="cancel-error-dismiss"
             className="self-start text-[11.5px] font-semibold underline"
           >
-            Dismiss
+            {t('dismiss')}
           </button>
         </div>
       )}
@@ -377,7 +371,7 @@ export function ParamsPanel({
               onClick={onCancelRun}
               className="h-[34px] rounded-[10px] border border-border bg-surface text-[12.5px] font-semibold text-text-secondary hover:border-status-danger-border hover:text-status-danger-text disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {cancelBusy ? 'Cancelling…' : 'Cancel run'}
+              {cancelBusy ? t('canceling') : t('cancelRun')}
             </button>
           )}
         </div>
@@ -388,7 +382,7 @@ export function ParamsPanel({
           onClick={onRun}
           className="h-[42px] rounded-[10px] bg-accent text-[13.5px] font-bold text-text-inverse hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-50"
         >
-          Run on selection
+          {t('runSelection')}
         </button>
       )}
     </div>

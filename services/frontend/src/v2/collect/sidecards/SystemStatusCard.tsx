@@ -9,8 +9,10 @@ import { SIDE_PAD } from '../compact';
 import { Chip } from './Chip';
 import { usePublishSystemRows } from './systemRowsStore';
 import { useSystemRows, type SystemRowsInput } from './useSystemRows';
+import { useTranslation } from 'react-i18next';
 
 export function SystemStatusCard(props: SystemRowsInput) {
+  const { t } = useTranslation('collect');
   const rows = useSystemRows(props);
   // Shared with the Active warnings card below, which must not be able to say
   // "no active warnings" while one of these rows says CHECK (#13).
@@ -24,12 +26,12 @@ export function SystemStatusCard(props: SystemRowsInput) {
       )}
     >
       <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-        System status
+        {t('systemStatus')}
       </h2>
       {rows.map((r) => (
         <div
-          key={r.label}
-          data-testid={`sys-${r.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
+          key={r.id ?? r.label}
+          data-testid={`sys-${r.id ?? r.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
           title={r.title}
           className="flex items-center gap-2.5 py-0.5 [@media(max-height:860px)]:py-0"
         >

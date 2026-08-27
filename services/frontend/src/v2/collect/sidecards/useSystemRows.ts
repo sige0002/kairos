@@ -14,6 +14,7 @@ import type { MetricsSnapshot, SystemInfo } from '../../../api/types';
 import type { SseStatus } from '../../../store/uiStore';
 import type { BatchMachine } from '../useBatchMachine';
 import { formatBytes } from '../../review/format';
+import { i18n } from '../../../i18n';
 import { useRecordStatus } from '../../captures/useRecordStatus';
 import type { CameraHealth } from '../Cameras';
 import { cameraSummary, topicRates } from '../warnings';
@@ -25,6 +26,8 @@ import type { Tone } from './Chip';
 const LOW_STORAGE_FREE_BYTES = 50 * 1024 ** 3;
 
 export interface SysRow {
+  /** Stable internal identity. Display labels are localized. */
+  id?: string;
   /** Hover text saying WHEN the figure was measured, where two adjacent rows
    *  describe different moments and would otherwise read as contradicting. */
   title?: string;
@@ -45,6 +48,8 @@ export interface SysRow {
    * story.
    */
   cause?: string;
+  /** Stable internal state. Display chips are localized. */
+  status?: 'ok' | 'check' | 'recording' | 'stopping' | 'armed' | 'ready' | 'unknown';
 }
 
 export interface SystemRowsInput {
@@ -60,6 +65,7 @@ export function useSystemRows({
   monitorBridge,
   cameraHealth,
 }: SystemRowsInput): SysRow[] {
+  const t = i18n.getFixedT(i18n.language, 'collect');
   const robotOffline = sseStatus === 'open' && monitorBridge === 'down';
   const robotLive = sseStatus === 'open' && !robotOffline;
   // The Recorder row reads the SERVER recorder state (same /record/status query
@@ -109,7 +115,9 @@ export function useSystemRows({
     if (elapsedS > 10 && bytes > 0) {
       const hours = freeBytes / (bytes / elapsedS) / 3600;
       headroom =
-        hours > 99 ? '>99 h left' : `≈${hours.toFixed(hours < 10 ? 1 : 0)} h left`;
+        hours > 99
+          ? t('headroomOver99')
+          : t('headroomHours', { hours: hours.toFixed(hours < 10 ? 1 : 0) });
     }
   }
   const storageOk = freeBytes != null && freeBytes >= LOW_STORAGE_FREE_BYTES;
@@ -123,23 +131,51 @@ export function useSystemRows({
   const shaMatch = shasKnown && recSha === conSha;
   const stackRow: SysRow = shasKnown
     ? shaMatch
-      ? { label: 'Build', value: recSha, chip: 'OK', tone: 'green' }
+      ? {
+          id: 'build',
+          label: t('build'),
+          value: recSha,
+          chip: t('statusOk'),
+          status: 'ok',
+          tone: 'green',
+        }
       : {
-          label: 'Build',
-          value: `robot ${recSha} ≠ console ${conSha}`,
-          chip: 'CHECK',
+          id: 'build',
+          label: t('build'),
+          value: t('buildMismatch', { robot: recSha, console: conSha }),
+          chip: t('statusCheck'),
+          status: 'check',
           tone: 'amber',
         }
-    : { label: 'Build', value: '—', chip: '—', tone: 'gray' };
+    : {
+        id: 'build',
+        label: t('build'),
+        value: '—',
+        chip: '—',
+        status: 'unknown',
+        tone: 'gray',
+      };
 
-  const storageRow: SysRow = freeBytes != null
-    ? {
-        label: 'Storage',
-        value: `${formatBytes(freeBytes)} free${headroom ? ` · ${headroom}` : ''}`,
-        chip: storageOk ? 'OK' : 'CHECK',
-        tone: storageOk ? 'green' : 'amber',
-      }
-    : { label: 'Storage', value: '—', chip: '—', tone: 'gray' };
+  const storageRow: SysRow =
+    freeBytes != null
+      ? {
+          id: 'storage',
+          label: t('storage'),
+          value: headroom
+            ? t('freeWithHeadroom', { free: formatBytes(freeBytes), headroom })
+            : t('freeSpace', { free: formatBytes(freeBytes) }),
+          chip: storageOk ? t('statusOk') : t('statusCheck'),
+          status: storageOk ? 'ok' : 'check',
+          tone: storageOk ? 'green' : 'amber',
+        }
+      : {
+          id: 'storage',
+          label: t('storage'),
+          value: '—',
+          chip: '—',
+          status: 'unknown',
+          tone: 'gray',
+        };
 
   // Real arming snapshot (matched vs missing target topics) — only measured
   // while the recorder is arming/recording; outside that window it's honestly
@@ -182,23 +218,30 @@ export function useSystemRows({
             : 'rates-mixed';
   const ratesRow: SysRow = rates
     ? {
-        label: 'Topic rates',
+        id: 'topic-rates',
+        label: t('topicRates'),
         value:
-          (rates.judged > 0 ? `${rates.ok} / ${rates.judged} at expected` : 'none readable') +
-          (withheld > 0 ? ` · ${withheld} unreadable` : ''),
+          (rates.judged > 0
+            ? t('atExpected', { ok: String(rates.ok), judged: String(rates.judged) })
+            : t('noneReadable')) +
+          (withheld > 0 ? ` · ${t('unreadableReadings', { count: withheld })}` : ''),
         title:
           withheld > 0
-            ? `${withheld} reading${withheld === 1 ? '' : 's'} arrived in a shape ` +
-              'this console could not read — no usable topic name — so they are ' +
-              'counted on NEITHER side of this ratio. It describes what was ' +
-              'readable, not everything the robot published.'
-            : 'Live, from the monitor\u2019s rolling window — it reflects the last few ' +
-              'seconds, not the moment recording started.',
-        chip: allJudgedOk && withheld === 0 ? 'OK' : 'CHECK',
+            ? t('unreadableReadingsTitle', { count: withheld })
+            : t('liveRollingWindowTitle'),
+        chip: allJudgedOk && withheld === 0 ? t('statusOk') : t('statusCheck'),
+        status: allJudgedOk && withheld === 0 ? 'ok' : 'check',
         tone: allJudgedOk && withheld === 0 ? 'green' : 'amber',
         cause: ratesCause,
       }
-    : { label: 'Topic rates', value: '—', chip: '—', tone: 'gray' };
+    : {
+        id: 'topic-rates',
+        label: t('topicRates'),
+        value: '—',
+        chip: '—',
+        status: 'unknown',
+        tone: 'gray',
+      };
 
   // Every pane, not just the main stream. A silent sub camera used to have
   // nothing on the screen accounting for it: the row spoke for the main tile
@@ -208,17 +251,21 @@ export function useSystemRows({
   // liveness, which is how four black tiles beside one working stream became
   // "5 cameras OK" in green (E-37). The summary is now a pure function of
   // facts that cover every pane, and it cannot go green while a stream is down.
+  const cameras = cameraSummary({
+    totalCameras: cameraHealth.totalCameras,
+    streamsDown: cameraHealth.streamsDown,
+    streamFault: cameraHealth.streamFault,
+    streamsNoVideo: cameraHealth.streamsNoVideo,
+    silentTopics: cameraHealth.silentTopics,
+    unmonitoredTopics: cameraHealth.unmonitoredTopics,
+    framesStale: cameraHealth.framesStale,
+  });
   const cameraRow: SysRow = {
-    label: 'Cameras',
-    ...cameraSummary({
-      totalCameras: cameraHealth.totalCameras,
-      streamsDown: cameraHealth.streamsDown,
-      streamFault: cameraHealth.streamFault,
-      streamsNoVideo: cameraHealth.streamsNoVideo,
-      silentTopics: cameraHealth.silentTopics,
-      unmonitoredTopics: cameraHealth.unmonitoredTopics,
-      framesStale: cameraHealth.framesStale,
-    }),
+    id: 'cameras',
+    label: t('cameras'),
+    ...cameras,
+    status:
+      cameras.tone === 'amber' ? 'check' : cameras.tone === 'green' ? 'ok' : 'unknown',
   };
 
   return [
@@ -231,15 +278,25 @@ export function useSystemRows({
     // pretending we re-measured something we did not.
     matched !== null && missing !== null
       ? {
-          label: 'Required data',
-          value: `${matched} / ${matched + missing} at start`,
-          title:
-            'Measured once, when the recorder matched its target topics. It is ' +
-            'not re-checked during the take — Topic rates below is the live view.',
-          chip: missing === 0 ? 'OK' : 'CHECK',
+          id: 'required-data',
+          label: t('requiredData'),
+          value: t('requiredDataValue', {
+            matched: String(matched),
+            total: String(matched + missing),
+          }),
+          title: t('requiredDataTitle'),
+          chip: missing === 0 ? t('statusOk') : t('statusCheck'),
+          status: missing === 0 ? 'ok' : 'check',
           tone: missing === 0 ? 'green' : 'amber',
         }
-      : { label: 'Required data', value: '—', chip: '—', tone: 'gray' },
+      : {
+          id: 'required-data',
+          label: t('requiredData'),
+          value: '—',
+          chip: '—',
+          status: 'unknown',
+          tone: 'gray',
+        },
     ratesRow,
     cameraRow,
     {
@@ -248,37 +305,45 @@ export function useSystemRows({
       // to the monitor (which runs on the robot). Both can be up while nothing
       // robot-shaped is publishing, and qa-ui found it reading OK in exactly
       // that state. Named for what it measures.
-      label: 'Monitor link',
-      value: robotOffline
-        ? 'orchestrator up, monitor unreachable'
-        : robotLive
-          ? 'live'
-          : sseStatus,
-      chip: robotLive ? 'OK' : 'CHECK',
+      id: 'monitor-link',
+      label: t('monitorLink'),
+      value: robotOffline ? t('monitorUnreachable') : robotLive ? t('live') : sseStatus,
+      chip: robotLive ? t('statusOk') : t('statusCheck'),
+      status: robotLive ? 'ok' : 'check',
       tone: robotLive ? 'green' : robotOffline ? 'amber' : 'gray',
     },
     storageRow,
     stackRow,
     {
-      label: 'Recorder',
+      id: 'recorder',
+      label: t('recorder'),
       value: recUnknown
-        ? 'no answer'
+        ? t('recorderNoAnswer')
+        : recording
+          ? t('recorderRecording')
+          : stopping
+            ? t('recorderStopping')
+            : armed
+              ? t('recorderPreArmed')
+              : t('recorderStandby'),
+      chip: recUnknown
+        ? t('statusCheck')
+        : recording
+          ? t('statusRecording')
+          : stopping
+            ? t('statusStopping')
+            : armed
+              ? t('statusArmed')
+              : t('statusReady'),
+      status: recUnknown
+        ? 'check'
         : recording
           ? 'recording'
           : stopping
             ? 'stopping'
             : armed
-              ? 'pre-armed'
-              : 'standby',
-      chip: recUnknown
-        ? 'CHECK'
-        : recording
-          ? 'REC'
-          : stopping
-            ? 'STOPPING'
-            : armed
-              ? 'ARMED'
-              : 'READY',
+              ? 'armed'
+              : 'ready',
       tone: recUnknown ? 'amber' : recording ? 'red' : stopping ? 'amber' : 'teal',
     },
   ];

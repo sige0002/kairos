@@ -7,6 +7,7 @@
 // fallback is the point: a new plugin's summary.json renders here with no UI
 // change required.
 import { Card } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import type { JobState, LossEvent, LossTopic } from '../../api/types';
 import { isCancellable } from './useJobCancel';
 import { SummaryResult, type Summary } from '../../features/validation/SummaryResult';
@@ -144,14 +145,6 @@ const BAR_TONE_CLASS: Record<string, string> = {
 };
 
 /** What each job state is called on screen while a run is in flight. */
-const JOB_STATE_LABEL: Record<JobState, string> = {
-  queued: 'Queued',
-  running: 'Running',
-  succeeded: 'Done',
-  failed: 'Failed',
-  canceled: 'Canceled',
-};
-
 const JOB_STATE_CLASS: Record<JobState, string> = {
   queued: 'bg-surface-muted text-text-secondary',
   running: 'bg-interaction-selected text-accent',
@@ -183,11 +176,12 @@ function RunningJobs({
   onCancelJob?: (jobId: string) => void;
   cancelPending: ReadonlySet<string>;
 }) {
+  const { t } = useTranslation('validation');
   if (jobs.length === 0) return null;
   return (
     <Card className="flex flex-col gap-1.5 p-4" data-testid="running-jobs">
       <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-        Jobs in this run
+        {t('jobsInRun')}
       </h3>
       {jobs.map((job) => (
         <div
@@ -205,7 +199,15 @@ function RunningJobs({
             data-testid={`job-state-${job.captureId}`}
             className={`shrink-0 rounded-chip px-2 py-0.5 text-[11px] font-semibold ${JOB_STATE_CLASS[job.state]}`}
           >
-            {JOB_STATE_LABEL[job.state]}
+            {job.state === 'queued'
+              ? t('queued')
+              : job.state === 'running'
+                ? t('running')
+                : job.state === 'succeeded'
+                  ? t('done')
+                  : job.state === 'failed'
+                    ? t('failed')
+                    : t('canceled')}
           </span>
           {isCancellable(job.state) && onCancelJob && (
             <button
@@ -216,8 +218,8 @@ function RunningJobs({
               className="shrink-0 rounded-chip border border-border bg-surface px-2 py-0.5 text-[11px] font-semibold text-text-secondary hover:border-status-danger-border hover:text-status-danger-text disabled:cursor-not-allowed disabled:opacity-50"
             >
               {cancelPending.has(job.jobId) || job.cancelRequested
-                ? 'Cancelling…'
-                : 'Cancel'}
+                ? t('canceling')
+                : t('cancel')}
             </button>
           )}
         </div>
@@ -242,11 +244,12 @@ export function ResultsPanel({
   onCancelJob?: (jobId: string) => void;
   cancelPending?: ReadonlySet<string>;
 }) {
+  const { t } = useTranslation('validation');
   if (!active) {
     return (
       <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
         <Card className="p-8 text-center text-sm text-text-muted">
-          Run a pipeline on the left to see results here.
+          {t('runPipelineHint')}
         </Card>
       </div>
     );
@@ -255,7 +258,7 @@ export function ResultsPanel({
   if (!active.allSettled) {
     return (
       <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
-        <Card className="p-8 text-center text-sm text-text-muted">Running…</Card>
+        <Card className="p-8 text-center text-sm text-text-muted">{t('running')}</Card>
         <RunningJobs
           jobs={runJobs}
           onCancelJob={onCancelJob}
@@ -280,10 +283,9 @@ export function ResultsPanel({
             className="flex flex-col gap-1 p-8 text-center text-sm text-text-muted"
             data-testid="run-canceled"
           >
-            <span className="font-semibold text-text-primary">Canceled</span>
+            <span className="font-semibold text-text-primary">{t('canceled')}</span>
             <span>
-              This run was stopped before it finished, so there is no result for{' '}
-              <span className="font-mono">{outcome.label ?? outcome.captureId}</span>.
+              {t('runCanceled', { capture: outcome.label ?? outcome.captureId })}
             </span>
           </Card>
         </div>
@@ -293,7 +295,7 @@ export function ResultsPanel({
       return (
         <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
           <Card className="p-8 text-center text-sm text-text-muted">
-            Nothing to run — every target is already validated.
+            {t('nothingToRun')}
           </Card>
         </div>
       );
@@ -302,7 +304,7 @@ export function ResultsPanel({
       <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
         <div className="flex items-center gap-2">
           <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-            Latest run
+            {t('latestRun')}
           </h3>
           <span className="font-mono text-xs text-text-muted">
             {outcome.label ?? outcome.captureId}
@@ -333,16 +335,18 @@ export function ResultsPanel({
     <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
       <div className="flex items-center gap-2">
         <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          Latest run
+          {t('latestRun')}
         </h3>
-        <span className="font-mono text-xs text-text-muted">{counts.total} captures</span>
+        <span className="font-mono text-xs text-text-muted">
+          {t('captures', { count: counts.total })}
+        </span>
         <div className="flex-1" />
         <button
           type="button"
           onClick={() => exportRowsCsv(active.pipeline, rows)}
           className="text-xs font-semibold text-text-primary hover:text-accent"
         >
-          Export CSV →
+          {t('exportCsv')}
         </button>
       </div>
 
@@ -358,23 +362,34 @@ export function ResultsPanel({
       </div>
 
       <div className="flex h-2 overflow-hidden rounded-full bg-surface-muted">
-        <span className="bg-status-success-accent" style={{ width: `${counts.okPct}%` }} />
-        <span className="bg-status-warning-accent" style={{ width: `${counts.warningPct}%` }} />
-        <span className="bg-status-danger-accent" style={{ width: `${counts.failPct}%` }} />
+        <span
+          className="bg-status-success-accent"
+          style={{ width: `${counts.okPct}%` }}
+        />
+        <span
+          className="bg-status-warning-accent"
+          style={{ width: `${counts.warningPct}%` }}
+        />
+        <span
+          className="bg-status-danger-accent"
+          style={{ width: `${counts.failPct}%` }}
+        />
       </div>
 
       {canceled > 0 && (
         <p data-testid="canceled-note" className="text-[11.5px] text-text-muted">
-          {canceled} of {counts.total} canceled — stopped before finishing, so they are
-          counted in none of the three results above.
+          {t('canceledSummary', {
+            canceled: String(canceled),
+            total: String(counts.total),
+          })}
         </p>
       )}
 
       <div className="grid grid-cols-[minmax(0,1fr)_100px_90px_1fr_60px] gap-2 border-b border-border px-1 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-        <span>Capture</span>
-        <span>Result</span>
-        <span>Coverage</span>
-        <span>Timeline</span>
+        <span>{t('capture')}</span>
+        <span>{t('result')}</span>
+        <span>{t('coverage')}</span>
+        <span>{t('timeline')}</span>
         <span />
       </div>
       <div className="flex flex-col">
@@ -410,7 +425,7 @@ export function ResultsPanel({
               onClick={() => onSelectCapture(row.captureId)}
               className="text-[11.5px] font-semibold text-text-primary hover:text-accent"
             >
-              detail
+              {t('detail')}
             </button>
           </div>
         ))}
@@ -453,10 +468,10 @@ function Tile({
 }
 
 function FooterNote() {
+  const { t } = useTranslation('validation');
   return (
     <div className="rounded-[10px] border border-border bg-surface-muted px-3 py-[9px] text-[11.5px] leading-relaxed text-text-muted">
-      Raw JSON, artifacts and false-positive notes live in each capture&apos;s detail
-      view.
+      {t('rawEvidence')}
     </div>
   );
 }

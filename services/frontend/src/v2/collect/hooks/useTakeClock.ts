@@ -9,6 +9,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { TERMINAL_RECORD_STATES, type RecordState } from '../../../api/types';
+import { i18n } from '../../../i18n';
 import {
   QUICKCHECK_FALLBACK_MS,
   type Phase,
@@ -198,10 +199,7 @@ export function useTakeClock({
     if (captureId && live.includes(captureId)) return; // genuinely still running
     onRecordingInterrupted?.(captureId);
     dispatch({ type: 'RECORDING_INTERRUPTED' });
-    showToast(
-      'The recording ended while the recorder was unreachable — the take is ' +
-        'listed below for labelling or discarding.',
-    );
+    showToast(i18n.t('collect:recordingEndedWhileUnreachable'));
   }, [
     recorderReachable,
     live,
@@ -263,10 +261,7 @@ export function useTakeClock({
     if (getStoreSnapshot().phase !== 'recording') return;
     onRecordingInterrupted?.(captureId);
     dispatch({ type: 'RECORDING_INTERRUPTED' });
-    showToast(
-      'The recording ended on the recorder — the take is listed below for ' +
-        'labelling or discarding.',
-    );
+    showToast(i18n.t('collect:recordingEndedOnRecorder'));
   }, [
     phase,
     currentCaptureId,
