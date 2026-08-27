@@ -4,7 +4,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, cn } from '../../components/ui';
-import { getFailReasons } from '../plans';
+import { getFailReasons, useFailReasons } from '../plans';
 import { getAudioStatus, prepareAudioAssets } from '../audio/api';
 import { assetKey, phraseFor } from '../audio/phrases';
 import {
@@ -57,7 +57,7 @@ const VOICE_LABELS: Record<string, string> = {
   jm_kumo: 'Kumo · 日本語 男性',
 };
 
-function phrasesFor(settings: AudioSettings) {
+function phrasesFor(settings: AudioSettings, failureReasons = getFailReasons()) {
   const base = AUDIO_EVENTS.filter((event) => event !== 'failure_reason').map(
     (event) => {
       const visibleText = phraseFor(event, settings.language);
@@ -71,7 +71,7 @@ function phrasesFor(settings: AudioSettings) {
     },
   );
   return base.concat(
-    getFailReasons().map((text) => ({
+    failureReasons.map((text) => ({
       key: assetKey('failure_reason', text),
       text,
       language: settings.language,
@@ -95,6 +95,7 @@ function phraseSetIdentity(phrases: ReturnType<typeof phrasesFor>): string {
 
 export function AudioSection() {
   const settings = useAudioSettings();
+  const failureReasons = useFailReasons();
   const [message, setMessage] = useState('');
   const cuePlayerRef = useRef<ReturnType<typeof createRecordingCuePlayer> | null>(null);
   cuePlayerRef.current ??= createRecordingCuePlayer();
@@ -129,7 +130,10 @@ export function AudioSection() {
     }
   }, [status.data]);
   const voices = status.data?.voices[settings.language] ?? [];
-  const phrases = useMemo(() => phrasesFor(settings), [settings]);
+  const phrases = useMemo(
+    () => phrasesFor(settings, failureReasons),
+    [failureReasons, settings],
+  );
   const prepare = useMutation({
     mutationFn: (request: {
       language: typeof settings.language;
@@ -142,17 +146,24 @@ export function AudioSection() {
       if (
         current.language !== request.language ||
         current.voiceName !== request.voiceName ||
-        current.speechRate !== request.speechRate ||
-        phraseSetIdentity(phrasesFor(current)) !==
-          phraseSetIdentity(request.phrases)
+        current.speechRate !== request.speechRate
       ) {
         setMessage(
           'Voice selection changed while preparing. Prepare the current voice again.',
         );
         return;
       }
-      const assets = { ...current.assets };
-      result.assets.forEach((asset) => {
+      const currentPhrases = phrasesFor(current);
+      const phraseSetChanged =
+        phraseSetIdentity(currentPhrases) !== phraseSetIdentity(request.phrases);
+      const currentKeys = new Set(currentPhrases.map((phrase) => phrase.key));
+      const assets = Object.fromEntries(
+        Object.entries(current.assets).filter(([key]) => currentKeys.has(key)),
+      );
+      const acceptedAssets = result.assets.filter((asset) =>
+        currentKeys.has(asset.key),
+      );
+      acceptedAssets.forEach((asset) => {
         assets[asset.key] = asset.url;
       });
       setAudioSettings({
@@ -164,11 +175,17 @@ export function AudioSection() {
       setMessage(
         result.deferred
           ? `${result.errors[0] ?? 'Voice preparation was deferred.'} Retry after recording stops.`
-          : result.available
-            ? result.errors.length
-              ? `Prepared with ${result.errors.length} skipped phrase(s).`
-              : `Voice assets ready (${result.assets.length}).`
-            : 'Voice engine is unavailable. Sound effects remain available.',
+          : phraseSetChanged
+            ? acceptedAssets.length
+              ? `Voice assets ready (${acceptedAssets.length}); failure reasons changed during preparation. Prepare again for the current reasons.`
+              : 'Failure reasons changed during preparation. Prepare again for the current reasons.'
+            : result.available
+              ? result.errors.length
+                ? acceptedAssets.length
+                  ? `Voice assets ready (${acceptedAssets.length}); ${result.errors.length} phrase(s) could not be prepared. Retry to prepare the missing phrases.`
+                  : `${result.errors[0] ?? 'No voice assets could be prepared.'} Retry preparation.`
+                : `Voice assets ready (${result.assets.length}).`
+              : 'Voice engine is unavailable. Sound effects remain available.',
       );
     },
     onError: () =>
@@ -189,6 +206,10 @@ export function AudioSection() {
   };
   const previewVoice = async (event: AudioFeedbackEvent, detail?: string) => {
     await unlockVoicePlayer();
+    if (prepare.isPending) {
+      setMessage('Voice preparation is still running. Wait for it to finish.');
+      return;
+    }
     const text = phraseFor(event, settings.language, detail);
     const url = settings.assets[assetKey(event, text)];
     if (url) {
@@ -197,7 +218,11 @@ export function AudioSection() {
         setMessage('The browser blocked Voice. Press Voice again to allow it.');
       else setMessage(`Voice preview: ${settings.voiceName}.`);
     } else {
-      setMessage('This Voice is not prepared. Press Prepare voice assets first.');
+      setMessage(
+        settings.preparedEngine
+          ? 'This phrase could not be prepared. Press Prepare voice assets to retry.'
+          : 'This Voice is not prepared. Press Prepare voice assets first.',
+      );
     }
   };
 
@@ -376,12 +401,12 @@ export function AudioSection() {
                   onClick={() =>
                     void previewVoice(
                       event,
-                      event === 'failure_reason' ? getFailReasons()[0] : undefined,
+                      event === 'failure_reason' ? failureReasons[0] : undefined,
                     )
                   }
                   className="min-h-9 rounded-control border border-gray-200 px-2 text-[11px] font-semibold text-teal-700"
                 >
-                  Voice
+                  {prepare.isPending ? 'Wait…' : 'Voice'}
                 </button>
               </div>
             );
@@ -392,14 +417,14 @@ export function AudioSection() {
             Task failure reason phrases
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
-            {getFailReasons().map((reason) => (
+            {failureReasons.map((reason) => (
               <button
                 key={reason}
                 type="button"
                 onClick={() => void previewVoice('failure_reason', reason)}
                 className="min-h-9 rounded-control border border-gray-200 px-2 text-[11.5px] text-gray-700"
               >
-                {reason} · Voice
+                {reason} · {prepare.isPending ? 'Wait…' : 'Voice'}
               </button>
             ))}
           </div>

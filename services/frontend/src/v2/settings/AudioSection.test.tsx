@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
 
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import {
@@ -9,6 +9,7 @@ import {
   getAudioSettings,
   setAudioSettings,
 } from '../audio/settings';
+import { __resetPlansStore, getFailReasons, setFailReasons } from '../plans';
 import { AudioSection } from './AudioSection';
 
 const cuePlayer = vi.hoisted(() => ({
@@ -24,6 +25,7 @@ vi.mock('../collect/recordingCues', () => ({
 
 beforeEach(() => {
   window.localStorage.clear();
+  __resetPlansStore();
   setAudioSettings(structuredClone(DEFAULT_AUDIO_SETTINGS));
   vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
   vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
@@ -255,7 +257,8 @@ test('an unknown stored voice recovers to the live catalog before prepare', asyn
 
 test('voice preparation merges into current settings instead of stale render state', async () => {
   let finishPreparation: ((response: Response) => void) | undefined;
-  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+  let requestedSuccessKey = '';
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     if (String(input).includes('/audio/status'))
       return Promise.resolve(
         jsonResponse({
@@ -264,6 +267,11 @@ test('voice preparation merges into current settings instead of stale render sta
           voices: { en: ['af_heart'], ja: ['jf_alpha'] },
         }),
       );
+    const body = JSON.parse(String(init?.body)) as {
+      phrases: { key: string }[];
+    };
+    requestedSuccessKey =
+      body.phrases.find((phrase) => phrase.key.startsWith('success:'))?.key ?? '';
     return new Promise<Response>((resolve) => {
       finishPreparation = resolve;
     });
@@ -279,15 +287,104 @@ test('voice preparation merges into current settings instead of stale render sta
     jsonResponse({
       available: true,
       engine: 'kokoro-82m',
-      assets: [{ key: 'success:x', url: '/voice.wav', asset_id: 'x' }],
+      assets: [{ key: requestedSuccessKey, url: '/voice.wav', asset_id: 'x' }],
       errors: [],
     }),
   );
 
   await waitFor(() =>
-    expect(getAudioSettings().assets['success:x']).toBe('/voice.wav'),
+    expect(getAudioSettings().assets[requestedSuccessKey]).toBe('/voice.wav'),
   );
   expect(getAudioSettings().soundEffects).toBe(false);
+});
+
+test('a failure-reason refresh during preparation keeps matching voice assets', async () => {
+  let finishPreparation: ((response: Response) => void) | undefined;
+  let requestedStartKey = '';
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    if (url.includes('/audio/status'))
+      return Promise.resolve(
+        jsonResponse({
+          available: true,
+          engine: 'kokoro-82m',
+          model_revision: 'revision-a',
+          voices: { en: ['af_heart'], ja: ['jf_alpha'] },
+        }),
+      );
+    if (url.includes('/audio/assets')) {
+      const body = JSON.parse(String(init?.body)) as {
+        phrases: { key: string }[];
+      };
+      requestedStartKey =
+        body.phrases.find((phrase) => phrase.key.startsWith('start:'))?.key ?? '';
+      return new Promise<Response>((resolve) => {
+        finishPreparation = resolve;
+      });
+    }
+    return Promise.resolve(jsonResponse({ revision: 1 }));
+  });
+  renderWithClient(<AudioSection />);
+
+  const prepare = screen.getByRole('button', { name: 'Prepare voice assets' });
+  await waitFor(() => expect(prepare).toBeEnabled());
+  fireEvent.click(prepare);
+  await waitFor(() => expect(finishPreparation).toBeDefined());
+  act(() => {
+    setFailReasons([...getFailReasons(), 'Reason loaded during preparation']);
+  });
+  finishPreparation!(
+    jsonResponse({
+      available: true,
+      engine: 'kokoro-82m',
+      model_revision: 'revision-a',
+      assets: [
+        { key: requestedStartKey, url: '/prepared-start.wav', asset_id: 'start' },
+      ],
+      errors: [],
+      deferred: false,
+    }),
+  );
+
+  await waitFor(() =>
+    expect(getAudioSettings().assets[requestedStartKey]).toBe('/prepared-start.wav'),
+  );
+  expect(
+    screen.getByText(/failure reasons changed during preparation.*Prepare again/i),
+  ).toBeVisible();
+});
+
+test('voice preview reports preparation in progress instead of not prepared', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    if (String(input).includes('/audio/status'))
+      return Promise.resolve(
+        jsonResponse({
+          available: true,
+          engine: 'kokoro-82m',
+          model_revision: 'revision-a',
+          voices: { en: ['af_heart'], ja: ['jf_alpha'] },
+        }),
+      );
+    return new Promise<Response>(() => {});
+  });
+  renderWithClient(<AudioSection />);
+
+  const prepare = screen.getByRole('button', { name: 'Prepare voice assets' });
+  await waitFor(() => expect(prepare).toBeEnabled());
+  fireEvent.click(prepare);
+  await waitFor(() => expect(prepare).toHaveTextContent('Preparing…'));
+  fireEvent.click(
+    screen.getByRole('button', { name: 'Preview voice for Success saved' }),
+  );
+
+  expect(
+    await screen.findByText(
+      'Voice preparation is still running. Wait for it to finish.',
+    ),
+  ).toBeVisible();
+  expect(
+    screen.getByRole('button', { name: 'Preview voice for Success saved' }),
+  ).toHaveTextContent('Wait…');
 });
 
 test('recording deferral names the reason and recovery instead of skipped phrases', async () => {
