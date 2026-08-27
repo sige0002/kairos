@@ -7,13 +7,16 @@ from __future__ import annotations
 import subprocess
 import threading
 import time
+from io import BytesIO
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from api_orchestrator.audio_feedback import (
     AudioFeedbackService,
     EspeakProvider,
     GenerationDeferred,
+    VoicevoxProvider,
 )
 from fastapi.testclient import TestClient
 
@@ -40,6 +43,81 @@ class FakeTtsProvider:
 
     def cancel(self) -> None:
         """No synthesis is long-running in the ordinary fake."""
+
+
+class FakeHttpResponse(BytesIO):
+    """Small urllib response stand-in used by the VOICEVOX provider tests."""
+
+    def __enter__(self) -> FakeHttpResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+
+def test_voicevox_uses_selected_style_id_for_japanese_synthesis(
+    tmp_path: Path,
+) -> None:
+    calls: list[tuple[str, str, bytes | None]] = []
+
+    def open_request(request, timeout: float):
+        assert timeout == 20.0
+        method = request.get_method()
+        url = request.full_url
+        body = request.data
+        calls.append((method, url, body))
+        path = urlsplit(url).path
+        if path == "/speakers":
+            return FakeHttpResponse(
+                b'[{"name":"Operator","styles":['
+                b'{"name":"Normal","id":3},{"name":"Calm","id":7}]}]'
+            )
+        if path == "/audio_query":
+            query = parse_qs(urlsplit(url).query)
+            assert query["speaker"] == ["7"]
+            assert query["text"] == ["録画開始"]
+            return FakeHttpResponse(b'{"accent_phrases":[]}')
+        if path == "/synthesis":
+            assert parse_qs(urlsplit(url).query)["speaker"] == ["7"]
+            assert body == b'{"accent_phrases":[]}'
+            return FakeHttpResponse(b"RIFF-voicevox-wave")
+        raise AssertionError(url)
+
+    provider = VoicevoxProvider("http://voicevox.test:50021", open_request=open_request)
+    assert provider.voices == {"ja": ["3:Operator / Normal", "7:Operator / Calm"]}
+
+    output = tmp_path / "voice.wav"
+    provider.synthesize(
+        "録画開始",
+        "ja",
+        "7:Operator / Calm",
+        output,
+        threading.Event(),
+    )
+
+    assert output.read_bytes() == b"RIFF-voicevox-wave"
+    assert [urlsplit(url).path for _, url, _ in calls] == [
+        "/speakers",
+        "/audio_query",
+        "/synthesis",
+    ]
+
+
+def test_voicevox_style_changes_asset_identity(tmp_path: Path) -> None:
+    def open_request(request, _timeout: float):
+        assert urlsplit(request.full_url).path == "/speakers"
+        return FakeHttpResponse(
+            b'[{"name":"Operator","styles":['
+            b'{"name":"Normal","id":3},{"name":"Calm","id":7}]}]'
+        )
+
+    provider = VoicevoxProvider("http://voicevox.test:50021", open_request=open_request)
+    service = AudioFeedbackService(tmp_path / "audio", provider)
+
+    normal = service.asset_id("成功", "ja", "3:Operator / Normal")
+    calm = service.asset_id("成功", "ja", "7:Operator / Calm")
+
+    assert normal != calm
 
 
 def test_stale_admission_token_cannot_generate_after_recording_reservation(
@@ -209,6 +287,16 @@ def test_prepare_assets_generates_once_and_serves_wav(client: TestClient) -> Non
 
 def test_unavailable_provider_is_non_fatal(client: TestClient) -> None:
     client.app.state.audio_feedback.provider = None
+    client.app.state.audio_feedback.configured_provider = "voicevox"
+
+    status = client.get("/api/v1/audio/status")
+    assert status.status_code == 200
+    assert status.json() == {
+        "available": False,
+        "engine": None,
+        "configured_provider": "voicevox",
+        "voices": {},
+    }
 
     response = client.post(
         "/api/v1/audio/assets",

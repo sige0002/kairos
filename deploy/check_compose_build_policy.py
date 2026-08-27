@@ -23,6 +23,11 @@ LAYOUTS = {
     "robot-edge": ("compose/robot.yaml",),
     "recording-host": ("compose/recording.yaml",),
     "single-host+lerobot": ("compose/compose.yaml", "compose/lerobot.yaml"),
+    "single-host+voicevox": ("compose/compose.yaml", "compose/voicevox.yaml"),
+    "recording-host+voicevox": (
+        "compose/recording.yaml",
+        "compose/voicevox.yaml",
+    ),
     "test-harness": ("deploy/test/compose.yaml",),
 }
 PROXY_CASES = {

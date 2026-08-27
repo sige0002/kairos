@@ -37,6 +37,7 @@ async def get_status(request: Request) -> dict[str, object]:
     return {
         "available": provider is not None,
         "engine": provider.name if provider else None,
+        "configured_provider": service.configured_provider,
         "voices": provider.voices if provider else {},
     }
 

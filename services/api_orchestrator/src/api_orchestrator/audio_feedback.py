@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import shutil
@@ -14,6 +15,8 @@ import tempfile
 import threading
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlencode
+from urllib.request import OpenerDirector, ProxyHandler, Request, build_opener
 
 LOGGER = logging.getLogger("kairos")
 
@@ -36,6 +39,20 @@ class TtsProvider(Protocol):
 
     def cancel(self) -> None:
         """Stop an in-flight synthesis promptly when recording takes priority."""
+
+
+class HttpResponse(Protocol):
+    """The small urllib response surface used by the VOICEVOX provider."""
+
+    def read(self, size: int = -1) -> bytes: ...
+
+    def close(self) -> None: ...
+
+
+class OpenRequest(Protocol):
+    """Injectable request seam that keeps provider tests off the network."""
+
+    def __call__(self, request: Request, timeout: float) -> HttpResponse: ...
 
 
 class GenerationDeferred(RuntimeError):
@@ -129,18 +146,214 @@ class EspeakProvider:
                 pass
 
 
-def discover_provider() -> TtsProvider | None:
-    """Return the installed local provider, or ``None`` for graceful disablement."""
+class VoicevoxProvider:
+    """Japanese neural TTS backed by a local VOICEVOX Engine HTTP service."""
+
+    name = "voicevox"
+    _QUERY_LIMIT = 1024 * 1024
+    _WAV_LIMIT = 5 * 1024 * 1024
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        open_request: OpenRequest | None = None,
+        timeout: float = 20.0,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        if not self._base_url.startswith(("http://", "https://")):
+            raise ValueError("TTS_VOICEVOX_URL must be an http(s) URL")
+        self._timeout = timeout
+        self._opener: OpenerDirector | None = None
+        if open_request is None:
+            # This is a trusted-LAN internal dependency. Host proxy variables
+            # must not capture a request intended for the co-located engine.
+            self._opener = build_opener(ProxyHandler({}))
+            self._open_request: OpenRequest = self._open_without_proxy
+        else:
+            self._open_request = open_request
+        self._response_lock = threading.Lock()
+        self._active_response: HttpResponse | None = None
+        self.voices = {"ja": self._discover_voices()}
+
+    def _open_without_proxy(self, request: Request, timeout: float) -> HttpResponse:
+        assert self._opener is not None
+        return self._opener.open(request, timeout=timeout)  # type: ignore[return-value]
+
+    def _discover_voices(self) -> list[str]:
+        request = Request(f"{self._base_url}/speakers", method="GET")
+        raw = self._read_response(request, self._QUERY_LIMIT, None)
+        speakers = json.loads(raw)
+        if not isinstance(speakers, list):
+            raise RuntimeError("VOICEVOX /speakers returned an invalid payload")
+        voices: list[tuple[int, str]] = []
+        for speaker in speakers:
+            if not isinstance(speaker, dict) or not isinstance(
+                speaker.get("name"), str
+            ):
+                continue
+            styles = speaker.get("styles")
+            if not isinstance(styles, list):
+                continue
+            for style in styles:
+                if (
+                    isinstance(style, dict)
+                    and isinstance(style.get("id"), int)
+                    and isinstance(style.get("name"), str)
+                ):
+                    style_id = style["id"]
+                    label = f"{style_id}:{speaker['name']} / {style['name']}"
+                    voices.append((style_id, label))
+        if not voices:
+            raise RuntimeError("VOICEVOX reported no speaker styles")
+        return [label for _, label in sorted(voices)]
+
+    def synthesize(
+        self,
+        text: str,
+        language: str,
+        voice: str,
+        output: Path,
+        cancel: threading.Event,
+    ) -> None:
+        if language != "ja":
+            raise ValueError("VOICEVOX supports Japanese only")
+        if voice not in self.voices["ja"]:
+            raise ValueError(f"unsupported VOICEVOX voice: {voice}")
+        try:
+            speaker_id = int(voice.split(":", 1)[0])
+        except ValueError as exc:
+            raise ValueError(f"invalid VOICEVOX voice: {voice}") from exc
+        query_string = urlencode({"text": text, "speaker": speaker_id})
+        query_request = Request(
+            f"{self._base_url}/audio_query?{query_string}",
+            data=b"",
+            method="POST",
+        )
+        query = self._read_response(query_request, self._QUERY_LIMIT, cancel)
+        speaker_query = urlencode({"speaker": speaker_id})
+        synthesis_request = Request(
+            f"{self._base_url}/synthesis?{speaker_query}",
+            data=query,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        wav = self._read_response(synthesis_request, self._WAV_LIMIT, cancel)
+        if not wav.startswith(b"RIFF"):
+            raise RuntimeError("VOICEVOX returned an invalid WAV asset")
+        output.write_bytes(wav)
+
+    def _read_response(
+        self,
+        request: Request,
+        limit: int,
+        cancel: threading.Event | None,
+    ) -> bytes:
+        if cancel is not None and cancel.is_set():
+            raise GenerationDeferred("recording took priority")
+        response: HttpResponse | None = None
+        try:
+            response = self._open_request(request, self._timeout)
+            with self._response_lock:
+                self._active_response = response
+            data = response.read(limit + 1)
+        except Exception:
+            if cancel is not None and cancel.is_set():
+                raise GenerationDeferred("recording took priority") from None
+            raise
+        finally:
+            with self._response_lock:
+                if self._active_response is response:
+                    self._active_response = None
+            if response is not None:
+                response.close()
+        if cancel is not None and cancel.is_set():
+            raise GenerationDeferred("recording took priority")
+        if len(data) > limit:
+            raise RuntimeError("VOICEVOX response exceeded the size limit")
+        return data
+
+    def cancel(self) -> None:
+        """Close an active response; the cache gate rejects any late result."""
+        with self._response_lock:
+            response = self._active_response
+        if response is not None:
+            response.close()
+
+
+class LanguageRouterProvider:
+    """Route each language to one provider while exposing one API contract."""
+
+    def __init__(self, routes: dict[str, TtsProvider]) -> None:
+        self._routes = routes
+        providers = list(dict.fromkeys(routes.values()))
+        self.name = "+".join(provider.name for provider in providers)
+        self.voices = {
+            language: list(provider.voices[language])
+            for language, provider in routes.items()
+        }
+
+    def synthesize(
+        self,
+        text: str,
+        language: str,
+        voice: str,
+        output: Path,
+        cancel: threading.Event,
+    ) -> None:
+        provider = self._routes.get(language)
+        if provider is None:
+            raise ValueError(f"unsupported language: {language}")
+        provider.synthesize(text, language, voice, output, cancel)
+
+    def cancel(self) -> None:
+        for provider in set(self._routes.values()):
+            provider.cancel()
+
+
+def discover_provider(
+    provider_name: str = "espeak-ng",
+    voicevox_url: str = "http://127.0.0.1:50021",
+) -> TtsProvider | None:
+    """Resolve the configured provider without making audio a startup gate."""
+    selected = provider_name.strip().lower()
     executable = shutil.which("espeak-ng")
-    return EspeakProvider(executable) if executable else None
+    if selected in {"", "none", "disabled"}:
+        return None
+    if selected == "espeak-ng":
+        return EspeakProvider(executable) if executable else None
+    if selected == "voicevox":
+        try:
+            voicevox = VoicevoxProvider(voicevox_url)
+        except Exception:
+            LOGGER.exception("Configured VOICEVOX provider is unavailable")
+            return None
+        routes: dict[str, TtsProvider] = {"ja": voicevox}
+        if executable:
+            routes["en"] = EspeakProvider(executable)
+        return LanguageRouterProvider(routes)
+    LOGGER.error("Unknown TTS provider", extra={"provider": provider_name})
+    return None
 
 
 class AudioFeedbackService:
     """Generate immutable, content-addressed voice assets outside Collect."""
 
-    def __init__(self, cache_dir: Path, provider: TtsProvider | None = None) -> None:
+    def __init__(
+        self,
+        cache_dir: Path,
+        provider: TtsProvider | None = None,
+        *,
+        configured_provider: str = "espeak-ng",
+        auto_discover: bool = True,
+    ) -> None:
         self.cache_dir = cache_dir
-        self.provider = provider if provider is not None else discover_provider()
+        self.provider = (
+            provider
+            if provider is not None or not auto_discover
+            else discover_provider()
+        )
+        self.configured_provider = configured_provider
         self._generation_lock = threading.Lock()
         self._priority_lock = threading.Lock()
         self._recording_reservations = 0

@@ -2,11 +2,11 @@
 // Copyright 2026 Sadasue Yuki
 
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Card, cn } from '../../components/ui';
 import { getFailReasons } from '../plans';
 import { getAudioStatus, prepareAudioAssets } from '../audio/api';
-import { assetKey, phraseFor } from '../audio/phrases';
+import { assetKey, phraseFor, spokenPhraseFor } from '../audio/phrases';
 import {
   AUDIO_EVENTS,
   getAudioSettings,
@@ -45,13 +45,18 @@ function cueFor(event: AudioFeedbackEvent) {
         : event;
 }
 
-function phrasesFor(settings: AudioSettings) {
+function voicevoxCredit(voice: string): string {
+  const match = /^\d+:(.+?) \/ (.+)$/.exec(voice);
+  return match ? `VOICEVOX:${match[1]} · ${match[2]}` : `VOICEVOX:${voice}`;
+}
+
+function phrasesFor(settings: AudioSettings, engine: string | null) {
   const base = AUDIO_EVENTS.filter((event) => event !== 'failure_reason').map(
     (event) => {
-      const text = phraseFor(event, settings.language);
+      const visibleText = phraseFor(event, settings.language);
       return {
-        key: assetKey(event, text),
-        text,
+        key: assetKey(event, visibleText),
+        text: spokenPhraseFor(event, settings.language, engine),
         language: settings.language,
         voice: settings.voiceName,
       };
@@ -76,12 +81,41 @@ function phraseSetIdentity(phrases: ReturnType<typeof phrasesFor>): string {
 export function AudioSection() {
   const settings = useAudioSettings();
   const [message, setMessage] = useState('');
+  const cuePlayerRef = useRef<ReturnType<typeof createRecordingCuePlayer> | null>(null);
+  cuePlayerRef.current ??= createRecordingCuePlayer();
+  const cuePlayer = cuePlayerRef.current;
+  useEffect(() => () => cuePlayer.dispose?.(), [cuePlayer]);
   const status = useQuery({
     queryKey: ['audio-status'],
     queryFn: ({ signal }) => getAudioStatus(signal),
   });
   const voices = status.data?.voices[settings.language] ?? [];
-  const phrases = useMemo(() => phrasesFor(settings), [settings]);
+  const phrases = useMemo(
+    () => phrasesFor(settings, status.data?.engine ?? null),
+    [settings, status.data?.engine],
+  );
+  useEffect(() => {
+    const engine = status.data?.engine;
+    if (!status.data?.available || !engine) return;
+    const current = getAudioSettings();
+    const availableVoices = status.data.voices[current.language] ?? [];
+    const voiceName = availableVoices.includes(current.voiceName)
+      ? current.voiceName
+      : (availableVoices[0] ?? current.voiceName);
+    const providerChanged =
+      current.preparedEngine !== null && current.preparedEngine !== engine;
+    const legacyAssets =
+      current.preparedEngine === null && Object.keys(current.assets).length > 0;
+    if (voiceName === current.voiceName && !providerChanged && !legacyAssets) return;
+    setAudioSettings({
+      ...current,
+      voiceName,
+      preparedEngine: providerChanged || legacyAssets ? null : current.preparedEngine,
+      assets: providerChanged || legacyAssets ? {} : current.assets,
+    });
+    if (providerChanged || legacyAssets)
+      setMessage('Voice engine changed. Prepare voice assets again.');
+  }, [status.data, settings.language]);
   const prepare = useMutation({
     mutationFn: (request: {
       language: typeof settings.language;
@@ -93,7 +127,8 @@ export function AudioSection() {
       if (
         current.language !== request.language ||
         current.voiceName !== request.voiceName ||
-        phraseSetIdentity(phrasesFor(current)) !== phraseSetIdentity(request.phrases)
+        phraseSetIdentity(phrasesFor(current, result.engine)) !==
+          phraseSetIdentity(request.phrases)
       ) {
         setMessage(
           'Voice selection changed while preparing. Prepare the current voice again.',
@@ -104,7 +139,7 @@ export function AudioSection() {
       result.assets.forEach((asset) => {
         assets[asset.key] = asset.url;
       });
-      setAudioSettings({ ...current, assets });
+      setAudioSettings({ ...current, assets, preparedEngine: result.engine });
       setMessage(
         result.deferred
           ? `${result.errors[0] ?? 'Voice preparation was deferred.'} Retry after recording stops.`
@@ -123,22 +158,26 @@ export function AudioSection() {
 
   const patch = (next: Partial<typeof settings>) =>
     setAudioSettings({ ...getAudioSettings(), ...next });
-  const preview = async (event: AudioFeedbackEvent, detail?: string) => {
-    void unlockVoicePlayer();
-    const player = createRecordingCuePlayer();
-    const eventSettings = settings.events[event];
-    if (settings.soundEffects && eventSettings.sound)
-      await player.play(cueFor(event), settings.volume);
+  const previewSound = async (event: AudioFeedbackEvent) => {
+    const played = await cuePlayer.play(cueFor(event), settings.volume);
+    setMessage(
+      played
+        ? 'Sound preview sent to this browser.'
+        : 'The browser blocked sound. Press Sound again to allow it.',
+    );
+  };
+  const previewVoice = async (event: AudioFeedbackEvent, detail?: string) => {
+    await unlockVoicePlayer();
     const text = phraseFor(event, settings.language, detail);
     const url = settings.assets[assetKey(event, text)];
-    if (settings.voice && eventSettings.voice && url) {
+    if (url) {
       const played = await playVoiceAsset(url, settings.volume);
       if (!played)
-        setMessage('The browser blocked audio. Press Preview again to allow it.');
-    } else if (settings.voice && eventSettings.voice) {
-      setMessage('Prepare voice assets before previewing Voice.');
+        setMessage('The browser blocked Voice. Press Voice again to allow it.');
+      else setMessage(`Voice preview: ${settings.voiceName}.`);
+    } else {
+      setMessage('This Voice is not prepared. Press Prepare voice assets first.');
     }
-    player.dispose?.();
   };
 
   return (
@@ -198,7 +237,11 @@ export function AudioSection() {
               onChange={(event) =>
                 patch({
                   language: event.target.value === 'ja' ? 'ja' : 'en',
-                  voiceName: event.target.value === 'ja' ? 'ja' : 'en-us',
+                  voiceName:
+                    status.data?.voices[
+                      event.target.value === 'ja' ? 'ja' : 'en'
+                    ]?.[0] ?? (event.target.value === 'ja' ? 'ja' : 'en-us'),
+                  preparedEngine: null,
                   assets: {},
                 })
               }
@@ -213,7 +256,13 @@ export function AudioSection() {
             <select
               value={settings.voiceName}
               disabled={!status.data?.available}
-              onChange={(event) => patch({ voiceName: event.target.value, assets: {} })}
+              onChange={(event) =>
+                patch({
+                  voiceName: event.target.value,
+                  preparedEngine: null,
+                  assets: {},
+                })
+              }
               className="h-9 rounded-control border border-gray-200 px-2 disabled:opacity-50"
             >
               {(voices.length ? voices : [settings.voiceName]).map((voice) => (
@@ -223,18 +272,19 @@ export function AudioSection() {
           </label>
         </div>
         <div className="rounded-control border border-gray-100">
-          <div className="grid grid-cols-[minmax(0,1fr)_64px_64px_80px] border-b border-gray-100 bg-gray-50 px-3 py-2 text-[10.5px] font-bold uppercase tracking-wide text-gray-500">
+          <div className="grid grid-cols-[minmax(180px,1fr)_56px_56px_72px_72px] border-b border-gray-100 bg-gray-50 px-3 py-2 text-[10.5px] font-bold uppercase tracking-wide text-gray-500">
             <span>Confirmed event / phrase</span>
             <span>Sound</span>
             <span>Voice</span>
-            <span>Test</span>
+            <span>Test SFX</span>
+            <span>Test voice</span>
           </div>
           {AUDIO_EVENTS.map((event) => {
             const phrase = phraseFor(event, settings.language);
             return (
               <div
                 key={event}
-                className="grid min-h-14 grid-cols-[minmax(0,1fr)_64px_64px_80px] items-center border-b border-gray-100 px-3 last:border-0"
+                className="grid min-h-14 grid-cols-[minmax(180px,1fr)_56px_56px_72px_72px] items-center border-b border-gray-100 px-3 last:border-0"
               >
                 <span className="min-w-0 pr-2 text-[12.5px] text-gray-700">
                   {LABELS[event]}
@@ -265,16 +315,24 @@ export function AudioSection() {
                 ))}
                 <button
                   type="button"
-                  aria-label={`Preview ${LABELS[event]}`}
+                  aria-label={`Preview sound for ${LABELS[event]}`}
+                  onClick={() => void previewSound(event)}
+                  className="min-h-9 rounded-control border border-gray-200 px-2 text-[11px] font-semibold text-teal-700"
+                >
+                  Sound
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Preview voice for ${LABELS[event]}`}
                   onClick={() =>
-                    void preview(
+                    void previewVoice(
                       event,
                       event === 'failure_reason' ? getFailReasons()[0] : undefined,
                     )
                   }
                   className="min-h-9 rounded-control border border-gray-200 px-2 text-[11px] font-semibold text-teal-700"
                 >
-                  Preview
+                  Voice
                 </button>
               </div>
             );
@@ -289,10 +347,10 @@ export function AudioSection() {
               <button
                 key={reason}
                 type="button"
-                onClick={() => void preview('failure_reason', reason)}
+                onClick={() => void previewVoice('failure_reason', reason)}
                 className="min-h-9 rounded-control border border-gray-200 px-2 text-[11.5px] text-gray-700"
               >
-                {reason} · Preview
+                {reason} · Voice
               </button>
             ))}
           </div>
@@ -307,17 +365,12 @@ export function AudioSection() {
                 phrases,
               })
             }
-            disabled={!settings.voice || prepare.isPending}
+            disabled={
+              !status.data?.available || voices.length === 0 || prepare.isPending
+            }
             className="min-h-11 rounded-control bg-teal-700 px-3 text-[12.5px] font-semibold text-white disabled:opacity-50"
           >
             {prepare.isPending ? 'Preparing…' : 'Prepare voice assets'}
-          </button>
-          <button
-            type="button"
-            onClick={() => void preview('success')}
-            className="min-h-11 rounded-control border border-gray-300 px-3 text-[12.5px] font-semibold text-gray-700"
-          >
-            Preview success
           </button>
           <button
             type="button"
@@ -347,7 +400,17 @@ export function AudioSection() {
                 ? 'Could not reach the voice service. Retry by reopening Audio settings; Collect is unaffected.'
                 : status.data?.available
                   ? `Voice engine ready: ${status.data.engine}. Prepare assets after changing language, voice, or failure reasons.`
-                  : 'Voice engine unavailable. Sound effects still work; Collect is unaffected.')}
+                  : `Configured voice provider ${status.data?.configured_provider ?? 'unknown'} is unavailable. Sound effects still work; Collect is unaffected.`)}
+          {status.data?.engine === 'espeak-ng' && settings.language === 'ja' ? (
+            <span className="mt-1 block">
+              eSpeak uses kana for built-in phrases. Write custom failure reasons in
+              hiragana or katakana, or select the VOICEVOX provider.
+            </span>
+          ) : null}
+          {status.data?.engine?.includes('voicevox') &&
+          settings.language === 'ja' ? (
+            <span className="mt-1 block">{voicevoxCredit(settings.voiceName)}</span>
+          ) : null}
         </div>
       </div>
     </Card>

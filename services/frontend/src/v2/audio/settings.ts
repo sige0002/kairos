@@ -30,6 +30,7 @@ export interface AudioSettings {
   volume: number;
   language: AudioLanguage;
   voiceName: string;
+  preparedEngine: string | null;
   events: Record<AudioFeedbackEvent, EventAudioSetting>;
   assets: Record<string, string>;
 }
@@ -42,6 +43,7 @@ export const DEFAULT_AUDIO_SETTINGS: AudioSettings = {
   volume: 0.45,
   language: 'en',
   voiceName: 'en-us',
+  preparedEngine: null,
   events: {
     start: { sound: true, voice: false },
     stop: { sound: true, voice: false },
@@ -115,6 +117,7 @@ function normalizeSettings(value: unknown): AudioSettings {
       typeof raw.voiceName === 'string' && raw.voiceName
         ? raw.voiceName
         : DEFAULT_AUDIO_SETTINGS.voiceName,
+    preparedEngine: typeof raw.preparedEngine === 'string' ? raw.preparedEngine : null,
     events,
     assets,
   };

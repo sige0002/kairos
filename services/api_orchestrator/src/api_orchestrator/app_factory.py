@@ -48,7 +48,7 @@ from kairos_common.stream_config import StreamConfig
 
 from api_orchestrator import bag_import
 from api_orchestrator import views as views_mod
-from api_orchestrator.audio_feedback import AudioFeedbackService
+from api_orchestrator.audio_feedback import AudioFeedbackService, discover_provider
 from api_orchestrator.batch_service import BatchService
 from api_orchestrator.bootstrap import StoreStartupError, bootstrap_store, prepare_store
 from api_orchestrator.capture_archive import CaptureArchiveRuns
@@ -434,7 +434,12 @@ def create_orchestrator_app(
     app.state.views_refresher = views_refresh
     app.state.store_health = health
     app.state.data_layout = layout
-    app.state.audio_feedback = AudioFeedbackService(layout.catalog / "audio")
+    app.state.audio_feedback = AudioFeedbackService(
+        layout.catalog / "audio",
+        provider=discover_provider(settings.tts_provider, settings.tts_voicevox_url),
+        configured_provider=settings.tts_provider,
+        auto_discover=False,
+    )
     # Audio requests may queue behind each other, but recorder Prepare/Start
     # never acquires this lock and instead preempts generation in the service.
     app.state.audio_request_lock = asyncio.Lock()

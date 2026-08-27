@@ -109,7 +109,10 @@ export function createRecordingCuePlayer(): RecordingCuePlayer {
       if (!(await unlock())) return false;
       const ctx = getContext();
       if (!ctx) return false;
-      const level = Math.max(0, Math.min(1, volume)) * 0.08;
+      // Cues must remain audible from a laptop on a noisy collection floor.
+      // Keep headroom for the square/saw waves, but do not bury the default
+      // 45% setting at the former near-silent 3.6% output gain.
+      const level = Math.max(0, Math.min(1, volume)) * 0.2;
       const startAt = ctx.currentTime + 0.008;
       try {
         for (const note of CUES[kind]) {

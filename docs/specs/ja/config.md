@@ -51,6 +51,9 @@
 | `WEBRTC_PACKET_MAX` | `1150` | RTP ペイロード上限（B）。既定 `1150` は MTU 1280 のトンネル（Tailscale/WireGuard）で断片化しないよう aiortc の 1300B 固定を縮小したもの。MTU 1500 の同一 LAN のみ `1300` に戻して overhead を減らせる |
 | `WEBRTC_KEEP_IPV6` | （未設定） | `1` で answer SDP の IPv6 ICE 候補除外を無効化。既定（未設定）では v6 候補を落とす（断片化 IPv6 が WireGuard/Tailscale でブラックホール化しプレビューが黒くなるのを防ぐ）。v6 でしか到達できない網でだけ `1` にする |
 | `LOG_LEVEL` | `INFO` | ログレベル |
+| `TTS_PROVIDER` | `espeak-ng` | Settings > Audio の local voice provider。`espeak-ng`（軽量・既定）/ `voicevox`（高品質日本語・任意）/ `disabled` を選ぶ。`.env` または `.env.split` に正確に `TTS_PROVIDER=voicevox` と書くと Makefile が `compose/voicevox.yaml` を build / up / images-save に自動追加する。provider の切替は orchestrator の起動時に確定するため再起動が必要 |
+| `TTS_VOICEVOX_URL` | `http://127.0.0.1:50021` | orchestrator から見た VOICEVOX Engine API。既定 overlay は host network の loopback にだけ bind し、browser はこの port に直接アクセスしない |
+| `TTS_VOICEVOX_CPUS` | `2` | 任意 VOICEVOX container の CPU 上限。録画を優先するための追加ガード（事前合成自体も recording priority で cancel / defer される） |
 | `RETENTION_DAYS` | `0` | `0`=無効。`>0` で古い capture を保持期間で削除候補に（助言のみ） |
 | `KAIROS_ARCHIVE_ROOTS` | (任意・既定は空=無効) | capture / dataset の archive 先として許可するルート（`:` 区切り、**コンテナから見た絶対パス**）。空なら archive 機能自体を提供しない（必ず失敗するボタンを置かない）。destination はここに対して検証され、`data_dir` と重なるものは拒否される（[capture_store](capture_store.md) §6/§6.1）。**必ず volume マウントと対で設定する** — `.env`（split は `.env.split`）に `ARCHIVE_DIR=<host パス>` を足せば、**`make up` / `make recording-up` が `-f compose/archive.yaml` を自動で付ける**（`compose/archive.yaml` が `${ARCHIVE_DIR}` を `/archive` にマウントする。旧 `COMPOSE_FILE` 配線は廃止 — 明示の `-f` に常に負けるため）。マウント無しの root を許可すると、エクスポートは**コンテナ層に書かれて再作成で消える**（move ならその時点で源も削除済み）。素の `docker compose` を使う場合はコマンドラインに `-f compose/archive.yaml` を足す |
 | `KAIROS_REBUILD` | (未設定) | 立てると次回起動時に `kairos.db` をサイドカーから rebuild する。「`kairos.db` を消して再起動」の運用版（動いているコンテナからファイルを消させない） |
@@ -80,7 +83,7 @@
 
 - サービス間は信頼 LAN 内で通信する（既定は host networking で `localhost:<port>`。内部ポートも上表のとおり）。マルチテナント host ではブリッジ網 + DDS unicast に切替（`compose/compose.yaml` のネットワーク注記参照）。
 - 共通の設定スキーマは `libs/kairos_common`（pydantic-settings）に置き、各サービスが env を型付きで読む。
-- compose は全 7 サービスに `GET /healthz`（frontend は nginx root）ベースの healthcheck を持ち、frontend は `depends_on: orchestrator (service_healthy)` で orchestrator の healthy を待って起動する。
+- compose は全 7 core サービスに `GET /healthz`（frontend は nginx root）ベースの healthcheck を持ち、frontend は `depends_on: orchestrator (service_healthy)` で orchestrator の healthy を待って起動する。VOICEVOX は 8 番目の任意 sidecar で、digest 固定の multi-arch image を local `kairos-voicevox` image として build する。`make images-save` / `images-load` にも自動で含まれるため、最初にオンライン環境で build した後は録画 PC をオフライン運用できる。使用時は VOICEVOX と各音声ライブラリの利用規約に従い、UI は選択中の `VOICEVOX:<speaker> · <style>` を表示する。
 
 ### DDS 実装の切替（Fast DDS ↔ Cyclone DDS）
 

@@ -150,7 +150,8 @@ ARCHIVE_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*A
 EXPORTS_DIR_LOCAL := $(if $(wildcard .env),$(shell grep -E '^[[:space:]]*EXPORTS_DIR=' .env 2>/dev/null | tail -1 | cut -d= -f2-),)
 LEROBOT_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*LEROBOT_EXPORTER=' .env 2>/dev/null && echo -f compose/lerobot.yaml),)
 LEROBOT_OVERRIDE_LOCAL += $(if $(and $(LEROBOT_OVERRIDE_LOCAL),$(EXPORTS_DIR_LOCAL)),-f compose/lerobot-exports.yaml,)
-COMPOSE      := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(LEROBOT_OVERRIDE_LOCAL)
+VOICEVOX_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*TTS_PROVIDER[[:space:]]*=[[:space:]]*voicevox[[:space:]]*$$' .env 2>/dev/null && echo -f compose/voicevox.yaml),)
+COMPOSE      := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(LEROBOT_OVERRIDE_LOCAL) $(VOICEVOX_OVERRIDE_LOCAL)
 # The lerobot-exporter image installs a SITE-PROVIDED converter from
 # deploy/lerobot/converter (gitignored, optional — see deploy/lerobot/README.md).
 # For BUILD ONLY, drop the lerobot overlay when that tree is absent, so a build
@@ -159,7 +160,7 @@ COMPOSE      := docker compose --project-directory . -f compose/compose.yaml $(A
 # exporter image still runs regardless.
 _CONVERTER_PRESENT := $(wildcard deploy/lerobot/converter/pyproject.toml)
 BUILD_LEROBOT_OVERLAY := $(if $(_CONVERTER_PRESENT),$(LEROBOT_OVERRIDE_LOCAL),)
-BUILD_COMPOSE := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(BUILD_LEROBOT_OVERLAY)
+BUILD_COMPOSE := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(BUILD_LEROBOT_OVERLAY) $(VOICEVOX_OVERRIDE_LOCAL)
 # Let the replay harness read the root .env too (so BAG / ROS_DISTRO / RMW set
 # there drive `make rosbag`), when a .env exists.
 TEST_COMPOSE := docker compose $(if $(wildcard .env),--env-file .env,) -f deploy/test/compose.yaml
@@ -188,7 +189,7 @@ ifneq ($(strip $(MSGS_OVERLAY_DIR)),)
 export MSGS_OVERLAY_DIR
 endif
 
-SERVICES := recorder monitor streamer probe orchestrator dora_runner frontend lerobot-exporter
+SERVICES := recorder monitor streamer probe orchestrator dora_runner frontend lerobot-exporter voicevox
 # Services named on the command line (e.g. `make build monitor`). Empty = all.
 # Override explicitly with SVC=monitor if you prefer.
 SVC ?= $(filter $(SERVICES),$(MAKECMDGOALS))
@@ -399,10 +400,11 @@ SPLIT_ENV := $(if $(wildcard .env.split),.env.split,$(if $(wildcard .env),.env,)
 # is the exports-vanish-with-the-container trap config.md warns about.
 # Robot-edge never mounts it — no orchestrator runs there.
 ARCHIVE_OVERRIDE  := $(if $(SPLIT_ENV),$(shell grep -qE '^[[:space:]]*ARCHIVE_DIR=' $(SPLIT_ENV) 2>/dev/null && echo -f compose/archive.yaml),)
+VOICEVOX_OVERRIDE := $(if $(SPLIT_ENV),$(shell grep -qE '^[[:space:]]*TTS_PROVIDER[[:space:]]*=[[:space:]]*voicevox[[:space:]]*$$' $(SPLIT_ENV) 2>/dev/null && echo -f compose/voicevox.yaml),)
 # Same anchoring as COMPOSE above: relative paths and the split files'
 # `extends: file: compose/compose.yaml` resolve from the repo root.
 COMPOSE_ROBOT     := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker compose --project-directory . $(if $(SPLIT_ENV),--env-file $(SPLIT_ENV),) -f compose/robot.yaml
-COMPOSE_RECORDING := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker compose --project-directory . $(if $(SPLIT_ENV),--env-file $(SPLIT_ENV),) -f compose/recording.yaml $(ARCHIVE_OVERRIDE)
+COMPOSE_RECORDING := $(if $(SPLIT_ENV),KAIROS_ENV_FILE=$(SPLIT_ENV),) docker compose --project-directory . $(if $(SPLIT_ENV),--env-file $(SPLIT_ENV),) -f compose/recording.yaml $(ARCHIVE_OVERRIDE) $(VOICEVOX_OVERRIDE)
 
 .PHONY: robot-up robot-down robot-build robot-rebuild robot-restart robot-logs robot-ps robot-config-reload \
         robot-images-save recording-up recording-down recording-build recording-rebuild recording-restart \

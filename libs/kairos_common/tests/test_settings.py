@@ -78,3 +78,15 @@ def test_archive_roots_answers_to_its_documented_name(
     monkeypatch.delenv("ARCHIVE_ROOTS")
     assert Settings(archive_roots="/direct").archive_roots == "/direct"
     assert Settings().archive_roots == ""
+
+
+def test_tts_provider_and_voicevox_url_are_runtime_selectable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TTS_PROVIDER", "voicevox")
+    monkeypatch.setenv("TTS_VOICEVOX_URL", "http://127.0.0.1:50021")
+
+    settings = _settings()
+
+    assert settings.tts_provider == "voicevox"
+    assert settings.tts_voicevox_url == "http://127.0.0.1:50021"

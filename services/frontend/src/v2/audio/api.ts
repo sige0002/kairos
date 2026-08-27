@@ -7,6 +7,7 @@ import type { AudioLanguage } from './settings';
 export interface AudioStatus {
   available: boolean;
   engine: string | null;
+  configured_provider?: string;
   voices: Partial<Record<AudioLanguage, string[]>>;
 }
 
