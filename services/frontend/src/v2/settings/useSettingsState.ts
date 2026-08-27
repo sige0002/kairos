@@ -8,8 +8,14 @@
 // edit here shows up in Collect immediately. The store's server model is Phase
 // 2.5; it's browser-local for now.
 
-import { useCallback, useState } from 'react';
-import { clonePlans, type PlanProjectData } from './data';
+import { useCallback, useEffect, useState } from 'react';
+import {
+  clonePlans,
+  DEFAULT_SETTINGS_SECTION_ID,
+  getSettingsSection,
+  type PlanProjectData,
+  type SettingsSectionId,
+} from './data';
 import {
   clearFailureShortcutsForReason,
   renameFailureShortcuts,
@@ -25,10 +31,11 @@ import {
   type FailureShortcutSlot,
 } from '../plans';
 import { useToast } from '../shared/useToast';
+import { useOnPopState } from '../shared/useOnPopState';
 
 export interface SettingsState {
-  menuIdx: number;
-  selectMenu: (i: number) => void;
+  sectionId: SettingsSectionId;
+  selectSection: (id: SettingsSectionId) => void;
 
   plans: PlanProjectData[];
   planProjIdx: number;
@@ -91,8 +98,39 @@ function validateCatalogName(
   return value;
 }
 
+function readSettingsSectionUrl(): SettingsSectionId {
+  const section = getSettingsSection(
+    new URLSearchParams(window.location.search).get('settings'),
+  );
+  return section?.id ?? DEFAULT_SETTINGS_SECTION_ID;
+}
+
+function writeSettingsSectionUrl(id: SettingsSectionId): void {
+  const params = new URLSearchParams(window.location.search);
+  if (id === DEFAULT_SETTINGS_SECTION_ID) params.delete('settings');
+  else params.set('settings', id);
+  const query = params.toString();
+  window.history.replaceState(
+    null,
+    '',
+    `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
+  );
+}
+
 export function useSettingsState(): SettingsState {
-  const [menuIdx, setMenuIdx] = useState(0);
+  const [sectionId, setSectionId] = useState<SettingsSectionId>(readSettingsSectionUrl);
+  useEffect(() => {
+    const raw = new URLSearchParams(window.location.search).get('settings');
+    if (raw !== null && !getSettingsSection(raw)) {
+      writeSettingsSectionUrl(DEFAULT_SETTINGS_SECTION_ID);
+    }
+  }, []);
+  useOnPopState(() => {
+    const raw = new URLSearchParams(window.location.search).get('settings');
+    const section = getSettingsSection(raw);
+    setSectionId(section?.id ?? DEFAULT_SETTINGS_SECTION_ID);
+    if (raw !== null && !section) writeSettingsSectionUrl(DEFAULT_SETTINGS_SECTION_ID);
+  });
   // The catalog lives in the shared store; mutations below call setPlans (which
   // persists + notifies Collect). Only the editor's cursor is local.
   const plans = usePlans();
@@ -122,7 +160,10 @@ export function useSettingsState(): SettingsState {
     [plans],
   );
 
-  const selectMenu = useCallback((i: number) => setMenuIdx(i), []);
+  const selectSection = useCallback((id: SettingsSectionId) => {
+    setSectionId(id);
+    writeSettingsSectionUrl(id);
+  }, []);
 
   // The catalog can legitimately be EMPTY. This editor blocks removing the last
   // project (see removeProject), but the catalog is SHARED: another terminal — or
@@ -498,8 +539,8 @@ export function useSettingsState(): SettingsState {
   );
 
   return {
-    menuIdx,
-    selectMenu,
+    sectionId,
+    selectSection,
     plans,
     planProjIdx: ppIdx,
     planTaskIdx: ptIdx,

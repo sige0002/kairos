@@ -1,31 +1,53 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-// Mock catalogs for the Settings screen (design mock:
-// .dev/kairos-console-v2.dc.html, data-screen-label="Settings", script ~L1563-1665).
-// Robots is now real (RobotsSection.tsx → GET /api/v1/config/options); only the
-// Plans section here is still a Phase-2 frontend mock, and the other five menu
-// items fall back to a placeholder (see SettingsScreen.tsx).
-
-/** One selectable settings section (left menu rail). Order/labels are the
- *  mock's `setSections` — plus "Failure reasons" (post-mock, 2026-08-04: the
- *  fail-reason vocabulary editor, kept next to the other label vocabulary)
- *  and "External controls" (2026-08-26, #43: the channel→action mapping, kept
- *  next to the failure-reason slots it reads). */
-export const SETTINGS_MENU = [
-  'Robots',
-  'Projects & tasks',
-  'Failure reasons',
-  'External controls',
-  'Operators',
-  'Recording',
-  'Data quality',
-  'Validation',
-  'Dataset profiles',
-  'Users & permissions',
-  'System',
-  'Appearance',
-  'Audio',
+// The Settings IA is deliberately data-driven: IDs are durable navigation
+// identities; labels are presentation and may be localized independently.
+export const SETTINGS_CATEGORIES = [
+  { id: 'general', label: 'General' },
+  { id: 'collection', label: 'Collection' },
+  { id: 'data', label: 'Data' },
+  { id: 'workspace', label: 'Workspace' },
+  { id: 'notifications', label: 'Notifications' },
+  { id: 'advanced', label: 'Advanced' },
 ] as const;
+
+export type SettingsCategoryId = (typeof SETTINGS_CATEGORIES)[number]['id'];
+
+export const SETTINGS_SECTIONS = [
+  { id: 'robots', label: 'Robots', categoryId: 'collection', legacyIndex: 0 },
+  { id: 'projects-tasks', label: 'Projects & tasks', categoryId: 'workspace', legacyIndex: 1 },
+  { id: 'failure-reasons', label: 'Failure reasons', categoryId: 'workspace', legacyIndex: 2 },
+  { id: 'external-controls', label: 'External controls', categoryId: 'collection', legacyIndex: 3 },
+  { id: 'operators', label: 'Operators', categoryId: 'workspace', legacyIndex: 4 },
+  { id: 'recording', label: 'Recording', categoryId: 'collection', legacyIndex: 5 },
+  { id: 'data-quality', label: 'Data quality', categoryId: 'data', legacyIndex: 6 },
+  { id: 'validation', label: 'Validation', categoryId: 'data', legacyIndex: 7 },
+  { id: 'dataset-profiles', label: 'Dataset profiles', categoryId: 'advanced', legacyIndex: 8 },
+  { id: 'users-permissions', label: 'Users & permissions', categoryId: 'advanced', legacyIndex: 9 },
+  { id: 'system', label: 'System', categoryId: 'advanced', legacyIndex: 10 },
+  { id: 'appearance', label: 'Appearance', categoryId: 'general', legacyIndex: 11 },
+  { id: 'audio', label: 'Audio', categoryId: 'general', legacyIndex: 12 },
+  { id: 'alerts', label: 'Alerts', categoryId: 'notifications', legacyIndex: null },
+  { id: 'generated-files', label: 'Generated files', categoryId: 'data', legacyIndex: null },
+] as const;
+
+export type SettingsSectionId = (typeof SETTINGS_SECTIONS)[number]['id'];
+export type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
+
+// Compatibility for older unit tests and helpers. Navigation itself uses IDs.
+export const SETTINGS_MENU = SETTINGS_SECTIONS.filter(
+  (section) => section.legacyIndex !== null,
+).map((section) => section.label);
+
+export const DEFAULT_SETTINGS_SECTION_ID: SettingsSectionId = 'robots';
+
+export function getSettingsSection(id: string | null): SettingsSection | undefined {
+  return SETTINGS_SECTIONS.find((section) => section.id === id);
+}
+
+export function getCategorySections(categoryId: SettingsCategoryId): SettingsSection[] {
+  return SETTINGS_SECTIONS.filter((section) => section.categoryId === categoryId);
+}
 
 // The plan catalog (Projects → Tasks → Conditions) is now the SHARED v2/plans
 // store — the single source of truth for both Settings and Collect, so an edit

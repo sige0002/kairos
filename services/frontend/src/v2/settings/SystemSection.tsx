@@ -2,7 +2,8 @@
 // Copyright 2026 Sadasue Yuki
 // Settings > System — read-only deployment facts. ROS_DOMAIN_ID + robot from the
 // runtime config, the service endpoints the browser talks to, the runtime data
-// dir + free space from GET /api/v1/system, and the honest component health
+// dir + free space from GET /api/v1/system, and the honest component health.
+// Generated-file cleanup lives in Settings > Data.
 // (shared ComponentHealth — see it for why /readyz isn't fetched here). No
 // product-version row: there is no honest client-side version source, and the
 // spec (§12) forbids inventing one, so it is omitted. RMW / DDS transport is not
@@ -15,7 +16,6 @@ import type { RuntimeConfig } from '../../config';
 import { Card } from '../../components/ui';
 import { formatBytes } from '../review/format';
 import { ComponentHealth } from '../monitor/ComponentHealth';
-import { GeneratedFilesSection } from './GeneratedFilesSection';
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -107,7 +107,6 @@ export function SystemSection({ config }: { config: RuntimeConfig | undefined })
         <ComponentHealth />
       </Section>
 
-      <GeneratedFilesSection />
     </Card>
   );
 }

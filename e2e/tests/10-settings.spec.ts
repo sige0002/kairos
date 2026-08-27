@@ -345,7 +345,7 @@ test("Settings: external-control mapping reaches Collect's effective HUD", async
 
   try {
     await openTab(page, "settings");
-    await page.getByTestId("settings-menu-item-3").click();
+    await page.getByTestId("settings-section-external-controls").click();
     await expect(page.getByTestId("settings-ext-controls")).toBeVisible();
     // A never-set installation seeds all catalog halves on this first mount.
     // Snapshot only after that reconcile, so cleanup restores an actual saved
