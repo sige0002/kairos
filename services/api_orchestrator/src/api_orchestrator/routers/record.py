@@ -42,8 +42,12 @@ async def record_prepare(
     ``start``, or none at all, falls back to today's full synchronous start —
     the recorder auto-disarms the stale armed session on its own timeout.
     """
-    async with request.app.state.recording_resource_lock:
+    audio = request.app.state.audio_feedback
+    audio.reserve_for_recording()
+    try:
         return await service.prepare(body)
+    finally:
+        audio.release_recording_reservation()
 
 
 @router.post("/start", response_model=Capture)
@@ -59,8 +63,12 @@ async def record_start(
     recorder's failed-start sidecar is what the next rebuild turns into a row
     (§3.4).
     """
-    async with request.app.state.recording_resource_lock:
+    audio = request.app.state.audio_feedback
+    audio.reserve_for_recording()
+    try:
         return await service.start(body)
+    finally:
+        audio.release_recording_reservation()
 
 
 @router.post("/stop", response_model=Capture)

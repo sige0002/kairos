@@ -20,9 +20,19 @@ class FakeTtsProvider:
     def __init__(self) -> None:
         self.calls: list[tuple[str, str, str, Path]] = []
 
-    def synthesize(self, text: str, language: str, voice: str, output: Path) -> None:
+    def synthesize(
+        self,
+        text: str,
+        language: str,
+        voice: str,
+        output: Path,
+        cancel: threading.Event,
+    ) -> None:
         self.calls.append((text, language, voice, output))
         output.write_bytes(b"RIFF-test-wave")
+
+    def cancel(self) -> None:
+        """No synthesis is long-running in the ordinary fake."""
 
 
 def test_prepare_assets_generates_once_and_serves_wav(client: TestClient) -> None:
@@ -178,15 +188,22 @@ def test_record_start_waits_for_in_flight_voice_generation(
 
     class BlockingProvider(FakeTtsProvider):
         def synthesize(
-            self, text: str, language: str, voice: str, output: Path
+            self,
+            text: str,
+            language: str,
+            voice: str,
+            output: Path,
+            cancel: threading.Event,
         ) -> None:
             entered.set()
             assert release.wait(timeout=5)
-            super().synthesize(text, language, voice, output)
+            super().synthesize(text, language, voice, output, cancel)
+
+        def cancel(self) -> None:
+            release.set()
 
     client.app.state.audio_feedback.provider = BlockingProvider()
     responses: dict[str, object] = {}
-    initial_recorder_state = fake_recorder.state
 
     def prepare_voice() -> None:
         responses["audio"] = client.post(
@@ -212,15 +229,17 @@ def test_record_start_waits_for_in_flight_voice_generation(
     start_thread = threading.Thread(target=start_recording)
     audio_thread.start()
     assert entered.wait(timeout=5)
+    started_at = time.monotonic()
     start_thread.start()
-    time.sleep(0.1)
+    start_thread.join(timeout=1)
+    start_elapsed = time.monotonic() - started_at
 
-    assert start_thread.is_alive()
-    assert fake_recorder.state == initial_recorder_state
-    release.set()
+    assert not start_thread.is_alive()
+    assert start_elapsed < 0.5
+    assert fake_recorder.state == "recording"
     audio_thread.join(timeout=5)
-    start_thread.join(timeout=5)
 
     assert responses["audio"].status_code == 200
+    assert responses["audio"].json()["deferred"] is True
     assert responses["start"].status_code == 200
     assert fake_recorder.state == "recording"
