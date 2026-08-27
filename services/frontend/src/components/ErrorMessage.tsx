@@ -58,11 +58,11 @@ export function ErrorMessage({ error }: { error: unknown }) {
     <div
       role="alert"
       data-error-code={code ?? undefined}
-      className="rounded bg-red-50 px-3 py-2 text-sm text-red-700"
+      className="rounded border border-status-danger-border bg-status-danger-bg px-3 py-2 text-sm text-status-danger-text"
     >
       <p>{errorText(error)}</p>
-      {detail && <p className="mt-1 font-mono text-xs text-red-700">{detail}</p>}
-      {code && <p className="mt-0.5 font-mono text-xs text-red-900 opacity-75">({code})</p>}
+      {detail && <p className="mt-1 font-mono text-xs text-status-danger-text">{detail}</p>}
+      {code && <p className="mt-0.5 font-mono text-xs text-status-danger-text opacity-75">({code})</p>}
     </div>
   );
 }

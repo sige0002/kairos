@@ -31,19 +31,19 @@ export function MenuRail({ settings }: { settings: SettingsState }) {
           className={cn(
             'rounded-control px-3 py-2 text-left text-[13px] font-medium transition-colors',
             i === settings.menuIdx
-              ? 'bg-teal-50 font-semibold text-teal-700'
-              : 'text-gray-600 hover:bg-gray-50',
+              ? 'bg-interaction-selected font-semibold text-accent'
+              : 'text-text-secondary hover:bg-interaction-hover',
           )}
         >
           {label}
         </button>
       ))}
       <div className="flex-1" />
-      <div className="flex flex-col gap-0.5 border-t border-gray-100 px-3 pb-1 pt-2.5">
-        <span className="text-[11px] text-gray-500">active robot</span>
+      <div className="flex flex-col gap-0.5 border-t border-border px-3 pb-1 pt-2.5">
+        <span className="text-[11px] text-text-muted">active robot</span>
         <span
           data-testid="settings-active-robot"
-          className="font-mono text-[12.5px] font-semibold text-teal-700"
+          className="font-mono text-[12.5px] font-semibold text-accent"
         >
           {activeRobot ?? '—'}
         </span>

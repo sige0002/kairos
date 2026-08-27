@@ -23,6 +23,7 @@ export const SETTINGS_MENU = [
   'Dataset profiles',
   'Users & permissions',
   'System',
+  'Appearance',
   'Audio',
 ] as const;
 

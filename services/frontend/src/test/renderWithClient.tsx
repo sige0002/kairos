@@ -3,6 +3,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, type RenderOptions } from '@testing-library/react';
 import type { ReactElement, ReactNode } from 'react';
+import { AppearanceProvider } from '../theme';
 
 /** A QueryClient tuned for tests: no retries, no GC surprises. */
 export function makeTestClient(): QueryClient {
@@ -20,7 +21,11 @@ export function renderWithClient(
 ) {
   const client = options?.client ?? makeTestClient();
   function Wrapper({ children }: { children: ReactNode }) {
-    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+    return (
+      <AppearanceProvider>
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      </AppearanceProvider>
+    );
   }
   return { client, ...render(ui, { wrapper: Wrapper, ...options }) };
 }

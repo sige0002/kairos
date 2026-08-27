@@ -315,6 +315,8 @@ function selectPosts() {
 
 beforeEach(() => {
   setApiBase('/api/v1');
+  window.localStorage.removeItem('kairos.appearance');
+  document.documentElement.dataset.theme = 'light';
   recordState = 'created';
   liveReported = true;
   streamPayload = {
@@ -351,6 +353,43 @@ test('lists the real robots and marks the active one', async () => {
   const localRow = screen.getByTestId('robot-row-2');
   expect(within(localRow).getByText('isaac_sim')).toBeInTheDocument();
   expect(within(localRow).getByText('local')).toBeInTheDocument();
+});
+
+test('Appearance applies immediately in Settings and is browser-local', () => {
+  renderWithClient(<SettingsScreen />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Appearance' }));
+  expect(screen.getByTestId('settings-appearance')).toBeInTheDocument();
+  expect(screen.getByTestId('appearance-system')).toBeChecked();
+
+  const fetchCallsBeforeSelection = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+    .length;
+  fireEvent.click(screen.getByTestId('appearance-dark'));
+  expect(screen.getByTestId('appearance-dark')).toBeChecked();
+  expect(screen.getByTestId('appearance-status')).toHaveTextContent('Using dark');
+  expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+  expect(window.localStorage.getItem('kairos.appearance')).toBe('dark');
+  expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(
+    fetchCallsBeforeSelection,
+  );
+});
+
+test('Appearance explains when the browser cannot persist the selection', () => {
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new DOMException('Storage disabled', 'SecurityError');
+  });
+  renderWithClient(<SettingsScreen />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Appearance' }));
+  fireEvent.click(screen.getByTestId('appearance-dark'));
+
+  expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+  expect(screen.getByTestId('appearance-status')).toHaveTextContent(
+    'Browser storage is unavailable',
+  );
+  expect(screen.getByTestId('appearance-status')).toHaveTextContent(
+    'choose it again after reload',
+  );
 });
 
 test('the active robot form shows real read-only runtime values + the recording editor', async () => {
