@@ -29,19 +29,19 @@ export function RecordContextChip() {
 
   return (
     <Card className="flex items-center gap-2.5 px-3.5 py-2" data-testid="monitor-context">
-      <h2 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
         Context
       </h2>
       {ctx.recording ? (
         <>
           <span
             data-testid="context-state"
-            className="inline-flex items-center gap-1.5 rounded-chip bg-red-50 px-[7px] py-0.5 text-[10.5px] font-bold text-red-700"
+            className="inline-flex items-center gap-1.5 rounded-chip bg-status-danger-bg px-[7px] py-0.5 text-[10.5px] font-bold text-status-danger-text"
           >
-            <span className="h-[7px] w-[7px] animate-pulse rounded-full bg-red-600" />
+            <span className="h-[7px] w-[7px] animate-pulse rounded-full bg-status-danger-accent" />
             REC
           </span>
-          <span className="font-mono text-[12.5px] font-semibold text-gray-900">
+          <span className="font-mono text-[12.5px] font-semibold text-text-primary">
             {ctx.runId ?? '—'}
           </span>
           {/* The identity, abbreviated to fit the strip; the full id is the
@@ -50,23 +50,23 @@ export function RecordContextChip() {
             data-testid="context-capture"
             data-capture-id={ctx.captureId ?? ''}
             title={ctx.captureId ?? 'The recorder did not name the capture.'}
-            className="font-mono text-[11px] text-gray-500"
+            className="font-mono text-[11px] text-text-muted"
           >
             {ctx.captureId ? ctx.captureId.slice(0, 8) : '—'}
           </span>
-          <span className="font-mono text-xs text-gray-500">{formatElapsed(ctx.elapsedMs)}</span>
+          <span className="font-mono text-xs text-text-muted">{formatElapsed(ctx.elapsedMs)}</span>
         </>
       ) : isPending ? (
         <span
           data-testid="context-state"
-          className="inline-flex rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-600"
+          className="inline-flex rounded-chip bg-surface-muted px-[7px] py-0.5 text-[10.5px] font-bold text-text-secondary"
         >
           CHECKING…
         </span>
       ) : ctx.liveKnown ? (
         <span
           data-testid="context-state"
-          className="inline-flex rounded-chip bg-gray-100 px-[7px] py-0.5 text-[10.5px] font-bold text-gray-600"
+          className="inline-flex rounded-chip bg-surface-muted px-[7px] py-0.5 text-[10.5px] font-bold text-text-secondary"
         >
           STANDBY
         </span>
@@ -74,7 +74,7 @@ export function RecordContextChip() {
         <span
           data-testid="context-state"
           title={UNREPORTED_TITLE}
-          className="inline-flex rounded-chip bg-amber-100 px-[7px] py-0.5 text-[10.5px] font-bold text-amber-700"
+          className="inline-flex rounded-chip bg-status-warning-bg px-[7px] py-0.5 text-[10.5px] font-bold text-status-warning-text"
         >
           LIVE STATE UNREPORTED
         </span>

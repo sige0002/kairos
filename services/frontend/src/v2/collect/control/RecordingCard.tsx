@@ -37,7 +37,7 @@ export function RecordingCard({
   return (
     <Card
       className={cn(
-        'flex shrink-0 flex-col gap-2.5 border-2 border-red-200',
+        'flex shrink-0 flex-col gap-2.5 border-2 border-status-danger-border',
         CARD_GAP_COMPACT,
         CARD_PAD,
       )}
@@ -46,34 +46,34 @@ export function RecordingCard({
         <span
           className={cn(
             'h-[9px] w-[9px] rounded-sm',
-            unreachable ? 'bg-amber-500' : 'animate-recpulse bg-red-600',
+            unreachable ? 'bg-status-warning-accent' : 'animate-recpulse bg-status-danger-accent',
           )}
         />
         <h2
           data-testid="phase-title"
           className={cn(
             'text-[17px] font-bold',
-            unreachable ? 'text-amber-700' : 'text-red-700',
+            unreachable ? 'text-status-warning-text' : 'text-status-danger-text',
           )}
         >
           {unreachable ? 'RECORDER UNREACHABLE' : 'RECORDING'}
         </h2>
         <div className="flex-1" />
-        <span className="font-mono text-xs text-gray-500">
+        <span className="font-mono text-xs text-text-muted">
           Ep {stats.epNext} / {machine.targetEpisodes}
         </span>
       </div>
       {unreachable && (
         <div
           data-testid="recorder-unreachable-note"
-          className="rounded-control border border-amber-300 bg-amber-50 px-3 py-2 text-[12.5px] leading-relaxed text-amber-900"
+          className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12.5px] leading-relaxed text-status-warning-text"
         >
           <p role="alert" aria-live="assertive">
             The recorder is not answering. Whether this take is still running cannot be
             confirmed from here. Check the recorder connection; after it reconnects,
             confirm whether this take is still live before continuing.
           </p>
-          <p className="mt-1 text-[11.5px] text-amber-800" aria-live="off">
+          <p className="mt-1 text-[11.5px] text-status-warning-text" aria-live="off">
             Last known: <span className="font-semibold">recording</span>, {staleText}.
             The figures below are the last ones reported, not current.
           </p>
@@ -84,7 +84,7 @@ export function RecordingCard({
           data-testid="elapsed"
           className={cn(
             'font-mono text-[34px] font-semibold',
-            unreachable ? 'text-gray-500' : 'text-gray-900',
+            unreachable ? 'text-text-muted' : 'text-text-primary',
           )}
           title={
             unreachable
@@ -94,7 +94,7 @@ export function RecordingCard({
         >
           {elapsedText}
         </span>
-        <span className="font-mono text-xs text-gray-500">{writtenText}</span>
+        <span className="font-mono text-xs text-text-muted">{writtenText}</span>
       </div>
       {/* Stop occupies the position Start just vacated, so the second half
           of a double-click lands here. Refused for the first moment of a
@@ -114,11 +114,11 @@ export function RecordingCard({
         className={cn(
           'flex h-[52px] items-center justify-center gap-2 rounded-control text-[15px] font-bold shadow-btn-red [@media(max-height:860px)]:h-[44px]',
           machine.canStop
-            ? 'bg-red-600 text-white hover:bg-red-700'
-            : 'cursor-not-allowed bg-red-300 text-white/80',
+            ? 'bg-status-danger-accent text-status-danger-contrast hover:bg-status-danger-text'
+            : 'cursor-not-allowed bg-status-danger-accent text-status-danger-contrast/80',
         )}
       >
-        <span className="h-[11px] w-[11px] rounded-sm bg-white" />
+        <span className="h-[11px] w-[11px] rounded-sm bg-surface" />
         Stop recording
         <span className="text-[11px] font-medium opacity-70">· S</span>
       </button>

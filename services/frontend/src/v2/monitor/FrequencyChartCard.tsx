@@ -173,14 +173,14 @@ export function FrequencyChartCard({
 
   return (
     <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <div className="flex flex-wrap items-center gap-2.5 border-b border-gray-100 px-[18px] py-3">
-        <span className="truncate font-mono text-[13px] font-semibold text-gray-900">{title}</span>
+      <div className="flex flex-wrap items-center gap-2.5 border-b border-border px-[18px] py-3">
+        <span className="truncate font-mono text-[13px] font-semibold text-text-primary">{title}</span>
         <select
           data-testid={`freq-metric-select${sfx}`}
           aria-label="chart metric"
           value={panel.metric}
           onChange={(e) => onMetricChange(e.target.value as MonitorMetricKey)}
-          className="rounded-control border border-gray-200 px-2 py-1 text-[12px] font-medium text-gray-700 focus:border-teal-600 focus:outline-none"
+          className="rounded-control border border-border px-2 py-1 text-[12px] font-medium text-text-primary focus:border-accent focus:outline-none"
         >
           {MONITOR_METRICS.map((m) => (
             <option key={m.key} value={m.key}>
@@ -196,7 +196,7 @@ export function FrequencyChartCard({
             data-testid={`freq-remove${sfx}`}
             aria-label="remove chart"
             onClick={onRemove}
-            className="rounded-control border border-red-200 px-2.5 py-1 text-[11px] font-semibold text-red-700 hover:bg-red-50"
+            className="rounded-control border border-status-danger-border px-2.5 py-1 text-[11px] font-semibold text-status-danger-text hover:bg-status-danger-bg"
           >
             Remove
           </button>
@@ -207,10 +207,10 @@ export function FrequencyChartCard({
         // Primary panel: read-only legend (the TopicsTable row clicks drive its set).
         <div
           data-testid={`freq-chart-legend${sfx}`}
-          className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-gray-100 px-[18px] py-2"
+          className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-[18px] py-2"
         >
           {topics.length === 0 ? (
-            <span className="text-[11.5px] text-gray-500">No series selected.</span>
+            <span className="text-[11.5px] text-text-muted">No series selected.</span>
           ) : (
             topics.map((t, i) => {
               const v = cols[i] ? lastValue(cols[i]!) : null;
@@ -219,17 +219,17 @@ export function FrequencyChartCard({
                 <span
                   key={t}
                   data-testid={`freq-legend${sfx}-${t}`}
-                  className="inline-flex items-center gap-1.5 text-[11.5px] text-gray-500"
+                  className="inline-flex items-center gap-1.5 text-[11.5px] text-text-muted"
                 >
                   <span className="h-[3px] w-3.5 rounded-sm" style={{ background: paletteColor(i) }} />
                   <span className="font-mono">{labelFor(t)}</span>
-                  <span className="font-semibold text-gray-700">{shown}</span>
+                  <span className="font-semibold text-text-primary">{shown}</span>
                 </span>
               );
             })
           )}
           {refLines && (
-            <span className="inline-flex items-center gap-1.5 text-[11.5px] text-gray-500">
+            <span className="inline-flex items-center gap-1.5 text-[11.5px] text-text-muted">
               <span
                 className="h-0 w-3.5 border-t-2"
                 style={{ borderTopStyle: 'dashed', borderTopColor: amber[600] }}
@@ -242,7 +242,7 @@ export function FrequencyChartCard({
         // Non-primary panel: its own removable series chips + an add-topic picker.
         <div
           data-testid={`freq-chart-legend${sfx}`}
-          className="flex flex-wrap items-center gap-1.5 border-b border-gray-100 px-[18px] py-2"
+          className="flex flex-wrap items-center gap-1.5 border-b border-border px-[18px] py-2"
         >
           {topics.map((t, i) => {
             const v = cols[i] ? lastValue(cols[i]!) : null;
@@ -251,17 +251,17 @@ export function FrequencyChartCard({
               <span
                 key={t}
                 data-testid={`freq-legend${sfx}-${t}`}
-                className="inline-flex items-center gap-1.5 rounded-chip border border-gray-200 bg-white py-0.5 pl-2 pr-1 text-[11px] text-gray-500"
+                className="inline-flex items-center gap-1.5 rounded-chip border border-border bg-surface py-0.5 pl-2 pr-1 text-[11px] text-text-muted"
               >
                 <span className="h-[3px] w-3.5 rounded-sm" style={{ background: paletteColor(i) }} />
                 <span className="font-mono">{labelFor(t)}</span>
-                <span className="font-semibold text-gray-700">{shown}</span>
+                <span className="font-semibold text-text-primary">{shown}</span>
                 <button
                   type="button"
                   data-testid={`freq-chip-remove${sfx}-${t}`}
                   aria-label={`remove ${t} from chart`}
                   onClick={() => onToggleTopic(t)}
-                  className="ml-0.5 rounded-sm px-1 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
+                  className="ml-0.5 rounded-sm px-1 text-text-muted hover:bg-surface-muted hover:text-text-primary"
                 >
                   ×
                 </button>
@@ -269,7 +269,7 @@ export function FrequencyChartCard({
             );
           })}
           {atCap ? (
-            <span className="text-[10.5px] text-amber-700">
+            <span className="text-[10.5px] text-status-warning-text">
               {MAX_SERIES}/{MAX_SERIES} series
             </span>
           ) : (
@@ -281,7 +281,7 @@ export function FrequencyChartCard({
                 if (e.target.value) onToggleTopic(e.target.value);
               }}
               disabled={addable.length === 0}
-              className="rounded-control border border-gray-200 px-2 py-0.5 text-[11px] font-medium text-gray-600 focus:border-teal-600 focus:outline-none disabled:text-gray-300"
+              className="rounded-control border border-border px-2 py-0.5 text-[11px] font-medium text-text-secondary focus:border-accent focus:outline-none disabled:text-text-muted"
             >
               <option value="">{addable.length === 0 ? 'No more topics' : '+ Add topic'}</option>
               {addable.map((t) => (
@@ -317,7 +317,7 @@ export function FrequencyChartCard({
         ) : (
           <p
             data-testid={`freq-chart-empty${sfx}`}
-            className="flex h-full items-center justify-center text-center text-[12px] text-gray-500"
+            className="flex h-full items-center justify-center text-center text-[12px] text-text-muted"
           >
             {topics.length === 0
               ? isPrimary
@@ -329,28 +329,28 @@ export function FrequencyChartCard({
         )}
       </div>
 
-      <div className="flex flex-wrap gap-4 border-t border-gray-100 px-[18px] py-2.5 text-xs text-gray-500">
+      <div className="flex flex-wrap gap-4 border-t border-border px-[18px] py-2.5 text-xs text-text-muted">
         {topics.length > 1 && primaryTopic && (
           <span>
             primary{' '}
-            <span className="font-mono font-semibold text-gray-900">{labelFor(primaryTopic)}</span>
+            <span className="font-mono font-semibold text-text-primary">{labelFor(primaryTopic)}</span>
           </span>
         )}
         <span>
-          current <span className="font-mono font-semibold text-amber-700">{current}</span>
+          current <span className="font-mono font-semibold text-status-warning-text">{current}</span>
         </span>
         {metric.hzLike && (
           <>
             <span>
-              expected <span className="font-mono font-semibold text-gray-900">{expectedText}</span>
+              expected <span className="font-mono font-semibold text-text-primary">{expectedText}</span>
             </span>
             <span>
-              warn below <span className="font-mono font-semibold text-gray-900">{warnBelow}</span>
+              warn below <span className="font-mono font-semibold text-text-primary">{warnBelow}</span>
             </span>
           </>
         )}
         <div className="flex-1" />
-        <span className="text-gray-500">
+        <span className="text-text-muted">
           REC markers are real · observed shortfall — no confirmed loss
         </span>
       </div>

@@ -18,7 +18,7 @@ export function AdviceCard({ machine }: { machine: BatchMachine }) {
       )}
     >
       <div className="flex items-center gap-2">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           General tip · static guidance
         </h2>
         <div className="flex-1" />
@@ -32,35 +32,35 @@ export function AdviceCard({ machine }: { machine: BatchMachine }) {
               type="button"
               onClick={machine.advicePrev}
               aria-label="previous advice"
-              className="flex h-[22px] w-[22px] items-center justify-center rounded-chip border border-gray-200 bg-white text-[11px] text-gray-500"
+              className="flex h-[22px] w-[22px] items-center justify-center rounded-chip border border-border bg-surface text-[11px] text-text-muted"
             >
               ‹
             </button>
-            <span className="font-mono text-[11px] text-gray-500">
+            <span className="font-mono text-[11px] text-text-muted">
               {machine.adviceIdx + 1} / {ADVICE_ITEMS.length}
             </span>
             <button
               type="button"
               onClick={machine.adviceNext}
               aria-label="next advice"
-              className="flex h-[22px] w-[22px] items-center justify-center rounded-chip border border-gray-200 bg-white text-[11px] text-gray-500"
+              className="flex h-[22px] w-[22px] items-center justify-center rounded-chip border border-border bg-surface text-[11px] text-text-muted"
             >
               ›
             </button>
           </>
         )}
       </div>
-      <div className="flex flex-col gap-1 rounded-control border border-teal-200 bg-teal-50 px-3 py-2.5 [@media(max-height:860px)]:py-1.5">
+      <div className="flex flex-col gap-1 rounded-control border border-accent bg-interaction-selected px-3 py-2.5 [@media(max-height:860px)]:py-1.5">
         <div className="flex items-center gap-2">
-          <span className="rounded-chip bg-teal-100 px-2 py-0.5 text-[10.5px] font-bold text-teal-700">
+          <span className="rounded-chip bg-interaction-selected px-2 py-0.5 text-[10.5px] font-bold text-accent">
             {advice.badge}
           </span>
-          <span className="text-[12.5px] font-semibold text-teal-950">
+          <span className="text-[12.5px] font-semibold text-accent-strong">
             {advice.title}
           </span>
         </div>
         {/* Full advice at roomy heights; clamped to keep the card short on laptops. */}
-        <span className="text-xs leading-relaxed text-teal-700 [@media(max-height:860px)]:line-clamp-2">
+        <span className="text-xs leading-relaxed text-accent [@media(max-height:860px)]:line-clamp-2">
           {advice.detail}
         </span>
       </div>

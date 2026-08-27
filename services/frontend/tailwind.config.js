@@ -48,18 +48,21 @@ export default {
             border: 'rgb(var(--color-status-success-border) / <alpha-value>)',
             text: 'rgb(var(--color-status-success-text) / <alpha-value>)',
             accent: 'rgb(var(--color-status-success-accent) / <alpha-value>)',
+            contrast: 'rgb(var(--color-status-success-contrast) / <alpha-value>)',
           },
           warning: {
             bg: 'rgb(var(--color-status-warning-bg) / <alpha-value>)',
             border: 'rgb(var(--color-status-warning-border) / <alpha-value>)',
             text: 'rgb(var(--color-status-warning-text) / <alpha-value>)',
             accent: 'rgb(var(--color-status-warning-accent) / <alpha-value>)',
+            contrast: 'rgb(var(--color-status-warning-contrast) / <alpha-value>)',
           },
           danger: {
             bg: 'rgb(var(--color-status-danger-bg) / <alpha-value>)',
             border: 'rgb(var(--color-status-danger-border) / <alpha-value>)',
             text: 'rgb(var(--color-status-danger-text) / <alpha-value>)',
             accent: 'rgb(var(--color-status-danger-accent) / <alpha-value>)',
+            contrast: 'rgb(var(--color-status-danger-contrast) / <alpha-value>)',
           },
           info: {
             bg: 'rgb(var(--color-status-info-bg) / <alpha-value>)',

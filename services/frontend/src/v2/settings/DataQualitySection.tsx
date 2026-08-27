@@ -32,7 +32,7 @@ function pct(fraction: number | undefined, fallback: number): string {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-2">
-      <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">{title}</h3>
+      <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">{title}</h3>
       {children}
     </div>
   );
@@ -68,11 +68,11 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
     <div className="flex min-w-0 flex-col gap-2.5 overflow-auto lg:col-span-2 lg:min-h-0" data-testid="settings-data-quality">
       <Card className="flex min-w-0 flex-col gap-5 p-[18px]">
       <div className="flex items-center gap-2.5">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Data quality
         </h2>
-        <span className="font-mono text-[13px] font-semibold text-gray-900">{robot}</span>
-        <span className="text-[11px] text-gray-500">read-only</span>
+        <span className="font-mono text-[13px] font-semibold text-text-primary">{robot}</span>
+        <span className="text-[11px] text-text-muted">read-only</span>
       </div>
 
       {optionsQuery.isError ? (
@@ -83,21 +83,21 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
         <>
           <Section title="Expected rates (monitor reference)">
             {patterns.length === 0 ? (
-              <p className="text-[12.5px] text-gray-500">
+              <p className="text-[12.5px] text-text-muted">
                 No expected-Hz patterns configured — topics without a reference rate learn a
                 baseline after subscribe (status stays &quot;unknown&quot; while learning).
               </p>
             ) : (
-              <div className="overflow-hidden rounded-control border border-gray-200" data-testid="dq-expected-hz">
+              <div className="overflow-hidden rounded-control border border-border" data-testid="dq-expected-hz">
                 {patterns.map((p) => (
                   <div
                     key={p.pattern}
-                    className="flex items-center gap-2 border-b border-gray-50 px-3 py-1.5 text-[12px] last:border-b-0"
+                    className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-[12px] last:border-b-0"
                   >
-                    <span className="min-w-0 flex-1 truncate font-mono text-gray-800" title={p.pattern}>
+                    <span className="min-w-0 flex-1 truncate font-mono text-text-primary" title={p.pattern}>
                       {p.pattern}
                     </span>
-                    <span className="font-mono text-gray-600">
+                    <span className="font-mono text-text-secondary">
                       {p.hz != null ? `${p.hz} Hz` : 'learn baseline'}
                     </span>
                   </div>
@@ -107,11 +107,11 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
           </Section>
 
           <Section title="Health thresholds">
-            <p className="text-[12.5px] leading-relaxed text-gray-600" data-testid="dq-thresholds">
-              A measured topic is flagged <strong className="text-amber-700">warning</strong> when its
+            <p className="text-[12.5px] leading-relaxed text-text-secondary" data-testid="dq-thresholds">
+              A measured topic is flagged <strong className="text-status-warning-text">warning</strong> when its
               rate falls <strong>{pct(warn, 0.02)}</strong> below the expected/learned rate, and{' '}
-              <strong className="text-red-700">danger</strong> at <strong>{pct(danger, 0.05)}</strong>{' '}
-              below. A configured topic that goes fully silent is <strong className="text-red-700">
+              <strong className="text-status-danger-text">danger</strong> at <strong>{pct(danger, 0.05)}</strong>{' '}
+              below. A configured topic that goes fully silent is <strong className="text-status-danger-text">
               danger (inactive)</strong>. These are the monitor&apos;s live status colours in the
               Monitor tab — observed shortfall, not true message loss.
             </p>
@@ -119,18 +119,18 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
 
           <Section title={`Validation — required topics (${requiredTopics.length})`}>
             {requiredTopics.length === 0 ? (
-              <p className="text-[12.5px] text-gray-500">
+              <p className="text-[12.5px] text-text-muted">
                 The active validation template lists no required topics.
               </p>
             ) : (
-              <ul className="max-h-64 overflow-auto rounded-control border border-gray-200 text-[12px]" data-testid="dq-required-topics">
+              <ul className="max-h-64 overflow-auto rounded-control border border-border text-[12px]" data-testid="dq-required-topics">
                 {requiredTopics.map((t) => (
                   <li
                     key={t.name}
-                    className="flex justify-between gap-2 border-b border-gray-50 px-3 py-1.5 last:border-b-0"
+                    className="flex justify-between gap-2 border-b border-border px-3 py-1.5 last:border-b-0"
                   >
-                    <span className="font-mono text-gray-800">{t.name}</span>
-                    <span className="font-mono text-gray-500">{t.type ?? 'any type'}</span>
+                    <span className="font-mono text-text-primary">{t.name}</span>
+                    <span className="font-mono text-text-muted">{t.type ?? 'any type'}</span>
                   </li>
                 ))}
               </ul>

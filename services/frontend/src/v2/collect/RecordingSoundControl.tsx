@@ -92,10 +92,10 @@ export function RecordingSoundControl({
         className={cn(
           'inline-flex h-8 w-8 items-center justify-center rounded-control border transition-colors',
           blocked
-            ? 'border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100'
+            ? 'border-status-warning-border bg-status-warning-bg text-status-warning-text hover:bg-status-warning-bg'
             : settings.enabled && !unavailable
-              ? 'border-teal-200 bg-teal-50 text-teal-700 hover:bg-teal-100'
-              : 'border-gray-200 bg-white text-gray-500 hover:bg-gray-50',
+              ? 'border-accent bg-interaction-selected text-accent hover:bg-interaction-selected'
+              : 'border-border bg-surface text-text-muted hover:bg-surface-muted',
         )}
       >
         <SpeakerIcon enabled={settings.enabled && !blocked && !unavailable} />
@@ -112,14 +112,14 @@ export function RecordingSoundControl({
             restoreFocusRef.current = true;
             onToggle();
           }}
-          className="absolute right-0 top-full z-50 mt-1.5 flex w-72 flex-col gap-3 rounded-card border border-gray-200 bg-white p-3.5 shadow-float"
+          className="absolute right-0 top-full z-50 mt-1.5 flex w-72 flex-col gap-3 rounded-card border border-border bg-surface p-3.5 shadow-float"
         >
           <div className="flex items-start justify-between gap-3">
             <div>
-              <div className="text-[13px] font-bold text-gray-900">
+              <div className="text-[13px] font-bold text-text-primary">
                 Recording sounds
               </div>
-              <div className="mt-0.5 text-[11px] leading-relaxed text-gray-500">
+              <div className="mt-0.5 text-[11px] leading-relaxed text-text-muted">
                 Browser-local and optional. Visual status remains authoritative.
               </div>
             </div>
@@ -133,12 +133,12 @@ export function RecordingSoundControl({
                 onClick={() => settings.setEnabled(!settings.enabled)}
                 className={cn(
                   'relative mt-0.5 h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50',
-                  settings.enabled ? 'bg-teal-600' : 'bg-gray-300',
+                  settings.enabled ? 'bg-accent' : 'bg-surface-muted',
                 )}
               >
                 <span
                   className={cn(
-                    'absolute top-0.5 h-5 w-5 rounded-full bg-white shadow-sm transition-transform',
+                    'absolute top-0.5 h-5 w-5 rounded-full bg-surface shadow-sm transition-transform',
                     settings.enabled ? 'translate-x-5' : 'translate-x-0.5',
                   )}
                 />
@@ -158,14 +158,14 @@ export function RecordingSoundControl({
                   onToggle();
                 }}
                 aria-label="Close recording sound settings"
-                className="rounded-control px-1.5 py-0.5 text-sm text-gray-500 hover:bg-gray-100"
+                className="rounded-control px-1.5 py-0.5 text-sm text-text-muted hover:bg-surface-muted"
               >
                 ×
               </button>
             </div>
           </div>
 
-          <label className="flex flex-col gap-1 text-[11px] font-semibold text-gray-600">
+          <label className="flex flex-col gap-1 text-[11px] font-semibold text-text-secondary">
             Volume · {Math.round(settings.volume * 100)}%
             <input
               type="range"
@@ -175,12 +175,12 @@ export function RecordingSoundControl({
               value={settings.volume}
               disabled={!settings.enabled}
               onChange={(event) => settings.setVolume(Number(event.target.value))}
-              className="accent-teal-700 disabled:opacity-40"
+              className="accent-accent disabled:opacity-40"
             />
           </label>
 
           <div>
-            <div className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-gray-500">
+            <div className="mb-1.5 text-[10.5px] font-semibold uppercase tracking-[0.06em] text-text-muted">
               Test cues
             </div>
             <div className="grid grid-cols-3 gap-1.5">
@@ -192,7 +192,7 @@ export function RecordingSoundControl({
                     !settings.enabled || settings.playbackState === 'unsupported'
                   }
                   onClick={() => settings.preview(kind)}
-                  className="rounded-chip border border-gray-200 px-2 py-1.5 text-[11px] font-semibold text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="rounded-chip border border-border px-2 py-1.5 text-[11px] font-semibold text-text-primary hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {label}
                 </button>
@@ -207,13 +207,13 @@ export function RecordingSoundControl({
               'text-[11px] leading-relaxed',
               settings.playbackState === 'blocked' ||
                 settings.playbackState === 'unsupported'
-                ? 'font-medium text-amber-700'
-                : 'text-gray-500',
+                ? 'font-medium text-status-warning-text'
+                : 'text-text-muted',
             )}
           >
             {status}
           </p>
-          <p className="border-t border-gray-100 pt-2 text-[10.5px] leading-relaxed text-gray-500">
+          <p className="border-t border-border pt-2 text-[10.5px] leading-relaxed text-text-muted">
             Start = live recording confirmed. End = recording finalized, not a data
             quality result. Warning = check the persistent alert and recovery action.
           </p>

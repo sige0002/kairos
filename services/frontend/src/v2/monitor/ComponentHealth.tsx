@@ -48,7 +48,7 @@ function monitorChip(b: MonitorBridge): Chip {
 function HealthRow({ label, chip, testId }: { label: string; chip: Chip; testId: string }) {
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="text-gray-600">{label}</span>
+      <span className="text-text-secondary">{label}</span>
       <div className="flex-1" />
       <span data-testid={testId}>
         <Badge tone={chip.tone} dot>
@@ -71,7 +71,7 @@ export function ComponentHealth() {
         testId="health-orchestrator"
       />
       <HealthRow label="Monitor" chip={monitorChip(bridge)} testId="health-monitor" />
-      <p className="text-[11.5px] leading-relaxed text-gray-500">
+      <p className="text-[11.5px] leading-relaxed text-text-muted">
         Orchestrator health is this browser&apos;s live event stream (SSE); monitor health is
         the orchestrator&#8202;→&#8202;monitor bridge. Per-container recorder / streamer
         readiness is checked server-side by the orchestrator&apos;s <code>/readyz</code>{' '}

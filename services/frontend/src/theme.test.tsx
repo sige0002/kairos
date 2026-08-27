@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
 import { act, render, screen } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 import {
   APPEARANCE_STORAGE_KEY,
@@ -63,6 +64,28 @@ function AppearanceProbe() {
       </button>
       <button type="button" onClick={() => setAppearance('system')}>
         system
+      </button>
+    </>
+  );
+}
+
+function ActiveSessionProbe() {
+  const { setAppearance } = useAppearance();
+  const [recording, setRecording] = useState(true);
+  const [note, setNote] = useState('keep this operator note');
+  return (
+    <>
+      <output data-testid="session-state">{recording ? 'recording' : 'stopped'}</output>
+      <input
+        aria-label="operator note"
+        value={note}
+        onChange={(event) => setNote(event.target.value)}
+      />
+      <button type="button" onClick={() => setRecording(false)}>
+        stop recording
+      </button>
+      <button type="button" onClick={() => setAppearance('dark')}>
+        switch appearance
       </button>
     </>
   );
@@ -167,4 +190,20 @@ test('shared primitives keep semantic roles in both resolved themes', () => {
   expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
   expect(container.querySelector('.bg-surface')).toBeInTheDocument();
   expect(container.querySelector('.bg-status-success-bg')).toBeInTheDocument();
+});
+
+test('switching appearance preserves active frontend session state', () => {
+  installMatchMedia(false);
+  render(
+    <AppearanceProvider>
+      <ActiveSessionProbe />
+    </AppearanceProvider>,
+  );
+
+  act(() => screen.getByRole('button', { name: 'switch appearance' }).click());
+  expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+  expect(screen.getByTestId('session-state')).toHaveTextContent('recording');
+  expect(screen.getByRole('textbox', { name: 'operator note' })).toHaveValue(
+    'keep this operator note',
+  );
 });

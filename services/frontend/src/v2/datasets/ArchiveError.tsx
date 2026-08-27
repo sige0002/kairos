@@ -57,10 +57,10 @@ export function ArchiveError({
       {heldBy && (
         <p
           data-testid={`${testIdPrefix}-holder`}
-          className="text-[12px] leading-relaxed text-gray-600"
+          className="text-[12px] leading-relaxed text-text-secondary"
         >
           Held by dataset{' '}
-          <span className="font-semibold text-gray-800">
+          <span className="font-semibold text-text-primary">
             {holderName ? `${holderName} (${heldBy})` : heldBy}
           </span>
           .
@@ -69,7 +69,7 @@ export function ArchiveError({
       {reading.guidance && (
         <p
           data-testid={`${testIdPrefix}-guidance`}
-          className="text-[12px] leading-relaxed text-gray-600"
+          className="text-[12px] leading-relaxed text-text-secondary"
         >
           {reading.guidance}
         </p>

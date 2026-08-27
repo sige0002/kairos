@@ -16,7 +16,7 @@ import { schemaHasType } from '../../schema/jsonSchema';
 import type { ValidationOption } from '../../api/types';
 
 const FIELD_CLASS =
-  'rounded-control border border-gray-200 px-2 py-1.5 font-mono text-sm focus:border-teal-600 focus:outline-none';
+  'rounded-control border border-border px-2 py-1.5 font-mono text-sm focus:border-accent focus:outline-none';
 
 interface PipelineFormProps {
   schema: JSONSchema;
@@ -61,9 +61,9 @@ function Field({
   suggestions?: Record<string, string[]>;
 }) {
   const label = (
-    <span className="text-[11px] font-medium text-gray-500">
+    <span className="text-[11px] font-medium text-text-muted">
       {fieldLabel(name, child)}
-      {required && <span className="text-red-600"> *</span>}
+      {required && <span className="text-status-danger-text"> *</span>}
     </span>
   );
 
@@ -154,7 +154,7 @@ function Field({
           aria-label={name}
           checked={Boolean(value)}
           onChange={(e) => onChange(e.target.checked)}
-          className="h-4 w-4 rounded border-gray-300 text-teal-700 focus:ring-teal-500"
+          className="h-4 w-4 rounded border-border-strong text-accent focus:ring-focus"
         />
         {label}
       </label>
@@ -229,7 +229,7 @@ export function PipelineForm({
 
   const entries = Object.entries(properties);
   if (entries.length === 0) {
-    return <p className="text-[11px] text-gray-500">No parameters for this pipeline.</p>;
+    return <p className="text-[11px] text-text-muted">No parameters for this pipeline.</p>;
   }
   return (
     <>

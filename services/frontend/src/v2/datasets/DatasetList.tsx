@@ -39,11 +39,11 @@ const RESULT_FILTERS: { id: TaskResultFilter; label: string }[] = [
  *  availability · operators) — every segment computed from a real field. */
 function SummaryLine({ segments }: { segments: SummarySegment[] }) {
   return (
-    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10.5px] leading-tight text-gray-500">
+    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10.5px] leading-tight text-text-muted">
       {segments.map((s, i) => (
         <span key={i} title={s.title} className="whitespace-nowrap">
-          {i > 0 && <span className="mr-1.5 text-gray-300">·</span>}
-          <span className={cn(s.warn && 'font-semibold text-amber-700')}>{s.text}</span>
+          {i > 0 && <span className="mr-1.5 text-text-muted">·</span>}
+          <span className={cn(s.warn && 'font-semibold text-status-warning-text')}>{s.text}</span>
         </span>
       ))}
     </div>
@@ -70,10 +70,10 @@ function DatasetListRow({ row, state }: { row: DatasetRow; state: DatasetsState 
       }}
       className={cn(
         'flex cursor-pointer flex-col gap-[3px] rounded-[10px] border px-[11px] py-[9px]',
-        selected ? 'border-teal-200 bg-teal-50' : 'border-gray-100 hover:bg-gray-50',
+        selected ? 'border-accent bg-interaction-selected' : 'border-border hover:bg-surface-muted',
       )}
     >
-      <span className="flex items-center gap-1.5 truncate text-[12.5px] font-semibold text-gray-900">
+      <span className="flex items-center gap-1.5 truncate text-[12.5px] font-semibold text-text-primary">
         <span className="truncate">{dataset.name}</span>
         {/* The terminal states are part of the row's identity: an archived
             dataset's bytes are elsewhere, and hiding that behind a click is
@@ -87,7 +87,7 @@ function DatasetListRow({ row, state }: { row: DatasetRow; state: DatasetsState 
         )}
       </span>
       {subtitle && (
-        <span className="truncate text-[10.5px] text-gray-500">{subtitle}</span>
+        <span className="truncate text-[10.5px] text-text-muted">{subtitle}</span>
       )}
       <SummaryLine segments={datasetSummarySegments(row)} />
     </div>
@@ -130,7 +130,7 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
         e.stopPropagation();
         onDismiss();
       }}
-      className="flex flex-col gap-1.5 border-b border-gray-100 bg-gray-50 px-3 py-2.5"
+      className="flex flex-col gap-1.5 border-b border-border bg-surface-muted px-3 py-2.5"
     >
       <input
         data-testid="new-dataset-name"
@@ -140,7 +140,7 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
         placeholder="Dataset name"
         maxLength={200}
         autoFocus
-        className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-500"
+        className="w-full rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12.5px] text-text-primary placeholder:text-text-muted"
       />
       <div className="flex gap-1.5">
         <input
@@ -149,7 +149,7 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
           onChange={(e) => state.setNewOperator(e.target.value)}
           aria-label="Operator (optional)"
           placeholder="Operator (optional)"
-          className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-500"
+          className="min-w-0 flex-1 rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12px] text-text-primary placeholder:text-text-muted"
         />
         <input
           data-testid="new-dataset-task"
@@ -157,10 +157,10 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
           onChange={(e) => state.setNewTask(e.target.value)}
           aria-label="Task (optional)"
           placeholder="Task (optional)"
-          className="min-w-0 flex-1 rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700 placeholder:text-gray-500"
+          className="min-w-0 flex-1 rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12px] text-text-primary placeholder:text-text-muted"
         />
       </div>
-      <p className="text-[10.5px] leading-relaxed text-gray-500">
+      <p className="text-[10.5px] leading-relaxed text-text-muted">
         A dataset is a named set of recordings. Creating one writes nothing under
         objects/ and moves no recording; the browsable views/ tree is regenerated
         by the server.
@@ -171,7 +171,7 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
           type="submit"
           data-testid="new-dataset-submit"
           disabled={state.newName.trim() === '' || state.creating}
-          className="rounded-chip bg-teal-700 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-800 disabled:opacity-40"
+          className="rounded-chip bg-accent px-[11px] py-[5px] text-xs font-bold text-text-inverse hover:bg-accent-strong disabled:opacity-40"
         >
           {state.creating ? 'Creating…' : 'Create'}
         </button>
@@ -180,7 +180,7 @@ function CreateForm({ state, onDismiss }: { state: DatasetsState; onDismiss: () 
           data-testid="new-dataset-cancel"
           onClick={onDismiss}
           disabled={state.creating}
-          className="rounded-chip border border-gray-200 px-[11px] py-[5px] text-xs font-semibold text-gray-600 hover:bg-white disabled:opacity-40"
+          className="rounded-chip border border-border px-[11px] py-[5px] text-xs font-semibold text-text-secondary hover:bg-surface disabled:opacity-40"
         >
           Cancel
         </button>
@@ -204,9 +204,9 @@ export function DatasetList({ state }: { state: DatasetsState }) {
   };
 
   return (
-    <div className="flex min-h-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
-      <div className="flex shrink-0 items-center gap-2.5 border-b border-gray-100 px-4 py-[13px]">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+    <div className="flex min-h-0 flex-col overflow-hidden rounded-card border border-border bg-surface shadow-card">
+      <div className="flex shrink-0 items-center gap-2.5 border-b border-border px-4 py-[13px]">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Datasets
         </h2>
         <div className="flex-1" />
@@ -215,7 +215,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           data-testid="combine-datasets-btn"
           onClick={state.openCombine}
           title="Build a new dataset from existing ones. The sources are not touched."
-          className="rounded-chip border border-gray-200 px-[11px] py-[5px] text-xs font-semibold text-gray-600 hover:bg-gray-50"
+          className="rounded-chip border border-border px-[11px] py-[5px] text-xs font-semibold text-text-secondary hover:bg-surface-muted"
         >
           ⧉ Combine
         </button>
@@ -224,7 +224,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           type="button"
           data-testid="new-dataset-btn"
           onClick={state.openCreate}
-          className="rounded-chip bg-teal-700 px-[11px] py-[5px] text-xs font-bold text-white hover:bg-teal-800"
+          className="rounded-chip bg-accent px-[11px] py-[5px] text-xs font-bold text-text-inverse hover:bg-accent-strong"
         >
           + New
         </button>
@@ -233,7 +233,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
       {state.createOpen && <CreateForm state={state} onDismiss={dismissCreate} />}
 
       {/* Toolbar: search, member facets + sort, operator, then the counter. */}
-      <div className="flex shrink-0 flex-col gap-2 border-b border-gray-100 px-3 py-2.5">
+      <div className="flex shrink-0 flex-col gap-2 border-b border-border px-3 py-2.5">
         <input
           type="search"
           data-testid="dataset-search"
@@ -241,7 +241,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           onChange={(e) => state.setSearch(e.target.value)}
           aria-label="Search datasets"
           placeholder="Search dataset, operator, task…"
-          className="w-full rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700 placeholder:text-gray-500"
+          className="w-full rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12.5px] text-text-primary placeholder:text-text-muted"
         />
 
         <div className="flex items-center gap-1.5">
@@ -256,8 +256,8 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                 className={cn(
                   'rounded-chip px-2 py-0.5 text-[11px] font-semibold',
                   state.taskResultFilter === f.id
-                    ? 'bg-teal-700 text-white'
-                    : 'bg-gray-100 text-gray-600 hover:bg-gray-200',
+                    ? 'bg-accent text-text-inverse'
+                    : 'bg-surface-muted text-text-secondary hover:bg-surface-muted',
                 )}
               >
                 {f.label}
@@ -274,7 +274,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
                 ? 'Sorted by most recently created — switch to A–Z'
                 : 'Sorted A–Z — switch to most recently created'
             }
-            className="flex items-center gap-1 rounded-chip border border-gray-200 px-2 py-0.5 text-[11px] font-semibold text-gray-600 hover:bg-gray-50"
+            className="flex items-center gap-1 rounded-chip border border-border px-2 py-0.5 text-[11px] font-semibold text-text-secondary hover:bg-surface-muted"
           >
             <span aria-hidden>⇅</span>
             {state.sort === 'recent' ? 'Recent' : 'A–Z'}
@@ -287,7 +287,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
             aria-label="Filter datasets by operator"
             value={state.operatorFilter}
             onChange={(e) => state.setOperatorFilter(e.target.value)}
-            className="w-full rounded-control border border-gray-200 bg-white px-2 py-1 text-[12px] text-gray-600"
+            className="w-full rounded-control border border-border bg-surface px-2 py-1 text-[12px] text-text-secondary"
           >
             <option value={ANY_OPERATOR}>Any operator</option>
             {state.operatorOptions.map((op) => (
@@ -298,7 +298,7 @@ export function DatasetList({ state }: { state: DatasetsState }) {
           </select>
         )}
 
-        <span data-testid="dataset-count" className="text-[11px] text-gray-500">
+        <span data-testid="dataset-count" className="text-[11px] text-text-muted">
           showing {state.shown} of {state.total}
         </span>
         <div className="flex items-center gap-1">
@@ -310,8 +310,8 @@ export function DatasetList({ state }: { state: DatasetsState }) {
             className={cn(
               'rounded-chip px-2 py-0.5 text-[11px] font-bold',
               state.datasetView === 'active'
-                ? 'bg-teal-700 text-white'
-                : 'border border-gray-200 text-gray-600 hover:bg-gray-50',
+                ? 'bg-accent text-text-inverse'
+                : 'border border-border text-text-secondary hover:bg-surface-muted',
             )}
           >
             Active ({state.activeDatasetCount})
@@ -325,8 +325,8 @@ export function DatasetList({ state }: { state: DatasetsState }) {
             className={cn(
               'rounded-chip px-2 py-0.5 text-[11px] font-bold',
               state.datasetView === 'archived'
-                ? 'bg-gray-600 text-white'
-                : 'border border-gray-200 text-gray-600 hover:bg-gray-50',
+                ? 'bg-text-secondary text-text-inverse'
+                : 'border border-border text-text-secondary hover:bg-surface-muted',
             )}
           >
             Archived ({state.archivedDatasetCount})
@@ -335,30 +335,30 @@ export function DatasetList({ state }: { state: DatasetsState }) {
       </div>
 
       {state.isLoading ? (
-        <div className="px-4 py-6 text-sm text-gray-500">Loading datasets…</div>
+        <div className="px-4 py-6 text-sm text-text-muted">Loading datasets…</div>
       ) : (
         <div data-testid="dataset-list-scroll" className="min-h-0 flex-1 overflow-y-auto p-2.5">
           {!hasAny ? (
             <div data-testid="dataset-list-empty" className="flex flex-col gap-1 px-1.5 py-4">
               {searchActive && state.total > 0 ? (
                 <>
-                  <span className="text-sm text-gray-500">No datasets match.</span>
-                  <span className="text-xs leading-relaxed text-gray-500">
+                  <span className="text-sm text-text-muted">No datasets match.</span>
+                  <span className="text-xs leading-relaxed text-text-muted">
                     {state.total} dataset(s) are hidden by the search — clear it to see
                     them.
                   </span>
                 </>
               ) : (
                 <>
-                  <span className="text-sm text-gray-500">No datasets yet.</span>
-                  <span className="text-xs leading-relaxed text-gray-500">
+                  <span className="text-sm text-text-muted">No datasets yet.</span>
+                  <span className="text-xs leading-relaxed text-text-muted">
                     Create one with “+ New”, then add finished recordings to it from the
                     right-hand rail.
                   </span>
                 </>
               )}
               {state.isError && (
-                <span className="text-xs text-amber-700">
+                <span className="text-xs text-status-warning-text">
                   Couldn&apos;t reach the backend just now.
                 </span>
               )}

@@ -32,8 +32,8 @@ function ReasonChip({
       className={cn(
         'rounded-chip border px-3 py-1.5 text-xs font-semibold',
         active
-          ? 'border-teal-600 bg-teal-50 text-teal-700'
-          : 'border-gray-200 bg-white font-medium text-gray-500',
+          ? 'border-accent bg-interaction-selected text-accent'
+          : 'border-border bg-surface font-medium text-text-muted',
       )}
     >
       {children}
@@ -69,31 +69,31 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
       }
     >
       <div className="grid grid-cols-3 gap-2">
-        <div className="rounded-control border border-gray-100 px-3 py-2.5">
-          <div className="font-mono text-lg font-semibold text-gray-900">
+        <div className="rounded-control border border-border px-3 py-2.5">
+          <div className="font-mono text-lg font-semibold text-text-primary">
             {stats.nRecorded}
           </div>
-          <div className="text-[11px] text-gray-500">recorded</div>
+          <div className="text-[11px] text-text-muted">recorded</div>
         </div>
-        <div className="rounded-control border border-gray-100 px-3 py-2.5">
-          <div className="font-mono text-lg font-semibold text-gray-500">
+        <div className="rounded-control border border-border px-3 py-2.5">
+          <div className="font-mono text-lg font-semibold text-text-muted">
             {stats.nRemaining}
           </div>
-          <div className="text-[11px] text-gray-500">not recorded</div>
+          <div className="text-[11px] text-text-muted">not recorded</div>
         </div>
-        <div className="rounded-control border border-gray-100 px-3 py-2.5">
-          <div className="font-mono text-lg font-semibold text-amber-700">
+        <div className="rounded-control border border-border px-3 py-2.5">
+          <div className="font-mono text-lg font-semibold text-status-warning-text">
             {stats.nReview}
           </div>
-          <div className="text-[11px] text-gray-500">needs review</div>
+          <div className="text-[11px] text-text-muted">needs review</div>
         </div>
       </div>
-      <p className="mt-3 text-[12.5px] leading-relaxed text-gray-500">
+      <p className="mt-3 text-[12.5px] leading-relaxed text-text-muted">
         Recorded episodes are kept and stay visible in Review. This set will be marked{' '}
-        <strong className="text-gray-700">Incomplete</strong>.
+        <strong className="text-text-primary">Incomplete</strong>.
       </p>
       <div className="mt-3 flex flex-col gap-1.5">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Reason (required)
         </span>
         <div className="flex flex-wrap gap-1.5">
@@ -134,25 +134,25 @@ function ResetBatchModal({ machine }: { machine: BatchMachine }) {
       }
     >
       {empty ? (
-        <p className="text-[12.5px] leading-relaxed text-gray-600">
+        <p className="text-[12.5px] leading-relaxed text-text-secondary">
           Nothing has been recorded in this batch yet, so this just clears local state —
           no batch is created or closed, and the batch number is unchanged.
         </p>
       ) : (
         <>
-          <p className="text-[12.5px] leading-relaxed text-gray-600">
+          <p className="text-[12.5px] leading-relaxed text-text-secondary">
             This closes the current set. The counter returns to{' '}
-            <span className="font-mono text-gray-800">
+            <span className="font-mono text-text-primary">
               0 / {machine.targetEpisodes}
             </span>
             ; the next set number is assigned when you start your next recording.
           </p>
-          <p className="mt-2 text-[12.5px] leading-relaxed text-gray-600">
+          <p className="mt-2 text-[12.5px] leading-relaxed text-text-secondary">
             The{' '}
-            <strong className="text-gray-700">
+            <strong className="text-text-primary">
               {machine.stats.nRecorded} recording(s)
             </strong>{' '}
-            already taken are <strong className="text-gray-700">not deleted</strong> —
+            already taken are <strong className="text-text-primary">not deleted</strong> —
             they stay in Review.
           </p>
         </>
@@ -205,15 +205,15 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
               className={cn(
                 'rounded-control border px-3.5 py-2.5 text-left text-sm',
                 c.name === machine.condition
-                  ? 'border-teal-600 bg-teal-50 font-semibold text-teal-700'
-                  : 'border-gray-200 bg-white font-medium text-gray-700',
+                  ? 'border-accent bg-interaction-selected font-semibold text-accent'
+                  : 'border-border bg-surface font-medium text-text-primary',
               )}
             >
               {c.name}
             </button>
           ))
         ) : (
-          <p className="rounded-control border border-gray-100 bg-gray-50 px-3.5 py-2.5 text-sm text-gray-500">
+          <p className="rounded-control border border-border bg-surface-muted px-3.5 py-2.5 text-sm text-text-muted">
             This project or task is no longer in the catalog. Choose a project/task or
             add a custom condition.
           </p>
@@ -232,7 +232,7 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
           }}
           placeholder="Custom condition…"
           data-testid="custom-condition-input"
-          className="min-w-0 flex-1 rounded-control border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:border-teal-600 focus:outline-none"
+          className="min-w-0 flex-1 rounded-control border border-border px-3 py-2.5 text-sm text-text-primary focus:border-accent focus:outline-none"
         />
         <Button
           data-testid="custom-condition-add"
@@ -273,11 +273,11 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
         </>
       }
     >
-      <p className="mb-3 text-[12.5px] leading-relaxed text-gray-600">
+      <p className="mb-3 text-[12.5px] leading-relaxed text-text-secondary">
         Planned episodes for this batch (currently{' '}
-        <span className="font-mono text-gray-800">{machine.targetEpisodes}</span>,
+        <span className="font-mono text-text-primary">{machine.targetEpisodes}</span>,
         recorded{' '}
-        <span className="font-mono text-gray-800">{machine.stats.nRecorded}</span>).
+        <span className="font-mono text-text-primary">{machine.stats.nRecorded}</span>).
         Applies to the current set and is inherited by the next one.
       </p>
       <input
@@ -289,10 +289,10 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
         placeholder={String(machine.targetEpisodes)}
         data-testid="target-input"
         autoFocus
-        className="w-full rounded-control border border-gray-200 px-3 py-2.5 font-mono text-sm text-gray-700 focus:border-teal-600 focus:outline-none"
+        className="w-full rounded-control border border-border px-3 py-2.5 font-mono text-sm text-text-primary focus:border-accent focus:outline-none"
       />
       {completesNow && (
-        <p className="mt-2 text-[12px] leading-relaxed text-amber-700">
+        <p className="mt-2 text-[12px] leading-relaxed text-status-warning-text">
           {machine.stats.nRecorded} episode(s) are already recorded, so this target
           marks the batch complete immediately.
         </p>
@@ -342,15 +342,15 @@ function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
       }
     >
       {machine.takeoverResumedOwn ? (
-        <p className="text-[12.5px] leading-relaxed text-gray-600">
+        <p className="text-[12.5px] leading-relaxed text-text-secondary">
           Stop the recording that&apos;s still running? {size} captured so far will be
           saved to Review.
         </p>
       ) : (
-        <p className="text-[12.5px] leading-relaxed text-gray-600">
+        <p className="text-[12.5px] leading-relaxed text-text-secondary">
           This recording was started from another session (operator{' '}
-          <strong className="text-gray-700">{t?.operator || '—'}</strong> · running{' '}
-          <span className="font-mono text-gray-800">
+          <strong className="text-text-primary">{t?.operator || '—'}</strong> · running{' '}
+          <span className="font-mono text-text-primary">
             {formatElapsedClock(t?.startedAt ?? null)}
           </span>{' '}
           · {size}). Stopping it saves what&apos;s captured so far — it will appear in
@@ -409,26 +409,26 @@ function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
       <div className="flex flex-col gap-1.5">
         {rows.map(([key, desc]) => (
           <div key={key} className="flex items-center gap-3">
-            <kbd className="rounded-control border border-gray-200 bg-gray-50 px-2 py-0.5 font-mono text-[12px] text-gray-700">
+            <kbd className="rounded-control border border-border bg-surface-muted px-2 py-0.5 font-mono text-[12px] text-text-primary">
               {key}
             </kbd>
-            <span className="text-[12.5px] text-gray-600">{desc}</span>
+            <span className="text-[12.5px] text-text-secondary">{desc}</span>
           </div>
         ))}
       </div>
-      <div className="mt-3 border-t border-gray-100 pt-3">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <div className="mt-3 border-t border-border pt-3">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           External actions (hands-busy / foot pedal)
         </span>
-        <div className="mt-2 overflow-hidden rounded-control border border-gray-200">
+        <div className="mt-2 overflow-hidden rounded-control border border-border">
           {stateRows.map((row, i) => (
             <div
               key={row[0]}
               className={cn(
                 'grid grid-cols-[1.3fr_1fr_1fr_1fr] gap-2 px-3 py-1.5 text-[11.5px]',
                 i === 0
-                  ? 'bg-gray-50 font-semibold text-gray-500'
-                  : 'border-t border-gray-100 text-gray-700',
+                  ? 'bg-surface-muted font-semibold text-text-muted'
+                  : 'border-t border-border text-text-primary',
               )}
             >
               {row.map((cell, cellIndex) => (
@@ -439,7 +439,7 @@ function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
             </div>
           ))}
         </div>
-        <p className="mt-2 text-[11.5px] leading-[1.6] text-gray-500">
+        <p className="mt-2 text-[11.5px] leading-[1.6] text-text-muted">
           The “Reason N” slots are the current task&apos;s three failure shortcuts
           (Settings → Projects &amp; tasks); an unassigned slot saves nothing and
           explains why. Failure reasons are accepted only AFTER Failure has been

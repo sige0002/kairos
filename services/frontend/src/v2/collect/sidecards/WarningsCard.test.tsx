@@ -174,8 +174,8 @@ test('a firing alert and an open check render as two distinct sections', async (
   // the red alert styling, the check keeps the neutral one.
   expect(alerts).not.toContainElement(checks);
   expect(checks).not.toContainElement(alerts);
-  expect(alerts.className).toMatch(/red/);
-  expect(checks.className).not.toMatch(/red/);
+  expect(alerts.className).toContain('status-danger');
+  expect(checks.className).not.toContain('status-danger');
 
   expect(alerts).toHaveTextContent(/image_raw/);
   expect(within(checks).getByText('Storage')).toBeInTheDocument();

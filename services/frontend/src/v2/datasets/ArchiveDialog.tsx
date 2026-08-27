@@ -60,10 +60,10 @@ export function ArchiveDialog({ state }: { state: DatasetsState }) {
       }
     >
       <div data-testid="archive-dialog" className="flex flex-col gap-3">
-        <p className="text-[13px] leading-relaxed text-gray-600">
-          <span className="font-mono text-gray-800">{name}</span> is copied to the
+        <p className="text-[13px] leading-relaxed text-text-secondary">
+          <span className="font-mono text-text-primary">{name}</span> is copied to the
           destination and every file is verified (SHA-256) against the source.{' '}
-          <span className="font-semibold text-gray-800">
+          <span className="font-semibold text-text-primary">
             Only after it verifies is the copy here removed.
           </span>{' '}
           The catalog keeps the capture and records where it went. The copy runs
@@ -74,7 +74,7 @@ export function ArchiveDialog({ state }: { state: DatasetsState }) {
         {state.archiving && state.archiveProgress && (
           <p
             data-testid="archive-progress"
-            className="font-mono text-[12px] text-gray-600"
+            className="font-mono text-[12px] text-text-secondary"
           >
             Copying… {(state.archiveProgress.done / 1_000_000).toFixed(0)} MB
             {state.archiveProgress.total != null
@@ -84,7 +84,7 @@ export function ArchiveDialog({ state }: { state: DatasetsState }) {
         )}
 
         <label className="flex flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
             Archive root
           </span>
           {archiveRoots.length > 1 ? (
@@ -92,7 +92,7 @@ export function ArchiveDialog({ state }: { state: DatasetsState }) {
               data-testid="archive-root"
               value={state.archiveRoot}
               onChange={(e) => state.setArchiveRoot(e.target.value)}
-              className="rounded-control border border-gray-200 bg-white px-2 py-1.5 text-[12.5px] text-gray-700"
+              className="rounded-control border border-border bg-surface px-2 py-1.5 text-[12.5px] text-text-primary"
             >
               {archiveRoots.map((root) => (
                 <option key={root} value={root}>
@@ -103,7 +103,7 @@ export function ArchiveDialog({ state }: { state: DatasetsState }) {
           ) : (
             <span
               data-testid="archive-root"
-              className="rounded-control border border-gray-100 bg-gray-50 px-2 py-1.5 font-mono text-[12px] text-gray-600"
+              className="rounded-control border border-border bg-surface-muted px-2 py-1.5 font-mono text-[12px] text-text-secondary"
             >
               {state.archiveRoot}
             </span>
@@ -111,7 +111,7 @@ export function ArchiveDialog({ state }: { state: DatasetsState }) {
         </label>
 
         <label className="flex flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
             Path under the root
           </span>
           <input
@@ -119,27 +119,27 @@ export function ArchiveDialog({ state }: { state: DatasetsState }) {
             value={state.archiveSubpath}
             onChange={(e) => state.setArchiveSubpath(e.target.value)}
             spellCheck={false}
-            className="rounded-control border border-gray-200 bg-white px-2 py-1.5 font-mono text-[12px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2 py-1.5 font-mono text-[12px] text-text-primary"
           />
-          <span className="text-[11px] text-gray-500">
+          <span className="text-[11px] text-text-muted">
             Defaults to the operator / task the recording itself records, so an
             archive stays navigable by the same names the catalog uses.
           </span>
         </label>
 
-        <div className="flex flex-col gap-1 rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-2">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <div className="flex flex-col gap-1 rounded-[10px] border border-border bg-surface-muted px-3 py-2">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
             Destination
           </span>
           <span
             data-testid="archive-destination"
-            className="break-all font-mono text-[12px] text-gray-800"
+            className="break-all font-mono text-[12px] text-text-primary"
           >
             {archiveDestination || '—'}
           </span>
-          <span className="text-[11px] text-gray-500">
+          <span className="text-[11px] text-text-muted">
             Files are written to{' '}
-            <span data-testid="archive-final-path" className="break-all font-mono text-gray-700">
+            <span data-testid="archive-final-path" className="break-all font-mono text-text-primary">
               {archiveFinalPath || '—'}
             </span>{' '}
             — the capture id is appended by the server.
@@ -147,15 +147,15 @@ export function ArchiveDialog({ state }: { state: DatasetsState }) {
         </div>
 
         <label className="flex flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-            Reason <span className="font-normal normal-case text-gray-500">(optional)</span>
+          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+            Reason <span className="font-normal normal-case text-text-muted">(optional)</span>
           </span>
           <input
             data-testid="archive-reason"
             value={state.archiveReason}
             onChange={(e) => state.setArchiveReason(e.target.value)}
             placeholder="e.g. moved to the shared storage server"
-            className="rounded-control border border-gray-200 bg-white px-2 py-1.5 text-[12.5px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2 py-1.5 text-[12.5px] text-text-primary"
           />
         </label>
 

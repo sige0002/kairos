@@ -33,14 +33,14 @@ export function SetupCheckPanel() {
   return (
     <section
       data-testid="setup-check"
-      className="rounded-control border border-gray-200 bg-gray-50/60 p-3.5"
+      className="rounded-control border border-border bg-surface-muted/60 p-3.5"
     >
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-600">
+          <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-secondary">
             Setup check
           </h3>
-          <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-gray-500">
+          <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-text-muted">
             Read-only. Checks recorder preconditions, configured ROS topic coverage,
             monitor intake, and camera preview. It does not start a recording or change
             config.
@@ -66,7 +66,7 @@ export function SetupCheckPanel() {
 
         {report && (
           <div className="mt-3 flex flex-col gap-3" data-testid="setup-check-result">
-            <div className="flex flex-wrap items-center gap-2 text-[11.5px] text-gray-500">
+            <div className="flex flex-wrap items-center gap-2 text-[11.5px] text-text-muted">
               <Badge tone={tone(report.status)} dot>
                 {report.status}
               </Badge>
@@ -82,23 +82,23 @@ export function SetupCheckPanel() {
                 <li
                   key={item.id}
                   className={cn(
-                    'rounded-control border bg-white px-3 py-2',
+                    'rounded-control border bg-surface px-3 py-2',
                     item.status === 'blocker'
-                      ? 'border-red-200'
+                      ? 'border-status-danger-border'
                       : item.status === 'warning'
-                        ? 'border-amber-200'
-                        : 'border-gray-200',
+                        ? 'border-status-warning-border'
+                        : 'border-border',
                   )}
                 >
                   <div className="flex items-center gap-2">
-                    <span className="text-[12.5px] font-semibold text-gray-800">
+                    <span className="text-[12.5px] font-semibold text-text-primary">
                       {item.label}
                     </span>
                     <Badge tone={tone(item.status)}>{item.status}</Badge>
                   </div>
-                  <p className="mt-1 text-[11.5px] text-gray-600">{item.summary}</p>
+                  <p className="mt-1 text-[11.5px] text-text-secondary">{item.summary}</p>
                   {item.action && (
-                    <p className="mt-1 text-[11.5px] font-medium text-gray-700">
+                    <p className="mt-1 text-[11.5px] font-medium text-text-primary">
                       Next: {item.action}
                     </p>
                   )}
@@ -108,12 +108,12 @@ export function SetupCheckPanel() {
 
             {report.topics.length > 0 && (
               <div>
-                <h4 className="mb-1.5 text-[12px] font-semibold text-gray-700">
+                <h4 className="mb-1.5 text-[12px] font-semibold text-text-primary">
                   Configured topic coverage
                 </h4>
-                <div className="max-h-72 overflow-auto rounded-control border border-gray-200 bg-white">
+                <div className="max-h-72 overflow-auto rounded-control border border-border bg-surface">
                   <table className="w-full text-[11.5px]">
-                    <thead className="sticky top-0 bg-gray-50 text-[10px] uppercase tracking-[0.04em] text-gray-500">
+                    <thead className="sticky top-0 bg-surface-muted text-[10px] uppercase tracking-[0.04em] text-text-muted">
                       <tr>
                         <th className="px-2.5 py-2 text-left font-medium">Pattern</th>
                         <th className="px-2.5 py-2 text-left font-medium">Evidence</th>
@@ -126,34 +126,34 @@ export function SetupCheckPanel() {
                       {report.topics.map((topic) => (
                         <tr
                           key={topic.pattern}
-                          className="border-t border-gray-100 align-top"
+                          className="border-t border-border align-top"
                         >
                           <td className="px-2.5 py-2">
                             <div className="flex items-center gap-2">
-                              <span className="font-mono text-gray-800">
+                              <span className="font-mono text-text-primary">
                                 {topic.pattern}
                               </span>
                               <Badge tone={tone(topic.status)}>{topic.status}</Badge>
                             </div>
                             {topic.action && (
-                              <p className="mt-1 max-w-sm text-gray-600">
+                              <p className="mt-1 max-w-sm text-text-secondary">
                                 {topic.action}
                               </p>
                             )}
                           </td>
-                          <td className="px-2.5 py-2 text-gray-600">
+                          <td className="px-2.5 py-2 text-text-secondary">
                             {topic.receiving_topics.length > 0
                               ? topic.receiving_topics.map((name) => (
                                   <div
                                     key={name}
-                                    className="font-mono text-[11px] text-gray-700"
+                                    className="font-mono text-[11px] text-text-primary"
                                   >
                                     {name}
                                   </div>
                                 ))
                               : topic.summary}
                           </td>
-                          <td className="px-2.5 py-2 text-gray-500">
+                          <td className="px-2.5 py-2 text-text-muted">
                             {topic.matched_topics.length > 0
                               ? topic.matched_topics.map((name) => (
                                   <div key={name}>{qosLabel(topic, name)}</div>
@@ -165,7 +165,7 @@ export function SetupCheckPanel() {
                     </tbody>
                   </table>
                 </div>
-                <p className="mt-1.5 text-[11px] text-gray-500">
+                <p className="mt-1.5 text-[11px] text-text-muted">
                   “Received” means the monitor has observed at least one sample; it does
                   not prove payload validity.
                 </p>

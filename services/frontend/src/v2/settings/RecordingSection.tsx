@@ -51,8 +51,8 @@ function hasQosOverride(cfg: RecordingConfigView, topic: string): boolean {
 function SummaryField({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-[5px]">
-      <span className="text-xs font-semibold text-gray-700">{label}</span>
-      <div className="rounded-[9px] border border-gray-200 bg-white px-[11px] py-2 text-[13px] text-gray-900">
+      <span className="text-xs font-semibold text-text-primary">{label}</span>
+      <div className="rounded-[9px] border border-border bg-surface px-[11px] py-2 text-[13px] text-text-primary">
         {children}
       </div>
     </div>
@@ -75,11 +75,11 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
 
   return (
     <Card className="flex min-w-0 flex-col overflow-auto lg:col-span-2" data-testid="settings-recording">
-      <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-[13px]">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <div className="flex items-center gap-2.5 border-b border-border px-[18px] py-[13px]">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Recording
         </h2>
-        <span data-testid="recording-robot" className="font-mono text-[13px] font-semibold text-gray-900">
+        <span data-testid="recording-robot" className="font-mono text-[13px] font-semibold text-text-primary">
           {cfg?.robot_name ?? config?.defaults.robot_name ?? '—'}
         </span>
       </div>
@@ -89,9 +89,9 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
           <ErrorMessage error={recordingQuery.error} />
         </div>
       ) : recordingQuery.isPending ? (
-        <p className="p-[18px] text-sm text-gray-500">Loading recording config…</p>
+        <p className="p-[18px] text-sm text-text-muted">Loading recording config…</p>
       ) : !cfg ? (
-        <p className="p-[18px] text-sm text-gray-500">
+        <p className="p-[18px] text-sm text-text-muted">
           No recording config is loaded for the active robot.
         </p>
       ) : (
@@ -146,18 +146,18 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
 
           <div className="flex flex-col gap-2">
             <div className="flex items-center gap-2">
-              <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+              <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
                 Default topics
               </h3>
-              <span data-testid="recording-topic-count" className="font-mono text-[11.5px] text-gray-500">
+              <span data-testid="recording-topic-count" className="font-mono text-[11.5px] text-text-muted">
                 {topics.length} topic{topics.length === 1 ? '' : 's'}
               </span>
             </div>
             {topics.length === 0 ? (
-              <p className="text-[12.5px] text-gray-500">No default topics configured.</p>
+              <p className="text-[12.5px] text-text-muted">No default topics configured.</p>
             ) : (
-              <div className="overflow-hidden rounded-control border border-gray-200" data-testid="recording-topics">
-                <div className="flex items-center gap-2 border-b border-gray-100 bg-gray-50 px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+              <div className="overflow-hidden rounded-control border border-border" data-testid="recording-topics">
+                <div className="flex items-center gap-2 border-b border-border bg-surface-muted px-3 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.04em] text-text-muted">
                   <span className="flex-1">Topic</span>
                   <span className="w-24 text-right">Expected Hz</span>
                   <span className="w-20 text-right">QoS</span>
@@ -169,16 +169,16 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
                     <div
                       key={t}
                       data-testid={`recording-topic-${t}`}
-                      className="flex items-center gap-2 border-b border-gray-50 px-3 py-1.5 text-[12px] last:border-b-0"
+                      className="flex items-center gap-2 border-b border-border px-3 py-1.5 text-[12px] last:border-b-0"
                     >
-                      <span className="min-w-0 flex-1 truncate font-mono text-gray-800" title={t}>
+                      <span className="min-w-0 flex-1 truncate font-mono text-text-primary" title={t}>
                         {t}
                       </span>
-                      <span className="w-24 text-right font-mono text-gray-600">
+                      <span className="w-24 text-right font-mono text-text-secondary">
                         {hz != null ? `${hz} Hz` : '—'}
                       </span>
                       <span className="w-20 text-right">
-                        {qos ? <Badge tone="teal">custom</Badge> : <span className="text-gray-500">default</span>}
+                        {qos ? <Badge tone="teal">custom</Badge> : <span className="text-text-muted">default</span>}
                       </span>
                     </div>
                   );
@@ -187,29 +187,29 @@ export function RecordingSection({ config }: { config: RuntimeConfig | undefined
             )}
           </div>
 
-          <p className="text-[11.5px] leading-relaxed text-gray-500">
+          <p className="text-[11.5px] leading-relaxed text-text-muted">
             <code>default_topics</code> / <code>robot_name</code> apply immediately; expected Hz,
             QoS and the start gate load at service startup, so they apply on the next recorder
             restart.
           </p>
 
           {/* Advanced: the raw JSON editor (spec §12 — JSON is Advanced). */}
-          <div className="rounded-control border border-gray-200">
+          <div className="rounded-control border border-border">
             <button
               type="button"
               data-testid="recording-advanced-toggle"
               aria-expanded={advancedOpen}
               onClick={() => setAdvancedOpen((o) => !o)}
-              className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[12.5px] font-semibold text-gray-700 hover:bg-gray-50"
+              className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[12.5px] font-semibold text-text-primary hover:bg-surface-muted"
             >
-              <span className={cn('text-gray-500 transition-transform', advancedOpen && 'rotate-90')}>
+              <span className={cn('text-text-muted transition-transform', advancedOpen && 'rotate-90')}>
                 ▸
               </span>
               Advanced — edit raw JSON
-              {path && <span className="font-mono text-[11px] font-normal text-gray-500">{path}</span>}
+              {path && <span className="font-mono text-[11px] font-normal text-text-muted">{path}</span>}
             </button>
             {advancedOpen && config && (
-              <div className="border-t border-gray-100 p-3.5" data-testid="recording-advanced">
+              <div className="border-t border-border p-3.5" data-testid="recording-advanced">
                 <RecordingConfigEditor config={config} />
               </div>
             )}

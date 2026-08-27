@@ -173,26 +173,26 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
   const validationDetails = formatValidationDetails(saveMutation.error);
 
   if (recordingQuery.isError) return <ErrorMessage error={recordingQuery.error} />;
-  if (recordingQuery.isPending) return <p className="text-sm text-gray-500">Loading…</p>;
+  if (recordingQuery.isPending) return <p className="text-sm text-text-muted">Loading…</p>;
 
   return (
     <div>
       <dl className="mb-3 grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
-        <dt className="text-gray-500">Robot</dt>
-        <dd className="font-mono text-gray-800">{robot || '—'}</dd>
-        <dt className="text-gray-500">Default topics</dt>
-        <dd className="font-mono text-gray-800">{topics.length}</dd>
+        <dt className="text-text-muted">Robot</dt>
+        <dd className="font-mono text-text-primary">{robot || '—'}</dd>
+        <dt className="text-text-muted">Default topics</dt>
+        <dd className="font-mono text-text-primary">{topics.length}</dd>
         {path && (
           <>
-            <dt className="text-gray-500">Path</dt>
-            <dd className="font-mono text-xs text-gray-500">{path}</dd>
+            <dt className="text-text-muted">Path</dt>
+            <dd className="font-mono text-xs text-text-muted">{path}</dd>
           </>
         )}
       </dl>
-      <label className="mb-1 block text-sm font-medium text-gray-700">Config (JSON)</label>
+      <label className="mb-1 block text-sm font-medium text-text-primary">Config (JSON)</label>
       <textarea
         aria-label="recording config json"
-        className="h-80 w-full rounded-control border border-gray-200 p-2 font-mono text-xs focus:border-teal-600 focus:outline-none"
+        className="h-80 w-full rounded-control border border-border p-2 font-mono text-xs focus:border-accent focus:outline-none"
         spellCheck={false}
         value={text}
         disabled={saveMutation.isPending}
@@ -203,15 +203,15 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
       />
 
       {jsonError ? (
-        <p className="mt-2 text-sm text-red-700">Invalid JSON — {jsonError}</p>
+        <p className="mt-2 text-sm text-status-danger-text">Invalid JSON — {jsonError}</p>
       ) : (
-        <p className="mt-2 text-xs text-gray-500">Valid JSON</p>
+        <p className="mt-2 text-xs text-text-muted">Valid JSON</p>
       )}
 
       {pendingServer && (
         <div
           data-testid="recording-server-changed"
-          className="mt-2 flex flex-col gap-2 rounded-control border border-amber-300 bg-amber-50 p-2 text-sm text-amber-800"
+          className="mt-2 flex flex-col gap-2 rounded-control border border-status-warning-border bg-status-warning-bg p-2 text-sm text-status-warning-text"
         >
           <p>
             <span className="font-medium">The recording config changed on the server</span> while
@@ -227,7 +227,7 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
               setPendingServer(null);
               setSaved(false);
             }}
-            className="self-start rounded-control border border-amber-300 bg-white px-2.5 py-1 text-xs font-semibold text-amber-800 hover:bg-amber-100"
+            className="self-start rounded-control border border-status-warning-border bg-surface px-2.5 py-1 text-xs font-semibold text-status-warning-text hover:bg-status-warning-bg"
           >
             Load the server copy (discards my edits)
           </button>
@@ -235,7 +235,7 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
       )}
 
       {recording && (
-        <div className="mt-2 rounded-control border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
+        <div className="mt-2 rounded-control border border-status-warning-border bg-status-warning-bg p-2 text-sm text-status-warning-text">
           A recording is in progress — saving recording config won&apos;t change the
           current one; it applies to the next.
         </div>
@@ -244,7 +244,7 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
       {armed && (
         <div
           data-testid="config-armed-note"
-          className="mt-2 rounded-control border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800"
+          className="mt-2 rounded-control border border-status-warning-border bg-status-warning-bg p-2 text-sm text-status-warning-text"
         >
           A session is armed and waiting to start — nothing is being written yet.
           It already holds the current topic selection, so a save applies to the
@@ -255,7 +255,7 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
       {liveUnknown && (
         <div
           data-testid="config-live-unknown"
-          className="mt-2 rounded-control border border-gray-200 bg-gray-50 p-2 text-sm text-gray-600">
+          className="mt-2 rounded-control border border-border bg-surface-muted p-2 text-sm text-text-secondary">
           The recorder has not confirmed what is running, so whether a session is
           in progress is unknown. A save still only applies to the next recording.
         </div>
@@ -265,7 +265,7 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
         <div className="mt-2">
           <ErrorMessage error={saveMutation.error} />
           {validationDetails.length > 0 && (
-            <ul className="mt-1 list-disc pl-5 text-xs text-red-700">
+            <ul className="mt-1 list-disc pl-5 text-xs text-status-danger-text">
               {validationDetails.map((d, i) => (
                 <li key={i} className="font-mono">
                   {d}
@@ -277,7 +277,7 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
       )}
 
       {saved && !saveMutation.isPending && (
-        <div className="mt-2 rounded-control border border-teal-200 bg-teal-50 p-2 text-sm text-teal-800">
+        <div className="mt-2 rounded-control border border-accent bg-interaction-selected p-2 text-sm text-accent">
           <p className="font-medium">Saved</p>
           <p className="mt-0.5 text-xs">
             default_topics / robot_name apply immediately; expected_hz and QoS apply after a
@@ -291,11 +291,11 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
           type="button"
           onClick={onSave}
           disabled={saveMutation.isPending || jsonError !== null}
-          className="rounded-control bg-teal-700 px-4 py-1.5 text-sm font-medium text-white hover:bg-teal-800 disabled:opacity-50"
+          className="rounded-control bg-accent px-4 py-1.5 text-sm font-medium text-text-inverse hover:bg-accent-strong disabled:opacity-50"
         >
           {saveMutation.isPending ? 'Saving…' : 'Save'}
         </button>
-        <span className="text-xs text-gray-500">
+        <span className="text-xs text-text-muted">
           Edits the active recording file; the server validates on save.
         </span>
       </div>

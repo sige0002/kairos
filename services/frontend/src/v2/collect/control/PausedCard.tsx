@@ -12,24 +12,24 @@ export function PausedCard({ machine }: { machine: BatchMachine }) {
   return (
     <Card
       className={cn(
-        'flex shrink-0 flex-col gap-2.5 border-2 border-gray-200',
+        'flex shrink-0 flex-col gap-2.5 border-2 border-border',
         CARD_GAP_COMPACT,
         CARD_PAD,
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="h-[9px] w-[9px] rounded-sm bg-gray-400" />
-        <h2 data-testid="phase-title" className="text-[17px] font-bold text-gray-500">
+        <span className="h-[9px] w-[9px] rounded-sm bg-text-disabled" />
+        <h2 data-testid="phase-title" className="text-[17px] font-bold text-text-muted">
           PAUSED
         </h2>
       </div>
-      <span className="text-[12.5px] text-gray-500">
+      <span className="text-[12.5px] text-text-muted">
         Set is paused. Recorded episodes are safe.
       </span>
       <button
         type="button"
         onClick={machine.resumeBatch}
-        className="h-[46px] rounded-control bg-teal-700 text-sm font-bold text-white hover:bg-teal-800"
+        className="h-[46px] rounded-control bg-accent text-sm font-bold text-text-inverse hover:bg-accent-strong"
       >
         Resume set
       </button>

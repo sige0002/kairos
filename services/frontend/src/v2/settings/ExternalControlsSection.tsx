@@ -54,11 +54,11 @@ export function ExternalControlsSection() {
       className="flex min-w-0 flex-col overflow-auto lg:col-span-2"
       data-testid="settings-ext-controls"
     >
-      <div className="flex flex-col gap-1 border-b border-gray-100 px-4 py-[13px]">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <div className="flex flex-col gap-1 border-b border-border px-4 py-[13px]">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           External controls
         </h2>
-        <span className="text-[12px] leading-relaxed text-gray-500">
+        <span className="text-[12px] leading-relaxed text-text-muted">
           Which action each external channel (LEFT / CENTER / RIGHT) performs in each
           Collect state. Any device may emit the three logical inputs — a keyboard
           shortcut, a macro pad, or a programmable foot pedal; no specific hardware is
@@ -71,7 +71,7 @@ export function ExternalControlsSection() {
         <div
           data-testid="ext-controls-invalid"
           role="alert"
-          className="mx-3 mt-3 rounded-control border border-amber-300 bg-amber-50 px-3 py-2 text-[12px] text-amber-800"
+          className="mx-3 mt-3 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] text-status-warning-text"
         >
           The saved external-control layout could not be read, so the default layout is
           active. Change any channel below to store a valid layout.
@@ -82,19 +82,19 @@ export function ExternalControlsSection() {
           <div
             key={state}
             data-testid={`ext-control-state-${state}`}
-            className="rounded-control border border-gray-100 bg-gray-50 px-3 py-2.5"
+            className="rounded-control border border-border bg-surface-muted px-3 py-2.5"
           >
             <div className="mb-2 flex items-baseline gap-2">
-              <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-600">
+              <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-secondary">
                 {STATE_LABELS[state]}
               </h3>
               {state === 'result' && (
-                <span className="text-[11px] text-gray-400">
+                <span className="text-[11px] text-text-muted">
                   Retake discards the current take and re-records it.
                 </span>
               )}
               {state === 'failure_reason' && (
-                <span className="text-[11px] text-gray-400">
+                <span className="text-[11px] text-text-muted">
                   Slots read the current Task&apos;s failure shortcuts.
                 </span>
               )}
@@ -109,7 +109,7 @@ export function ExternalControlsSection() {
                   );
                 return (
                   <label key={slot} className="flex flex-col gap-1">
-                    <span className="text-[10.5px] font-bold uppercase tracking-[0.08em] text-gray-500">
+                    <span className="text-[10.5px] font-bold uppercase tracking-[0.08em] text-text-muted">
                       {slot}
                     </span>
                     <select
@@ -122,7 +122,7 @@ export function ExternalControlsSection() {
                           event.target.value as ExternalControlAction,
                         )
                       }
-                      className="h-[34px] min-w-0 rounded-control border border-gray-200 bg-white px-2 text-[12.5px] text-gray-800 disabled:cursor-not-allowed disabled:opacity-40"
+                      className="h-[34px] min-w-0 rounded-control border border-border bg-surface px-2 text-[12.5px] text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       {(
                         ['none', ...ALLOWED_ACTIONS[state]] as ExternalControlAction[]
@@ -146,7 +146,7 @@ export function ExternalControlsSection() {
           type="button"
           onClick={resetToDefault}
           data-testid="ext-controls-reset"
-          className="self-start rounded-control border border-dashed border-gray-300 bg-white px-3 py-2 text-[12.5px] font-semibold text-teal-700 hover:bg-teal-50"
+          className="self-start rounded-control border border-dashed border-border-strong bg-surface px-3 py-2 text-[12.5px] font-semibold text-accent hover:bg-interaction-selected"
         >
           Reset to default
         </button>

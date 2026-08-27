@@ -143,26 +143,26 @@ function OutcomeDonut({
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <span
             data-testid="dataset-success-rate"
-            className="font-mono text-[26px] font-bold text-gray-900"
+            className="font-mono text-[26px] font-bold text-text-primary"
           >
             {pct}%
           </span>
-          <span className="text-[10.5px] uppercase tracking-[0.05em] text-gray-500">
+          <span className="text-[10.5px] uppercase tracking-[0.05em] text-text-muted">
             success
           </span>
         </div>
       </div>
-      <figcaption className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11.5px] text-gray-600">
+      <figcaption className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11.5px] text-text-secondary">
         <span className="flex items-center gap-1.5">
           <span
-            className="inline-block h-2.5 w-2.5 rounded-sm bg-teal-600"
+            className="inline-block h-2.5 w-2.5 rounded-sm bg-accent"
             aria-hidden
           />
           ✓ {success} success
         </span>
         <span className="flex items-center gap-1.5">
           <span
-            className="inline-block h-2.5 w-2.5 rounded-sm bg-red-600"
+            className="inline-block h-2.5 w-2.5 rounded-sm bg-status-danger-accent"
             aria-hidden
           />
           ✗ {failure} failure
@@ -191,15 +191,15 @@ function AvailabilitySection({
   const { slices, awaiting, warn } = agg.availability;
 
   return (
-    <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
-      <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+    <div className="flex flex-col gap-1.5 border-t border-border pt-3">
+      <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
         Where the recordings are
       </h3>
 
       {slices.length === 0 ? (
         <span
           data-testid="dataset-availability-empty"
-          className="text-[12px] text-gray-500"
+          className="text-[12px] text-text-muted"
         >
           No member capture is loaded, so nothing can be said about where the bytes are.
         </span>
@@ -212,7 +212,7 @@ function AvailabilitySection({
             <span
               key={slice.kind}
               data-testid={`dataset-availability-${slice.kind}`}
-              className="flex items-center gap-1.5 text-[12px] text-gray-600"
+              className="flex items-center gap-1.5 text-[12px] text-text-secondary"
             >
               <Badge
                 tone={slice.tone}
@@ -231,7 +231,7 @@ function AvailabilitySection({
       {awaiting > 0 && (
         <span
           data-testid="dataset-availability-awaiting"
-          className="text-[11.5px] text-gray-500"
+          className="text-[11.5px] text-text-muted"
         >
           {awaiting} of these have no local copy yet. On a split deployment the bytes
           are pulled after the review — expected, not a failure.
@@ -240,7 +240,7 @@ function AvailabilitySection({
       {warn > 0 && (
         <span
           data-testid="dataset-availability-warn"
-          className="text-[11.5px] font-semibold text-amber-700"
+          className="text-[11.5px] font-semibold text-status-warning-text"
         >
           {warn} need a look: the files vanished outside kairos, or a manifest cannot be
           read.
@@ -249,7 +249,7 @@ function AvailabilitySection({
       {unresolved > 0 && (
         <span
           data-testid="dataset-availability-unresolved"
-          className="text-[11.5px] font-semibold text-amber-700"
+          className="text-[11.5px] font-semibold text-status-warning-text"
         >
           {memberCount(unresolved)} {unresolved === 1 ? 'has' : 'have'} no capture row
           in the loaded catalog — nothing above describes{' '}
@@ -272,16 +272,16 @@ function StatTile({
   return (
     <div
       title={title}
-      className="flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-[12px] py-[9px]"
+      className="flex flex-col gap-0.5 rounded-[10px] border border-border px-[12px] py-[9px]"
     >
       {/* Most values here are numbers, but "operator" puts a NAME in this slot
           and an operator id has no break opportunity — measured 360px outside
           the tile. `break-words` only breaks what cannot otherwise fit, so the
           numbers are untouched. */}
-      <span className="break-words font-mono text-[16px] font-semibold text-gray-900">
+      <span className="break-words font-mono text-[16px] font-semibold text-text-primary">
         {value}
       </span>
-      <span className="text-[11px] text-gray-500">{label}</span>
+      <span className="text-[11px] text-text-muted">{label}</span>
     </div>
   );
 }
@@ -315,16 +315,16 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
       className="flex min-w-0 flex-col gap-4 px-[18px] py-4"
     >
       <div className="flex flex-wrap items-baseline gap-2">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Summary
         </h3>
         <span
           data-testid="dataset-summary-scope"
-          className="text-[15px] font-bold text-gray-900"
+          className="text-[15px] font-bold text-text-primary"
         >
           {scope.label}
         </span>
-        <span className="text-[11.5px] text-gray-500">
+        <span className="text-[11.5px] text-text-muted">
           {scope.kind === 'catalog'
             ? 'every member, across the datasets in view'
             : 'for this dataset'}
@@ -332,7 +332,7 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
       </div>
 
       {agg.memberCount === 0 ? (
-        <p data-testid="dataset-summary-empty" className="text-[13px] text-gray-500">
+        <p data-testid="dataset-summary-empty" className="text-[13px] text-text-muted">
           No members in this scope yet.
         </p>
       ) : (
@@ -348,7 +348,7 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
             ) : (
               <p
                 data-testid="dataset-donut-empty"
-                className="max-w-[190px] text-[12.5px] leading-relaxed text-gray-500"
+                className="max-w-[190px] text-[12.5px] leading-relaxed text-text-muted"
               >
                 No task-result labels in this scope yet — there&apos;s no
                 success/failure rate to chart.
@@ -391,13 +391,13 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
 
           <AvailabilitySection agg={agg} unresolved={scope.unresolved} />
 
-          <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
-            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <div className="flex flex-col gap-1.5 border-t border-border pt-3">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
               Recorded conditions
             </h3>
             <div
               data-testid="dataset-summary-conditions"
-              className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-gray-600"
+              className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-text-secondary"
             >
               {scope.conditions.labels.map(({ value, count }) => (
                 <span key={value}>
@@ -414,21 +414,21 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
           </div>
 
           {scope.kind === 'dataset' && (
-            <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
-              <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+            <div className="flex flex-col gap-1.5 border-t border-border pt-3">
+              <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
                 Selection history
               </h3>
               {selectionRecipes.length === 0 ? (
                 <span
                   data-testid="dataset-selection-recipes-empty"
-                  className="text-[12px] text-gray-500"
+                  className="text-[12px] text-text-muted"
                 >
                   No saved selection recipe.
                 </span>
               ) : (
                 <ul
                   data-testid="dataset-selection-recipes"
-                  className="space-y-1 text-[12px] text-gray-600"
+                  className="space-y-1 text-[12px] text-text-secondary"
                 >
                   {selectionRecipes.map((recipe) => (
                     <li key={recipe.recipe_id}>
@@ -452,7 +452,7 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
                       {selectionQuerySummary(recipe.selection_query) && (
                         <span
                           data-testid={`dataset-selection-query-${recipe.recipe_id}`}
-                          className="mt-0.5 block break-words text-[11px] leading-relaxed text-gray-500"
+                          className="mt-0.5 block break-words text-[11px] leading-relaxed text-text-muted"
                         >
                           Server selection:{' '}
                           {selectionQuerySummary(recipe.selection_query)}
@@ -465,36 +465,36 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
             </div>
           )}
 
-          <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
-            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <div className="flex flex-col gap-1.5 border-t border-border pt-3">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
               Quality
             </h3>
             {agg.qualityLabeledCount > 0 ? (
               <div
                 data-testid="dataset-summary-quality"
-                className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-gray-600"
+                className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-text-secondary"
               >
-                <QualityDot tone="bg-green-600" label="Good" count={agg.qualityGood} />
+                <QualityDot tone="bg-status-success-accent" label="Good" count={agg.qualityGood} />
                 <QualityDot
-                  tone="bg-amber-600"
+                  tone="bg-status-warning-accent"
                   label="Needs review"
                   count={agg.qualityNeedsReview}
                 />
                 <QualityDot
-                  tone="bg-red-600"
+                  tone="bg-status-danger-accent"
                   label="Not usable"
                   count={agg.qualityNotUsable}
                 />
               </div>
             ) : (
-              <span className="text-[12px] text-gray-500">
+              <span className="text-[12px] text-text-muted">
                 No quality labels in this scope.
               </span>
             )}
             {outcome.unlabeled > 0 && (
               <span
                 data-testid="dataset-summary-unlabeled"
-                className="text-[11.5px] text-gray-500"
+                className="text-[11.5px] text-text-muted"
               >
                 {outcome.unlabeled} without labels — excluded from the success rate (not
                 counted as successes).
@@ -503,7 +503,7 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
             {agg.bytes.unknown > 0 && (
               <span
                 data-testid="dataset-summary-sizeless"
-                className="text-[11.5px] text-gray-500"
+                className="text-[11.5px] text-text-muted"
               >
                 {agg.bytes.unknown} report no size — {formatBytes(agg.bytes.total)}{' '}
                 covers the other {agg.bytes.known}.

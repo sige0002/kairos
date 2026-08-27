@@ -139,14 +139,14 @@ export function SignalSection({
   return (
     <section data-testid="review-signals">
       <div className="mb-1.5 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="text-[12.5px] font-medium text-gray-700">Data integrity</h3>
+        <h3 className="text-[12.5px] font-medium text-text-primary">Data integrity</h3>
         <button
           type="button"
           data-testid="review-run-signal"
           onClick={sig.run}
           disabled={sig.running || !!blockedReason}
           title={blockedReason ?? undefined}
-          className="rounded-control border border-teal-200 px-2.5 py-1 text-[11.5px] font-semibold text-teal-700 transition-colors hover:bg-teal-50 disabled:opacity-50"
+          className="rounded-control border border-accent px-2.5 py-1 text-[11.5px] font-semibold text-accent transition-colors hover:bg-interaction-selected disabled:opacity-50"
         >
           {sig.running
             ? 'Analysing…'
@@ -195,20 +195,20 @@ export function SignalSection({
       ) : null}
 
       {!report && !sig.running && !sig.jobError && !sig.error && (
-        <p className="text-[11.5px] text-gray-500">
+        <p className="text-[11.5px] text-text-muted">
           Analyses each topic's message timing in the recording (signal_report) to
           locate gaps, shortfalls and silence — decoding stays isolated in the
           pipeline.
         </p>
       )}
       {sig.running && (
-        <p className="text-[11.5px] text-gray-500" data-testid="review-signal-progress">
+        <p className="text-[11.5px] text-text-muted" data-testid="review-signal-progress">
           Analysing message timing across the recording…
         </p>
       )}
 
       {report && numericTopics.length === 0 && (
-        <p className="text-[11.5px] text-gray-500" data-testid="review-signal-empty">
+        <p className="text-[11.5px] text-text-muted" data-testid="review-signal-empty">
           No numeric topics in this recording.
         </p>
       )}
@@ -220,7 +220,7 @@ export function SignalSection({
           {cameras.length > 0 && (
             <div className="flex flex-col gap-2">
               <div className="flex flex-wrap items-center gap-2">
-                <h3 className="text-[11px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+                <h3 className="text-[11px] font-semibold uppercase tracking-[0.04em] text-text-muted">
                   Synced video
                 </h3>
                 <select
@@ -228,7 +228,7 @@ export function SignalSection({
                   data-testid="review-signal-camera"
                   value={cameraChoice}
                   onChange={(e) => setCameraChoice(e.target.value)}
-                  className="max-w-[180px] truncate rounded-control border border-gray-200 px-2 py-1 font-mono text-[11px] text-gray-700"
+                  className="max-w-[180px] truncate rounded-control border border-border px-2 py-1 font-mono text-[11px] text-text-primary"
                 >
                   {cameras.map((c) => (
                     <option key={c.name} value={c.name}>
@@ -241,7 +241,7 @@ export function SignalSection({
                   data-testid="review-signal-sync"
                   onClick={() => cameraChoice && setSyncCamera(cameraChoice)}
                   disabled={!cameraChoice}
-                  className="rounded-control border border-teal-200 px-2.5 py-1 text-[11px] font-semibold text-teal-700 hover:bg-teal-50 disabled:opacity-50"
+                  className="rounded-control border border-accent px-2.5 py-1 text-[11px] font-semibold text-accent hover:bg-interaction-selected disabled:opacity-50"
                 >
                   {syncCamera === cameraChoice ? 'Loaded' : 'Load synced video'}
                 </button>
@@ -249,7 +249,7 @@ export function SignalSection({
               {syncCamera && (
                 <>
                   {videoTruncated && (
-                    <p className="text-[11px] text-amber-700">
+                    <p className="text-[11px] text-status-warning-text">
                       Head-only preview — use “Re-encode full episode” below to enable
                       seeking from the timeline across the whole episode.
                     </p>
@@ -283,7 +283,7 @@ export function SignalSection({
             data-testid="review-topic-summary"
           >
             <thead>
-              <tr className="text-left text-[10px] uppercase tracking-[0.03em] text-gray-500">
+              <tr className="text-left text-[10px] uppercase tracking-[0.03em] text-text-muted">
                 <th className="py-0.5 pr-2 font-medium">Topic</th>
                 <th className="py-0.5 pr-2 font-medium">Messages</th>
                 <th className="py-0.5 pr-2 font-medium">Continuity</th>
@@ -296,18 +296,18 @@ export function SignalSection({
                 const events = tr.loss_events ?? [];
                 const majors = events.filter((e) => e.severity === 'major').length;
                 return (
-                  <tr key={name} className="border-t border-gray-100">
+                  <tr key={name} className="border-t border-border">
                     <td
-                      className="py-0.5 pr-2 font-mono text-gray-600"
+                      className="py-0.5 pr-2 font-mono text-text-secondary"
                       title={tr.time_source ? `clock: ${tr.time_source}` : undefined}
                     >
                       {name}
                     </td>
-                    <td className="py-0.5 pr-2 font-mono text-gray-500">
+                    <td className="py-0.5 pr-2 font-mono text-text-muted">
                       {tr.message_count ?? '—'}
                     </td>
                     <td
-                      className="cursor-help py-0.5 pr-2 font-mono text-gray-500"
+                      className="cursor-help py-0.5 pr-2 font-mono text-text-muted"
                       title={
                         tr.continuity_definition ??
                         'No continuity definition provided by the pipeline.'
@@ -318,10 +318,10 @@ export function SignalSection({
                     <td
                       className={`py-0.5 font-mono ${
                         majors > 0
-                          ? 'font-semibold text-red-600'
+                          ? 'font-semibold text-status-danger-text'
                           : events.length > 0
-                            ? 'text-amber-700'
-                            : 'text-gray-500'
+                            ? 'text-status-warning-text'
+                            : 'text-text-muted'
                       }`}
                     >
                       {events.length}
@@ -334,15 +334,15 @@ export function SignalSection({
           </table>
 
           {report.skipped_topics && Object.keys(report.skipped_topics).length > 0 && (
-            <details className="text-[11px] text-gray-500">
+            <details className="text-[11px] text-text-muted">
               <summary className="cursor-pointer">
                 Skipped topics ({Object.keys(report.skipped_topics).length})
               </summary>
               <ul className="mt-1 flex flex-col gap-0.5">
                 {Object.entries(report.skipped_topics).map(([t, reason]) => (
                   <li key={t} className="font-mono">
-                    <span className="text-gray-600">{t}</span>
-                    <span className="text-gray-500"> — {reason}</span>
+                    <span className="text-text-secondary">{t}</span>
+                    <span className="text-text-muted"> — {reason}</span>
                   </li>
                 ))}
               </ul>

@@ -77,7 +77,7 @@ export function StatsBadge({
           'that arrived — the picture is not current.'
         }
         className={cn(
-          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-gray-900',
+          'inline-flex items-center gap-1.5 rounded-chip bg-status-warning-accent/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-gray-900',
           className,
         )}
       >
@@ -130,7 +130,7 @@ function StreamStatsBadge({ stats, className }: { stats: StreamStats; className?
           'publisher rather than a network problem.'
         }
         className={cn(
-          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-gray-900',
+          'inline-flex items-center gap-1.5 rounded-chip bg-status-warning-accent/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-gray-900',
           className,
         )}
       >
@@ -152,7 +152,7 @@ function StreamStatsBadge({ stats, className }: { stats: StreamStats; className?
           {stats.latencyMs}ms
         </span>
       )}
-      {stats.latencyMs != null && stats.fps != null && <span className="text-gray-500">·</span>}
+      {stats.latencyMs != null && stats.fps != null && <span className="text-gray-300">·</span>}
       {stats.fps != null && <span className="text-gray-300">{stats.fps}fps</span>}
     </span>
   );
@@ -182,7 +182,7 @@ export function CameraPlaceholder({
   return (
     <div
       className={cn(
-        'flex flex-col items-center justify-center gap-1.5 border border-gray-200 px-3 text-center',
+        'flex flex-col items-center justify-center gap-1.5 border border-border px-3 text-center',
         className,
       )}
       style={{
@@ -192,19 +192,19 @@ export function CameraPlaceholder({
     >
       {failed ? (
         <>
-          <span aria-hidden className="text-lg leading-none text-amber-400">
+          <span aria-hidden className="text-lg leading-none text-status-warning-text">
             ⚠
           </span>
           <span className="font-sans text-xs font-semibold text-gray-200">
             Camera preview unavailable
           </span>
           <span
-            className="max-w-full truncate font-mono text-[11px] text-gray-500"
+            className="max-w-full truncate font-mono text-[11px] text-gray-300"
             title={error ?? undefined}
           >
             {error ?? "the WebRTC stream couldn't connect"}
           </span>
-          <span className="max-w-full truncate font-mono text-[10.5px] text-gray-500">{name}</span>
+          <span className="max-w-full truncate font-mono text-[10.5px] text-gray-300">{name}</span>
           <button
             type="button"
             data-testid="camera-retry"
@@ -227,7 +227,7 @@ export function CameraPlaceholder({
           <span className="font-sans text-xs font-semibold text-gray-300">
             Connecting to camera…
           </span>
-          <span className="max-w-full truncate font-mono text-[10.5px] text-gray-500">{name}</span>
+          <span className="max-w-full truncate font-mono text-[10.5px] text-gray-300">{name}</span>
         </>
       )}
     </div>
@@ -287,7 +287,7 @@ function SubResToggle({
           className={cn(
             'rounded-chip px-1.5 py-0.5 font-mono text-[9.5px] font-bold',
             HIT_AREA_RES_SUB,
-            label === value ? 'bg-teal-300 text-gray-900' : 'text-gray-300',
+            label === value ? 'bg-accent-soft text-text-primary' : 'text-gray-300',
           )}
         >
           {label}
@@ -360,7 +360,7 @@ export function SubCameraTile({
       onClick={onSelect}
       title={`${pane.topic} — click to make this the main camera`}
       data-testid="sub-camera-tile"
-      className="relative cursor-pointer overflow-hidden rounded-card border border-gray-200 bg-[#1f2937] hover:border-teal-500"
+      className="relative cursor-pointer overflow-hidden rounded-card border border-border bg-[#1f2937] hover:border-accent"
       style={style}
     >
       {/* Always mounted, like the main tile — see the comment there. */}
@@ -411,7 +411,7 @@ export function SubCameraTile({
             e.stopPropagation();
             onRemove();
           }}
-          className="absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-chip bg-gray-900/80 text-[13px] font-bold leading-none text-gray-300 hover:bg-red-500 hover:text-white"
+          className="absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-chip bg-gray-900/80 text-[13px] font-bold leading-none text-gray-300 hover:bg-status-danger-accent hover:text-white"
         >
           ×
         </button>
@@ -435,11 +435,11 @@ export function AddCameraTile({
   return (
     <div
       data-testid="add-camera-tile"
-      className="flex min-w-0 flex-col items-center justify-center gap-2 overflow-hidden rounded-card border border-dashed border-gray-300 bg-gray-50 p-3"
+      className="flex min-w-0 flex-col items-center justify-center gap-2 overflow-hidden rounded-card border border-dashed border-border-strong bg-surface-muted p-3"
       style={style}
     >
-      <span className="text-xl font-semibold text-gray-500">+</span>
-      <span className="text-[11px] font-semibold text-gray-500">Add camera</span>
+      <span className="text-xl font-semibold text-text-muted">+</span>
+      <span className="text-[11px] font-semibold text-text-muted">Add camera</span>
       <select
         aria-label="add camera topic"
         data-testid="add-camera-select"
@@ -448,7 +448,7 @@ export function AddCameraTile({
           if (e.target.value) addCameraPane(e.target.value);
           // Value stays "" (it's an action trigger, not a persistent selection).
         }}
-        className="w-full max-w-[92%] rounded-control border border-gray-200 bg-white px-2 py-1 font-mono text-[11px] text-gray-700 focus:border-teal-600 focus:outline-none"
+        className="w-full max-w-[92%] rounded-control border border-border bg-surface px-2 py-1 font-mono text-[11px] text-text-primary focus:border-accent focus:outline-none"
       >
         <option value="" disabled>
           {options.length === 0 ? 'No image topics found' : 'Choose a camera…'}

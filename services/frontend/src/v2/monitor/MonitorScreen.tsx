@@ -88,7 +88,7 @@ export function MonitorScreen() {
       <div className="flex shrink-0 flex-wrap items-center gap-2.5">
         <RecordContextChip />
 
-        <div className="flex flex-wrap gap-0.5 rounded-[11px] border border-gray-200 bg-gray-100 p-[3px]">
+        <div className="flex flex-wrap gap-0.5 rounded-[11px] border border-border bg-surface-muted p-[3px]">
           {MON_NAV.map((label) => (
             <button
               key={label}
@@ -99,8 +99,8 @@ export function MonitorScreen() {
               className={cn(
                 'rounded-lg px-3.5 py-1.5 text-[12.5px] font-medium transition-colors',
                 label === monView
-                  ? 'bg-teal-700 font-semibold text-white'
-                  : 'text-gray-600 hover:text-gray-700',
+                  ? 'bg-accent font-semibold text-text-inverse'
+                  : 'text-text-secondary hover:text-text-primary',
               )}
             >
               {label}
@@ -112,14 +112,14 @@ export function MonitorScreen() {
         <button
           type="button"
           onClick={() => setActiveTab('collect')}
-          className="text-[12.5px] font-semibold text-gray-700 hover:text-teal-700"
+          className="text-[12.5px] font-semibold text-text-primary hover:text-accent"
         >
           ← Back to Collect
         </button>
       </div>
 
       {!config ? (
-        <div className="p-4 text-sm text-gray-500">Loading…</div>
+        <div className="p-4 text-sm text-text-muted">Loading…</div>
       ) : monView === 'Overview' ? (
         <OverviewView
           config={config}

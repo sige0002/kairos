@@ -20,10 +20,10 @@ import {
 } from './signalReport';
 
 const COLOR_CLASS: Record<BinColor, string> = {
-  gray: 'bg-gray-100',
-  green: 'bg-emerald-300',
-  amber: 'bg-amber-400',
-  red: 'bg-red-500',
+  gray: 'bg-surface-muted',
+  green: 'bg-status-success-accent',
+  amber: 'bg-status-warning-accent',
+  red: 'bg-status-danger-accent',
 };
 
 function binTitle(bin: AggregateBin): string {
@@ -59,10 +59,10 @@ export function LossTimeline({
   return (
     <div data-testid="review-loss-timeline" className="flex flex-col gap-1">
       <div className="flex items-center justify-between">
-        <h3 className="text-[10px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+        <h3 className="text-[10px] font-semibold uppercase tracking-[0.04em] text-text-muted">
           Integrity timeline
         </h3>
-        <span className="font-mono text-[10px] text-gray-500">
+        <span className="font-mono text-[10px] text-text-muted">
           span {formatSecondsShort(spanNs)}
         </span>
       </div>
@@ -89,12 +89,12 @@ export function LossTimeline({
         {playheadFrac != null && (
           <div
             data-testid="timeline-playhead"
-            className="pointer-events-none absolute inset-y-0 w-px bg-gray-900/70"
+            className="pointer-events-none absolute inset-y-0 w-px bg-text-primary/70"
             style={{ left: `${Math.min(1, Math.max(0, playheadFrac)) * 100}%` }}
           />
         )}
       </div>
-      <span className="text-[10px] text-gray-500">
+      <span className="text-[10px] text-text-muted">
         green ok · amber minor loss · red major loss / silent · gray no topic active
         {seekEnabled ? ' — click to seek the video' : ''}
       </span>

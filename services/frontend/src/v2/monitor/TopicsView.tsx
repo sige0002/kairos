@@ -136,14 +136,14 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
 
         <div className="flex shrink-0 flex-wrap items-center gap-2.5">
           <span
-            className="font-mono text-[11.5px] text-gray-500"
+            className="font-mono text-[11.5px] text-text-muted"
             title="History accumulates from when Monitor opened."
           >
             {rows.length} topics · {panels.length} chart{panels.length === 1 ? '' : 's'} · {windowId}{' '}
             window{windowNotFull ? ` (${formatElapsed(elapsedMs)} so far)` : ''}
           </span>
           {paused && (
-            <span data-testid="freeze-note" className="font-mono text-[11px] text-amber-700">
+            <span data-testid="freeze-note" className="font-mono text-[11px] text-status-warning-text">
               Charts frozen · table still live.
             </span>
           )}
@@ -154,7 +154,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
           {metricsStale && (
             <span
               data-testid="metrics-stale-note"
-              className="font-mono text-[11px] text-amber-700"
+              className="font-mono text-[11px] text-status-warning-text"
             >
               Live metrics unavailable — measured columns withheld.
             </span>
@@ -169,14 +169,14 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
             <span
               data-testid="malformed-note"
               title="These readings arrived in a shape this screen could not read — no usable topic name — so they were left out rather than shown under an invented one."
-              className="font-mono text-[11px] text-amber-700"
+              className="font-mono text-[11px] text-status-warning-text"
             >
               {malformedDropped} reading{malformedDropped === 1 ? '' : 's'} ignored
               (unreadable)
             </span>
           )}
           <div className="flex-1" />
-          <div className="flex gap-[3px] rounded-control border border-gray-200 bg-gray-100 p-1">
+          <div className="flex gap-[3px] rounded-control border border-border bg-surface-muted p-1">
             {MONITOR_WINDOWS.map((w) => (
               <button
                 key={w.id}
@@ -187,8 +187,8 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
                 className={cn(
                   'rounded-chip px-2.5 py-0.5 text-[11px] font-medium transition-colors',
                   w.id === windowId
-                    ? 'bg-white text-teal-700 shadow-sm'
-                    : 'text-gray-600 hover:text-gray-700',
+                    ? 'bg-surface text-accent shadow-sm'
+                    : 'text-text-secondary hover:text-text-primary',
                 )}
               >
                 {w.label}
@@ -204,8 +204,8 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
             className={cn(
               'rounded-control border px-3 py-1 text-[11px] font-medium transition-colors',
               paused
-                ? 'border-amber-200 bg-amber-50 text-amber-700'
-                : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50',
+                ? 'border-status-warning-border bg-status-warning-bg text-status-warning-text'
+                : 'border-border bg-surface text-text-secondary hover:bg-surface-muted',
             )}
           >
             {paused ? 'Live' : 'Freeze charts'}
@@ -215,7 +215,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
             data-testid="add-chart"
             onClick={() => addPanel(availableNames[0])}
             disabled={panels.length >= MAX_PANELS}
-            className="rounded-control bg-teal-700 px-3 py-1 text-[11px] font-semibold text-white shadow-card transition-colors hover:bg-teal-800 disabled:bg-gray-300"
+            className="rounded-control bg-accent px-3 py-1 text-[11px] font-semibold text-text-inverse shadow-card transition-colors hover:bg-accent-strong disabled:bg-surface-muted"
           >
             + Add chart
           </button>

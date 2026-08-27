@@ -124,8 +124,8 @@ export function LabelRows({
                   onClick={startEditing}
                   title="Edit operator, task and robot"
                   className={cn(
-                    'group inline-flex items-center gap-1.5 rounded-[5px] px-1 py-0.5 text-left hover:bg-gray-50',
-                    value ? 'text-gray-700' : 'text-gray-500',
+                    'group inline-flex items-center gap-1.5 rounded-[5px] px-1 py-0.5 text-left hover:bg-surface-muted',
+                    value ? 'text-text-primary' : 'text-text-muted',
                   )}
                 >
                   <span className={cn(!value && 'italic')}>
@@ -133,7 +133,7 @@ export function LabelRows({
                   </span>
                   <span
                     aria-hidden="true"
-                    className="text-[11px] text-gray-500 group-hover:text-teal-600"
+                    className="text-[11px] text-text-muted group-hover:text-accent"
                   >
                     ✎
                   </span>
@@ -166,7 +166,7 @@ export function LabelRows({
               onChange={(e) =>
                 setDraft((cur) => ({ ...cur, [field.key]: e.target.value }))
               }
-              className="w-full rounded-control border border-gray-200 px-2 py-1 text-[12.5px] text-gray-800 focus:border-teal-600 focus:outline-none disabled:bg-gray-50"
+              className="w-full rounded-control border border-border px-2 py-1 text-[12.5px] text-text-primary focus:border-accent focus:outline-none disabled:bg-surface-muted"
             />
           </RowFrame>
           {field.key === 'task' && (
@@ -182,7 +182,7 @@ export function LabelRows({
           <span
             role="alert"
             data-testid="label-error"
-            className="rounded-control border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[11.5px] text-amber-900"
+            className="rounded-control border border-status-warning-border bg-status-warning-bg px-2.5 py-1.5 text-[11.5px] text-status-warning-text"
           >
             {error}
           </span>
@@ -193,7 +193,7 @@ export function LabelRows({
             data-testid="label-save"
             onClick={() => void submit()}
             disabled={editing.saving}
-            className="h-8 rounded-control bg-teal-700 px-3 text-[12px] font-bold text-white hover:bg-teal-800 disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-8 rounded-control bg-accent px-3 text-[12px] font-bold text-text-inverse hover:bg-accent-strong disabled:cursor-not-allowed disabled:opacity-50"
           >
             {editing.saving ? 'Saving…' : 'Save labels'}
           </button>
@@ -202,12 +202,12 @@ export function LabelRows({
             data-testid="label-cancel"
             onClick={() => setOpen(false)}
             disabled={editing.saving}
-            className="h-8 rounded-control border border-gray-200 bg-white px-3 text-[12px] font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className="h-8 rounded-control border border-border bg-surface px-3 text-[12px] font-semibold text-text-secondary hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-50"
           >
             Cancel
           </button>
         </div>
-        <span className="text-[11px] leading-snug text-gray-500">
+        <span className="text-[11px] leading-snug text-text-muted">
           Clearing a field returns it to whatever the recording&apos;s own manifest
           said.
         </span>
@@ -220,8 +220,8 @@ export function LabelRows({
 function RowFrame({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <>
-      <dt className="text-[11.5px] text-gray-500">{label}</dt>
-      <dd className="text-[12.5px] text-gray-700">{children}</dd>
+      <dt className="text-[11.5px] text-text-muted">{label}</dt>
+      <dd className="text-[12.5px] text-text-primary">{children}</dd>
     </>
   );
 }

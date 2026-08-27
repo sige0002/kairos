@@ -103,7 +103,7 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
       className={cn('flex shrink-0 flex-col gap-1.5', SIDE_PAD)}
       data-testid="coverage-card"
     >
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
         Coverage — {task}
       </h2>
       <div className="flex flex-col gap-1">
@@ -113,22 +113,22 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
             data-testid={`coverage-row-${cond}`}
             className={cn(
               'flex items-baseline gap-2 rounded-[7px] px-1.5 py-0.5',
-              cond === machine.condition && 'bg-teal-50',
+              cond === machine.condition && 'bg-interaction-selected',
             )}
           >
             <span
               className={cn(
                 'min-w-0 flex-1 truncate text-[11.5px]',
                 cond === machine.condition
-                  ? 'font-semibold text-teal-800'
-                  : 'text-gray-600',
+                  ? 'font-semibold text-accent'
+                  : 'text-text-secondary',
               )}
               title={cond}
             >
               {cond}
             </span>
             <span
-              className="shrink-0 font-mono text-[11.5px] text-gray-800"
+              className="shrink-0 font-mono text-[11.5px] text-text-primary"
               title={
                 isFloor
                   ? 'At least this many — part of this total was rebuilt from the recordings still on disk, so takes deleted after review are not counted.'
@@ -138,11 +138,11 @@ export function CoverageCard({ machine }: { machine: BatchMachine }) {
               {isFloor ? '\u2265 ' : ''}
               {recorded}
             </span>
-            <span className="shrink-0 text-[10.5px] text-gray-500">rec</span>
+            <span className="shrink-0 text-[10.5px] text-text-muted">rec</span>
           </div>
         ))}
       </div>
-      <p className="text-[10.5px] leading-snug text-gray-500">
+      <p className="text-[10.5px] leading-snug text-text-muted">
         {scopeReady
           ? `Scope: ${project ?? 'custom project'} / ${task} · ${robot} · ${operator}`
           : 'Coverage waits for the active robot and operator scope.'}{' '}

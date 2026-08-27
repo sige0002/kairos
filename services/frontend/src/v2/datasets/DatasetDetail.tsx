@@ -59,7 +59,7 @@ export function DatasetDetail({
         <span
           data-testid="dataset-member-capture"
           title={member.captureId}
-          className="font-mono text-[13px] font-semibold text-gray-900"
+          className="font-mono text-[13px] font-semibold text-text-primary"
         >
           {capture?.run_id ?? member.captureId}
         </span>
@@ -73,7 +73,7 @@ export function DatasetDetail({
               onClick={() => state.removeMember(member)}
               disabled={removing}
               title="Take this capture out of the dataset. The recording itself is untouched and its number is not reused."
-              className="inline-flex shrink-0 items-center rounded-control border border-teal-200 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-50 disabled:opacity-50"
+              className="inline-flex shrink-0 items-center rounded-control border border-accent px-2.5 py-1 text-xs font-semibold text-accent hover:bg-interaction-selected disabled:opacity-50"
             >
               {removing ? 'Removing…' : 'Remove from dataset'}
             </button>
@@ -84,7 +84,7 @@ export function DatasetDetail({
                   data-testid="discard-member-btn"
                   onClick={() => state.deletion.requestDiscard(capture)}
                   title="Destroy this recording. Irreversible, and refused while it is still a dataset member."
-                  className="inline-flex shrink-0 items-center rounded-control border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50"
+                  className="inline-flex shrink-0 items-center rounded-control border border-status-danger-border px-2.5 py-1 text-xs font-semibold text-status-danger-text hover:bg-status-danger-bg"
                 >
                   Discard (not uploaded)
                 </button>
@@ -93,7 +93,7 @@ export function DatasetDetail({
                   data-testid="delete-member-btn"
                   onClick={() => state.deletion.requestDelete(capture)}
                   title="Remove this recording's files from this machine. Refused while it is still a dataset member."
-                  className="inline-flex shrink-0 items-center rounded-control border border-gray-200 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+                  className="inline-flex shrink-0 items-center rounded-control border border-border px-2.5 py-1 text-xs font-semibold text-text-secondary hover:bg-surface-muted"
                 >
                   Delete
                 </button>
@@ -106,7 +106,7 @@ export function DatasetDetail({
       {frozen && (
         <p
           data-testid="dataset-member-frozen-note"
-          className="rounded-control border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] leading-relaxed text-gray-600"
+          className="rounded-control border border-border bg-surface-muted px-3 py-2 text-[12px] leading-relaxed text-text-secondary"
         >
           This dataset&apos;s member set is frozen by its archive run — a move
           took the recordings with it, a copy left them here. The membership
@@ -118,7 +118,7 @@ export function DatasetDetail({
         <>
           <p
             data-testid="dataset-member-order-note"
-            className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900"
+            className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
           >
             Remove it from this dataset first. A discard or a delete is refused while a
             capture is still a member, so the dataset can never be left citing a
@@ -134,15 +134,15 @@ export function DatasetDetail({
       )}
 
       {!capture ? (
-        <p data-testid="dataset-member-unresolved-note" className="text-sm text-gray-500">
+        <p data-testid="dataset-member-unresolved-note" className="text-sm text-text-muted">
           This dataset lists a capture the loaded catalog has no row for. The
           membership is real; nothing more can be said about the recording from
           here.
         </p>
       ) : detailLoading ? (
-        <span className="text-sm text-gray-500">Loading capture…</span>
+        <span className="text-sm text-text-muted">Loading capture…</span>
       ) : detailError ? (
-        <span className="text-sm text-amber-700">Couldn&apos;t load this capture.</span>
+        <span className="text-sm text-status-warning-text">Couldn&apos;t load this capture.</span>
       ) : detail ? (
         <>
           <div className="grid grid-cols-4 gap-2" data-testid="dataset-member-stats">
@@ -155,7 +155,7 @@ export function DatasetDetail({
             />
           </div>
 
-          <div className="flex flex-col gap-1 text-[11.5px] leading-relaxed text-gray-500">
+          <div className="flex flex-col gap-1 text-[11.5px] leading-relaxed text-text-muted">
             <span>recorded {formatWhen(detail.started_at)}</span>
             {/* The chip above is a word; this is the sentence behind it — a
                 member whose bytes are elsewhere needs the whole explanation,
@@ -165,7 +165,7 @@ export function DatasetDetail({
             </span>
           </div>
 
-          <div className="border-t border-gray-100 pt-4">
+          <div className="border-t border-border pt-4">
             <DatasetInspection detail={detail} />
           </div>
         </>
@@ -176,9 +176,9 @@ export function DatasetDetail({
 
 function Stat({ value, label }: { value: string; label: string }) {
   return (
-    <div className="flex flex-col gap-0.5 rounded-[11px] border border-gray-100 px-[14px] py-[11px]">
-      <span className="font-mono text-[21px] font-semibold text-gray-900">{value}</span>
-      <span className="text-[11.5px] text-gray-500">{label}</span>
+    <div className="flex flex-col gap-0.5 rounded-[11px] border border-border px-[14px] py-[11px]">
+      <span className="font-mono text-[21px] font-semibold text-text-primary">{value}</span>
+      <span className="text-[11.5px] text-text-muted">{label}</span>
     </div>
   );
 }

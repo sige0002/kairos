@@ -42,7 +42,7 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
       role="alert"
       data-testid="unsaved-take-banner"
       className={cn(
-        'flex shrink-0 flex-col gap-2 border-2 border-amber-200 bg-amber-50/70 px-4 py-3',
+        'flex shrink-0 flex-col gap-2 border-2 border-status-warning-border bg-status-warning-bg/70 px-4 py-3',
         // The one Collect surface that had no compact step. It sits in the
         // PINNED half of the left column, above the ControlCard, so every
         // pixel it takes at a short height is a pixel of headroom the primary
@@ -52,7 +52,7 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
         '[@media(max-height:860px)]:gap-1.5 [@media(max-height:860px)]:py-2',
       )}
     >
-      <span className="text-[13px] text-amber-900" data-testid="unsaved-take-identity">
+      <span className="text-[13px] text-status-warning-text" data-testid="unsaved-take-identity">
         {machine.unsavedTakeCount > 1
           ? `${machine.unsavedTakeCount} unsaved takes. Most recent: `
           : take.interrupted
@@ -69,7 +69,7 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
           stop themselves is the case where the reason is the whole question,
           and a toast has long since gone by the time they look. */}
       {take.interrupted && (
-        <span className="text-[12px] text-amber-800" data-testid="unsaved-take-reason">
+        <span className="text-[12px] text-status-warning-text" data-testid="unsaved-take-reason">
           It ended on its own:{' '}
           {take.reason ?? 'the recorder stopped before the take was finished'}.
           Whatever it managed to write is still here.
@@ -79,7 +79,7 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
         <button
           type="button"
           onClick={machine.labelUnsavedTake}
-          className="h-9 [@media(max-height:860px)]:h-8 rounded-control bg-teal-700 px-3.5 text-[12.5px] font-bold text-white hover:bg-teal-800"
+          className="h-9 [@media(max-height:860px)]:h-8 rounded-control bg-accent px-3.5 text-[12.5px] font-bold text-text-inverse hover:bg-accent-strong"
         >
           Label it
         </button>
@@ -87,14 +87,14 @@ function UnsavedTakeBanner({ machine }: { machine: BatchMachine }) {
           type="button"
           onClick={machine.discardUnsavedTake}
           disabled={machine.unsavedDiscard.busy}
-          className="h-9 [@media(max-height:860px)]:h-8 rounded-control border border-gray-200 bg-white px-3.5 text-[12.5px] font-semibold text-gray-600 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-50"
+          className="h-9 [@media(max-height:860px)]:h-8 rounded-control border border-border bg-surface px-3.5 text-[12.5px] font-semibold text-text-secondary hover:bg-surface-muted disabled:cursor-not-allowed disabled:opacity-50"
         >
           Discard
         </button>
         <button
           type="button"
           onClick={machine.dismissUnsavedTake}
-          className="h-9 [@media(max-height:860px)]:h-8 rounded-control px-2 text-[12.5px] font-semibold text-gray-500 hover:underline"
+          className="h-9 [@media(max-height:860px)]:h-8 rounded-control px-2 text-[12.5px] font-semibold text-text-muted hover:underline"
         >
           Later
         </button>
@@ -141,7 +141,7 @@ export function CollectScreen() {
     return (
       <>
         <ScreenTitle>Collect</ScreenTitle>
-        <div className="p-4 text-sm text-gray-500">Loading…</div>
+        <div className="p-4 text-sm text-text-muted">Loading…</div>
       </>
     );
   }

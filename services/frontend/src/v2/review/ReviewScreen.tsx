@@ -69,7 +69,7 @@ export function ReviewScreen() {
     <div className="flex flex-col gap-2.5 lg:h-full lg:min-h-0">
       <ScreenTitle>Review</ScreenTitle>
       <div className="flex flex-wrap items-center gap-2.5">
-        <p data-testid="review-page-scope" className="text-xs text-gray-500">
+        <p data-testid="review-page-scope" className="text-xs text-text-muted">
           Page scope: {rv.rows.length} shown of {rv.serverTotal} matching. Lane and bulk
           actions apply only to this page.
         </p>
@@ -80,7 +80,7 @@ export function ReviewScreen() {
             data-testid="review-previous-page"
             disabled={!rv.hasPreviousPage}
             onClick={rv.previousPage}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] font-semibold text-gray-600 disabled:cursor-not-allowed disabled:text-gray-300"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12.5px] font-semibold text-text-secondary disabled:cursor-not-allowed disabled:text-text-muted"
           >
             Previous
           </button>
@@ -89,7 +89,7 @@ export function ReviewScreen() {
             data-testid="review-next-page"
             disabled={!rv.hasNextPage}
             onClick={rv.nextPage}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] font-semibold text-gray-600 disabled:cursor-not-allowed disabled:text-gray-300"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12.5px] font-semibold text-text-secondary disabled:cursor-not-allowed disabled:text-text-muted"
           >
             Next
           </button>
@@ -98,7 +98,7 @@ export function ReviewScreen() {
           type="button"
           data-testid="review-import-bags"
           onClick={() => setImportOpen(true)}
-          className="rounded-control border border-gray-200 bg-white px-3 py-1.5 text-[12.5px] font-semibold text-gray-700 hover:bg-gray-50"
+          className="rounded-control border border-border bg-surface px-3 py-1.5 text-[12.5px] font-semibold text-text-primary hover:bg-surface-muted"
         >
           ↧ Import bags…
         </button>
@@ -128,7 +128,7 @@ export function ReviewScreen() {
         <div
           role="alert"
           data-testid="review-conflict-banner"
-          className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-sm text-status-warning-text"
         >
           <span data-testid="review-conflict-message">
             <strong data-testid="review-conflict-subject">
@@ -165,7 +165,7 @@ export function ReviewScreen() {
           role="alert"
           data-testid="review-save-failure"
           data-error-code={failure.code}
-          className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-status-danger-border bg-status-danger-bg px-3 py-2 text-sm text-status-danger-text"
         >
           <span>
             <strong>Not saved.</strong>{' '}
@@ -193,7 +193,7 @@ export function ReviewScreen() {
         <div
           role="status"
           data-testid="review-retention-banner"
-          className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900"
+          className="flex flex-wrap items-center justify-between gap-2 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-sm text-status-warning-text"
         >
           {rv.retentionFilterActive ? (
             <>
@@ -232,7 +232,7 @@ export function ReviewScreen() {
                   type="button"
                   aria-label="Dismiss retention notice"
                   data-testid="review-retention-dismiss"
-                  className="rounded-control px-1.5 text-lg leading-none text-amber-700 hover:bg-amber-100"
+                  className="rounded-control px-1.5 text-lg leading-none text-status-warning-text hover:bg-status-warning-bg"
                   onClick={rv.dismissRetentionBanner}
                 >
                   &times;
@@ -352,7 +352,7 @@ export function ReviewScreen() {
         </p>
         <ul
           data-testid="review-exclude-batch-list"
-          className="mt-2 max-h-48 overflow-auto rounded-control border border-gray-200 text-xs"
+          className="mt-2 max-h-48 overflow-auto rounded-control border border-border text-xs"
         >
           {rv.batchExcludable.map((r) => {
             const failure = rv.excludeBatchFailures.find(
@@ -361,17 +361,17 @@ export function ReviewScreen() {
             return (
               <li
                 key={r.captureId}
-                className="flex items-center justify-between gap-2 border-t border-gray-100 px-2 py-1 first:border-t-0"
+                className="flex items-center justify-between gap-2 border-t border-border px-2 py-1 first:border-t-0"
               >
-                <span className="truncate font-mono text-gray-700">
+                <span className="truncate font-mono text-text-primary">
                   {episodeLabel(r.ep)} · {r.runId ?? r.captureId}
                 </span>
                 {failure ? (
-                  <span className="shrink-0 text-red-600" title={failure.error}>
+                  <span className="shrink-0 text-status-danger-text" title={failure.error}>
                     failed
                   </span>
                 ) : (
-                  <span className="shrink-0 font-mono text-gray-500">
+                  <span className="shrink-0 font-mono text-text-muted">
                     {r.reviewLane}
                   </span>
                 )}
@@ -380,7 +380,7 @@ export function ReviewScreen() {
           })}
         </ul>
         {rv.excludeBatchFailures.length > 0 && !rv.excludeBatchRunning && (
-          <p role="alert" className="mt-2 text-sm text-red-600">
+          <p role="alert" className="mt-2 text-sm text-status-danger-text">
             {rv.excludeBatchFailures.length} exclude
             {rv.excludeBatchFailures.length === 1 ? '' : 's'} failed — those episodes
             keep their previous status.

@@ -13,45 +13,45 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
   const { nRecorded, nGood, nReview, nTaskFailed } = machine.stats;
   return (
     <Card className={cn('flex shrink-0 flex-col gap-1.5', SIDE_PAD)}>
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
         Batch stats
       </h2>
       <div className="flex gap-3.5">
         <div className="flex flex-col">
           <span
             data-testid="stat-recorded"
-            className="font-mono text-lg font-semibold text-gray-900"
+            className="font-mono text-lg font-semibold text-text-primary"
           >
             {nRecorded}
           </span>
-          <span className="text-[11px] text-gray-500">recorded</span>
+          <span className="text-[11px] text-text-muted">recorded</span>
         </div>
         <div className="flex flex-col">
           <span
             data-testid="stat-good"
-            className="font-mono text-lg font-semibold text-green-700"
+            className="font-mono text-lg font-semibold text-status-success-text"
           >
             {nGood}
           </span>
-          <span className="text-[11px] text-gray-500">good quality</span>
+          <span className="text-[11px] text-text-muted">good quality</span>
         </div>
         <div className="flex flex-col">
           <span
             data-testid="stat-review"
-            className="font-mono text-lg font-semibold text-amber-700"
+            className="font-mono text-lg font-semibold text-status-warning-text"
           >
             {nReview}
           </span>
-          <span className="text-[11px] text-gray-500">needs review</span>
+          <span className="text-[11px] text-text-muted">needs review</span>
         </div>
         <div className="flex flex-col">
           <span
             data-testid="stat-task-failed"
-            className="font-mono text-lg font-semibold text-red-600"
+            className="font-mono text-lg font-semibold text-status-danger-text"
           >
             {nTaskFailed}
           </span>
-          <span className="text-[11px] text-gray-500">task failed</span>
+          <span className="text-[11px] text-text-muted">task failed</span>
         </div>
       </div>
       {/* After a Review delete the monotone "recorded" count outruns the quality
@@ -60,7 +60,7 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
       {nRecorded > nGood + nReview && (
         <p
           data-testid="stats-footnote"
-          className="text-[11px] leading-snug text-gray-500"
+          className="text-[11px] leading-snug text-text-muted"
         >
           recorded counts every take this batch; quality tallies reflect recordings
           still on disk

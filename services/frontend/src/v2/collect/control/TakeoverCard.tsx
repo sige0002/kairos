@@ -24,11 +24,11 @@ function FieldRow({
 }) {
   return (
     <div className="flex items-baseline gap-2.5">
-      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
         {label}
       </span>
       <div className="flex-1" />
-      <span className={cn('text-[13px] text-gray-800', mono && 'font-mono text-xs')}>
+      <span className={cn('text-[13px] text-text-primary', mono && 'font-mono text-xs')}>
         {value}
       </span>
     </div>
@@ -59,34 +59,34 @@ export function TakeoverCard({
   return (
     <Card
       className={cn(
-        'flex shrink-0 flex-col gap-2.5 border-2 border-red-200',
+        'flex shrink-0 flex-col gap-2.5 border-2 border-status-danger-border',
         CARD_GAP_COMPACT,
         CARD_PAD,
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-red-600" />
-        <h2 data-testid="phase-title" className="text-[15px] font-bold text-red-700">
+        <span className="h-[9px] w-[9px] animate-recpulse rounded-sm bg-status-danger-accent" />
+        <h2 data-testid="phase-title" className="text-[15px] font-bold text-status-danger-text">
           RECORDING IN PROGRESS
         </h2>
       </div>
-      <span className="text-[12.5px] leading-relaxed text-gray-600">
+      <span className="text-[12.5px] leading-relaxed text-text-secondary">
         {machine.takeoverResumedOwn
           ? 'Recording resumed — this was started here earlier.'
           : "A recording is running on this robot — it wasn't started from this screen."}
       </span>
-      <div className="flex flex-col gap-1.5 rounded-control border border-gray-200 bg-gray-50 px-3 py-2.5">
+      <div className="flex flex-col gap-1.5 rounded-control border border-border bg-surface-muted px-3 py-2.5">
         {/* The run_id is the name the operator recognises on disk; it is shown
             and never used as a key (§1). "—" until the capture loads. */}
         <FieldRow label="Run" value={takeover.runLabel ?? '—'} mono />
         <div className="flex items-baseline gap-2.5">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
             Elapsed
           </span>
           <div className="flex-1" />
           <span
             data-testid="takeover-elapsed"
-            className="font-mono text-[34px] font-semibold text-gray-900"
+            className="font-mono text-[34px] font-semibold text-text-primary"
           >
             {elapsedMs != null ? formatElapsed(elapsedMs) : '—'}
           </span>
@@ -106,15 +106,15 @@ export function TakeoverCard({
         ref={stopRef}
         type="button"
         onClick={machine.openTakeoverStopModal}
-        className="flex h-[52px] items-center justify-center gap-2 rounded-control bg-red-600 text-[15px] font-bold text-white shadow-btn-red hover:bg-red-700 [@media(max-height:860px)]:h-[44px]"
+        className="flex h-[52px] items-center justify-center gap-2 rounded-control bg-status-danger-accent text-[15px] font-bold text-status-danger-contrast shadow-btn-red hover:bg-status-danger-text [@media(max-height:860px)]:h-[44px]"
       >
-        <span className="h-[11px] w-[11px] rounded-sm bg-white" />
+        <span className="h-[11px] w-[11px] rounded-sm bg-surface" />
         Stop recording
       </button>
       <button
         type="button"
         onClick={machine.goMonitor}
-        className="self-start text-[12.5px] font-semibold text-teal-700 hover:underline"
+        className="self-start text-[12.5px] font-semibold text-accent hover:underline"
       >
         Open in Monitor →
       </button>

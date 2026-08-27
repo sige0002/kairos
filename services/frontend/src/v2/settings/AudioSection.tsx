@@ -231,11 +231,11 @@ export function AudioSection() {
       className="flex min-w-0 flex-col overflow-auto lg:col-span-2"
       data-testid="settings-audio"
     >
-      <div className="border-b border-gray-100 px-4 py-[13px]">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <div className="border-b border-border px-4 py-[13px]">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Audio feedback
         </h2>
-        <p className="mt-1 text-[12px] leading-relaxed text-gray-500">
+        <p className="mt-1 text-[12px] leading-relaxed text-text-muted">
           Optional, browser-local confirmation for hands-busy Collect work. Visual state
           stays authoritative; missing audio never blocks an action.
         </p>
@@ -264,7 +264,7 @@ export function AudioSection() {
               patch({ voice });
             }}
           />
-          <label className="flex flex-col gap-1 text-[12px] font-semibold text-gray-700">
+          <label className="flex flex-col gap-1 text-[12px] font-semibold text-text-primary">
             Output volume
             <input
               aria-label="Output volume"
@@ -276,7 +276,7 @@ export function AudioSection() {
               onChange={(event) => patch({ volume: Number(event.target.value) })}
             />
           </label>
-          <label className="flex flex-col gap-1 text-[12px] font-semibold text-gray-700">
+          <label className="flex flex-col gap-1 text-[12px] font-semibold text-text-primary">
             Language
             <select
               value={settings.language}
@@ -293,13 +293,13 @@ export function AudioSection() {
                   assets: {},
                 })
               }
-              className="h-9 rounded-control border border-gray-200 px-2"
+              className="h-9 rounded-control border border-border px-2"
             >
               <option value="en">English</option>
               <option value="ja">日本語</option>
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-[12px] font-semibold text-gray-700">
+          <label className="flex flex-col gap-1 text-[12px] font-semibold text-text-primary">
             Voice
             <select
               value={settings.voiceName}
@@ -314,7 +314,7 @@ export function AudioSection() {
                   assets: {},
                 });
               }}
-              className="h-9 rounded-control border border-gray-200 px-2 disabled:opacity-50"
+              className="h-9 rounded-control border border-border px-2 disabled:opacity-50"
             >
               {(voices.length ? voices : [settings.voiceName]).map((voice) => (
                 <option key={voice} value={voice}>
@@ -323,7 +323,7 @@ export function AudioSection() {
               ))}
             </select>
           </label>
-          <label className="flex flex-col gap-1 text-[12px] font-semibold text-gray-700">
+          <label className="flex flex-col gap-1 text-[12px] font-semibold text-text-primary">
             Speech rate · {settings.speechRate.toFixed(2)}×
             <input
               aria-label="Speech rate"
@@ -345,8 +345,8 @@ export function AudioSection() {
             />
           </label>
         </div>
-        <div className="rounded-control border border-gray-100">
-          <div className="grid grid-cols-[minmax(180px,1fr)_56px_56px_72px_72px] border-b border-gray-100 bg-gray-50 px-3 py-2 text-[10.5px] font-bold uppercase tracking-wide text-gray-500">
+        <div className="rounded-control border border-border">
+          <div className="grid grid-cols-[minmax(180px,1fr)_56px_56px_72px_72px] border-b border-border bg-surface-muted px-3 py-2 text-[10.5px] font-bold uppercase tracking-wide text-text-muted">
             <span>Confirmed event / phrase</span>
             <span>Sound</span>
             <span>Voice</span>
@@ -358,11 +358,11 @@ export function AudioSection() {
             return (
               <div
                 key={event}
-                className="grid min-h-14 grid-cols-[minmax(180px,1fr)_56px_56px_72px_72px] items-center border-b border-gray-100 px-3 last:border-0"
+                className="grid min-h-14 grid-cols-[minmax(180px,1fr)_56px_56px_72px_72px] items-center border-b border-border px-3 last:border-0"
               >
-                <span className="min-w-0 pr-2 text-[12.5px] text-gray-700">
+                <span className="min-w-0 pr-2 text-[12.5px] text-text-primary">
                   {LABELS[event]}
-                  <span className="block truncate text-[11px] font-normal text-gray-500">
+                  <span className="block truncate text-[11px] font-normal text-text-muted">
                     {phrase || 'Uses the selected task failure reason'}
                   </span>
                 </span>
@@ -391,7 +391,7 @@ export function AudioSection() {
                   type="button"
                   aria-label={`Preview sound for ${LABELS[event]}`}
                   onClick={() => void previewSound(event)}
-                  className="min-h-9 rounded-control border border-gray-200 px-2 text-[11px] font-semibold text-teal-700"
+                  className="min-h-9 rounded-control border border-border px-2 text-[11px] font-semibold text-accent"
                 >
                   Sound
                 </button>
@@ -404,7 +404,7 @@ export function AudioSection() {
                       event === 'failure_reason' ? failureReasons[0] : undefined,
                     )
                   }
-                  className="min-h-9 rounded-control border border-gray-200 px-2 text-[11px] font-semibold text-teal-700"
+                  className="min-h-9 rounded-control border border-border px-2 text-[11px] font-semibold text-accent"
                 >
                   {prepare.isPending ? 'Wait…' : 'Voice'}
                 </button>
@@ -412,8 +412,8 @@ export function AudioSection() {
             );
           })}
         </div>
-        <div className="rounded-control border border-gray-100 px-3 py-2">
-          <p className="text-[11px] font-semibold uppercase tracking-wide text-gray-500">
+        <div className="rounded-control border border-border px-3 py-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">
             Task failure reason phrases
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
@@ -422,7 +422,7 @@ export function AudioSection() {
                 key={reason}
                 type="button"
                 onClick={() => void previewVoice('failure_reason', reason)}
-                className="min-h-9 rounded-control border border-gray-200 px-2 text-[11.5px] text-gray-700"
+                className="min-h-9 rounded-control border border-border px-2 text-[11.5px] text-text-primary"
               >
                 {reason} · {prepare.isPending ? 'Wait…' : 'Voice'}
               </button>
@@ -443,7 +443,7 @@ export function AudioSection() {
             disabled={
               !status.data?.available || voices.length === 0 || prepare.isPending
             }
-            className="min-h-11 rounded-control bg-teal-700 px-3 text-[12.5px] font-semibold text-white disabled:opacity-50"
+            className="min-h-11 rounded-control bg-accent px-3 text-[12.5px] font-semibold text-text-inverse disabled:opacity-50"
           >
             {prepare.isPending ? 'Preparing…' : 'Prepare voice assets'}
           </button>
@@ -454,7 +454,7 @@ export function AudioSection() {
               stopVoicePlayer();
               setMessage('Audio settings reset. Audio feedback is Off.');
             }}
-            className="min-h-11 rounded-control border border-dashed border-gray-300 px-3 text-[12.5px] font-semibold text-teal-700"
+            className="min-h-11 rounded-control border border-dashed border-border-strong px-3 text-[12.5px] font-semibold text-accent"
           >
             Reset to defaults
           </button>
@@ -464,8 +464,8 @@ export function AudioSection() {
           className={cn(
             'rounded-control border px-3 py-2 text-[12px]',
             status.data?.available
-              ? 'border-teal-200 bg-teal-50 text-teal-800'
-              : 'border-amber-200 bg-amber-50 text-amber-800',
+              ? 'border-accent bg-interaction-selected text-accent'
+              : 'border-status-warning-border bg-status-warning-bg text-status-warning-text',
           )}
         >
           {message ||
@@ -497,7 +497,7 @@ function Toggle({
   onChange: (checked: boolean) => void;
 }) {
   return (
-    <label className="flex min-h-11 items-center justify-between rounded-control border border-gray-100 px-3 text-[12.5px] font-semibold text-gray-700">
+    <label className="flex min-h-11 items-center justify-between rounded-control border border-border px-3 text-[12.5px] font-semibold text-text-primary">
       <span>{label}</span>
       <input
         type="checkbox"
