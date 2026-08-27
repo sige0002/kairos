@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from api_orchestrator.deps import get_record_service
 from api_orchestrator.models import (
@@ -31,6 +31,7 @@ router = APIRouter(prefix="/api/v1/record", tags=["record"])
 @router.post("/prepare", response_model=RecordPrepareResponse)
 async def record_prepare(
     body: RecordStartRequest,
+    request: Request,
     service: RecordService = Depends(get_record_service),
 ) -> RecordPrepareResponse:
     """Arm a recording ahead of time so a later matching ``start`` is fast.
@@ -41,12 +42,14 @@ async def record_prepare(
     ``start``, or none at all, falls back to today's full synchronous start —
     the recorder auto-disarms the stale armed session on its own timeout.
     """
-    return await service.prepare(body)
+    async with request.app.state.recording_resource_lock:
+        return await service.prepare(body)
 
 
 @router.post("/start", response_model=Capture)
 async def record_start(
     body: RecordStartRequest,
+    request: Request,
     service: RecordService = Depends(get_record_service),
 ) -> Capture:
     """Start recording and file the capture the recorder minted.
@@ -56,7 +59,8 @@ async def record_start(
     recorder's failed-start sidecar is what the next rebuild turns into a row
     (§3.4).
     """
-    return await service.start(body)
+    async with request.app.state.recording_resource_lock:
+        return await service.start(body)
 
 
 @router.post("/stop", response_model=Capture)

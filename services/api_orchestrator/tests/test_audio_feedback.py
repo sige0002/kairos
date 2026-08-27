@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -65,6 +67,7 @@ def test_unavailable_provider_is_non_fatal(client: TestClient) -> None:
         "engine": None,
         "assets": [],
         "errors": ["TTS engine is unavailable"],
+        "deferred": False,
     }
 
 
@@ -133,4 +136,91 @@ def test_voice_generation_is_deferred_during_recording(
     assert response.json()["errors"] == [
         "Voice generation is deferred while recording is active"
     ]
+    assert response.json()["deferred"] is True
     assert provider.calls == []
+
+
+def test_voice_generation_is_deferred_when_recorder_status_is_unknown(
+    client: TestClient, fake_recorder
+) -> None:
+    provider = FakeTtsProvider()
+    client.app.state.audio_feedback.provider = provider
+    fake_recorder.transport_down = True
+
+    response = client.post(
+        "/api/v1/audio/assets",
+        json={
+            "phrases": [
+                {
+                    "key": "success",
+                    "text": "Success",
+                    "language": "en",
+                    "voice": "test-en",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["assets"] == []
+    assert response.json()["deferred"] is True
+    assert response.json()["errors"] == [
+        "Voice generation is deferred until recorder status is known"
+    ]
+    assert provider.calls == []
+
+
+def test_record_start_waits_for_in_flight_voice_generation(
+    client: TestClient, fake_recorder
+) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingProvider(FakeTtsProvider):
+        def synthesize(
+            self, text: str, language: str, voice: str, output: Path
+        ) -> None:
+            entered.set()
+            assert release.wait(timeout=5)
+            super().synthesize(text, language, voice, output)
+
+    client.app.state.audio_feedback.provider = BlockingProvider()
+    responses: dict[str, object] = {}
+    initial_recorder_state = fake_recorder.state
+
+    def prepare_voice() -> None:
+        responses["audio"] = client.post(
+            "/api/v1/audio/assets",
+            json={
+                "phrases": [
+                    {
+                        "key": "success",
+                        "text": "Success",
+                        "language": "en",
+                        "voice": "test-en",
+                    }
+                ]
+            },
+        )
+
+    def start_recording() -> None:
+        responses["start"] = client.post(
+            "/api/v1/record/start", json={"topics": ["/joint_states"]}
+        )
+
+    audio_thread = threading.Thread(target=prepare_voice)
+    start_thread = threading.Thread(target=start_recording)
+    audio_thread.start()
+    assert entered.wait(timeout=5)
+    start_thread.start()
+    time.sleep(0.1)
+
+    assert start_thread.is_alive()
+    assert fake_recorder.state == initial_recorder_state
+    release.set()
+    audio_thread.join(timeout=5)
+    start_thread.join(timeout=5)
+
+    assert responses["audio"].status_code == 200
+    assert responses["start"].status_code == 200
+    assert fake_recorder.state == "recording"

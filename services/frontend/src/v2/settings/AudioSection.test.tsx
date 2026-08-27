@@ -100,3 +100,34 @@ test('voice preparation merges into current settings instead of stale render sta
   );
   expect(getAudioSettings().soundEffects).toBe(false);
 });
+
+test('recording deferral names the reason and recovery instead of skipped phrases', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    if (String(input).includes('/audio/status'))
+      return Promise.resolve(
+        jsonResponse({
+          available: true,
+          engine: 'test',
+          voices: { en: ['en-us'], ja: ['ja'] },
+        }),
+      );
+    return Promise.resolve(
+      jsonResponse({
+        available: true,
+        engine: 'test',
+        assets: [],
+        errors: ['Voice generation is deferred while recording is active'],
+        deferred: true,
+      }),
+    );
+  });
+  renderWithClient(<AudioSection />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Prepare voice assets' }));
+
+  expect(
+    await screen.findByText(
+      /deferred while recording is active.*Retry after recording stops/,
+    ),
+  ).toBeVisible();
+});

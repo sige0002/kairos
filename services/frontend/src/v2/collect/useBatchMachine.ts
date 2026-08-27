@@ -738,8 +738,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
             void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
             void queryClient.invalidateQueries({ queryKey: queryKeys.batches });
             recordingCues.emit(
-              taskResult === 'fail' ? 'failure_reason' : 'success',
-              reason,
+              pendingCompletion.taskResult === 'fail' ? 'failure_reason' : 'success',
+              pendingCompletion.failureReason,
             );
             recordingCues.emit('save');
             flashSaved(pendingCompletion.index);
@@ -843,6 +843,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
                 batchId,
                 index: storedIndex,
                 quality: localQuality,
+                taskResult,
+                failureReason: reason,
               });
             } catch (err) {
               throw new Error(

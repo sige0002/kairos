@@ -45,42 +45,56 @@ async def prepare_assets(body: PrepareRequest, request: Request) -> dict[str, ob
             "engine": None,
             "assets": [],
             "errors": ["TTS engine is unavailable"],
-        }
-    try:
-        recorder_status = await request.app.state.recorder_client.status()
-    except Exception:
-        recorder_status = {}
-    if recorder_status.get("state") in {"armed", "recording", "stopping"}:
-        return {
-            "available": True,
-            "engine": provider.name,
-            "assets": [],
-            "errors": ["Voice generation is deferred while recording is active"],
+            "deferred": False,
         }
     assets: list[dict[str, str]] = []
     errors: list[str] = []
-    for phrase in body.phrases:
-        try:
-            asset_id = await asyncio.to_thread(
-                service.prepare, phrase.text, phrase.language, phrase.voice
+    async with request.app.state.recording_resource_lock:
+        for phrase in body.phrases:
+            try:
+                recorder_status = await request.app.state.recorder_client.status()
+            except Exception:
+                return {
+                    "available": True,
+                    "engine": provider.name,
+                    "assets": assets,
+                    "errors": [
+                        "Voice generation is deferred until recorder status is known"
+                    ],
+                    "deferred": True,
+                }
+            if recorder_status.get("state") in {"armed", "recording", "stopping"}:
+                return {
+                    "available": True,
+                    "engine": provider.name,
+                    "assets": assets,
+                    "errors": [
+                        "Voice generation is deferred while recording is active"
+                    ],
+                    "deferred": True,
+                }
+            try:
+                asset_id = await asyncio.to_thread(
+                    service.prepare, phrase.text, phrase.language, phrase.voice
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            except Exception as exc:
+                errors.append(f"{phrase.key}: {exc}")
+                continue
+            assets.append(
+                {
+                    "key": phrase.key,
+                    "asset_id": asset_id,
+                    "url": f"/api/v1/audio/assets/{asset_id}.wav",
+                }
             )
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except Exception as exc:
-            errors.append(f"{phrase.key}: {exc}")
-            continue
-        assets.append(
-            {
-                "key": phrase.key,
-                "asset_id": asset_id,
-                "url": f"/api/v1/audio/assets/{asset_id}.wav",
-            }
-        )
     return {
         "available": True,
         "engine": provider.name,
         "assets": assets,
         "errors": errors,
+        "deferred": False,
     }
 
 

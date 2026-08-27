@@ -435,6 +435,10 @@ def create_orchestrator_app(
     app.state.store_health = health
     app.state.data_layout = layout
     app.state.audio_feedback = AudioFeedbackService(layout.catalog / "audio")
+    # TTS and recorder prepare/start share this gate. A browser may request
+    # voice preparation from another terminal, but synthesis must finish before
+    # collection can become armed or live (and vice versa).
+    app.state.recording_resource_lock = asyncio.Lock()
     app.state.report_storage_service = ReportStorageService(layout, capture_store)
     app.state.instance_id = instance_id
     app.state.recorder_client = recorder

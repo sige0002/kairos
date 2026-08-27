@@ -14,10 +14,16 @@ import {
 } from '../recordingCues';
 import { assetKey, phraseFor } from '../../audio/phrases';
 import {
+  getAudioSettings,
   setAudioSettings,
   useAudioSettings,
   type AudioFeedbackEvent,
 } from '../../audio/settings';
+import {
+  playVoiceAsset,
+  stopVoicePlayer,
+  unlockVoicePlayer,
+} from '../../audio/voicePlayer';
 
 const STORAGE_KEY = 'kairos.collect.recording-cues.v1';
 const DEFAULT_VOLUME = 0.45;
@@ -101,6 +107,14 @@ export function useRecordingCues({
   const [playbackState, setPlaybackState] = useState<RecordingCuePlaybackState>(
     !player.supported ? 'unsupported' : enabled ? 'ready' : 'disabled',
   );
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => () => player.dispose?.(), [player]);
 
@@ -119,7 +133,7 @@ export function useRecordingCues({
         setPlaybackState('unsupported');
         return;
       }
-      setAudioSettings({ ...audioSettings, master: next });
+      setAudioSettings({ ...getAudioSettings(), master: next });
       persistSettings({ enabled: next, volume });
       if (!next) {
         setPlaybackState(player.supported ? 'disabled' : 'unsupported');
@@ -132,20 +146,20 @@ export function useRecordingCues({
       void player
         .unlock()
         .then((unlocked) => setPlaybackState(unlocked ? 'ready' : 'blocked'));
+      void unlockVoicePlayer();
     },
-    [audioSettings, player, volume],
+    [player, volume],
   );
 
   const setVolume = useCallback(
     (next: number) => {
       const clamped = clampVolume(next);
-      setAudioSettings({ ...audioSettings, volume: clamped });
+      setAudioSettings({ ...getAudioSettings(), volume: clamped });
       persistSettings({ enabled, volume: clamped });
     },
-    [audioSettings, enabled],
+    [enabled],
   );
 
-  const voiceRef = useRef<HTMLAudioElement | null>(null);
   const voicePriorityRef = useRef(0);
   const priority: Record<AudioFeedbackEvent, number> = {
     save: 1,
@@ -173,12 +187,7 @@ export function useRecordingCues({
   }, [audioSettings.assets, audioSettings.voice, enabled]);
 
   const stopVoice = useCallback(() => {
-    try {
-      voiceRef.current?.pause();
-    } catch {
-      // Audio teardown must never escape into Collect.
-    }
-    voiceRef.current = null;
+    stopVoicePlayer();
     voicePriorityRef.current = 0;
   }, []);
 
@@ -190,8 +199,10 @@ export function useRecordingCues({
   const emit = useCallback(
     (event: AudioFeedbackEvent, detail?: string) => {
       try {
-        if (!enabled) return;
-        const eventSettings = audioSettings.events[event];
+        if (!mountedRef.current) return;
+        const live = getAudioSettings();
+        if (!live.master) return;
+        const eventSettings = live.events[event];
         const cue: RecordingCueKind =
           event === 'stop'
             ? 'end'
@@ -200,36 +211,32 @@ export function useRecordingCues({
               : event === 'error'
                 ? 'warning'
                 : event;
-        if (audioSettings.soundEffects && eventSettings.sound)
-          void play(cue).catch(() => {});
-        if (!audioSettings.voice || !eventSettings.voice) return;
-        const phrase = phraseFor(event, audioSettings.language, detail);
-        const url = audioSettings.assets[assetKey(event, phrase)];
+        if (live.soundEffects && eventSettings.sound)
+          void player
+            .play(cue, live.volume)
+            .then((played) => {
+              if (mountedRef.current) setPlaybackState(played ? 'ready' : 'blocked');
+            })
+            .catch(() => {});
+        if (!live.voice || !eventSettings.voice) return;
+        const phrase = phraseFor(event, live.language, detail);
+        const url = live.assets[assetKey(event, phrase)];
         if (!url) return;
-        if (voiceRef.current && !voiceRef.current.paused) {
-          if (priority[event] <= voicePriorityRef.current) return;
-          voiceRef.current.pause();
-        }
-        const audio = new Audio(url);
-        audio.volume = audioSettings.volume;
-        voiceRef.current = audio;
+        if (priority[event] <= voicePriorityRef.current) return;
         voicePriorityRef.current = priority[event];
-        audio.addEventListener(
-          'ended',
-          () => {
-            if (voiceRef.current === audio) {
-              voiceRef.current = null;
-              voicePriorityRef.current = 0;
-            }
-          },
-          { once: true },
-        );
-        void audio.play().catch(() => setPlaybackState('blocked'));
+        void playVoiceAsset(url, live.volume, () => {
+          voicePriorityRef.current = 0;
+        }).then((played) => {
+          if (!played) {
+            voicePriorityRef.current = 0;
+            if (mountedRef.current) setPlaybackState('blocked');
+          }
+        });
       } catch {
-        setPlaybackState('blocked');
+        if (mountedRef.current) setPlaybackState('blocked');
       }
     },
-    [audioSettings, enabled, play],
+    [player],
   );
 
   const preview = useCallback(
@@ -250,13 +257,19 @@ export function useRecordingCues({
 
   const markStartRequested = useCallback(() => {
     startRequestedRef.current = true;
-    if (enabled) void player.unlock();
+    if (enabled) {
+      void player.unlock();
+      void unlockVoicePlayer();
+    }
   }, [enabled, player]);
 
   /** Prime Web Audio synchronously from gestures whose eventual start happens
    *  after asynchronous work (notably Retake's discard). */
   const prime = useCallback(() => {
-    if (enabled) void player.unlock();
+    if (enabled) {
+      void player.unlock();
+      void unlockVoicePlayer();
+    }
   }, [enabled, player]);
 
   const claimStartedCapture = useCallback((captureId: string | null) => {
@@ -294,7 +307,10 @@ export function useRecordingCues({
     (captureId: string | null) => {
       if (!captureId || ownedCaptureRef.current !== captureId) return;
       stopRequestedRef.current = captureId;
-      if (enabled) void player.unlock();
+      if (enabled) {
+        void player.unlock();
+        void unlockVoicePlayer();
+      }
     },
     [enabled, player],
   );

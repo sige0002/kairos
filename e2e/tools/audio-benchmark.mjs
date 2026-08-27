@@ -144,12 +144,14 @@ async function runRound(page, enabled, assets) {
   const recordedCamera = Object.entries(recordedTopics).find(([name]) => name.includes('image'));
   const ddsLost = Object.values(capture.quick_check?.layer0?.topics ?? {})
     .reduce((sum, topic) => sum + (topic.dds_samples_lost ?? 0), 0);
+  const resolvedVoicePlays = await page.evaluate(() => window.__kairosVoicePlays ?? 0);
   return {
     audio: enabled ? 'on' : 'off', start_latency_ms: Math.round(startLatencyMs),
     stop_to_result_ms: Math.round(stopLatencyMs), message_count: capture.message_count,
     bytes: capture.bytes, dds_samples_lost: ddsLost,
     tts_during_recording: deferred.errors, cpu_percent: cpu,
     system_cpu_percent: systemCpuPercent,
+    resolved_voice_plays: resolvedVoicePlays,
     camera_fps_before: beforeTopics.camera_fps, camera_fps_during: duringTopics.camera_fps,
     recorded_camera_fps: recordedCamera?.[1]?.avg_hz ?? null,
     camera_dds_samples_lost: duringTopics.camera_dds_samples_lost,
@@ -183,6 +185,18 @@ if (!cacheChecks.every((response) => response.ok)) {
 const browser = await chromium.launch({ headless: true });
 try {
   const page = await browser.newPage();
+  await page.addInitScript(() => {
+    window.__kairosVoicePlays = 0;
+    const originalPlay = HTMLMediaElement.prototype.play;
+    HTMLMediaElement.prototype.play = function observedPlay() {
+      const source = this.getAttribute('src') || this.src;
+      const result = originalPlay.call(this);
+      void result.then(() => {
+        if (source && !source.startsWith('data:')) window.__kairosVoicePlays += 1;
+      });
+      return result;
+    };
+  });
   await page.goto(`${FRONTEND}/?tab=collect`);
   const results = [await runRound(page, false, assets), await runRound(page, true, assets)];
   const [off, on] = results;
@@ -200,6 +214,8 @@ try {
   }, null, 2));
   if (off.dds_samples_lost > 0 || on.dds_samples_lost > 0)
     process.exitCode = 1;
+  if (on.resolved_voice_plays < 1)
+    throw new Error('Audio ON produced no successfully resolved Voice playback');
 } finally {
   await browser.close();
 }

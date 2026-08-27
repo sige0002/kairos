@@ -15,6 +15,7 @@ export interface PreparedAudioAssets {
   engine: string | null;
   assets: { key: string; asset_id: string; url: string }[];
   errors: string[];
+  deferred: boolean;
 }
 
 export function getAudioStatus(signal?: AbortSignal): Promise<AudioStatus> {

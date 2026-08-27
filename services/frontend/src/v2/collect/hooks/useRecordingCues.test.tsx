@@ -10,6 +10,7 @@ import { useRecordingCues } from './useRecordingCues';
 import {
   __reloadAudioSettings,
   DEFAULT_AUDIO_SETTINGS,
+  getAudioSettings,
   setAudioSettings,
 } from '../../audio/settings';
 import { assetKey, phraseFor } from '../../audio/phrases';
@@ -49,11 +50,16 @@ const baseSignals: Signals = {
 };
 
 beforeEach(() => {
+  vi.restoreAllMocks();
   window.localStorage.clear();
   setAudioSettings(structuredClone(DEFAULT_AUDIO_SETTINGS));
+  vi.spyOn(HTMLMediaElement.prototype, 'play').mockResolvedValue();
+  vi.spyOn(HTMLMediaElement.prototype, 'pause').mockImplementation(() => {});
 });
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 test('recording cues are opt-in and persist their volume', async () => {
   const { player } = fakePlayer();
@@ -253,11 +259,13 @@ test('master off and per-event sound controls suppress playback', async () => {
 
 test('higher-priority voice interrupts and stale lower-priority voice is dropped', () => {
   const instances: FakeAudio[] = [];
+  const playedSources: string[] = [];
   class FakeAudio {
     paused = true;
     preload = '';
     volume = 1;
     played = false;
+    pauseCount = 0;
     constructor(readonly src: string) {
       instances.push(this);
     }
@@ -265,10 +273,12 @@ test('higher-priority voice interrupts and stale lower-priority voice is dropped
     play() {
       this.paused = false;
       this.played = true;
+      playedSources.push(this.src);
       return Promise.resolve();
     }
     pause() {
       this.paused = true;
+      this.pauseCount += 1;
     }
     addEventListener() {}
   }
@@ -293,10 +303,11 @@ test('higher-priority voice interrupts and stale lower-priority voice is dropped
     result.current.emit('error');
   });
 
-  const played = instances.filter((audio) => audio.played);
-  expect(played.map((audio) => audio.src)).toEqual(['/success.wav', '/error.wav']);
-  expect(played[0]!.paused).toBe(true);
-  expect(played[1]!.paused).toBe(false);
+  expect(playedSources).toEqual(['/success.wav', '/error.wav']);
+  const voice = instances.filter((audio) => audio.played);
+  expect(voice).toHaveLength(1);
+  expect(voice[0]!.pauseCount).toBeGreaterThanOrEqual(2);
+  expect(voice[0]!.paused).toBe(false);
 });
 
 test('malformed persisted event settings and browser Audio errors never escape Collect', () => {
@@ -321,4 +332,41 @@ test('malformed persisted event settings and browser Audio errors never escape C
   const { result } = renderHook(() => useRecordingCues({ ...baseSignals, player }));
 
   expect(() => result.current.emit('success')).not.toThrow();
+});
+
+test('an emitter captured before Audio is disabled consults the live setting', () => {
+  const played: string[] = [];
+  class FakeAudio {
+    paused = true;
+    preload = '';
+    volume = 1;
+    onended: (() => void) | null = null;
+    constructor(public src: string) {}
+    load() {}
+    play() {
+      this.paused = false;
+      played.push(this.src);
+      return Promise.resolve();
+    }
+    pause() {
+      this.paused = true;
+    }
+    removeAttribute() {}
+  }
+  vi.stubGlobal('Audio', FakeAudio);
+  const phrase = phraseFor('success', 'en');
+  setAudioSettings({
+    ...structuredClone(DEFAULT_AUDIO_SETTINGS),
+    master: true,
+    soundEffects: false,
+    assets: { [assetKey('success', phrase)]: '/success.wav' },
+  });
+  const { player } = fakePlayer();
+  const { result } = renderHook(() => useRecordingCues({ ...baseSignals, player }));
+  const staleEmit = result.current.emit;
+
+  act(() => setAudioSettings({ ...getAudioSettings(), master: false }));
+  act(() => staleEmit('success'));
+
+  expect(played).toEqual([]);
 });

@@ -14,7 +14,13 @@ import {
   setAudioSettings,
   useAudioSettings,
   type AudioFeedbackEvent,
+  type AudioSettings,
 } from '../audio/settings';
+import {
+  playVoiceAsset,
+  stopVoicePlayer,
+  unlockVoicePlayer,
+} from '../audio/voicePlayer';
 import { createRecordingCuePlayer } from '../collect/recordingCues';
 
 const LABELS: Record<AudioFeedbackEvent, string> = {
@@ -29,22 +35,6 @@ const LABELS: Record<AudioFeedbackEvent, string> = {
   error: 'Recording / Collect error',
 };
 
-const SILENT_WAV =
-  'data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQQAAACA';
-
-function unlockVoicePlayback(): void {
-  try {
-    const audio = new Audio(SILENT_WAV);
-    audio.volume = 0;
-    void audio
-      .play()
-      .then(() => audio.pause())
-      .catch(() => {});
-  } catch {
-    // The status region explains a later blocked preview; settings still save.
-  }
-}
-
 function cueFor(event: AudioFeedbackEvent) {
   return event === 'stop'
     ? 'end'
@@ -55,6 +45,34 @@ function cueFor(event: AudioFeedbackEvent) {
         : event;
 }
 
+function phrasesFor(settings: AudioSettings) {
+  const base = AUDIO_EVENTS.filter((event) => event !== 'failure_reason').map(
+    (event) => {
+      const text = phraseFor(event, settings.language);
+      return {
+        key: assetKey(event, text),
+        text,
+        language: settings.language,
+        voice: settings.voiceName,
+      };
+    },
+  );
+  return base.concat(
+    getFailReasons().map((text) => ({
+      key: assetKey('failure_reason', text),
+      text,
+      language: settings.language,
+      voice: settings.voiceName,
+    })),
+  );
+}
+
+function phraseSetIdentity(phrases: ReturnType<typeof phrasesFor>): string {
+  return JSON.stringify(
+    phrases.map(({ key, text, language, voice }) => [key, text, language, voice]),
+  );
+}
+
 export function AudioSection() {
   const settings = useAudioSettings();
   const [message, setMessage] = useState('');
@@ -63,27 +81,7 @@ export function AudioSection() {
     queryFn: ({ signal }) => getAudioStatus(signal),
   });
   const voices = status.data?.voices[settings.language] ?? [];
-  const phrases = useMemo(() => {
-    const base = AUDIO_EVENTS.filter((event) => event !== 'failure_reason').map(
-      (event) => {
-        const text = phraseFor(event, settings.language);
-        return {
-          key: assetKey(event, text),
-          text,
-          language: settings.language,
-          voice: settings.voiceName,
-        };
-      },
-    );
-    return base.concat(
-      getFailReasons().map((text) => ({
-        key: assetKey('failure_reason', text),
-        text,
-        language: settings.language,
-        voice: settings.voiceName,
-      })),
-    );
-  }, [settings.language, settings.voiceName]);
+  const phrases = useMemo(() => phrasesFor(settings), [settings]);
   const prepare = useMutation({
     mutationFn: (request: {
       language: typeof settings.language;
@@ -94,7 +92,8 @@ export function AudioSection() {
       const current = getAudioSettings();
       if (
         current.language !== request.language ||
-        current.voiceName !== request.voiceName
+        current.voiceName !== request.voiceName ||
+        phraseSetIdentity(phrasesFor(current)) !== phraseSetIdentity(request.phrases)
       ) {
         setMessage(
           'Voice selection changed while preparing. Prepare the current voice again.',
@@ -107,11 +106,13 @@ export function AudioSection() {
       });
       setAudioSettings({ ...current, assets });
       setMessage(
-        result.available
-          ? result.errors.length
-            ? `Prepared with ${result.errors.length} skipped phrase(s).`
-            : `Voice assets ready (${result.assets.length}).`
-          : 'Voice engine is unavailable. Sound effects remain available.',
+        result.deferred
+          ? `${result.errors[0] ?? 'Voice preparation was deferred.'} Retry after recording stops.`
+          : result.available
+            ? result.errors.length
+              ? `Prepared with ${result.errors.length} skipped phrase(s).`
+              : `Voice assets ready (${result.assets.length}).`
+            : 'Voice engine is unavailable. Sound effects remain available.',
       );
     },
     onError: () =>
@@ -123,7 +124,7 @@ export function AudioSection() {
   const patch = (next: Partial<typeof settings>) =>
     setAudioSettings({ ...getAudioSettings(), ...next });
   const preview = async (event: AudioFeedbackEvent, detail?: string) => {
-    unlockVoicePlayback();
+    void unlockVoicePlayer();
     const player = createRecordingCuePlayer();
     const eventSettings = settings.events[event];
     if (settings.soundEffects && eventSettings.sound)
@@ -131,13 +132,9 @@ export function AudioSection() {
     const text = phraseFor(event, settings.language, detail);
     const url = settings.assets[assetKey(event, text)];
     if (settings.voice && eventSettings.voice && url) {
-      const audio = new Audio(url);
-      audio.volume = settings.volume;
-      await audio
-        .play()
-        .catch(() =>
-          setMessage('The browser blocked audio. Press Preview again to allow it.'),
-        );
+      const played = await playVoiceAsset(url, settings.volume);
+      if (!played)
+        setMessage('The browser blocked audio. Press Preview again to allow it.');
     } else if (settings.voice && eventSettings.voice) {
       setMessage('Prepare voice assets before previewing Voice.');
     }
@@ -164,7 +161,8 @@ export function AudioSection() {
             label="Audio feedback"
             checked={settings.master}
             onChange={(master) => {
-              if (master) unlockVoicePlayback();
+              if (master) void unlockVoicePlayer();
+              else stopVoicePlayer();
               patch({ master });
             }}
           />
@@ -176,7 +174,10 @@ export function AudioSection() {
           <Toggle
             label="Voice / TTS"
             checked={settings.voice}
-            onChange={(voice) => patch({ voice })}
+            onChange={(voice) => {
+              if (!voice) stopVoicePlayer();
+              patch({ voice });
+            }}
           />
           <label className="flex flex-col gap-1 text-[12px] font-semibold text-gray-700">
             Output volume
@@ -322,6 +323,7 @@ export function AudioSection() {
             type="button"
             onClick={() => {
               resetAudioSettings();
+              stopVoicePlayer();
               setMessage('Audio settings reset. Audio feedback is Off.');
             }}
             className="min-h-11 rounded-control border border-dashed border-gray-300 px-3 text-[12.5px] font-semibold text-teal-700"
