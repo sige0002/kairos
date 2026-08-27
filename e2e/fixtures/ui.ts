@@ -273,15 +273,9 @@ export async function refreshStoreHealth(page: Page): Promise<void> {
 
 // ---- Settings › Recording ---------------------------------------------------
 
-/** "Recording" in the Settings menu rail. The rail's testids are positional,
- *  so the section is confirmed by its OWN testid immediately after the click —
- *  a reordered menu then fails with "settings-recording never appeared"
- *  instead of quietly asserting against whatever section index 5 became. */
-const RECORDING_MENU_INDEX = 5;
-
 export async function openRecordingSettings(page: Page): Promise<void> {
   await openTab(page, 'settings');
-  await page.getByTestId(`settings-menu-item-${RECORDING_MENU_INDEX}`).click();
+  await page.getByTestId('settings-section-recording').click();
   await expect(page.getByTestId('settings-recording')).toBeVisible({ timeout: 30_000 });
 }
 

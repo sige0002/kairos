@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-// Settings tab (v2 IA) — absorbs the old Config tab plus robot profiles and
-// batch plans. Root mirrors the design mock's 216px / 250px / 1fr three-column
-// grid (settings menu, then either a list+detail pair or a single wide section).
+// Settings tab (v2 IA) — a stable category rail with durable section IDs.
 //
 // All spec §12 sections are built on real data:
 //   Robots            — robot select + per-aspect options + recording editor
@@ -12,6 +10,8 @@
 //   Operators         — the attribution roster (fills the OP picker; not auth)
 //   Recording         — form-first active-robot recording config (JSON = Advanced)
 //   Data quality      — read-only expected rates + thresholds + required topics
+//   Alerts            — per-robot monitor alert rules
+//   Generated files   — derived report / preview cleanup
 //   Validation        — aspect selection + one-click presets (run in the Val tab)
 //   System            — deployment facts + honest component health
 //   Appearance        — browser-local System / Light / Dark presentation mode
@@ -19,9 +19,10 @@
 // is genuinely nothing to configure for them yet (see OtherSection rationale).
 
 import { useQuery } from '@tanstack/react-query';
-import { fetchRuntimeConfig } from '../../config';
+import type { ReactNode } from 'react';
+import { fetchRuntimeConfig, type RuntimeConfig } from '../../config';
 import { queryKeys } from '../../api/queryKeys';
-import { SETTINGS_MENU } from './data';
+import type { SettingsSectionId } from './data';
 import { MenuRail } from './MenuRail';
 import { RobotsSection } from './RobotsSection';
 import { PlansSection } from './PlansSection';
@@ -35,17 +36,58 @@ import { ValidationSection } from './ValidationSection';
 import { SystemSection } from './SystemSection';
 import { OtherSection } from './OtherSection';
 import { AppearanceSection } from './AppearanceSection';
+import { AlertsCard } from './AlertsCard';
+import { GeneratedFilesSection } from './GeneratedFilesSection';
+import { Card } from '../../components/ui';
 import { Toast } from '../shared/Toast';
 import { useSettingsState } from './useSettingsState';
 import { adoptServerCatalog, usePlansConflict, usePlansUnsynced } from '../plans';
 import { ScreenTitle } from '../shared/ScreenTitle';
 
 // Honest rationale for the two sections with nothing to configure yet.
-const PLACEHOLDER_RATIONALE: Record<string, string> = {
-  'Dataset profiles':
+const PLACEHOLDER_RATIONALE: Record<'dataset-profiles' | 'users-permissions', string> = {
+  'dataset-profiles':
     'Dataset profiles arrive with the Phase 3 recipe model (build datasets from a reviewed query). There is nothing to configure yet.',
-  'Users & permissions':
+  'users-permissions':
     'This deployment is single-team on a trusted LAN with no accounts, so there is nothing to manage yet. Authentication is on the roadmap for beyond-LAN deployments.',
+};
+
+interface SectionRendererContext {
+  config: RuntimeConfig | undefined;
+  settings: ReturnType<typeof useSettingsState>;
+}
+
+const SECTION_RENDERERS: Record<
+  SettingsSectionId,
+  (context: SectionRendererContext) => ReactNode
+> = {
+  robots: ({ config }) => <RobotsSection config={config} />,
+  'projects-tasks': ({ settings }) => <PlansSection settings={settings} />,
+  'failure-reasons': ({ settings }) => <FailureReasonsSection settings={settings} />,
+  'external-controls': () => <ExternalControlsSection />,
+  operators: ({ settings }) => <OperatorsSection settings={settings} />,
+  recording: ({ config }) => <RecordingSection config={config} />,
+  'data-quality': ({ config }) => <DataQualitySection config={config} />,
+  validation: () => <ValidationSection />,
+  'dataset-profiles': () => (
+    <OtherSection label="Dataset profiles" rationale={PLACEHOLDER_RATIONALE['dataset-profiles']} />
+  ),
+  'users-permissions': () => (
+    <OtherSection label="Users & permissions" rationale={PLACEHOLDER_RATIONALE['users-permissions']} />
+  ),
+  system: ({ config }) => <SystemSection config={config} />,
+  appearance: () => <AppearanceSection />,
+  audio: () => <AudioSection />,
+  alerts: () => (
+    <Card className="flex min-w-0 flex-col overflow-auto p-[18px] lg:col-span-2" data-testid="settings-alerts-panel">
+      <AlertsCard />
+    </Card>
+  ),
+  'generated-files': () => (
+    <Card className="flex min-w-0 flex-col overflow-auto p-[18px] lg:col-span-2" data-testid="settings-generated-files">
+      <GeneratedFilesSection />
+    </Card>
+  ),
 };
 
 export function SettingsScreen() {
@@ -58,37 +100,13 @@ export function SettingsScreen() {
   });
 
   const settings = useSettingsState();
-  const label = SETTINGS_MENU[settings.menuIdx] ?? 'Settings';
+  const renderSection = SECTION_RENDERERS[settings.sectionId];
 
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[216px_250px_1fr]">
       <ScreenTitle>Settings</ScreenTitle>
       <MenuRail settings={settings} />
-      {label === 'Robots' ? (
-        <RobotsSection config={config} />
-      ) : label === 'Projects & tasks' ? (
-        <PlansSection settings={settings} />
-      ) : label === 'Failure reasons' ? (
-        <FailureReasonsSection settings={settings} />
-      ) : label === 'External controls' ? (
-        <ExternalControlsSection />
-      ) : label === 'Audio' ? (
-        <AudioSection />
-      ) : label === 'Operators' ? (
-        <OperatorsSection settings={settings} />
-      ) : label === 'Recording' ? (
-        <RecordingSection config={config} />
-      ) : label === 'Data quality' ? (
-        <DataQualitySection config={config} />
-      ) : label === 'Validation' ? (
-        <ValidationSection />
-      ) : label === 'System' ? (
-        <SystemSection config={config} />
-      ) : label === 'Appearance' ? (
-        <AppearanceSection />
-      ) : (
-        <OtherSection label={label} rationale={PLACEHOLDER_RATIONALE[label] ?? ''} />
-      )}
+      {renderSection({ config, settings })}
       <UnsyncedCatalogNote />
       <CatalogConflictNote />
       <Toast message={settings.toast} testId="settings-toast" />

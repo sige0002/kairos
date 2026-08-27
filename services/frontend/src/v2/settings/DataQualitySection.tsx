@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
 // Settings > Data quality — what "good" and "important" mean for the active
-// robot. The top card is a READ-ONLY view sourced from GET /api/v1/config/robots/
+// robot. This is a READ-ONLY view sourced from GET /api/v1/config/robots/
 // {robot} (RobotConfig): expected-Hz reference rates + the monitor's shortfall
 // status thresholds from the recording aspect, and the active validation
-// template's required topics. Below it is the per-robot alert-rules EDITOR
-// (AlertsCard → /config/alerts) that used to be "not exposed by the API".
+// template's required topics. Alert rules have their own Notifications section.
 // (The Review Signals defaults editor was retired with the Review waveform
 // chart it configured — the integrity view has no per-field selection.)
 
@@ -15,7 +14,6 @@ import { queryKeys } from '../../api/queryKeys';
 import type { RuntimeConfig } from '../../config';
 import { Card } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
-import { AlertsCard } from './AlertsCard';
 
 interface RecordingContentView {
   expected_hz_patterns?: { pattern: string; hz?: number | null }[];
@@ -139,12 +137,6 @@ export function DataQualitySection({ config }: { config: RuntimeConfig | undefin
 
         </>
       )}
-      </Card>
-
-      {/* Alert rules — editable surface for config/<robot>/monitoring/alerts.yaml
-          (F2''): replaces the old "not exposed by the API" note. */}
-      <Card className="flex min-w-0 flex-col p-[18px]">
-        <AlertsCard />
       </Card>
 
     </div>

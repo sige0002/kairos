@@ -6,6 +6,7 @@ import { setApiBase } from '../../api/client';
 import { ErrorBoundary } from '../../components/ErrorBoundary';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { SettingsScreen } from './SettingsScreen';
+import { getCategorySections, SETTINGS_CATEGORIES, SETTINGS_SECTIONS } from './data';
 import {
   __rehydratePlansStore,
   __resetPlansStore,
@@ -314,6 +315,7 @@ function selectPosts() {
 }
 
 beforeEach(() => {
+  window.history.replaceState(null, '', '/');
   setApiBase('/api/v1');
   window.localStorage.removeItem('kairos.appearance');
   document.documentElement.dataset.theme = 'light';
@@ -759,6 +761,73 @@ test('menu switches Robots → Plans → Recording (real, not a placeholder) →
 
   fireEvent.click(screen.getByTestId('settings-menu-item-0'));
   expect(screen.getByTestId('robot-form')).toBeInTheDocument();
+});
+
+test('groups every settings section under stable category and section IDs', () => {
+  renderWithClient(<SettingsScreen />);
+
+  expect(screen.getByTestId('settings-category-general')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-category-collection')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-category-data')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-category-workspace')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-category-notifications')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-category-advanced')).toBeInTheDocument();
+
+  expect(screen.getByTestId('settings-section-alerts')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-section-generated-files')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-section-appearance')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-section-audio')).toBeInTheDocument();
+  // Language is intentionally absent until its implementation exists; General
+  // is its stable destination without presenting a dead control.
+  expect(screen.queryByRole('button', { name: 'Language' })).not.toBeInTheDocument();
+});
+
+test('derives complete, non-overlapping category membership from section metadata', () => {
+  const idsInCategories = SETTINGS_CATEGORIES.flatMap((category) =>
+    getCategorySections(category.id).map((section) => section.id),
+  );
+
+  expect(idsInCategories).toHaveLength(SETTINGS_SECTIONS.length);
+  expect(new Set(idsInCategories)).toHaveLength(SETTINGS_SECTIONS.length);
+  expect(new Set(idsInCategories)).toEqual(
+    new Set(SETTINGS_SECTIONS.map((section) => section.id)),
+  );
+  for (const category of SETTINGS_CATEGORIES) {
+    expect(
+      getCategorySections(category.id).every(
+        (section) => section.categoryId === category.id,
+      ),
+    ).toBe(true);
+  }
+});
+
+test('selects sections by stable ID, keeps focus, and updates the settings deep link', () => {
+  renderWithClient(<SettingsScreen />);
+
+  const recording = screen.getByTestId('settings-menu-item-5');
+  recording.focus();
+  fireEvent.click(recording);
+
+  expect(recording).toHaveFocus();
+  expect(recording).toHaveAttribute('aria-current', 'page');
+  expect(screen.getByTestId('settings-recording')).toBeInTheDocument();
+  expect(new URLSearchParams(window.location.search).get('settings')).toBe('recording');
+});
+
+test('opens a valid Settings deep link and safely falls back for an unknown ID', () => {
+  window.history.replaceState(null, '', '/?tab=settings&settings=alerts');
+  const view = renderWithClient(<SettingsScreen />);
+  expect(screen.getByTestId('settings-alerts-panel')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-menu-item-alerts')).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+
+  view.unmount();
+  window.history.replaceState(null, '', '/?tab=settings&settings=not-a-section');
+  renderWithClient(<SettingsScreen />);
+  expect(screen.getByTestId('robot-form')).toBeInTheDocument();
+  expect(new URLSearchParams(window.location.search).get('settings')).toBeNull();
 });
 
 test('External controls exposes only state-safe actions and persists a rearrangement', async () => {
@@ -1416,12 +1485,12 @@ test('Plans: the catalog empties WHILE the operator is in the detail editor', as
 // then no other robot's entry to serve.
 // ---------------------------------------------------------------------------
 
-test('Data quality: alert rules follow the ACTIVE robot across a switch', async () => {
+test('Alerts: alert rules follow the ACTIVE robot across a switch', async () => {
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
 
-  // Data quality shows airoa_hsr's rule, from airoa_hsr's file.
-  fireEvent.click(screen.getByTestId('settings-menu-item-6'));
+  // Alerts shows airoa_hsr's rule, from airoa_hsr's file.
+  fireEvent.click(screen.getByTestId('settings-section-alerts'));
   await waitFor(() =>
     expect(screen.getByLabelText('rule topic 0')).toHaveValue(
       '/airoa_hsr/joint_states',
@@ -1436,10 +1505,10 @@ test('Data quality: alert rules follow the ACTIVE robot across a switch', async 
     expect(selectPosts()).toContainEqual({ category: 'robot', id: 'template' }),
   );
 
-  // Back to Data quality: the previous robot's rules must never be on screen
+  // Back to Alerts: the previous robot's rules must never be on screen
   // under the new robot — not even for the moment before a refetch lands, since
   // Save in that window would write them into the new robot's file.
-  fireEvent.click(screen.getByTestId('settings-menu-item-6'));
+  fireEvent.click(screen.getByTestId('settings-section-alerts'));
   expect(screen.queryByDisplayValue('/airoa_hsr/joint_states')).not.toBeInTheDocument();
   await waitFor(() =>
     expect(screen.getByLabelText('rule topic 0')).toHaveValue('/template/joint_states'),
