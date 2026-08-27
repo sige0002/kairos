@@ -26,6 +26,12 @@ import {
 } from '../captures/availability';
 import { formatHms } from '../review/format';
 import { spanMs } from '../review/mapCaptures';
+import {
+  formatCaptureDate,
+  formatMemberCount,
+  formatNumber,
+  formatShortDate as formatLocaleShortDate,
+} from '../../i18n/format';
 
 /** Operator-facet sentinel meaning "don't filter by operator". */
 export const ANY_OPERATOR = '__any__';
@@ -130,9 +136,7 @@ export function captureWhen(capture: CaptureListItem): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
-  const date = d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-  const time = d.toLocaleTimeString('en-GB', { hour12: false });
-  return `${date} ${time}`;
+  return formatCaptureDate(d);
 }
 
 /** The facts that tell one recording from another — task · operator ·
@@ -153,20 +157,16 @@ export function captureFacts(capture: CaptureListItem): string {
 
 export function formatCount(n?: number | null): string {
   if (n === undefined || n === null) return '—';
-  return n.toLocaleString();
+  return formatNumber(n);
 }
 
 /** "member" / "members", agreeing with `n`. One place, because the screen says
  *  it in six — a list row, a scope header, a pager, a stat tile and two
  *  tooltips — and "1 members" in any one of them reads as a rendering bug and
  *  costs the number beside it its credibility. */
-export function memberNoun(n: number): string {
-  return n === 1 ? 'member' : 'members';
-}
-
 /** The count and its noun together ("1 member", "1,204 members"). */
 export function memberCount(n: number): string {
-  return `${formatCount(n)} ${memberNoun(n)}`;
+  return formatMemberCount(n);
 }
 
 /** Compact "MM/DD" for the list rows ("last 07/21"). */
@@ -174,7 +174,7 @@ export function formatShortDate(iso?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
-  return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+  return formatLocaleShortDate(d);
 }
 
 /** The short form of a capture id used in tables and titles. The full id is

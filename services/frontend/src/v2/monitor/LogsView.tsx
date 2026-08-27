@@ -12,6 +12,7 @@ import { useQuery } from '@tanstack/react-query';
 import { queryKeys } from '../../api/queryKeys';
 import type { SessionLogEntry, SessionLogType } from '../../api/types';
 import { Card, cn, type Tone } from '../../components/ui';
+import { formatTime } from '../../i18n/format';
 
 type TypeFilter = 'all' | SessionLogType;
 const TYPE_FILTERS: TypeFilter[] = ['all', 'record_status', 'alert', 'job'];
@@ -28,12 +29,7 @@ const TYPE_TONE: Record<SessionLogType, Tone> = {
 };
 
 function formatClock(ts: number): string {
-  return new Date(ts).toLocaleTimeString('en-GB', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  return formatTime(new Date(ts));
 }
 
 export function LogsView() {

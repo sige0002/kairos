@@ -6,10 +6,12 @@ import { useQuery } from '@tanstack/react-query';
 import { getConfigOptions } from '../../api/config';
 import { queryKeys } from '../../api/queryKeys';
 import { Card, cn } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { getCategorySections, SETTINGS_CATEGORIES } from './data';
 import type { SettingsState } from './useSettingsState';
 
 export function MenuRail({ settings }: { settings: SettingsState }) {
+  const { t } = useTranslation('settings');
   // Real active robot from GET /api/v1/config/options (the same cache the Robots
   // section fills). There is no global "config version" concept in the backend,
   // so the footer shows the one honest, sourced value we do have.
@@ -29,7 +31,7 @@ export function MenuRail({ settings }: { settings: SettingsState }) {
               data-testid={`settings-category-${category.id}`}
               className="px-3 pb-1 text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted"
             >
-              {category.label}
+              {t(`categories.${category.id}`)}
             </h2>
             <div className="flex flex-col gap-[3px]">
               {getCategorySections(category.id).map((section) => (
@@ -51,7 +53,9 @@ export function MenuRail({ settings }: { settings: SettingsState }) {
                       : 'text-text-secondary hover:bg-interaction-hover',
                   )}
                 >
-                  <span data-testid={`settings-section-${section.id}`}>{section.label}</span>
+                  <span data-testid={`settings-section-${section.id}`}>
+                    {section.id === 'language' ? t('sections.language') : section.label}
+                  </span>
                 </button>
               ))}
             </div>

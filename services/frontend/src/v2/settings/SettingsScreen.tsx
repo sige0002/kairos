@@ -36,6 +36,7 @@ import { ValidationSection } from './ValidationSection';
 import { SystemSection } from './SystemSection';
 import { OtherSection } from './OtherSection';
 import { AppearanceSection } from './AppearanceSection';
+import { LanguageSection } from './LanguageSection';
 import { AlertsCard } from './AlertsCard';
 import { GeneratedFilesSection } from './GeneratedFilesSection';
 import { Card } from '../../components/ui';
@@ -61,6 +62,7 @@ const SECTION_RENDERERS: Record<
   SettingsSectionId,
   (context: SectionRendererContext) => ReactNode
 > = {
+  language: () => <LanguageSection />,
   robots: ({ config }) => <RobotsSection config={config} />,
   'projects-tasks': ({ settings }) => <PlansSection settings={settings} />,
   'failure-reasons': ({ settings }) => <FailureReasonsSection settings={settings} />,

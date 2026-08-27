@@ -146,6 +146,69 @@ test("Settings: changing appearance leaves an active Collect recording alone", a
   }
 });
 
+test("Settings: changing language leaves an active Collect recording alone", async ({ page }) => {
+  test.setTimeout(5 * 60_000);
+  const recordRequests: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (/\/api\/v1\/record\/(?:start|stop)$/.test(path)) recordRequests.push(path);
+  });
+
+  let recordingStarted = false;
+  try {
+    await openTab(page, "collect");
+    await ensureOperator(page);
+    const before = new Set((await api.allCaptures(true)).map((capture) => capture.capture_id));
+
+    await expect(phaseTitle(page)).toHaveText("READY", { timeout: 90_000 });
+    await page.getByRole("button", { name: /Start recording/ }).click();
+    recordingStarted = true;
+    await expect(phaseTitle(page)).toHaveText("RECORDING", { timeout: 120_000 });
+    await expect.poll(() => elapsedSeconds(page), { timeout: 60_000 }).toBeGreaterThanOrEqual(1);
+
+    const live = (await api.allCaptures(true)).filter((capture) => !before.has(capture.capture_id));
+    expect(live, "starting Collect did not create one live capture").toHaveLength(1);
+    const captureId = live[0].capture_id;
+    const commandsBeforeLanguage = [...recordRequests];
+
+    await page.locator("#tab-settings").click();
+    await page.getByTestId("settings-menu-item-language").click();
+    const language = page.getByTestId("settings-language");
+    await expect(language).toBeVisible();
+    await expect(language.getByTestId("language-en")).toBeChecked();
+    await language.getByTestId("language-ja").click();
+    await expect(page.locator("html")).toHaveAttribute("lang", "ja");
+    await expect(page.locator("#tab-collect")).toHaveText("収録");
+    expect(await page.evaluate(() => localStorage.getItem("kairos.locale"))).toBe("ja");
+    expect(recordRequests, "language sent a recorder command").toEqual(commandsBeforeLanguage);
+
+    // Tab IDs are semantic navigation identities, so the return path does not
+    // depend on translated display text.
+    await page.locator("#tab-collect").click();
+    await expect(phaseTitle(page)).toHaveText("RECORDING");
+    await expect.poll(() => elapsedSeconds(page), { timeout: 60_000 }).toBeGreaterThanOrEqual(2);
+    expect((await api.allCaptures(true)).map((capture) => capture.capture_id)).toContain(captureId);
+    expect(recordRequests, "returning from Settings sent a recorder command").toEqual(
+      commandsBeforeLanguage,
+    );
+
+    await page.getByRole("button", { name: /Stop recording/ }).click();
+    await expect(phaseTitle(page)).toHaveText(/result$/, { timeout: 180_000 });
+    recordingStarted = false;
+    await page.getByTestId("save-episode").click();
+    await expect(phaseTitle(page)).not.toHaveText(/result$/, { timeout: 60_000 });
+    expect(recordRequests.filter((path) => path.endsWith("/stop"))).toHaveLength(1);
+  } finally {
+    if (recordingStarted && (await page.getByRole("button", { name: /Stop recording/ }).count())) {
+      await page.getByRole("button", { name: /Stop recording/ }).click();
+    }
+    await page.locator("#tab-settings").click();
+    await page.getByTestId("settings-menu-item-language").click();
+    await page.getByTestId("language-en").click();
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
+  }
+});
+
 test("Settings: Audio is opt-in, independently configurable, and resettable", async ({
   page,
 }) => {

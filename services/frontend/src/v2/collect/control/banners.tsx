@@ -7,6 +7,7 @@
 import { cn } from '../../../components/ui';
 import type { RecordArming } from '../../../api/types';
 import { isTransportCode, readCaptureError } from '../../captures/errors';
+import { formatNumber } from '../../../i18n/format';
 import type { MachineError } from '../useBatchMachine';
 
 // Operator-facing copy for known recorder error codes (D-8-1). Unknown codes
@@ -135,7 +136,7 @@ export function IntegrityBanner({
         <span className="text-[13px] font-bold">
           {failed
             ? 'Recording failed — bag unreadable'
-            : `Data dropped — ${dropped != null ? dropped.toLocaleString() : '?'} messages lost`}
+            : `Data dropped — ${dropped != null ? formatNumber(dropped) : '?'} messages lost`}
         </span>
       </div>
       <span className="pl-4 text-xs">

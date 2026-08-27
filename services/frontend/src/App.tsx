@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { setApiBase } from './api/client';
 import { fetchRuntimeConfig, type RuntimeConfig } from './config';
 import { queryKeys } from './api/queryKeys';
@@ -12,13 +13,14 @@ import { DatasetsScreen } from './v2/datasets/DatasetsScreen';
 import { ValidationScreen } from './v2/validation/ValidationScreen';
 import { MonitorScreen } from './v2/monitor/MonitorScreen';
 import { SettingsScreen } from './v2/settings/SettingsScreen';
-import { resolveTabId, tabLabel, V2_TABS, type V2TabId } from './v2/tabs';
+import { resolveTabId, V2_TABS, type V2TabId } from './v2/tabs';
 import { useOnPopState } from './v2/shared/useOnPopState';
 import { HIT_AREA_CHIP, HIT_AREA_TAB } from './v2/shared/hitArea';
 import { PanelBoundary } from './components/ErrorBoundary';
 import { Hexagon, StatusDot, cn } from './components/ui';
 import { OPERATOR_STORAGE_KEY, type SseStatus } from './store/uiStore';
 import { StoreHealthBanner } from './v2/store/StoreHealthBanner';
+import { useLocale } from './i18n';
 
 // ---- per-tab pages (deep link + pop-out) ------------------------------------
 // Each tab is addressable by URL (`?tab=<id>`); `?tab=<id>&solo=1` renders ONLY
@@ -109,6 +111,7 @@ function useActiveTab(): V2TabId {
  *  Settings). Fixed client-side — see `./v2/tabs.ts` for why this no longer
  *  reads the backend's tab registry. */
 function TabNav({ active }: { active: V2TabId }) {
+  const { t } = useTranslation('common');
   const setActiveTab = useUiStore((s) => s.setActiveTab);
   return (
     <nav
@@ -138,7 +141,7 @@ function TabNav({ active }: { active: V2TabId }) {
                 : 'font-medium text-text-secondary hover:text-text-primary',
             )}
           >
-            {tabLabel(tab.id)}
+            {t(`tabs.${tab.id}`)}
           </button>
         );
       })}
@@ -150,17 +153,19 @@ function TabNav({ active }: { active: V2TabId }) {
  *  tablist) so assistive tech sees only tabs in the nav; the pop-out is still
  *  reachable and every tab remains directly addressable by its deep-link URL. */
 function TabPanel({ active }: { active: V2TabId }) {
+  const { t } = useTranslation('common');
+  const label = t(`tabs.${active}`);
   return (
     <div className="flex flex-col gap-2 lg:min-h-0 lg:flex-1">
       <div className="flex justify-end lg:shrink-0">
         <button
           type="button"
-          aria-label={`open ${tabLabel(active)} in a new window`}
-          title="Open the current tab in its own window"
+          aria-label={t('actions.openTabInNewWindow', { tab: label })}
+          title={t('actions.openInNewWindow')}
           onClick={() => openTabWindow(active)}
           className="inline-flex items-center gap-1 rounded-control border border-border px-2.5 py-1.5 text-[12.5px] text-text-muted transition-colors hover:bg-surface hover:text-accent"
         >
-          ↗<span className="hidden sm:inline">Open in new window</span>
+          ↗<span className="hidden sm:inline">{t('actions.openInNewWindow')}</span>
         </button>
       </div>
       <section
@@ -537,6 +542,7 @@ function Shell({ config }: { config: RuntimeConfig }) {
  * console. `tabId` is always a resolved v2 id (see `resolveTabId`).
  */
 function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) {
+  const { t } = useTranslation('common');
   const activeTab = useUiStore((s) => s.activeTab);
   const setActiveTab = useUiStore((s) => s.setActiveTab);
   const [seeded, setSeeded] = useState(false);
@@ -544,7 +550,7 @@ function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) 
   // another tab from a previously-open console window; letting that win would
   // make a direct `?tab=review&solo=1` request open the wrong screen.
   const active = seeded && activeTab ? resolveTabId(activeTab) : tabId;
-  const label = tabLabel(active);
+  const label = t(`tabs.${active}`);
 
   useEffect(() => {
     if (!seeded) {
@@ -564,7 +570,7 @@ function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) 
       <header className="mb-2 flex flex-wrap items-center gap-3">
         <a
           href={tabUrl(active, false)}
-          title="Back to the kairos console"
+          title={t('actions.backToConsole')}
           className="flex items-center gap-2 rounded-control text-text-secondary hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-focus"
         >
           <Hexagon size={20} />
@@ -595,6 +601,11 @@ function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) 
 }
 
 export function App() {
+  // This subscription deliberately sits at the application boundary. Legacy
+  // presentation helpers are pure functions, so changing language must also
+  // rerender already-mounted formatter consumers without remounting their
+  // stateful Collect/Review/Datasets screens.
+  const { locale } = useLocale();
   const operatorHydrated = useUiStore((s) => s.operatorHydrated);
   // Render gate: wait for the backend config before showing the UI. config.ts
   // provides a dev-only fallback so the SPA renders without a backend. Still
@@ -669,7 +680,10 @@ export function App() {
   return (
     <>
       {operatorHydration}
-      <main className="min-h-screen bg-app px-[22px] pb-[22px] pt-2.5 lg:flex lg:h-svh lg:min-h-0 lg:flex-col lg:overflow-hidden">
+      <main
+        data-locale={locale}
+        className="min-h-screen bg-app px-[22px] pb-[22px] pt-2.5 lg:flex lg:h-svh lg:min-h-0 lg:flex-col lg:overflow-hidden"
+      >
         <EventStreamMount url={config.endpoints.events} />
         <Shell config={config} />
       </main>

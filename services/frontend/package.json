@@ -16,8 +16,10 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.51.0",
+    "i18next": "^25.10.10",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-i18next": "^15.7.4",
     "uplot": "^1.6.32",
     "zustand": "^4.5.4"
   },

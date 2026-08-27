@@ -5,6 +5,8 @@
 // uses a zero-padded HH:MM:SS clock ("00:00:58"), so this is its own thing
 // rather than a reuse of that helper.
 
+import { formatDateTime, formatTime } from '../../i18n/format';
+
 export function formatHms(ms?: number): string {
   if (ms == null || Number.isNaN(ms)) return '—';
   const totalSec = Math.max(0, Math.round(ms / 1000));
@@ -19,7 +21,7 @@ export function formatTimeOfDay(iso?: string): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
-  return d.toLocaleTimeString('en-GB', { hour12: false });
+  return formatTime(d);
 }
 
 /** Human-readable byte size ("7.6 MB"); "—" when unknown (null/undefined).
@@ -41,5 +43,5 @@ export function formatBytes(bytes?: number | null): string {
 export function formatWhen(iso?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-GB', { hour12: false });
+  return Number.isNaN(d.getTime()) ? iso : formatDateTime(d);
 }

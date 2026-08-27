@@ -18,6 +18,7 @@
 // clean when something actually looked.
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { formatDateTime } from '../../i18n/format';
 import { repairStore } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import type { CorruptEntry } from '../../api/types';
@@ -29,7 +30,7 @@ import { useStoreHealth } from '../store/useStoreHealth';
 function formatInstant(iso?: string | null): string {
   if (!iso) return '—';
   const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? iso : d.toLocaleString('en-GB', { hour12: false });
+  return Number.isNaN(d.getTime()) ? iso : formatDateTime(d);
 }
 
 /** Render one value of a server-supplied summary dict without assuming its
