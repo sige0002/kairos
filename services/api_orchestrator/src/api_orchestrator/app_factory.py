@@ -435,6 +435,9 @@ def create_orchestrator_app(
     app.state.store_health = health
     app.state.data_layout = layout
     app.state.audio_feedback = AudioFeedbackService(layout.catalog / "audio")
+    # Audio requests may queue behind each other, but recorder Prepare/Start
+    # never acquires this lock and instead preempts generation in the service.
+    app.state.audio_request_lock = asyncio.Lock()
     app.state.report_storage_service = ReportStorageService(layout, capture_store)
     app.state.instance_id = instance_id
     app.state.recorder_client = recorder

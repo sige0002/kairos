@@ -10,7 +10,11 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-from api_orchestrator.audio_feedback import GenerationDeferred
+from api_orchestrator.audio_feedback import (
+    AudioFeedbackService,
+    GenerationDeferred,
+    TtsProvider,
+)
 
 router = APIRouter(prefix="/api/v1/audio", tags=["audio"])
 
@@ -49,9 +53,21 @@ async def prepare_assets(body: PrepareRequest, request: Request) -> dict[str, ob
             "errors": ["TTS engine is unavailable"],
             "deferred": False,
         }
+    async with request.app.state.audio_request_lock:
+        return await _prepare_assets_serially(body, request, service, provider)
+
+
+async def _prepare_assets_serially(
+    body: PrepareRequest,
+    request: Request,
+    service: AudioFeedbackService,
+    provider: TtsProvider,
+) -> dict[str, object]:
+    """Serialize only audio work and recheck recorder state after any wait."""
     assets: list[dict[str, str]] = []
     errors: list[str] = []
     for phrase in body.phrases:
+        admission_token = service.admission_token()
         try:
             recorder_status = await request.app.state.recorder_client.status()
         except Exception:
@@ -74,7 +90,11 @@ async def prepare_assets(body: PrepareRequest, request: Request) -> dict[str, ob
             }
         try:
             asset_id = await asyncio.to_thread(
-                service.prepare, phrase.text, phrase.language, phrase.voice
+                service.prepare,
+                phrase.text,
+                phrase.language,
+                phrase.voice,
+                admission_token,
             )
         except GenerationDeferred:
             return {

@@ -4,10 +4,17 @@
 
 from __future__ import annotations
 
+import subprocess
 import threading
 import time
 from pathlib import Path
 
+import pytest
+from api_orchestrator.audio_feedback import (
+    AudioFeedbackService,
+    EspeakProvider,
+    GenerationDeferred,
+)
 from fastapi.testclient import TestClient
 
 
@@ -33,6 +40,90 @@ class FakeTtsProvider:
 
     def cancel(self) -> None:
         """No synthesis is long-running in the ordinary fake."""
+
+
+def test_stale_admission_token_cannot_generate_after_recording_reservation(
+    tmp_path: Path,
+) -> None:
+    provider = FakeTtsProvider()
+    service = AudioFeedbackService(tmp_path / "audio", provider)
+    token = service.admission_token()
+
+    service.reserve_for_recording()
+    service.release_recording_reservation()
+
+    with pytest.raises(GenerationDeferred):
+        service.prepare("Success", "en", "test-en", token)
+    assert provider.calls == []
+
+
+def test_recording_cancellation_prevents_asset_publication(tmp_path: Path) -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    class PausingProvider(FakeTtsProvider):
+        def synthesize(
+            self,
+            text: str,
+            language: str,
+            voice: str,
+            output: Path,
+            cancel: threading.Event,
+        ) -> None:
+            output.write_bytes(b"RIFF-test-wave")
+            entered.set()
+            assert release.wait(timeout=5)
+
+        def cancel(self) -> None:
+            release.set()
+
+    provider = PausingProvider()
+    service = AudioFeedbackService(tmp_path / "audio", provider)
+    token = service.admission_token()
+    asset_id = service.asset_id("Success", "en", "test-en")
+    outcome: dict[str, object] = {}
+
+    def generate() -> None:
+        try:
+            service.prepare("Success", "en", "test-en", token)
+        except Exception as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=generate)
+    thread.start()
+    assert entered.wait(timeout=5)
+    service.reserve_for_recording()
+    service.release_recording_reservation()
+    thread.join(timeout=5)
+
+    assert isinstance(outcome.get("error"), GenerationDeferred)
+    assert not service.path_for(asset_id).exists()
+
+
+def test_espeak_cancel_escalates_without_blocking() -> None:
+    killed = threading.Event()
+
+    class UnresponsiveProcess:
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            pass
+
+        def wait(self, timeout: float) -> None:
+            raise subprocess.TimeoutExpired("espeak-ng", timeout)
+
+        def kill(self) -> None:
+            killed.set()
+
+    provider = EspeakProvider("espeak-ng")
+    provider._process = UnresponsiveProcess()  # type: ignore[assignment]
+
+    started_at = time.monotonic()
+    provider.cancel()
+
+    assert time.monotonic() - started_at < 0.1
+    assert killed.wait(timeout=1)
 
 
 def test_prepare_assets_generates_once_and_serves_wav(client: TestClient) -> None:
@@ -180,7 +271,7 @@ def test_voice_generation_is_deferred_when_recorder_status_is_unknown(
     assert provider.calls == []
 
 
-def test_record_start_waits_for_in_flight_voice_generation(
+def test_record_start_preempts_in_flight_and_queued_voice_generation(
     client: TestClient, fake_recorder
 ) -> None:
     entered = threading.Event()
@@ -202,11 +293,12 @@ def test_record_start_waits_for_in_flight_voice_generation(
         def cancel(self) -> None:
             release.set()
 
-    client.app.state.audio_feedback.provider = BlockingProvider()
+    provider = BlockingProvider()
+    client.app.state.audio_feedback.provider = provider
     responses: dict[str, object] = {}
 
-    def prepare_voice() -> None:
-        responses["audio"] = client.post(
+    def prepare_voice(response_key: str) -> None:
+        responses[response_key] = client.post(
             "/api/v1/audio/assets",
             json={
                 "phrases": [
@@ -225,10 +317,12 @@ def test_record_start_waits_for_in_flight_voice_generation(
             "/api/v1/record/start", json={"topics": ["/joint_states"]}
         )
 
-    audio_thread = threading.Thread(target=prepare_voice)
+    audio_thread = threading.Thread(target=prepare_voice, args=("audio",))
+    queued_audio_thread = threading.Thread(target=prepare_voice, args=("queued_audio",))
     start_thread = threading.Thread(target=start_recording)
     audio_thread.start()
     assert entered.wait(timeout=5)
+    queued_audio_thread.start()
     started_at = time.monotonic()
     start_thread.start()
     start_thread.join(timeout=1)
@@ -238,8 +332,12 @@ def test_record_start_waits_for_in_flight_voice_generation(
     assert start_elapsed < 0.5
     assert fake_recorder.state == "recording"
     audio_thread.join(timeout=5)
+    queued_audio_thread.join(timeout=5)
 
     assert responses["audio"].status_code == 200
     assert responses["audio"].json()["deferred"] is True
+    assert responses["queued_audio"].status_code == 200
+    assert responses["queued_audio"].json()["deferred"] is True
     assert responses["start"].status_code == 200
     assert fake_recorder.state == "recording"
+    assert len(provider.calls) == 1

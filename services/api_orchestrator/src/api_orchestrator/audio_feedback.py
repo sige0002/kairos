@@ -101,6 +101,23 @@ class EspeakProvider:
             try:
                 process.terminate()
             except ProcessLookupError:
+                return
+            threading.Thread(
+                target=self._kill_if_running,
+                args=(process,),
+                name="tts-cancel-escalation",
+                daemon=True,
+            ).start()
+
+    @staticmethod
+    def _kill_if_running(process: subprocess.Popen[bytes]) -> None:
+        """Escalate cancellation off the recorder's latency-critical path."""
+        try:
+            process.wait(timeout=0.25)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except ProcessLookupError:
                 pass
 
 
@@ -119,11 +136,13 @@ class AudioFeedbackService:
         self._generation_lock = threading.Lock()
         self._priority_lock = threading.Lock()
         self._recording_reservations = 0
+        self._priority_epoch = 0
         self._active_cancel: threading.Event | None = None
 
     def reserve_for_recording(self) -> None:
         """Preempt synthesis synchronously before recorder Prepare or Start."""
         with self._priority_lock:
+            self._priority_epoch += 1
             self._recording_reservations += 1
             if self._active_cancel is not None:
                 self._active_cancel.set()
@@ -147,7 +166,14 @@ class AudioFeedbackService:
         material = "\0".join(("v1", engine, language, voice, text)).encode()
         return hashlib.sha256(material).hexdigest()
 
-    def prepare(self, text: str, language: str, voice: str) -> str:
+    def admission_token(self) -> int:
+        """Capture the recording-priority epoch before checking recorder state."""
+        with self._priority_lock:
+            return self._priority_epoch
+
+    def prepare(
+        self, text: str, language: str, voice: str, admission_token: int
+    ) -> str:
         """Generate once and atomically publish a cached WAV asset."""
         if self.provider is None:
             raise RuntimeError("TTS engine is unavailable")
@@ -157,14 +183,20 @@ class AudioFeedbackService:
             raise ValueError(f"unsupported voice: {voice}")
         with self._generation_lock:
             with self._priority_lock:
-                if self._recording_reservations:
+                if (
+                    self._recording_reservations
+                    or admission_token != self._priority_epoch
+                ):
                     raise GenerationDeferred("recording took priority")
             asset_id = self.asset_id(text, language, voice)
             destination = self.path_for(asset_id)
             if destination.is_file() and not destination.is_symlink():
                 return asset_id
             with self._priority_lock:
-                if self._recording_reservations:
+                if (
+                    self._recording_reservations
+                    or admission_token != self._priority_epoch
+                ):
                     raise GenerationDeferred("recording took priority")
                 cancel = threading.Event()
                 self._active_cancel = cancel
@@ -176,11 +208,16 @@ class AudioFeedbackService:
             temporary = Path(temporary_name)
             try:
                 self.provider.synthesize(text, language, voice, temporary, cancel)
-                if cancel.is_set():
-                    raise GenerationDeferred("recording took priority")
-                if temporary.stat().st_size == 0:
-                    raise RuntimeError("TTS engine produced an empty asset")
-                os.replace(temporary, destination)
+                with self._priority_lock:
+                    if (
+                        cancel.is_set()
+                        or self._recording_reservations
+                        or admission_token != self._priority_epoch
+                    ):
+                        raise GenerationDeferred("recording took priority")
+                    if temporary.stat().st_size == 0:
+                        raise RuntimeError("TTS engine produced an empty asset")
+                    os.replace(temporary, destination)
             except Exception:
                 temporary.unlink(missing_ok=True)
                 raise
