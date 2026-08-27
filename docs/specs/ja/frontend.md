@@ -49,6 +49,14 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。タブは技術
 
 ## 全画面で共有する部品（v2）
 
+### Presentation primitives の境界
+
+`src/components/ui.tsx` は、複数画面で同じ**意味・操作・アクセシビリティ**を持つ見た目だけを扱う。Button / IconButton、Modal、Card、Badge、Notice、単一入力の Field / 複数入力の FieldGroup と native input/select/textarea、SettingsSection はここを再利用する。内容はすべて呼び出し側が `ReactNode` として渡し、部品にオペレーター向け英語を固定しない。これによりテーマ、focus、disabled、destructive、折返しを全タブで同じ契約に保つ。
+
+- 共有する: 同じ操作契約を持つ標準コントロール、通知の tone / live region、field の label/help/error、Settings の見出し・補助説明・action 枠。複数入力をまとめる `FieldGroup` は安定した `id` を渡し、fieldset と help/error をプログラム上も関連付ける。単一入力を `FieldGroup` で包んで個別の label を代用しない。
+- 共有しない: capture の削除、import、Collect の録画制御、pipeline 実行など、文言・確認条件・失敗回復・状態遷移が異なるワークフロー。これらは画面側に置き、必要な表示プリミティブだけを組み合わせる。
+- 新しい標準コントロールを追加する前に既存プリミティブを確認する。feature 内で focus ring、disabled 表示、status panel、icon-only の accessible name を複製しない。例外は画面固有の密度または interaction を同じ場所に説明する。
+
 ### Availability チップ
 
 `capture.replica.state` と `capture.digest_state` から**唯一の判定関数**で導き、Review / Datasets / Validation が同じチップを描く。「使えるか」（`usable`）はこのチップの導出値で、ジョブ実行・プレビュー・archive の共通の前提条件になる。

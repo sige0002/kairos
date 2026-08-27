@@ -4,7 +4,7 @@
 // answering" face of this card here — same card, but it stops asserting that a
 // recording is still happening.
 
-import { Card, cn } from '../../../components/ui';
+import { Card, Notice, cn } from '../../../components/ui';
 import { formatBytes } from '../../review/format';
 import { CARD_PAD } from '../compact';
 import type { BatchMachine } from '../useBatchMachine';
@@ -46,7 +46,9 @@ export function RecordingCard({
         <span
           className={cn(
             'h-[9px] w-[9px] rounded-sm',
-            unreachable ? 'bg-status-warning-accent' : 'animate-recpulse bg-status-danger-accent',
+            unreachable
+              ? 'bg-status-warning-accent'
+              : 'animate-recpulse bg-status-danger-accent',
           )}
         />
         <h2
@@ -64,11 +66,13 @@ export function RecordingCard({
         </span>
       </div>
       {unreachable && (
-        <div
+        <Notice
+          tone="warning"
+          live="assertive"
           data-testid="recorder-unreachable-note"
-          className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12.5px] leading-relaxed text-status-warning-text"
+          className="text-[12.5px]"
         >
-          <p role="alert" aria-live="assertive">
+          <p>
             The recorder is not answering. Whether this take is still running cannot be
             confirmed from here. Check the recorder connection; after it reconnects,
             confirm whether this take is still live before continuing.
@@ -77,7 +81,7 @@ export function RecordingCard({
             Last known: <span className="font-semibold">recording</span>, {staleText}.
             The figures below are the last ones reported, not current.
           </p>
-        </div>
+        </Notice>
       )}
       <div className="flex items-baseline gap-2.5">
         <span

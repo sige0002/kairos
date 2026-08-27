@@ -21,6 +21,7 @@ import type {
 import { useRecordStatus } from '../captures/useRecordStatus';
 import type { RuntimeConfig } from '../../config';
 import { ErrorMessage } from '../../components/ErrorMessage';
+import { Button, Field, Notice, Textarea } from '../../components/ui';
 
 /** PUT the edited config. Inline (no apiPut helper) so client.ts is untouched. */
 async function putRecordingConfig(
@@ -89,7 +90,9 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
   const [seededText, setSeededText] = useState('');
   const seededDataRef = useRef<RecordingConfigPayload | null>(null);
   // A newer server payload withheld because the operator has unsaved edits.
-  const [pendingServer, setPendingServer] = useState<RecordingConfigPayload | null>(null);
+  const [pendingServer, setPendingServer] = useState<RecordingConfigPayload | null>(
+    null,
+  );
 
   const seedFrom = useCallback((data: RecordingConfigPayload) => {
     seededDataRef.current = data;
@@ -173,7 +176,8 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
   const validationDetails = formatValidationDetails(saveMutation.error);
 
   if (recordingQuery.isError) return <ErrorMessage error={recordingQuery.error} />;
-  if (recordingQuery.isPending) return <p className="text-sm text-text-muted">Loading…</p>;
+  if (recordingQuery.isPending)
+    return <p className="text-sm text-text-muted">Loading…</p>;
 
   return (
     <div>
@@ -189,76 +193,75 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
           </>
         )}
       </dl>
-      <label className="mb-1 block text-sm font-medium text-text-primary">Config (JSON)</label>
-      <textarea
-        aria-label="recording config json"
-        className="h-80 w-full rounded-control border border-border p-2 font-mono text-xs focus:border-accent focus:outline-none"
-        spellCheck={false}
-        value={text}
-        disabled={saveMutation.isPending}
-        onChange={(e) => {
-          setText(e.target.value);
-          setSaved(false);
-        }}
-      />
-
-      {jsonError ? (
-        <p className="mt-2 text-sm text-status-danger-text">Invalid JSON — {jsonError}</p>
-      ) : (
-        <p className="mt-2 text-xs text-text-muted">Valid JSON</p>
-      )}
+      <Field
+        id="recording-config-json"
+        label="Config (JSON)"
+        className="mb-2"
+        error={jsonError ? `Invalid JSON — ${jsonError}` : undefined}
+        help={jsonError ? undefined : 'Valid JSON'}
+      >
+        <Textarea
+          aria-label="recording config json"
+          className="h-80 w-full p-2 font-mono text-xs"
+          spellCheck={false}
+          value={text}
+          disabled={saveMutation.isPending}
+          onChange={(e) => {
+            setText(e.target.value);
+            setSaved(false);
+          }}
+        />
+      </Field>
 
       {pendingServer && (
-        <div
+        <Notice
+          tone="warning"
           data-testid="recording-server-changed"
-          className="mt-2 flex flex-col gap-2 rounded-control border border-status-warning-border bg-status-warning-bg p-2 text-sm text-status-warning-text"
+          className="mt-2 flex flex-col gap-2"
         >
           <p>
-            <span className="font-medium">The recording config changed on the server</span> while
-            you were editing — another terminal saved it, or the active robot changed. Your unsaved
-            edits are kept and nothing here was overwritten, but saving now writes over that newer
-            file.
+            <span className="font-medium">
+              The recording config changed on the server
+            </span>{' '}
+            while you were editing — another terminal saved it, or the active robot
+            changed. Your unsaved edits are kept and nothing here was overwritten, but
+            saving now writes over that newer file.
           </p>
-          <button
-            type="button"
+          <Button
+            size="sm"
             data-testid="recording-load-server"
             onClick={() => {
               seedFrom(pendingServer);
               setPendingServer(null);
               setSaved(false);
             }}
-            className="self-start rounded-control border border-status-warning-border bg-surface px-2.5 py-1 text-xs font-semibold text-status-warning-text hover:bg-status-warning-bg"
+            className="self-start border-status-warning-border text-status-warning-text hover:bg-status-warning-bg"
           >
             Load the server copy (discards my edits)
-          </button>
-        </div>
+          </Button>
+        </Notice>
       )}
 
       {recording && (
-        <div className="mt-2 rounded-control border border-status-warning-border bg-status-warning-bg p-2 text-sm text-status-warning-text">
+        <Notice tone="warning" className="mt-2">
           A recording is in progress — saving recording config won&apos;t change the
           current one; it applies to the next.
-        </div>
+        </Notice>
       )}
 
       {armed && (
-        <div
-          data-testid="config-armed-note"
-          className="mt-2 rounded-control border border-status-warning-border bg-status-warning-bg p-2 text-sm text-status-warning-text"
-        >
-          A session is armed and waiting to start — nothing is being written yet.
-          It already holds the current topic selection, so a save applies to the
-          recording after it.
-        </div>
+        <Notice tone="warning" data-testid="config-armed-note" className="mt-2">
+          A session is armed and waiting to start — nothing is being written yet. It
+          already holds the current topic selection, so a save applies to the recording
+          after it.
+        </Notice>
       )}
 
       {liveUnknown && (
-        <div
-          data-testid="config-live-unknown"
-          className="mt-2 rounded-control border border-border bg-surface-muted p-2 text-sm text-text-secondary">
-          The recorder has not confirmed what is running, so whether a session is
-          in progress is unknown. A save still only applies to the next recording.
-        </div>
+        <Notice tone="info" data-testid="config-live-unknown" className="mt-2">
+          The recorder has not confirmed what is running, so whether a session is in
+          progress is unknown. A save still only applies to the next recording.
+        </Notice>
       )}
 
       {saveMutation.isError && (
@@ -277,24 +280,23 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
       )}
 
       {saved && !saveMutation.isPending && (
-        <div className="mt-2 rounded-control border border-accent bg-interaction-selected p-2 text-sm text-accent">
+        <Notice tone="success" className="mt-2">
           <p className="font-medium">Saved</p>
           <p className="mt-0.5 text-xs">
-            default_topics / robot_name apply immediately; expected_hz and QoS apply after a
-            service restart.
+            default_topics / robot_name apply immediately; expected_hz and QoS apply
+            after a service restart.
           </p>
-        </div>
+        </Notice>
       )}
 
       <div className="mt-3 flex items-center gap-3">
-        <button
-          type="button"
+        <Button
           onClick={onSave}
           disabled={saveMutation.isPending || jsonError !== null}
-          className="rounded-control bg-accent px-4 py-1.5 text-sm font-medium text-text-inverse hover:bg-accent-strong disabled:opacity-50"
+          className="font-medium"
         >
           {saveMutation.isPending ? 'Saving…' : 'Save'}
-        </button>
+        </Button>
         <span className="text-xs text-text-muted">
           Edits the active recording file; the server validates on save.
         </span>
@@ -307,7 +309,8 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
 export function optionLabel(aspect: ConfigAspect, o: AspectOption): string {
   const m = o.meta;
   if (aspect === 'recording') return `${o.id} · ${m.default_topics ?? 0} topics`;
-  if (aspect === 'stream') return `${o.id} · ${m.columns ?? '?'} col / ${m.panes ?? 0} panes`;
+  if (aspect === 'stream')
+    return `${o.id} · ${m.columns ?? '?'} col / ${m.panes ?? 0} panes`;
   if (aspect === 'validation')
     return `${m.name ?? o.id} (v${m.version ?? 1}) · ${m.required_topics?.length ?? 0} topics`;
   return o.id;

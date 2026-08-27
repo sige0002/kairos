@@ -13,7 +13,7 @@ import { apiGet } from '../../api/client';
 import { getConfigOptions, selectConfig } from '../../api/config';
 import { queryKeys } from '../../api/queryKeys';
 import type { ConfigAspect, ValidationPreset } from '../../api/types';
-import { Badge, Card } from '../../components/ui';
+import { Badge, Card, Select } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
 import { optionLabel } from './RecordingConfigEditor';
@@ -40,12 +40,12 @@ export function ValidationSection() {
   });
   const presetsQuery = useQuery({
     queryKey: queryKeys.validationPresets,
-    queryFn: ({ signal }) => apiGet<PresetListResponse>('/validation/presets', { signal }),
+    queryFn: ({ signal }) =>
+      apiGet<PresetListResponse>('/validation/presets', { signal }),
   });
 
   const selectMutation = useMutation({
-    mutationFn: (vars: { category: string; id: string }) =>
-      selectConfig(vars),
+    mutationFn: (vars: { category: string; id: string }) => selectConfig(vars),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.configOptions, data);
       queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
@@ -58,13 +58,18 @@ export function ValidationSection() {
   const presets = presetsQuery.data?.items ?? [];
 
   return (
-    <Card className="flex min-w-0 flex-col gap-5 overflow-auto p-[18px] lg:col-span-2" data-testid="settings-validation">
+    <Card
+      className="flex min-w-0 flex-col gap-5 overflow-auto p-[18px] lg:col-span-2"
+      data-testid="settings-validation"
+    >
       <div className="flex items-center gap-2.5">
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           Validation
         </h2>
         {data && (
-          <span className="font-mono text-[13px] font-semibold text-text-primary">{data.active_robot}</span>
+          <span className="font-mono text-[13px] font-semibold text-text-primary">
+            {data.active_robot}
+          </span>
         )}
       </div>
 
@@ -91,14 +96,18 @@ export function ValidationSection() {
                     </Badge>
                   </span>
                   {options.length === 0 ? (
-                    <span className="text-[12.5px] text-text-muted">No options for this robot.</span>
+                    <span className="text-[12.5px] text-text-muted">
+                      No options for this robot.
+                    </span>
                   ) : (
-                    <select
+                    <Select
                       aria-label={`${id} option`}
-                      className="rounded-control border border-border px-2 py-1.5 font-mono text-[12.5px] focus:border-accent focus:outline-none disabled:opacity-50"
+                      className="font-mono text-[12.5px]"
                       value={state.active}
                       disabled={selectMutation.isPending}
-                      onChange={(e) => selectMutation.mutate({ category: id, id: e.target.value })}
+                      onChange={(e) =>
+                        selectMutation.mutate({ category: id, id: e.target.value })
+                      }
                     >
                       {options.map((o) => (
                         <option key={o.id} value={o.id}>
@@ -106,7 +115,7 @@ export function ValidationSection() {
                           {o.local ? ' · local' : ''}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   )}
                 </label>
               );
@@ -126,8 +135,12 @@ export function ValidationSection() {
         ) : presetsQuery.isPending ? (
           <p className="text-sm text-text-muted">Loading presets…</p>
         ) : presets.length === 0 ? (
-          <p className="text-[12.5px] text-text-muted" data-testid="validation-presets-empty">
-            No presets configured — add them to <code>config/&lt;robot&gt;/validation_presets.yaml</code>.
+          <p
+            className="text-[12.5px] text-text-muted"
+            data-testid="validation-presets-empty"
+          >
+            No presets configured — add them to{' '}
+            <code>config/&lt;robot&gt;/validation_presets.yaml</code>.
           </p>
         ) : (
           <div className="flex flex-col gap-2" data-testid="validation-presets">
@@ -138,13 +151,20 @@ export function ValidationSection() {
                 className="flex items-center gap-3 rounded-control border border-border px-3.5 py-2.5"
               >
                 <div className="flex min-w-0 flex-col">
-                  <span className="text-[13px] font-semibold text-text-primary">{p.name}</span>
+                  <span className="text-[13px] font-semibold text-text-primary">
+                    {p.name}
+                  </span>
                   {p.description && (
-                    <span className="truncate text-[11.5px] text-text-muted" title={p.description}>
+                    <span
+                      className="truncate text-[11.5px] text-text-muted"
+                      title={p.description}
+                    >
                       {p.description}
                     </span>
                   )}
-                  <span className="font-mono text-[11px] text-text-muted">pipeline: {p.pipeline}</span>
+                  <span className="font-mono text-[11px] text-text-muted">
+                    pipeline: {p.pipeline}
+                  </span>
                 </div>
                 <div className="flex-1" />
                 {p.pending > 0 ? (
