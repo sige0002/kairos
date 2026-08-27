@@ -126,6 +126,63 @@ def test_espeak_cancel_escalates_without_blocking() -> None:
     assert killed.wait(timeout=1)
 
 
+def test_espeak_cancel_during_process_creation_still_escalates(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    creation_started = threading.Event()
+    allow_creation = threading.Event()
+    killed = threading.Event()
+
+    class UnresponsiveProcess:
+        args = ["espeak-ng"]
+        returncode = -9
+
+        def poll(self) -> int | None:
+            return -9 if killed.is_set() else None
+
+        def terminate(self) -> None:
+            pass
+
+        def wait(self, timeout: float) -> int:
+            raise subprocess.TimeoutExpired("espeak-ng", timeout)
+
+        def kill(self) -> None:
+            killed.set()
+
+        def communicate(self, timeout: float) -> tuple[bytes, bytes]:
+            assert killed.wait(timeout=1)
+            return b"", b""
+
+    process = UnresponsiveProcess()
+
+    def create_process(*args: object, **kwargs: object) -> UnresponsiveProcess:
+        creation_started.set()
+        assert allow_creation.wait(timeout=5)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", create_process)
+    provider = EspeakProvider("espeak-ng")
+    cancel = threading.Event()
+    outcome: dict[str, object] = {}
+
+    def synthesize() -> None:
+        try:
+            provider.synthesize("Success", "en", "en-us", tmp_path / "out.wav", cancel)
+        except Exception as exc:
+            outcome["error"] = exc
+
+    thread = threading.Thread(target=synthesize)
+    thread.start()
+    assert creation_started.wait(timeout=5)
+    cancel.set()
+    provider.cancel()
+    allow_creation.set()
+    thread.join(timeout=5)
+
+    assert killed.is_set()
+    assert isinstance(outcome.get("error"), GenerationDeferred)
+
+
 def test_prepare_assets_generates_once_and_serves_wav(client: TestClient) -> None:
     provider = FakeTtsProvider()
     client.app.state.audio_feedback.provider = provider

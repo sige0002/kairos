@@ -52,6 +52,7 @@ class EspeakProvider:
         self._executable = executable
         self._process_lock = threading.Lock()
         self._process: subprocess.Popen[bytes] | None = None
+        self._cancellation_process: subprocess.Popen[bytes] | None = None
 
     def synthesize(
         self,
@@ -72,10 +73,7 @@ class EspeakProvider:
         with self._process_lock:
             self._process = process
         if cancel.is_set():
-            try:
-                process.terminate()
-            except ProcessLookupError:
-                pass
+            self._cancel_process(process)
         try:
             _, stderr = process.communicate(timeout=20)
         except subprocess.TimeoutExpired:
@@ -86,6 +84,8 @@ class EspeakProvider:
             with self._process_lock:
                 if self._process is process:
                     self._process = None
+                if self._cancellation_process is process:
+                    self._cancellation_process = None
         if cancel.is_set():
             raise GenerationDeferred("recording took priority")
         if process.returncode:
@@ -97,17 +97,25 @@ class EspeakProvider:
         """Terminate the current process without waiting on the recording path."""
         with self._process_lock:
             process = self._process
-        if process is not None and process.poll() is None:
-            try:
-                process.terminate()
-            except ProcessLookupError:
+        if process is not None:
+            self._cancel_process(process)
+
+    def _cancel_process(self, process: subprocess.Popen[bytes]) -> None:
+        """Request one bounded, asynchronously escalated process stop."""
+        with self._process_lock:
+            if process.poll() is not None or self._cancellation_process is process:
                 return
-            threading.Thread(
-                target=self._kill_if_running,
-                args=(process,),
-                name="tts-cancel-escalation",
-                daemon=True,
-            ).start()
+            self._cancellation_process = process
+        try:
+            process.terminate()
+        except ProcessLookupError:
+            return
+        threading.Thread(
+            target=self._kill_if_running,
+            args=(process,),
+            name="tts-cancel-escalation",
+            daemon=True,
+        ).start()
 
     @staticmethod
     def _kill_if_running(process: subprocess.Popen[bytes]) -> None:
