@@ -684,10 +684,10 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     () => dispatch({ type: 'PICK_RESULT', result: 'ok' }),
     [],
   );
-  const pickFailure = useCallback(
-    () => dispatch({ type: 'PICK_RESULT', result: 'fail' }),
-    [],
-  );
+  const pickFailure = useCallback(() => {
+    dispatch({ type: 'PICK_RESULT', result: 'fail' });
+    recordingCues.emit('failure');
+  }, [recordingCues]);
   const pickFailReason = useCallback(
     (reason: string) => dispatch({ type: 'PICK_FAIL_REASON', reason }),
     [],
@@ -737,6 +737,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
             });
             void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
             void queryClient.invalidateQueries({ queryKey: queryKeys.batches });
+            recordingCues.emit(
+              pendingCompletion.taskResult === 'fail' ? 'failure_reason' : 'success',
+              pendingCompletion.failureReason,
+            );
+            recordingCues.emit('save');
             flashSaved(pendingCompletion.index);
             const batchSeq = getStoreSnapshot().batchSeq;
             const seqPart = batchSeq != null ? ` of Batch ${batchSeq}` : '';
@@ -746,6 +751,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
           })
           .catch((err) => {
             setSaveError(err);
+            recordingCues.emit('error');
           })
           .finally(() => {
             savingReviewRef.current = false;
@@ -837,6 +843,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
                 batchId,
                 index: storedIndex,
                 quality: localQuality,
+                taskResult,
+                failureReason: reason,
               });
             } catch (err) {
               throw new Error(
@@ -849,6 +857,8 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
             quality: localQuality,
             index: storedIndex,
           });
+          recordingCues.emit(isFail ? 'failure_reason' : 'success', reason);
+          recordingCues.emit('save');
           // The capture now carries a review, so it is no longer an unsaved
           // take.
           void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
@@ -884,6 +894,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
           // (§12). The result panel stays put with their values intact, so a
           // re-apply is their decision.
           setSaveError(err);
+          recordingCues.emit('error');
           if (needsReload(err)) {
             // The capture moved under us. Refetch it so a re-apply is a
             // compare-and-swap against what is actually stored — never a
@@ -915,6 +926,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       showToast,
       flashSaved,
       queryClient,
+      recordingCues,
     ],
   );
 
@@ -1050,7 +1062,10 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
         // discard (toast already shown) must not leave an armed auto-start:
         // the moment this machine next reaches READY it would fire a second
         // recording on top of the take that still exists.
-        if (discarded) setRetakeQueued(true);
+        if (discarded) {
+          recordingCues.emit('retake');
+          setRetakeQueued(true);
+        }
       });
   }, [episodeDiscard, recordingCues, splitDeploy]);
   useEffect(() => {
@@ -1301,6 +1316,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     saveSuccess,
     saveFailureWithReason,
     showToast,
+    onInvalidAction: () => recordingCues.emit('invalid'),
   });
 
   const stats: BatchStats = useMemo(() => {

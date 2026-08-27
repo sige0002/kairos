@@ -42,6 +42,33 @@ import {
 
 test.describe.configure({ mode: "serial" });
 
+test("Settings: Audio is opt-in, independently configurable, and resettable", async ({
+  page,
+}) => {
+  await openTab(page, "settings");
+  await page.getByRole("button", { name: "Audio", exact: true }).click();
+  const section = page.getByTestId("settings-audio");
+  await expect(section).toBeVisible();
+
+  const master = section.getByRole("switch", { name: "Audio feedback" });
+  const sound = section.getByRole("switch", { name: "Sound effects" });
+  const voice = section.getByRole("switch", { name: "Voice / TTS" });
+  await expect(master).not.toBeChecked();
+  await expect(sound).toBeChecked();
+  await expect(voice).toBeChecked();
+
+  await master.click();
+  await sound.click();
+  await page.reload();
+  await page.getByRole("button", { name: "Audio", exact: true }).click();
+  await expect(section.getByRole("switch", { name: "Audio feedback" })).toBeChecked();
+  await expect(section.getByRole("switch", { name: "Sound effects" })).not.toBeChecked();
+  await expect(section.getByRole("switch", { name: "Voice / TTS" })).toBeChecked();
+
+  await section.getByRole("button", { name: "Reset to defaults" }).click();
+  await expect(section.getByRole("switch", { name: "Audio feedback" })).not.toBeChecked();
+});
+
 test("Settings: setup check runs only on request and returns within five seconds", async ({
   page,
 }) => {

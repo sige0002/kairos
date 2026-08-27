@@ -48,6 +48,7 @@ from kairos_common.stream_config import StreamConfig
 
 from api_orchestrator import bag_import
 from api_orchestrator import views as views_mod
+from api_orchestrator.audio_feedback import AudioFeedbackService
 from api_orchestrator.batch_service import BatchService
 from api_orchestrator.bootstrap import StoreStartupError, bootstrap_store, prepare_store
 from api_orchestrator.capture_archive import CaptureArchiveRuns
@@ -67,6 +68,7 @@ from api_orchestrator.reconciler import Reconciler
 from api_orchestrator.record_service import RecordService
 from api_orchestrator.recorder_client import RecorderClient
 from api_orchestrator.report_storage import ReportStorageService
+from api_orchestrator.routers import audio as audio_router
 from api_orchestrator.routers import batches as batches_router
 from api_orchestrator.routers import captures as captures_router
 from api_orchestrator.routers import config as config_router
@@ -432,6 +434,10 @@ def create_orchestrator_app(
     app.state.views_refresher = views_refresh
     app.state.store_health = health
     app.state.data_layout = layout
+    app.state.audio_feedback = AudioFeedbackService(layout.catalog / "audio")
+    # Audio requests may queue behind each other, but recorder Prepare/Start
+    # never acquires this lock and instead preempts generation in the service.
+    app.state.audio_request_lock = asyncio.Lock()
     app.state.report_storage_service = ReportStorageService(layout, capture_store)
     app.state.instance_id = instance_id
     app.state.recorder_client = recorder
@@ -475,6 +481,7 @@ def create_orchestrator_app(
     app.state.stream_config_path = resolve_config_path(settings.stream_config)
 
     app.include_router(config_router.router)
+    app.include_router(audio_router.router)
     app.include_router(record_router.router)
     app.include_router(captures_router.router)
     app.include_router(captures_router.selection_router)

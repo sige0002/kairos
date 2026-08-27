@@ -29,6 +29,7 @@ export function useExternalOperatorShortcuts({
   saveSuccess,
   saveFailureWithReason,
   showToast,
+  onInvalidAction,
 }: {
   meanings: ExternalActionMeanings;
   taskName: string | null;
@@ -40,6 +41,7 @@ export function useExternalOperatorShortcuts({
   saveSuccess: () => void;
   saveFailureWithReason: (reason: string) => void;
   showToast: (message: string) => void;
+  onInvalidAction: () => void;
 }): void {
   // Refs keep the window listener stable while always acting on the CURRENT
   // meanings/actions (the same belt-and-braces as useCollectShortcuts).
@@ -57,6 +59,7 @@ export function useExternalOperatorShortcuts({
     saveSuccess,
     saveFailureWithReason,
     showToast,
+    onInvalidAction,
   });
   actionsRef.current = {
     startRecording,
@@ -66,6 +69,7 @@ export function useExternalOperatorShortcuts({
     saveSuccess,
     saveFailureWithReason,
     showToast,
+    onInvalidAction,
   };
   // Keydown latching: a slot that is still "held down" (no keyup yet) cannot
   // fire again. Held pedals re-emit keydown; one press = at most one action.
@@ -116,6 +120,7 @@ export function useExternalOperatorShortcuts({
           actions.saveFailureWithReason(meaning.reason);
           break;
         case 'unassigned': {
+          actions.onInvalidAction();
           // Visible feedback, no save, no silent fallback (#36 / #37).
           const name = taskNameRef.current;
           actions.showToast(
@@ -125,6 +130,7 @@ export function useExternalOperatorShortcuts({
           break;
         }
         case 'disabled':
+          actions.onInvalidAction();
           // The HUD shows the slot disabled and why; a press has nothing to do.
           break;
       }

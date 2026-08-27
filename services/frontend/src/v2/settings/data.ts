@@ -23,6 +23,7 @@ export const SETTINGS_MENU = [
   'Dataset profiles',
   'Users & permissions',
   'System',
+  'Audio',
 ] as const;
 
 // The plan catalog (Projects → Tasks → Conditions) is now the SHARED v2/plans
