@@ -1,0 +1,33 @@
+{
+  "purpose": "Reviewed literal display-copy exceptions. Exact bidirectional matching rejects both new literals and stale exceptions.",
+  "notes": [
+    "Entries are keyed by source file, syntactic sink, literal value, and exact observed count.",
+    "The guard ignores punctuation-only layout syntax. Exceptions below are only product/protocol identifiers, units, keyboard chords, configuration examples, and language endonyms.",
+    "Raw backend diagnostics and user-authored values are dynamic and intentionally remain outside this literal-sink check."
+  ],
+  "entries": {
+    "src/App.tsx|jsx-text|kairos": 2,
+    "src/v2/collect/CameraTile.tsx|jsx-text|fps": 1,
+    "src/v2/collect/CameraTile.tsx|jsx-text|ms": 1,
+    "src/v2/collect/ContextBar.tsx|jsx-text|&ge;": 1,
+    "src/v2/collect/ExternalActionHud.tsx|jsx-text|Ctrl+Alt+1/2/3": 1,
+    "src/v2/collect/Modals.tsx|jsx-text|0 /": 1,
+    "src/v2/collect/Modals.tsx|jsx-text|· running": 1,
+    "src/v2/collect/control/ReadyCard.tsx|jsx-text|· R": 1,
+    "src/v2/collect/control/RecordingCard.tsx|jsx-text|· S": 1,
+    "src/v2/collect/sidecards/WarningsCard.tsx|jsx-text|0": 1,
+    "src/v2/monitor/OverviewView.tsx|jsx-text|REC": 1,
+    "src/v2/monitor/RecordContextChip.tsx|jsx-text|REC": 1,
+    "src/v2/monitor/TopicsTable.tsx|jsx-text|Hz": 1,
+    "src/v2/monitor/signals/SignalsView.tsx|jsx-text|Hz": 1,
+    "src/v2/review/CaptureInspection.tsx|jsx-text|fast_validation": 1,
+    "src/v2/review/ReviewScreen.tsx|jsx-text|&times;": 1,
+    "src/v2/settings/AlertsCard.tsx|attr:placeholder|/hsrb/joint_states": 1,
+    "src/v2/settings/AlertsCard.tsx|attr:placeholder|rules: []": 1,
+    "src/v2/settings/AudioSection.tsx|jsx-text|English": 1,
+    "src/v2/settings/RobotsSection.tsx|jsx-text|GET /api/v1/config ·": 1,
+    "src/v2/settings/RobotsSection.tsx|jsx-text|GET /api/v1/config/robots ·": 1,
+    "src/v2/settings/SetupCheckPanel.tsx|jsx-text|ROS_DOMAIN_ID": 1,
+    "src/v2/settings/SetupCheckPanel.tsx|jsx-text|ms": 1
+  }
+}

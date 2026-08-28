@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { ErrorBoundary } from '../../components/ErrorBoundary';
@@ -18,7 +25,7 @@ import {
 import { DEFAULT_EXTERNAL_CONTROLS } from '../collect/machine/externalControlConfig';
 import { __resetStopConfirmMs, __setStopConfirmMs } from '../captures/stopConfirm';
 import { expectScreenHeadingOutline } from '../../test/headingOutline';
-import { LOCALE_STORAGE_KEY, i18n } from '../../i18n';
+import { LOCALE_STORAGE_KEY, i18n, useLocale } from '../../i18n';
 
 // Runtime config (GET /api/v1/config): the ACTIVE robot's read-only values that
 // the Robots form surfaces (ROS_DOMAIN_ID + recorded topics).
@@ -181,7 +188,7 @@ function holdPlansResponse() {
 
 // The recorder state served by GET /record/status; tests flip it to exercise the
 // recording-aware guards.
-let recordState: 'created' | 'recording' = 'created';
+let recordState: 'armed' | 'created' | 'recording' = 'created';
 // Whether that response carries `live_capture_ids` at all. §10 rev.2.4: a
 // response without it is an unreachable recorder, not an idle one — a distinct
 // case the guards have to handle, so it is switchable here.
@@ -270,11 +277,11 @@ function mockFetch() {
       return Promise.resolve(jsonResponse({ run_id: 'run_x', state: 'completed' }));
     }
     if (url.includes('/record/status')) {
-      const live = recordState === 'recording' ? ['cap_x'] : [];
+      const live = recordState === 'created' ? [] : ['cap_x'];
       return Promise.resolve(
         jsonResponse({
-          run_id: recordState === 'recording' ? 'run_x' : null,
-          capture_id: recordState === 'recording' ? 'cap_x' : null,
+          run_id: recordState === 'created' ? null : 'run_x',
+          capture_id: recordState === 'created' ? null : 'cap_x',
           state: recordState,
           ...(liveReported ? { live_capture_ids: live } : {}),
         }),
@@ -313,6 +320,19 @@ function selectPosts() {
   return calls
     .filter((c) => String(c[0]).includes('/config/select'))
     .map((c) => JSON.parse(String((c[1] as RequestInit).body)));
+}
+
+function LocaleSwitchProbe() {
+  const { setLocale } = useLocale();
+  return (
+    <button
+      type="button"
+      data-testid="locale-switch-to-ja"
+      onClick={() => setLocale('ja')}
+    >
+      Switch locale
+    </button>
+  );
 }
 
 beforeEach(async () => {
@@ -367,7 +387,7 @@ test('lists the real robots and marks the active one', async () => {
 
   const row0 = await screen.findByTestId('robot-row-0');
   expect(within(row0).getByText('airoa_hsr')).toBeInTheDocument();
-  expect(within(row0).getByText('active')).toBeInTheDocument();
+  expect(within(row0).getByText('Active')).toBeInTheDocument();
   // Local robots are badged.
   const localRow = screen.getByTestId('robot-row-2');
   expect(within(localRow).getByText('isaac_sim')).toBeInTheDocument();
@@ -381,8 +401,8 @@ test('Appearance applies immediately in Settings and is browser-local', () => {
   expect(screen.getByTestId('settings-appearance')).toBeInTheDocument();
   expect(screen.getByTestId('appearance-system')).toBeChecked();
 
-  const fetchCallsBeforeSelection = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
-    .length;
+  const fetchCallsBeforeSelection = (globalThis.fetch as ReturnType<typeof vi.fn>).mock
+    .calls.length;
   fireEvent.click(screen.getByTestId('appearance-dark'));
   expect(screen.getByTestId('appearance-dark')).toBeChecked();
   expect(screen.getByTestId('appearance-status')).toHaveTextContent('Using dark');
@@ -398,17 +418,94 @@ test('Language applies immediately, persists separately from Appearance, and kee
 
   fireEvent.click(screen.getByTestId('settings-menu-item-language'));
   expect(screen.getByTestId('settings-language')).toBeInTheDocument();
+  const routeBeforeLocaleChange = window.location.href;
+  const configRequestsBeforeLocaleChange = (
+    globalThis.fetch as ReturnType<typeof vi.fn>
+  ).mock.calls.filter(([input]) => String(input).includes('/config')).length;
   await act(async () => {
     fireEvent.click(screen.getByTestId('language-ja'));
     await Promise.resolve();
   });
 
-  await waitFor(() => expect(screen.getByRole('heading', { name: '言語' })).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByRole('heading', { name: '言語' })).toBeInTheDocument(),
+  );
+  expect(screen.getByTestId('settings-category-general')).toHaveTextContent('一般');
+  expect(screen.getByTestId('settings-section-audio')).toHaveTextContent('音声');
+  expect(screen.getByTestId('language-status')).toHaveTextContent(
+    /このコンソールでは\s*日本語/,
+  );
   expect(document.documentElement.lang).toBe('ja');
   expect(window.localStorage.getItem(LOCALE_STORAGE_KEY)).toBe('ja');
   expect(window.localStorage.getItem('kairos.appearance')).toBeNull();
   expect(screen.getByTestId('settings-language')).toBeInTheDocument();
+  expect(window.location.href).toBe(routeBeforeLocaleChange);
+  expect(
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([input]) =>
+      String(input).includes('/config'),
+    ),
+  ).toHaveLength(configRequestsBeforeLocaleChange);
 });
+
+test('the locale setter preserves an unsaved Settings draft, route, and config cache', async () => {
+  window.history.replaceState(null, '', '/?settings=robots');
+  renderWithClient(
+    <>
+      <SettingsScreen />
+      <LocaleSwitchProbe />
+    </>,
+  );
+
+  const editor = (await screen.findByLabelText(
+    'recording config json',
+  )) as HTMLTextAreaElement;
+  await waitFor(() => expect(editor.value).toContain('"robot_name": "hsr"'));
+  fireEvent.change(editor, { target: { value: '{"draft": "keep this"}' } });
+  const routeBeforeLocaleChange = window.location.href;
+  const configRequestsBeforeLocaleChange = (
+    globalThis.fetch as ReturnType<typeof vi.fn>
+  ).mock.calls.filter(([input]) => String(input).includes('/config')).length;
+
+  await act(async () => {
+    fireEvent.click(screen.getByTestId('locale-switch-to-ja'));
+    await Promise.resolve();
+  });
+
+  expect(editor).toHaveValue('{"draft": "keep this"}');
+  expect(window.location.href).toBe(routeBeforeLocaleChange);
+  expect(document.documentElement.lang).toBe('ja');
+  expect(
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([input]) =>
+      String(input).includes('/config'),
+    ),
+  ).toHaveLength(configRequestsBeforeLocaleChange);
+});
+
+test.each([
+  ['en', 'light', 'Language', 'Appearance'],
+  ['en', 'dark', 'Language', 'Appearance'],
+  ['ja', 'light', '言語', '外観'],
+  ['ja', 'dark', '言語', '外観'],
+] as const)(
+  'Settings General is semantic in %s / %s',
+  async (locale, theme, languageTitle, appearanceTitle) => {
+    renderWithClient(<SettingsScreen />);
+
+    fireEvent.click(screen.getByTestId('settings-menu-item-language'));
+    if (locale === 'ja') {
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('language-ja'));
+        await Promise.resolve();
+      });
+    }
+    expect(screen.getByRole('heading', { name: languageTitle })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: appearanceTitle }));
+    expect(screen.getByRole('heading', { name: appearanceTitle })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId(`appearance-${theme}`));
+    expect(document.documentElement).toHaveAttribute('data-theme', theme);
+  },
+);
 
 test('Appearance explains when the browser cannot persist the selection', () => {
   vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
@@ -446,6 +543,14 @@ test('the active robot form shows real read-only runtime values + the recording 
     'recording config json',
   )) as HTMLTextAreaElement;
   await waitFor(() => expect(editor.value).toContain('"robot_name": "hsr"'));
+  expect(screen.getByTestId('recording-config-metadata')).toHaveClass('grid-cols-1');
+  expect(screen.getByTestId('recording-config-metadata')).toHaveClass(
+    'sm:grid-cols-[auto_minmax(0,1fr)]',
+  );
+  expect(screen.getByText('/config/airoa_hsr/recording/default.yaml')).toHaveClass(
+    'min-w-0',
+    'break-all',
+  );
 });
 
 test('selecting a non-active robot shows its config read-only, without switching', async () => {
@@ -477,8 +582,8 @@ test('+ Add robot opens a persistent explainer panel (not a toast)', async () =>
   fireEvent.click(screen.getByTestId('add-robot'));
   const explainer = screen.getByTestId('robot-add-explainer');
   expect(explainer).toHaveTextContent('config/<robot>/');
-  expect(explainer).toHaveTextContent('no in-console create yet');
-  expect(explainer).toHaveTextContent('inspect its config as a template');
+  expect(explainer).toHaveTextContent('cannot be created from this console');
+  expect(explainer).toHaveTextContent('existing robot as a template');
   // Selecting a robot dismisses the explainer.
   fireEvent.click(screen.getByTestId('robot-row-1'));
   expect(screen.queryByTestId('robot-add-explainer')).not.toBeInTheDocument();
@@ -515,7 +620,7 @@ test('activating a robot while recording confirms first, then stops and switches
   // configs until restarted (S1-3) — pretending otherwise is how a
   // mixed-config recording gets made.
   const note = await screen.findByTestId('robot-switch-note');
-  expect(note).toHaveTextContent(/until they are restarted/);
+  expect(note).toHaveTextContent(/after restarting/);
   expect(note).toHaveTextContent('make restart monitor streamer probe');
 });
 
@@ -613,16 +718,35 @@ test('cancelling the switch-while-recording confirm leaves the recording alone',
   expect(selectPosts()).toHaveLength(0);
 });
 
-test('the recording-config editor warns that a save applies to the next recording', async () => {
+test('the recording-config editor distinguishes a recording already writing from later work', async () => {
   recordState = 'recording';
   renderWithClient(<SettingsScreen />);
   // Active robot (airoa_hsr) renders the editable editor.
   await screen.findByLabelText('recording config json');
   expect(
-    await screen.findByText(
-      /saving recording config won.t change the current one; it applies to the next/i,
-    ),
+    await screen.findByText(/does not change the current recording/i),
   ).toBeInTheDocument();
+});
+
+test('the recording-config editor says an armed session has written nothing', async () => {
+  recordState = 'armed';
+  renderWithClient(<SettingsScreen />);
+
+  expect(await screen.findByTestId('config-armed-note')).toHaveTextContent(
+    /nothing is being written yet/i,
+  );
+  expect(screen.getByTestId('config-armed-note')).toHaveTextContent(
+    /recording after it/i,
+  );
+});
+
+test('the recording-config editor reports an unconfirmed live state as unknown', async () => {
+  liveReported = false;
+  renderWithClient(<SettingsScreen />);
+
+  expect(await screen.findByTestId('config-live-unknown')).toHaveTextContent(
+    /whether a session is in progress is unknown/i,
+  );
 });
 
 test('"Use this robot" POSTs {category: robot} for the previewed robot', async () => {
@@ -649,13 +773,13 @@ test('the activate action is disabled for the already-active robot', async () =>
 test('aspect pickers select an option and POST {category: <aspect>}', async () => {
   renderWithClient(<SettingsScreen />);
   const validation = (await screen.findByLabelText(
-    'validation option',
+    'Validation option',
   )) as HTMLSelectElement;
   expect(validation.value).toBe('default');
   // All four aspect pickers are present.
-  expect(screen.getByLabelText('recording option')).toBeInTheDocument();
-  expect(screen.getByLabelText('stream option')).toBeInTheDocument();
-  expect(screen.getByLabelText('validators option')).toBeInTheDocument();
+  expect(screen.getByLabelText('Recording option')).toBeInTheDocument();
+  expect(screen.getByLabelText('Stream option')).toBeInTheDocument();
+  expect(screen.getByLabelText('Validators option')).toBeInTheDocument();
 
   fireEvent.change(validation, { target: { value: 'strict' } });
   await waitFor(() =>
@@ -690,7 +814,9 @@ test('saving the recording editor PUTs the edited config', async () => {
       config: edited,
     });
   });
-  expect(await screen.findByText('Saved')).toBeInTheDocument();
+  const saved = await screen.findByText('Saved');
+  expect(saved).toBeInTheDocument();
+  expect(saved.parentElement).toHaveTextContent(/apply on the next recorder restart/i);
 });
 
 test('saving the stream editor PUTs the edited layout and reports immediate apply', async () => {

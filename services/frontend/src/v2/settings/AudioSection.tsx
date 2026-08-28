@@ -22,18 +22,7 @@ import {
   unlockVoicePlayer,
 } from '../audio/voicePlayer';
 import { createRecordingCuePlayer } from '../collect/recordingCues';
-
-const LABELS: Record<AudioFeedbackEvent, string> = {
-  start: 'Recording Start accepted',
-  stop: 'Recording Stop completed',
-  success: 'Success saved',
-  failure: 'Failure selected',
-  failure_reason: 'Failure reason saved',
-  retake: 'Retake accepted',
-  save: 'Save completed',
-  invalid: 'Invalid shortcut action',
-  error: 'Recording / Collect error',
-};
+import { useTranslation } from 'react-i18next';
 
 function cueFor(event: AudioFeedbackEvent) {
   return event === 'stop'
@@ -94,6 +83,7 @@ function phraseSetIdentity(phrases: ReturnType<typeof phrasesFor>): string {
 }
 
 export function AudioSection() {
+  const { t } = useTranslation('settings');
   const settings = useAudioSettings();
   const failureReasons = useFailReasons();
   const [message, setMessage] = useState('');
@@ -148,9 +138,7 @@ export function AudioSection() {
         current.voiceName !== request.voiceName ||
         current.speechRate !== request.speechRate
       ) {
-        setMessage(
-          'Voice selection changed while preparing. Prepare the current voice again.',
-        );
+        setMessage(t('audio.selectionChanged'));
         return;
       }
       const currentPhrases = phrasesFor(current);
@@ -174,54 +162,51 @@ export function AudioSection() {
       });
       setMessage(
         result.deferred
-          ? `${result.errors[0] ?? 'Voice preparation was deferred.'} Retry after recording stops.`
+          ? t('audio.prepareDeferred', {
+              reason: result.errors[0] ?? t('audio.prepareDeferredDefault'),
+            })
           : phraseSetChanged
             ? acceptedAssets.length
-              ? `Voice assets ready (${acceptedAssets.length}); failure reasons changed during preparation. Prepare again for the current reasons.`
-              : 'Failure reasons changed during preparation. Prepare again for the current reasons.'
+              ? t('audio.assetsReadyReasonsChanged', {
+                  count: acceptedAssets.length,
+                })
+              : t('audio.reasonsChanged')
             : result.available
               ? result.errors.length
                 ? acceptedAssets.length
-                  ? `Voice assets ready (${acceptedAssets.length}); ${result.errors.length} phrase(s) could not be prepared. Retry to prepare the missing phrases.`
-                  : `${result.errors[0] ?? 'No voice assets could be prepared.'} Retry preparation.`
-                : `Voice assets ready (${result.assets.length}).`
-              : 'Voice engine is unavailable. Sound effects remain available.',
+                  ? t('audio.assetsReadyPartial', {
+                      ready: String(acceptedAssets.length),
+                      count: result.errors.length,
+                    })
+                  : `${result.errors[0] ?? t('audio.noAssets')}`
+                : t('audio.ready')
+              : t('audio.engineUnavailable'),
       );
     },
-    onError: () =>
-      setMessage(
-        'Voice preparation failed. Sound effects and Collect remain available.',
-      ),
+    onError: () => setMessage(t('audio.prepareFailed')),
   });
 
   const patch = (next: Partial<typeof settings>) =>
     setAudioSettings({ ...getAudioSettings(), ...next });
   const previewSound = async (event: AudioFeedbackEvent) => {
     const played = await cuePlayer.play(cueFor(event), settings.volume);
-    setMessage(
-      played
-        ? 'Sound preview sent to this browser.'
-        : 'The browser blocked sound. Press Sound again to allow it.',
-    );
+    setMessage(played ? t('audio.soundSent') : t('audio.soundBlocked'));
   };
   const previewVoice = async (event: AudioFeedbackEvent, detail?: string) => {
     await unlockVoicePlayer();
     if (prepare.isPending) {
-      setMessage('Voice preparation is still running. Wait for it to finish.');
+      setMessage(t('audio.voicePreparing'));
       return;
     }
     const text = phraseFor(event, settings.language, detail);
     const url = settings.assets[assetKey(event, text)];
     if (url) {
       const played = await playVoiceAsset(url, settings.volume);
-      if (!played)
-        setMessage('The browser blocked Voice. Press Voice again to allow it.');
-      else setMessage(`Voice preview: ${settings.voiceName}.`);
+      if (!played) setMessage(t('audio.voiceBlocked'));
+      else setMessage(t('audio.voicePreview', { voice: settings.voiceName }));
     } else {
       setMessage(
-        settings.preparedEngine
-          ? 'This phrase could not be prepared. Press Prepare voice assets to retry.'
-          : 'This Voice is not prepared. Press Prepare voice assets first.',
+        settings.preparedEngine ? t('audio.voiceRetry') : t('audio.voiceNotPrepared'),
       );
     }
   };
@@ -233,17 +218,16 @@ export function AudioSection() {
     >
       <div className="border-b border-border px-4 py-[13px]">
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          Audio feedback
+          {t('audio.title')}
         </h2>
         <p className="mt-1 text-[12px] leading-relaxed text-text-muted">
-          Optional, browser-local confirmation for hands-busy Collect work. Visual state
-          stays authoritative; missing audio never blocks an action.
+          {t('audio.description')}
         </p>
       </div>
       <div className="flex flex-col gap-4 p-4">
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           <Toggle
-            label="Audio feedback"
+            label={t('audio.master')}
             checked={settings.master}
             onChange={(master) => {
               if (master) void unlockVoicePlayer();
@@ -252,12 +236,12 @@ export function AudioSection() {
             }}
           />
           <Toggle
-            label="Sound effects"
+            label={t('audio.sound')}
             checked={settings.soundEffects}
             onChange={(soundEffects) => patch({ soundEffects })}
           />
           <Toggle
-            label="Voice / TTS"
+            label={t('audio.voice')}
             checked={settings.voice}
             onChange={(voice) => {
               if (!voice) stopVoicePlayer();
@@ -265,9 +249,9 @@ export function AudioSection() {
             }}
           />
           <label className="flex flex-col gap-1 text-[12px] font-semibold text-text-primary">
-            Output volume
+            {t('audio.volume')}
             <input
-              aria-label="Output volume"
+              aria-label={t('audio.volume')}
               type="range"
               min="0"
               max="1"
@@ -277,7 +261,7 @@ export function AudioSection() {
             />
           </label>
           <label className="flex flex-col gap-1 text-[12px] font-semibold text-text-primary">
-            Language
+            {t('audio.language')}
             <select
               value={settings.language}
               onChange={(event) =>
@@ -286,8 +270,7 @@ export function AudioSection() {
                   voiceName:
                     status.data?.voices[
                       event.target.value === 'ja' ? 'ja' : 'en'
-                    ]?.[0] ??
-                    (event.target.value === 'ja' ? 'jf_alpha' : 'af_heart'),
+                    ]?.[0] ?? (event.target.value === 'ja' ? 'jf_alpha' : 'af_heart'),
                   preparedEngine: null,
                   preparedModelRevision: null,
                   assets: {},
@@ -300,7 +283,7 @@ export function AudioSection() {
             </select>
           </label>
           <label className="flex flex-col gap-1 text-[12px] font-semibold text-text-primary">
-            Voice
+            {t('audio.voiceName')}
             <select
               value={settings.voiceName}
               disabled={!status.data?.available}
@@ -324,9 +307,11 @@ export function AudioSection() {
             </select>
           </label>
           <label className="flex flex-col gap-1 text-[12px] font-semibold text-text-primary">
-            Speech rate · {settings.speechRate.toFixed(2)}×
+            {t('audio.speechRate', { rate: settings.speechRate.toFixed(2) })}
             <input
-              aria-label="Speech rate"
+              aria-label={t('audio.speechRate', {
+                rate: settings.speechRate.toFixed(2),
+              })}
               type="range"
               min="0.75"
               max="1.25"
@@ -347,11 +332,11 @@ export function AudioSection() {
         </div>
         <div className="rounded-control border border-border">
           <div className="grid grid-cols-[minmax(180px,1fr)_56px_56px_72px_72px] border-b border-border bg-surface-muted px-3 py-2 text-[10.5px] font-bold uppercase tracking-wide text-text-muted">
-            <span>Confirmed event / phrase</span>
-            <span>Sound</span>
-            <span>Voice</span>
-            <span>Test SFX</span>
-            <span>Test voice</span>
+            <span>{t('audio.event')}</span>
+            <span>{t('audio.sound')}</span>
+            <span>{t('audio.voice')}</span>
+            <span>{t('audio.testSound')}</span>
+            <span>{t('audio.testVoice')}</span>
           </div>
           {AUDIO_EVENTS.map((event) => {
             const phrase = phraseFor(event, settings.language);
@@ -361,15 +346,15 @@ export function AudioSection() {
                 className="grid min-h-14 grid-cols-[minmax(180px,1fr)_56px_56px_72px_72px] items-center border-b border-border px-3 last:border-0"
               >
                 <span className="min-w-0 pr-2 text-[12.5px] text-text-primary">
-                  {LABELS[event]}
+                  {t(`audio.events.${event}`)}
                   <span className="block truncate text-[11px] font-normal text-text-muted">
-                    {phrase || 'Uses the selected task failure reason'}
+                    {phrase || t('audio.usesReason')}
                   </span>
                 </span>
                 {(['sound', 'voice'] as const).map((kind) => (
                   <input
                     key={kind}
-                    aria-label={`${LABELS[event]} ${kind}`}
+                    aria-label={`${t(`audio.events.${event}`)} ${kind === 'sound' ? t('audio.sound') : t('audio.voice')}`}
                     type="checkbox"
                     checked={settings.events[event][kind]}
                     onChange={(e) => {
@@ -389,15 +374,19 @@ export function AudioSection() {
                 ))}
                 <button
                   type="button"
-                  aria-label={`Preview sound for ${LABELS[event]}`}
+                  aria-label={t('audio.previewSound', {
+                    event: t(`audio.events.${event}`),
+                  })}
                   onClick={() => void previewSound(event)}
                   className="min-h-9 rounded-control border border-border px-2 text-[11px] font-semibold text-accent"
                 >
-                  Sound
+                  {t('audio.sound')}
                 </button>
                 <button
                   type="button"
-                  aria-label={`Preview voice for ${LABELS[event]}`}
+                  aria-label={t('audio.previewVoice', {
+                    event: t(`audio.events.${event}`),
+                  })}
                   onClick={() =>
                     void previewVoice(
                       event,
@@ -406,7 +395,7 @@ export function AudioSection() {
                   }
                   className="min-h-9 rounded-control border border-border px-2 text-[11px] font-semibold text-accent"
                 >
-                  {prepare.isPending ? 'Wait…' : 'Voice'}
+                  {prepare.isPending ? t('audio.wait') : t('audio.voice')}
                 </button>
               </div>
             );
@@ -414,7 +403,7 @@ export function AudioSection() {
         </div>
         <div className="rounded-control border border-border px-3 py-2">
           <p className="text-[11px] font-semibold uppercase tracking-wide text-text-muted">
-            Task failure reason phrases
+            {t('audio.taskReasons')}
           </p>
           <div className="mt-2 flex flex-wrap gap-2">
             {failureReasons.map((reason) => (
@@ -424,7 +413,7 @@ export function AudioSection() {
                 onClick={() => void previewVoice('failure_reason', reason)}
                 className="min-h-9 rounded-control border border-border px-2 text-[11.5px] text-text-primary"
               >
-                {reason} · {prepare.isPending ? 'Wait…' : 'Voice'}
+                {reason} · {prepare.isPending ? t('audio.wait') : t('audio.voice')}
               </button>
             ))}
           </div>
@@ -445,18 +434,18 @@ export function AudioSection() {
             }
             className="min-h-11 rounded-control bg-accent px-3 text-[12.5px] font-semibold text-text-inverse disabled:opacity-50"
           >
-            {prepare.isPending ? 'Preparing…' : 'Prepare voice assets'}
+            {prepare.isPending ? t('audio.preparing') : t('audio.prepare')}
           </button>
           <button
             type="button"
             onClick={() => {
               resetAudioSettings();
               stopVoicePlayer();
-              setMessage('Audio settings reset. Audio feedback is Off.');
+              setMessage(t('audio.resetMessage'));
             }}
             className="min-h-11 rounded-control border border-dashed border-border-strong px-3 text-[12.5px] font-semibold text-accent"
           >
-            Reset to defaults
+            {t('audio.reset')}
           </button>
         </div>
         <div
@@ -470,15 +459,17 @@ export function AudioSection() {
         >
           {message ||
             (status.isLoading
-              ? 'Checking local voice engine…'
+              ? t('audio.checking')
               : status.isError
-                ? 'Could not reach the voice service. Retry by reopening Audio settings; Collect is unaffected.'
+                ? t('audio.reachableError')
                 : status.data?.available
-                  ? `Voice engine ready: Kokoro 82M. Prepare assets after changing language, voice, rate, or failure reasons.`
-                  : 'Kokoro voice service is unavailable. Enable COMPOSE_PROFILES=audio before make build and make up. Sound effects still work; Collect is unaffected.')}
+                  ? t('audio.ready')
+                  : t('audio.unavailable'))}
           {status.data?.available ? (
             <span className="mt-1 block">
-              Local CPU model · Apache-2.0 · {VOICE_LABELS[settings.voiceName] ?? settings.voiceName}
+              {t('audio.localModel', {
+                voice: VOICE_LABELS[settings.voiceName] ?? settings.voiceName,
+              })}
             </span>
           ) : null}
         </div>

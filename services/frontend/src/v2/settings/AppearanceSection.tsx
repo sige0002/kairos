@@ -2,26 +2,12 @@
 // Copyright 2026 Sadasue Yuki
 import { Card, cn } from '../../components/ui';
 import { useAppearance, type Appearance } from '../../theme';
+import { useTranslation } from 'react-i18next';
 
-const OPTIONS: Array<{ value: Appearance; label: string; description: string }> = [
-  {
-    value: 'system',
-    label: 'System',
-    description: 'Match this device’s light or dark appearance.',
-  },
-  {
-    value: 'light',
-    label: 'Light',
-    description: 'Always use the light appearance.',
-  },
-  {
-    value: 'dark',
-    label: 'Dark',
-    description: 'Always use the dark appearance.',
-  },
-];
+const OPTIONS: Appearance[] = ['system', 'light', 'dark'];
 
 export function AppearanceSection() {
+  const { t } = useTranslation('settings');
   const { appearance, resolvedTheme, preferencePersistent, setAppearance } =
     useAppearance();
   return (
@@ -31,20 +17,19 @@ export function AppearanceSection() {
     >
       <div>
         <h2 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
-          Appearance
+          {t('appearance.title')}
         </h2>
         <p className="mt-1 text-[12.5px] text-text-secondary">
-          Applies immediately on this browser. It does not affect recording or shared
-          system settings.
+          {t('appearance.description')}
         </p>
       </div>
       <fieldset className="flex max-w-xl flex-col gap-2">
-        <legend className="sr-only">Appearance</legend>
-        {OPTIONS.map((option) => {
-          const selected = appearance === option.value;
+        <legend className="sr-only">{t('appearance.title')}</legend>
+        {OPTIONS.map((value) => {
+          const selected = appearance === value;
           return (
             <label
-              key={option.value}
+              key={value}
               className={cn(
                 'flex cursor-pointer items-start gap-3 rounded-control border p-3 transition-colors',
                 selected
@@ -55,18 +40,18 @@ export function AppearanceSection() {
               <input
                 type="radio"
                 name="appearance"
-                value={option.value}
+                value={value}
                 checked={selected}
-                onChange={() => setAppearance(option.value)}
+                onChange={() => setAppearance(value)}
                 className="mt-0.5 h-4 w-4 border-border-strong accent-accent focus:ring-2 focus:ring-focus"
-                data-testid={`appearance-${option.value}`}
+                data-testid={`appearance-${value}`}
               />
               <span>
                 <span className="block text-sm font-semibold text-text-primary">
-                  {option.label}
+                  {t(`appearance.options.${value}`)}
                 </span>
                 <span className="block text-[12.5px] text-text-secondary">
-                  {option.description}
+                  {t(`appearance.optionDescriptions.${value}`)}
                 </span>
               </span>
             </label>
@@ -82,10 +67,14 @@ export function AppearanceSection() {
         data-testid="appearance-status"
       >
         {!preferencePersistent
-          ? `Using ${resolvedTheme} for this page. Browser storage is unavailable, so choose it again after reload.`
+          ? t('appearance.statusTemporary', {
+              theme: t(`appearance.options.${resolvedTheme}`),
+            })
           : appearance === 'system'
-            ? `Following this device: ${resolvedTheme}.`
-            : `Using ${resolvedTheme} appearance.`}
+            ? t('appearance.statusSystem', {
+                theme: t(`appearance.options.${resolvedTheme}`),
+              })
+            : t('appearance.statusSelected', { theme: resolvedTheme })}
       </p>
     </Card>
   );

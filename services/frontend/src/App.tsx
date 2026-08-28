@@ -46,6 +46,7 @@ function openTabWindow(id: string): void {
 
 /** Render the screen for a given v2 tab id. */
 function TabContent({ tabId }: { tabId: V2TabId }) {
+  const { t } = useTranslation('common');
   switch (tabId) {
     case 'collect':
       return <CollectScreen />;
@@ -60,7 +61,11 @@ function TabContent({ tabId }: { tabId: V2TabId }) {
     case 'settings':
       return <SettingsScreen />;
     default:
-      return <p className="text-sm text-text-muted">Unknown tab: {tabId}</p>;
+      return (
+        <p className="text-sm text-text-muted">
+          {t('shell.unknownTab', { tab: tabId })}
+        </p>
+      );
   }
 }
 
@@ -116,7 +121,7 @@ function TabNav({ active }: { active: V2TabId }) {
   return (
     <nav
       role="tablist"
-      aria-label="kairos tabs"
+      aria-label={t('shell.tabsLabel')}
       // gap-y-2 only: the tabs' hit areas reach 4px above and below each tab
       // (HIT_AREA_TAB), so a wrapped nav at narrow widths needs 8px between
       // ROWS or the two rows' targets would overlap. The 3px column gap is
@@ -193,6 +198,7 @@ function TabPanel({ active }: { active: V2TabId }) {
  * cross-host split. A green "DDS connected" therefore requires BOTH; an open
  * pipe with the bridge down reads "robot offline" instead of a false green. */
 function ConnectionBadge() {
+  const { t } = useTranslation('common');
   const status = useUiStore((s) => s.sseStatus);
   const bridge = useUiStore((s) => s.monitorBridge);
   const tone: Record<SseStatus, 'green' | 'amber' | 'gray'> = {
@@ -202,10 +208,10 @@ function ConnectionBadge() {
     closed: 'gray',
   };
   const label: Record<SseStatus, string> = {
-    open: 'DDS connected',
-    connecting: 'connecting',
-    reconnecting: 'DDS reconnecting…',
-    closed: 'disconnected',
+    open: t('shell.connection.connected'),
+    connecting: t('shell.connection.connecting'),
+    reconnecting: t('shell.connection.reconnecting'),
+    closed: t('shell.connection.disconnected'),
   };
   const robotOffline = status === 'open' && bridge === 'down';
   const checkingRobot = status === 'open' && bridge === null;
@@ -215,9 +221,9 @@ function ConnectionBadge() {
       data-testid="connection-status"
       title={
         robotOffline
-          ? 'The orchestrator is up, but the monitor (robot-edge) is unreachable — check the robot / ROBOT_IP.'
+          ? t('shell.connection.robotOfflineHelp')
           : checkingRobot
-            ? 'The orchestrator is connected. Waiting for its robot-monitor status.'
+            ? t('shell.connection.checkingRobotHelp')
             : undefined
       }
       className={cn(
@@ -244,9 +250,9 @@ function ConnectionBadge() {
         )}
       >
         {robotOffline
-          ? 'robot offline'
+          ? t('shell.connection.robotOffline')
           : checkingRobot
-            ? 'checking robot…'
+            ? t('shell.connection.checkingRobot')
             : label[status]}
       </span>
     </span>
@@ -258,14 +264,17 @@ function ConnectionBadge() {
  * badge (operator context). Hidden when the backend omits it.
  */
 function DomainChip({ domainId }: { domainId?: number }) {
+  const { t } = useTranslation('common');
   if (domainId === undefined) return null;
   return (
     <span
       data-testid="ros-domain"
-      title={`ROS 2 domain ${domainId} (ROS_DOMAIN_ID)`}
+      title={t('shell.domainTitle', { domainId: String(domainId) })}
       className="inline-flex items-center gap-1.5 rounded-control border border-border bg-surface px-3 py-2 font-mono text-[12.5px] font-semibold text-text-secondary"
     >
-      <span className="uppercase tracking-[0.04em] text-text-muted">DOMAIN</span>
+      <span className="uppercase tracking-[0.04em] text-text-muted">
+        {t('shell.domain')}
+      </span>
       {domainId}
     </span>
   );
@@ -310,6 +319,7 @@ function OperatorHydrationMount() {
  *  record-start flow reads (`recordOperator` → /record/start `operator`), plus
  *  localStorage so the name survives a reload — the store itself is in-memory. */
 function OperatorChip() {
+  const { t } = useTranslation('common');
   const operator = useUiStore((s) => s.recordOperator);
   const setOperator = useUiStore((s) => s.setRecordOperator);
   // Attribution roster (Settings > Operators). Non-empty → the popover is a
@@ -348,12 +358,16 @@ function OperatorChip() {
     <div className="relative">
       <button
         type="button"
-        aria-label={operator.trim() ? `operator: ${operator}` : 'set operator'}
+        aria-label={
+          operator.trim()
+            ? t('shell.operator.namedLabel', { operator })
+            : t('shell.operator.setLabel')
+        }
         data-testid="operator-chip"
         title={
           operator.trim()
-            ? `Operator: ${operator} — saved into each recording`
-            : 'Set operator name — saved into each recording'
+            ? t('shell.operator.namedTitle', { operator })
+            : t('shell.operator.setTitle')
         }
         onClick={() => {
           setDraft(operator);
@@ -373,11 +387,8 @@ function OperatorChip() {
         >
           {initials}
         </span>
-        <span
-          data-testid="operator-visible-name"
-          className="max-w-[160px] truncate"
-        >
-          {operator.trim() || 'Set operator'}
+        <span data-testid="operator-visible-name" className="max-w-[160px] truncate">
+          {operator.trim() || t('shell.operator.set')}
         </span>
       </button>
       {open && (
@@ -386,14 +397,13 @@ function OperatorChip() {
             htmlFor="operator-name"
             className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted"
           >
-            Operator — saved into each recording
+            {t('shell.operator.label')}
           </label>
           {roster.length > 0 ? (
             <div className="flex flex-col gap-1" data-testid="operator-roster">
               {operator.trim() && !roster.includes(operator.trim()) && (
                 <p className="mb-1 rounded-control border border-status-warning-border bg-status-warning-bg px-2 py-1 text-[11px] text-status-warning-text">
-                  “{operator.trim()}” is not on the roster — pick a name below (Settings
-                  &gt; Operators edits the list).
+                  {t('shell.operator.notOnRoster', { operator: operator.trim() })}
                 </p>
               )}
               {roster.map((name) => (
@@ -460,7 +470,7 @@ function OperatorChip() {
                   }
                   if (e.key === 'Escape') setOpen(false);
                 }}
-                placeholder="e.g. sadasue"
+                placeholder={t('shell.operator.placeholder')}
                 autoFocus
                 data-testid="operator-input"
                 className="w-full rounded-control border border-border bg-surface-control px-2 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
@@ -470,7 +480,7 @@ function OperatorChip() {
                 onClick={save}
                 className="rounded-control bg-accent px-3 py-1.5 text-sm font-semibold text-text-inverse hover:bg-accent-strong"
               >
-                Save
+                {t('actions.save')}
               </button>
             </div>
           )}
@@ -484,12 +494,13 @@ function OperatorChip() {
  *  (design mock header). Always mounted — unlike the tab panel below it, it
  *  never unmounts on a tab switch. */
 function Header({ active, config }: { active: V2TabId; config: RuntimeConfig }) {
+  const { t } = useTranslation('common');
   return (
     <header className="mb-2.5 flex flex-wrap items-center gap-4 lg:shrink-0">
       <a
         href="/"
-        aria-label="kairos — recording console (home)"
-        title="kairos — recording console (home)"
+        aria-label={t('shell.home')}
+        title={t('shell.home')}
         className="flex items-center gap-[11px] rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-focus"
       >
         <Hexagon size={30} />
@@ -508,6 +519,7 @@ function Header({ active, config }: { active: V2TabId; config: RuntimeConfig }) 
 }
 
 function BatchRestoreNotice() {
+  const { t } = useTranslation('common');
   const batchRestoreIssue = useUiStore((s) => s.batchRestoreIssue);
   if (batchRestoreIssue !== 'ambiguous') return null;
   return (
@@ -516,7 +528,7 @@ function BatchRestoreNotice() {
       data-testid="batch-restore-issue"
       className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] font-medium text-status-warning-text"
     >
-      More than one active batch matches this operator and robot. No batch was restored.
+      {t('shell.batchRestore')}
     </span>
   );
 }
@@ -606,6 +618,7 @@ export function App() {
   // rerender already-mounted formatter consumers without remounting their
   // stateful Collect/Review/Datasets screens.
   const { locale } = useLocale();
+  const { t } = useTranslation('common');
   const operatorHydrated = useUiStore((s) => s.operatorHydrated);
   // Render gate: wait for the backend config before showing the UI. config.ts
   // provides a dev-only fallback so the SPA renders without a backend. Still
@@ -633,7 +646,7 @@ export function App() {
         {operatorHydration}
         <main className="flex min-h-screen items-center gap-3 bg-app p-[22px] text-text-muted">
           <Hexagon size={22} />
-          Loading kairos…
+          {t('shell.loadingConsole')}
         </main>
       </>
     );
@@ -643,7 +656,7 @@ export function App() {
       <>
         {operatorHydration}
         <main className="min-h-screen bg-app p-[22px] text-status-danger-text">
-          Failed to load configuration: {String(error)}
+          {t('shell.configurationFailed', { error: String(error) })}
         </main>
       </>
     );
@@ -655,7 +668,7 @@ export function App() {
         {operatorHydration}
         <main className="flex min-h-screen items-center gap-3 bg-app p-[22px] text-text-muted">
           <Hexagon size={22} />
-          Loading operator context…
+          {t('shell.loadingOperator')}
         </main>
       </>
     );

@@ -64,7 +64,7 @@ export function EditDatasetDialog({ state }: { state: DatasetsState }) {
             datasetId={state.selectedDatasetId}
           />
           <p className="text-[12px] leading-relaxed text-text-muted">
-            Nothing was renamed. The labels you typed are not saved anywhere.
+            {t('datasets:editNotSaved')}
           </p>
           {state.editError != null && <ErrorMessage error={state.editError} />}
         </div>
@@ -76,11 +76,12 @@ export function EditDatasetDialog({ state }: { state: DatasetsState }) {
 }
 
 function EditForm({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation('datasets');
   return (
     <div data-testid="edit-dataset-dialog" className="flex flex-col gap-3">
       <label className="flex flex-col gap-1">
         <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          Name
+          {t('datasetName')}
         </span>
         <input
           data-testid="edit-dataset-name"
@@ -94,8 +95,7 @@ function EditForm({ state }: { state: DatasetsState }) {
       <div className="flex gap-1.5">
         <label className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-            Operator{' '}
-            <span className="font-normal normal-case text-text-muted">(optional)</span>
+            {t('operatorOptional')}
           </span>
           <input
             data-testid="edit-dataset-operator"
@@ -106,8 +106,7 @@ function EditForm({ state }: { state: DatasetsState }) {
         </label>
         <label className="flex min-w-0 flex-1 flex-col gap-1">
           <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-            Task{' '}
-            <span className="font-normal normal-case text-text-muted">(optional)</span>
+            {t('taskOptional')}
           </span>
           <input
             data-testid="edit-dataset-task"
@@ -118,10 +117,7 @@ function EditForm({ state }: { state: DatasetsState }) {
         </label>
       </div>
       <p className="text-[11px] leading-relaxed text-text-muted">
-        Labels only: the members and their numbers do not change, and no recording
-        moves. Leave operator empty when several people recorded the members — each
-        recording keeps its own operator either way, and the browsable views/ tree
-        follows the new labels on its own.
+        {t('editDatasetLabelsHelp')}
       </p>
       {state.editError != null && <ErrorMessage error={state.editError} />}
     </div>

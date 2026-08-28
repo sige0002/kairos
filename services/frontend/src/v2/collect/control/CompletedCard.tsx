@@ -30,7 +30,7 @@ export function CompletedCard({
     >
       <div className="flex items-center gap-2">
         <h2 className="text-[15px] font-bold text-text-primary">
-          Batch {machine.batchSeq ?? '—'} completed 🎉
+          {t('completedCardTitle', { batch: String(machine.batchSeq ?? '—') })}
         </h2>
         <div className="flex-1" />
         <span className="rounded-chip bg-status-success-bg px-2 py-0.5 text-[11px] font-bold text-status-success-text">
@@ -38,7 +38,7 @@ export function CompletedCard({
         </span>
       </div>
       <span className="text-[12.5px] leading-relaxed text-text-muted">
-        {endSummary}. Nice work — all {machine.targetEpisodes} episodes recorded.
+        {endSummary}. {t('completedCardSummary', { count: machine.targetEpisodes })}
       </span>
       <button
         type="button"
@@ -55,7 +55,7 @@ export function CompletedCard({
       </button>
       {confirmNextSet && (
         <span data-testid="next-set-note" className="text-[11.5px] text-text-muted">
-          This panel starts a fresh set — the recorded episodes stay saved in Review.
+          {t('nextSetPanelHelp')}
         </span>
       )}
     </Card>

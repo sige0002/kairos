@@ -52,6 +52,7 @@ export interface ActiveOutcome {
  *  the good renderer sat ten lines away). Worst offenders first, flagged count
  *  as the headline; the generic card follows as the evidence trail. */
 function LossReportCard({ summary }: { summary: Summary }) {
+  const { t } = useTranslation('validation');
   const raw = (summary as Record<string, unknown>).topics;
   if (!Array.isArray(raw) || raw.length === 0) return null;
   const topics = [...(raw as LossTopic[])].sort(
@@ -66,7 +67,10 @@ function LossReportCard({ summary }: { summary: Summary }) {
     <div className="flex flex-col gap-2" data-testid="loss-report-table">
       {flaggedCount !== null && flaggedCount > 0 && worst && (
         <p className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12.5px] font-semibold text-status-warning-text">
-          ⚠ {flaggedCount} of {topics.length} topics exceeded the gap threshold — worst:{' '}
+          {t('lossGapWarning', {
+            flagged: String(flaggedCount),
+            total: String(topics.length),
+          })}{' '}
           <span className="font-mono">{worst.name}</span>{' '}
           {worst.loss_rate != null ? `${(worst.loss_rate * 100).toFixed(1)}%` : ''}
         </p>

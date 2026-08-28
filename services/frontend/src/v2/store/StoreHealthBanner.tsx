@@ -3,26 +3,36 @@
 // Non-blocking global notice for conditions invisible in a capture list.
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { useUiStore } from '../../store/uiStore';
 import { cn } from '../../components/ui';
 import { useStoreHealth } from './useStoreHealth';
 import type { StoreHealth } from '../../api/types';
 import { formatDateTime } from '../../i18n/format';
 
-function observedBy(health: {
-  corrupt_source?: 'rebuild' | 'reconcile' | null;
-  corrupt_observed_at?: string | null;
-}): string {
-  const source = health.corrupt_source === 'reconcile' ? 'reconciler pass' : 'rebuild';
+function observedBy(
+  t: TFunction<'common'>,
+  health: {
+    corrupt_source?: 'rebuild' | 'reconcile' | null;
+    corrupt_observed_at?: string | null;
+  },
+): string {
+  const source = t(
+    health.corrupt_source === 'reconcile'
+      ? 'storeHealthBanner.sourceReconciler'
+      : 'storeHealthBanner.sourceRebuild',
+  );
   if (!health.corrupt_observed_at) return source;
   const date = new Date(health.corrupt_observed_at);
-  return Number.isNaN(date.getTime())
-    ? `${source} at ${health.corrupt_observed_at}`
-    : `${source} at ${formatDateTime(date)}`;
+  const time = Number.isNaN(date.getTime())
+    ? health.corrupt_observed_at
+    : formatDateTime(date);
+  return t('storeHealthBanner.observedAt', { source, time });
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'The request failed.';
+function errorMessage(t: TFunction<'common'>, error: unknown): string {
+  return error instanceof Error ? error.message : t('storeHealthBanner.requestFailed');
 }
 
 function informationalNoticeKey(health: StoreHealth): string | null {
@@ -74,6 +84,7 @@ function safeSetAcknowledged(key: string): boolean {
  * visible. Nothing here blocks the operator's current task.
  */
 export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
+  const { t } = useTranslation('common');
   const query = useStoreHealth();
   const [dismissedKey, setDismissedKey] = useState<string | null>(null);
   const setActiveTab = useUiStore((s) => s.setActiveTab);
@@ -100,7 +111,7 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
         <span className="animate-pulse" aria-hidden="true">
           ●
         </span>
-        Checking store health…
+        {t('storeHealthBanner.loading')}
       </div>
     );
   }
@@ -117,10 +128,12 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
         data-state="unavailable"
         className="my-2.5 flex flex-wrap items-center gap-2 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] text-status-warning-text"
       >
-        <span className="font-semibold">Store status unavailable.</span>
-        <span>Nothing is known; this is not an all-clear.</span>
+        <span className="font-semibold">{t('storeHealthBanner.unavailableTitle')}</span>
+        <span>{t('storeHealthBanner.unavailableHelp')}</span>
         {query.isError && (
-          <span className="text-status-warning-text">{errorMessage(query.error)}</span>
+          <span className="text-status-warning-text">
+            {errorMessage(t, query.error)}
+          </span>
         )}
         <button
           type="button"
@@ -129,7 +142,9 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
           disabled={query.isFetching}
           className="ml-auto font-semibold underline underline-offset-2 disabled:no-underline"
         >
-          {query.isFetching ? 'Checking…' : 'Retry'}
+          {query.isFetching
+            ? t('storeHealthBanner.retrying')
+            : t('storeHealthBanner.retry')}
         </button>
       </div>
     );
@@ -171,21 +186,24 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
     >
       {suspect && (
         <>
-          <span className="font-semibold">Suspect — automatic cleanup is halted.</span>
-          <span>{health.suspect_reason ?? 'No reason was reported.'}</span>
+          <span className="font-semibold">{t('storeHealthBanner.suspectTitle')}</span>
+          <span>{health.suspect_reason ?? t('storeHealthBanner.noReason')}</span>
         </>
       )}
       {corruptCount > 0 && (
         <span>
-          {corruptCount} corrupt sidecar{corruptCount === 1 ? '' : 's'} found by{' '}
-          {observedBy(health)}; affected recordings may not appear in lists.
+          {t('storeHealthBanner.corruptFound', {
+            count: corruptCount,
+            observation: observedBy(t, health),
+          })}
         </span>
       )}
       {hasWarnings && <span>{health.warnings.join(' ')}</span>}
       {deleteUnavailable && (
         <span>
-          Delete unavailable:{' '}
-          {health.delete_unavailable_reason ?? 'No reason was reported.'}
+          {t('storeHealthBanner.deleteUnavailable', {
+            reason: health.delete_unavailable_reason ?? t('storeHealthBanner.noReason'),
+          })}
         </span>
       )}
       <button
@@ -194,7 +212,7 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
         onClick={openMonitor}
         className="ml-auto font-semibold underline underline-offset-2"
       >
-        Open Monitor
+        {t('storeHealthBanner.openMonitor')}
       </button>
       {noticeKey && (
         <button
@@ -207,7 +225,7 @@ export function StoreHealthBanner({ solo = false }: { solo?: boolean }) {
           }}
           className="font-semibold underline underline-offset-2"
         >
-          Dismiss
+          {t('storeHealthBanner.dismiss')}
         </button>
       )}
     </div>

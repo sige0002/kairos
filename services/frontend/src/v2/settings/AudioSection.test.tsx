@@ -200,12 +200,12 @@ test('speech-rate changes invalidate assets and are sent to prepare', async () =
   });
   renderWithClient(<AudioSection />);
 
-  fireEvent.change(screen.getByLabelText('Speech rate'), {
+  fireEvent.change(screen.getByLabelText(/Speech rate/), {
     target: { value: '0.9' },
   });
   expect(getAudioSettings().assets).toEqual({});
   expect(getAudioSettings().preparedEngine).toBeNull();
-  await waitFor(() => expect(screen.getByLabelText('Speech rate')).toHaveValue('0.9'));
+  await waitFor(() => expect(screen.getByLabelText(/Speech rate/)).toHaveValue('0.9'));
   const prepare = screen.getByRole('button', { name: 'Prepare voice assets' });
   await waitFor(() => expect(prepare).toBeEnabled());
   fireEvent.click(prepare);
@@ -418,4 +418,38 @@ test('recording deferral names the reason and recovery instead of skipped phrase
       /deferred while recording is active.*Retry after recording stops/,
     ),
   ).toBeVisible();
+});
+
+test('partial preparation uses a pluralized recovery message', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    if (String(input).includes('/audio/status'))
+      return Promise.resolve(
+        jsonResponse({
+          available: true,
+          engine: 'kokoro-82m',
+          voices: { en: ['af_heart'], ja: ['jf_alpha'] },
+        }),
+      );
+    const body = JSON.parse(String(init?.body)) as {
+      phrases: { key: string }[];
+    };
+    const startKey = body.phrases.find((phrase) =>
+      phrase.key.startsWith('start:'),
+    )?.key;
+    return Promise.resolve(
+      jsonResponse({
+        available: true,
+        engine: 'kokoro-82m',
+        assets: startKey ? [{ key: startKey, url: '/prepared-start.wav' }] : [],
+        errors: ['raw service failure'],
+        deferred: false,
+      }),
+    );
+  });
+  renderWithClient(<AudioSection />);
+
+  const prepare = screen.getByRole('button', { name: 'Prepare voice assets' });
+  await waitFor(() => expect(prepare).toBeEnabled());
+  fireEvent.click(prepare);
+  expect(await screen.findByText(/1 phrase could not be prepared/i)).toBeVisible();
 });

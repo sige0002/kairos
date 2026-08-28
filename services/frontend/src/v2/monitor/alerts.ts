@@ -12,6 +12,7 @@
 // Kept separate from the card so the formatting/collapse is unit-testable.
 
 import type { AlertEvent, AlertMetric } from '../../api/types';
+import { i18n } from '../../i18n';
 import { formatTime as formatLocaleTime } from '../../i18n/format';
 
 export type AlertTone = 'red' | 'gray';
@@ -33,12 +34,12 @@ export interface AlertRow {
   refires: number;
 }
 
-const METRIC_LABEL: Record<AlertMetric, string> = {
-  hz: 'Hz',
-  bandwidth: 'bandwidth',
-  gap: 'gap',
-  late: 'latency',
-  loss: 'loss',
+const METRIC_LABEL: Record<AlertMetric, () => string> = {
+  hz: () => i18n.t('monitor:alerts.hz'),
+  bandwidth: () => i18n.t('monitor:alerts.bandwidth'),
+  gap: () => i18n.t('monitor:alerts.gap'),
+  late: () => i18n.t('monitor:alerts.latency'),
+  loss: () => i18n.t('monitor:alerts.loss'),
 };
 
 const OP_SYMBOL: Record<NonNullable<AlertEvent['op']>, string> = {
@@ -67,11 +68,16 @@ function incidentKey(a: AlertEvent): string {
 /** Format ONE event as a row (the collapse in toAlertRows picks which event). */
 export function formatAlert(a: AlertEvent): AlertRow {
   const state: 'firing' | 'cleared' = a.state === 'cleared' ? 'cleared' : 'firing';
-  const metric = METRIC_LABEL[a.metric] ?? a.metric;
+  const metric = METRIC_LABEL[a.metric]();
   const op = a.op ? OP_SYMBOL[a.op] : '';
-  const title = [shortTopic(a.topic), metric, op, a.threshold].filter((p) => p !== '').join(' ');
+  const title = [shortTopic(a.topic), metric, op, a.threshold]
+    .filter((p) => p !== '')
+    .join(' ');
   // Only a firing row carries the live value; a cleared row is just the recovery.
-  const detail = state === 'firing' && a.value != null ? `now ${a.value}` : '';
+  const detail =
+    state === 'firing' && a.value != null
+      ? i18n.t('monitor:alerts.current', { value: String(a.value) })
+      : '';
   return {
     key: incidentKey(a),
     topic: a.topic,

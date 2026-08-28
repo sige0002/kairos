@@ -106,7 +106,9 @@ test('shows the observed cleanup result', async () => {
   await screen.findByTestId('cleanup-selected');
   fireEvent.click(screen.getByRole('button', { name: 'Delete 800 B' }));
 
-  expect(await screen.findByRole('status')).toHaveTextContent('Deleted 4 report sets');
+  expect(await screen.findByRole('status')).toHaveTextContent(
+    'Deleted 8 files from 4 report sets (800 B).',
+  );
   expect(screen.getByRole('status')).toHaveTextContent('800 B');
   expect(fetchSpy).toHaveBeenCalledWith(
     '/api/v1/report-storage/cleanup',

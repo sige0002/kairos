@@ -4,6 +4,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import type { StoreHealth } from '../../api/types';
+import { i18n, LOCALE_STORAGE_KEY } from '../../i18n';
 import { useUiStore } from '../../store/uiStore';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { StoreHealthBanner } from './StoreHealthBanner';
@@ -37,10 +38,11 @@ beforeEach(() => {
   window.history.replaceState(null, '', '/?tab=collect');
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   localStorage.clear();
   window.history.replaceState(null, '', '/');
+  await i18n.changeLanguage('en');
 });
 
 test('hides the global notice only after an explicit healthy response', async () => {
@@ -59,6 +61,27 @@ test('shows Checking while the health request is unresolved', () => {
     'loading',
   );
   expect(screen.getByText('Checking store health…')).toBeInTheDocument();
+});
+
+test('localizes banner guidance while preserving a raw server reason', async () => {
+  localStorage.setItem(LOCALE_STORAGE_KEY, 'ja');
+  await i18n.changeLanguage('ja');
+  mockHealth(() =>
+    Promise.resolve(
+      jsonResponse({
+        ...OK,
+        state: 'suspect',
+        suspect_reason: 'Too many replicas disappeared.',
+      }),
+    ),
+  );
+  renderWithClient(<StoreHealthBanner />);
+
+  const banner = await screen.findByTestId('store-health-banner');
+  await waitFor(() => expect(banner).toHaveAttribute('data-state', 'suspect'));
+  expect(banner).toHaveTextContent('自動クリーンアップを停止しています');
+  expect(banner).toHaveTextContent('Too many replicas disappeared.');
+  expect(screen.getByRole('button', { name: 'Monitor を開く' })).toBeInTheDocument();
 });
 
 test('states that an error is unavailable and permits an explicit retry', async () => {

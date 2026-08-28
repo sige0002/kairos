@@ -25,9 +25,7 @@ export function PausedCard({ machine }: { machine: BatchMachine }) {
           {t('paused')}
         </h2>
       </div>
-      <span className="text-[12.5px] text-text-muted">
-        Set is paused. Recorded episodes are safe.
-      </span>
+      <span className="text-[12.5px] text-text-muted">{t('pausedCardHelp')}</span>
       <button
         type="button"
         onClick={machine.resumeBatch}

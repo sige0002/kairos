@@ -18,6 +18,7 @@ import { ErrorMessage } from '../../components/ErrorMessage';
 import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
 import { optionLabel } from './RecordingConfigEditor';
 import { useUiStore } from '../../store/uiStore';
+import { useTranslation } from 'react-i18next';
 
 interface PresetListResponse {
   items: ValidationPreset[];
@@ -25,12 +26,17 @@ interface PresetListResponse {
 
 // Both aspects load at service startup (validators) / inject into template-less
 // jobs (validation), so neither is a live hot-swap; label honestly.
-const ASPECTS: { id: ConfigAspect; label: string; immediate: boolean }[] = [
-  { id: 'validation', label: 'Validation template', immediate: true },
-  { id: 'validators', label: 'Validators', immediate: false },
+const ASPECTS: {
+  id: ConfigAspect;
+  label: 'validationTemplate' | 'validators';
+  immediate: boolean;
+}[] = [
+  { id: 'validation', label: 'validationTemplate', immediate: true },
+  { id: 'validators', label: 'validators', immediate: false },
 ];
 
 export function ValidationSection() {
+  const { t } = useTranslation('settings');
   const queryClient = useQueryClient();
   const setActiveTab = useUiStore((s) => s.setActiveTab);
 
@@ -64,7 +70,7 @@ export function ValidationSection() {
     >
       <div className="flex items-center gap-2.5">
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          Validation
+          {t('validation.title')}
         </h2>
         {data && (
           <span className="font-mono text-[13px] font-semibold text-text-primary">
@@ -76,12 +82,12 @@ export function ValidationSection() {
       {/* Aspect selection */}
       <div className="flex flex-col gap-2.5" data-testid="validation-aspects">
         <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
-          Active options
+          {t('validation.activeOptions')}
         </h3>
         {optionsQuery.isError ? (
           <ErrorMessage error={optionsQuery.error} />
         ) : !data ? (
-          <p className="text-sm text-text-muted">Loading options…</p>
+          <p className="text-sm text-text-muted">{t('validation.loadingOptions')}</p>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {ASPECTS.map(({ id, label, immediate }) => {
@@ -90,18 +96,22 @@ export function ValidationSection() {
               return (
                 <label key={id} className="flex flex-col gap-1.5 text-sm">
                   <span className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-text-primary">{label}</span>
+                    <span className="font-medium text-text-primary">
+                      {t(`validation.${label}`)}
+                    </span>
                     <Badge tone={immediate ? 'green' : 'gray'} dot>
-                      {immediate ? 'applies immediately' : 'applies on restart'}
+                      {immediate
+                        ? t('common.applyImmediately')
+                        : t('common.applyOnRestart')}
                     </Badge>
                   </span>
                   {options.length === 0 ? (
                     <span className="text-[12.5px] text-text-muted">
-                      No options for this robot.
+                      {t('common.noOptions')}
                     </span>
                   ) : (
                     <Select
-                      aria-label={`${id} option`}
+                      aria-label={t('validation.optionAria', { aspect: id })}
                       className="font-mono text-[12.5px]"
                       value={state.active}
                       disabled={selectMutation.isPending}
@@ -112,7 +122,7 @@ export function ValidationSection() {
                       {options.map((o) => (
                         <option key={o.id} value={o.id}>
                           {optionLabel(id, o)}
-                          {o.local ? ' · local' : ''}
+                          {o.local ? t('validation.local') : ''}
                         </option>
                       ))}
                     </Select>
@@ -128,19 +138,18 @@ export function ValidationSection() {
       {/* One-click presets (read-only) */}
       <div className="flex flex-col gap-2.5">
         <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
-          One-click presets
+          {t('validation.oneClickPresets')}
         </h3>
         {presetsQuery.isError ? (
           <ErrorMessage error={presetsQuery.error} />
         ) : presetsQuery.isPending ? (
-          <p className="text-sm text-text-muted">Loading presets…</p>
+          <p className="text-sm text-text-muted">{t('validation.loadingPresets')}</p>
         ) : presets.length === 0 ? (
           <p
             className="text-[12.5px] text-text-muted"
             data-testid="validation-presets-empty"
           >
-            No presets configured — add them to{' '}
-            <code>config/&lt;robot&gt;/validation_presets.yaml</code>.
+            {t('validation.noPresets')}
           </p>
         ) : (
           <div className="flex flex-col gap-2" data-testid="validation-presets">
@@ -163,15 +172,17 @@ export function ValidationSection() {
                     </span>
                   )}
                   <span className="font-mono text-[11px] text-text-muted">
-                    pipeline: {p.pipeline}
+                    {t('validation.pipeline', { pipeline: p.pipeline })}
                   </span>
                 </div>
                 <div className="flex-1" />
                 {p.pending > 0 ? (
-                  <Badge tone="amber">{p.pending} pending</Badge>
+                  <Badge tone="amber">
+                    {t('validation.pending', { count: p.pending })}
+                  </Badge>
                 ) : (
                   <Badge tone="green" dot>
-                    up to date
+                    {t('validation.upToDate')}
                   </Badge>
                 )}
               </div>
@@ -182,7 +193,7 @@ export function ValidationSection() {
 
       <div className="flex items-center gap-2 rounded-control border border-border bg-surface-muted px-3.5 py-2.5">
         <span className="text-[12px] text-text-muted">
-          Run pipelines and see results in the Validation tab.
+          {t('validation.runElsewhere')}
         </span>
         <div className="flex-1" />
         <button
@@ -191,7 +202,7 @@ export function ValidationSection() {
           onClick={() => setActiveTab('validation')}
           className="rounded-control bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-text-inverse hover:bg-accent-strong"
         >
-          Open Validation tab →
+          {t('validation.openTab')}
         </button>
       </div>
     </Card>

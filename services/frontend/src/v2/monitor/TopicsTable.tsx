@@ -23,24 +23,13 @@ import {
 import { Badge, Card, cn } from '../../components/ui';
 import { useUiStore } from '../../store/uiStore';
 import { MAX_SERIES, paletteColor } from './chartSeries';
+import { useTranslation } from 'react-i18next';
 
 // Rec checkbox + the original six metric columns (leading 34px is the Rec cell).
 const GRID_COLS = 'grid-cols-[34px_1fr_84px_84px_96px_84px_96px]';
 
 // TopicStatus -> the mock's short chip words (only OK / CHECK appear in the
 // mock's sample rows; DANGER / SILENT / — extend it to the backend's full enum).
-const STATUS_LABEL: Record<string, string> = {
-  ok: 'OK',
-  warning: 'CHECK',
-  danger: 'DANGER',
-  inactive: 'SILENT',
-  unknown: '—',
-};
-
-function statusLabel(row: MonitorRow): string {
-  return STATUS_LABEL[row.measured ? (row.status ?? 'unknown') : 'unknown']!;
-}
-
 export function TopicsTable({
   rows,
   isDiscovering,
@@ -59,6 +48,21 @@ export function TopicsTable({
   /** Toggle a topic in/out of the next-recording set (uiStore toggleRecordTopic). */
   onToggleRec?: (name: string) => void;
 }) {
+  const { t } = useTranslation('monitor');
+  const baselineLabels = {
+    learning: t('baseline.learning'),
+    baseline: t('baseline.default'),
+    unstable: t('baseline.unstable'),
+  };
+  const statusKeys = {
+    ok: 'topics.ok',
+    warning: 'topics.warning',
+    danger: 'topics.danger',
+    inactive: 'topics.inactive',
+    unknown: 'topics.unknown',
+  } as const;
+  const statusLabel = (row: MonitorRow) =>
+    row.measured ? t(statusKeys[row.status ?? 'unknown']) : t('topics.unknown');
   // Robot-edge reachability (same idiom as GraphTab's GraphPanel): explain an
   // empty table instead of just... being empty (honesty principle).
   const monitorBridge = useUiStore((s) => s.monitorBridge);
@@ -81,11 +85,11 @@ export function TopicsTable({
       <div className="border-b border-border px-[18px] py-2">
         <input
           type="search"
-          aria-label="Search topics"
+          aria-label={t('topics.searchLabel')}
           data-testid="topics-search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="Search topics…"
+          placeholder={t('topics.searchPlaceholder')}
           className="h-8 w-full rounded-control border border-border bg-surface px-3 font-mono text-[12px] text-text-primary outline-none placeholder:font-sans placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-focus"
         />
       </div>
@@ -95,40 +99,43 @@ export function TopicsTable({
           GRID_COLS,
         )}
       >
-        <span title="Include in the next recording">Rec</span>
-        <span>Topic</span>
+        <span title={t('topics.includeNext')}>{t('topics.rec')}</span>
+        <span>{t('topics.topic')}</span>
         <span>Hz</span>
-        <span>Expected</span>
-        <span>Bandwidth</span>
-        <span>Max gap</span>
-        <span>Status</span>
+        <span>{t('topics.expected')}</span>
+        <span>{t('topics.bandwidth')}</span>
+        <span>{t('topics.maxGap')}</span>
+        <span>{t('topics.status')}</span>
       </div>
       {atCap && (
         <p
           data-testid="topics-table-cap"
           className="border-b border-status-warning-border bg-status-warning-bg px-[18px] py-1 text-[10.5px] text-status-warning-text"
         >
-          Charting {MAX_SERIES}/{MAX_SERIES} topics — deselect one to overlay another.
+          {t('topics.chartCap', {
+            current: String(MAX_SERIES),
+            max: String(MAX_SERIES),
+          })}
         </p>
       )}
       <div className="overflow-auto">
         {isDiscovering ? (
-          <p className="px-[18px] py-6 text-center text-xs text-text-muted">Discovering topics…</p>
+          <p className="px-[18px] py-6 text-center text-xs text-text-muted">
+            {t('topics.discovering')}
+          </p>
         ) : rows.length === 0 ? (
           <p
             data-testid="topics-table-empty"
             className="px-[18px] py-6 text-center text-xs text-text-muted"
           >
-            {monitorBridge === 'down'
-              ? 'Robot offline — no topics discovered (the monitor on the robot side is unreachable).'
-              : 'No topics discovered yet.'}
+            {monitorBridge === 'down' ? t('topics.offline') : t('topics.none')}
           </p>
         ) : filteredRows.length === 0 ? (
           <p
             data-testid="topics-table-no-results"
             className="px-[18px] py-6 text-center text-xs text-text-muted"
           >
-            No topics match “{query.trim()}”.
+            {t('topics.noMatch', { query: query.trim() })}
           </p>
         ) : (
           filteredRows.map((row) => {
@@ -163,7 +170,7 @@ export function TopicsTable({
                   <input
                     type="checkbox"
                     data-testid={`rec-check-${row.name}`}
-                    aria-label={`record ${row.name}`}
+                    aria-label={t('topics.recordTopic', { topic: row.name })}
                     checked={recChecked}
                     // Keep the checkbox click from bubbling to the row's
                     // chart-toggle handler (separate targets).
@@ -178,25 +185,34 @@ export function TopicsTable({
                     className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm border"
                     style={
                       charted
-                        ? { background: paletteColor(chartIdx), borderColor: paletteColor(chartIdx) }
+                        ? {
+                            background: paletteColor(chartIdx),
+                            borderColor: paletteColor(chartIdx),
+                          }
                         : {
                             background: 'transparent',
                             borderColor: 'rgb(var(--color-border-default))',
                           }
                     }
                   />
-                  <span className="truncate font-mono text-[12.5px] text-text-primary">{row.name}</span>
+                  <span className="truncate font-mono text-[12.5px] text-text-primary">
+                    {row.name}
+                  </span>
                 </span>
                 <span className="font-mono text-[12.5px] text-text-primary">
                   {row.hz != null ? row.hz.toFixed(1) : '—'}
                 </span>
                 <span className="font-mono text-[12.5px] text-text-muted">
-                  {row.expected_hz != null ? row.expected_hz : (formatBaseline(row) ?? '—')}
+                  {row.expected_hz != null
+                    ? row.expected_hz
+                    : (formatBaseline(row, baselineLabels) ?? '—')}
                 </span>
                 <span className="font-mono text-[12.5px] text-text-primary">
                   {formatBandwidth(row.bandwidth_bps)}
                 </span>
-                <span className="font-mono text-[12.5px] text-text-primary">{formatGap(row)}</span>
+                <span className="font-mono text-[12.5px] text-text-primary">
+                  {formatGap(row)}
+                </span>
                 <Badge tone={rowTone(row)}>{statusLabel(row)}</Badge>
               </div>
             );

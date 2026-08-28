@@ -22,6 +22,7 @@ import {
   useExternalControlsInvalid,
 } from '../plans';
 import { useToast } from '../shared/useToast';
+import { i18n } from '../../i18n';
 
 export interface ExternalControlsSettings {
   config: ExternalControlsConfig;
@@ -59,7 +60,7 @@ export function useExternalControlsSettings(): ExternalControlsSettings {
 
   const resetToDefault = useCallback(() => {
     setExternalControls(cloneExternalControls(DEFAULT_EXTERNAL_CONTROLS));
-    showToast('External controls reset to the default layout');
+    showToast(i18n.t('settings:externalControls.resetToast'));
   }, [showToast]);
 
   return { config, invalid, setChannel, resetToDefault, toast };

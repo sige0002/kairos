@@ -22,10 +22,16 @@ export function MenuRail({ settings }: { settings: SettingsState }) {
   const activeRobot = optionsQuery.data?.active_robot;
 
   return (
-    <Card className="flex min-w-0 flex-col gap-3 overflow-auto p-3" data-testid="settings-navigation">
-      <nav aria-label="Settings categories" className="flex flex-col gap-3">
+    <Card
+      className="flex min-w-0 flex-col gap-3 overflow-auto p-3"
+      data-testid="settings-navigation"
+    >
+      <nav aria-label={t('navigation.categories')} className="flex flex-col gap-3">
         {SETTINGS_CATEGORIES.map((category) => (
-          <section key={category.id} aria-labelledby={`settings-category-${category.id}`}>
+          <section
+            key={category.id}
+            aria-labelledby={`settings-category-${category.id}`}
+          >
             <h2
               id={`settings-category-${category.id}`}
               data-testid={`settings-category-${category.id}`}
@@ -54,7 +60,7 @@ export function MenuRail({ settings }: { settings: SettingsState }) {
                   )}
                 >
                   <span data-testid={`settings-section-${section.id}`}>
-                    {section.id === 'language' ? t('sections.language') : section.label}
+                    {t(`sections.${section.label}`)}
                   </span>
                 </button>
               ))}
@@ -64,7 +70,9 @@ export function MenuRail({ settings }: { settings: SettingsState }) {
       </nav>
       <div className="flex-1" />
       <div className="flex flex-col gap-0.5 border-t border-border px-3 pb-1 pt-2.5">
-        <span className="text-[11px] text-text-muted">active robot</span>
+        <span className="text-[11px] text-text-muted">
+          {t('navigation.activeRobot')}
+        </span>
         <span
           data-testid="settings-active-robot"
           className="font-mono text-[12.5px] font-semibold text-accent"

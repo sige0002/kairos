@@ -18,6 +18,7 @@ import { ApiError, apiGet, apiPut } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
 import type { RuntimeConfig } from '../../config';
 import { ErrorMessage } from '../../components/ErrorMessage';
+import { useTranslation } from 'react-i18next';
 
 /** GET/PUT /api/v1/config/stream. `config` is null when the file is absent or
  *  failed to load — `error` separates the two (null = absent, a save creates
@@ -50,6 +51,7 @@ function formatValidationDetails(error: unknown): string[] {
 
 /** Editable JSON editor for the active robot's active STREAM_CONFIG. */
 export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
+  const { t } = useTranslation('settings');
   const queryClient = useQueryClient();
   const robot = config.defaults.robot_name ?? '';
 
@@ -130,7 +132,7 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
       return;
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      setJsonError('config must be an object ({ … })');
+      setJsonError(t('stream.configMustBeObject'));
       return;
     }
     saveMutation.mutate(parsed as Record<string, unknown>);
@@ -139,7 +141,8 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
   const validationDetails = formatValidationDetails(saveMutation.error);
 
   if (streamQuery.isError) return <ErrorMessage error={streamQuery.error} />;
-  if (streamQuery.isPending) return <p className="text-sm text-text-muted">Loading…</p>;
+  if (streamQuery.isPending)
+    return <p className="text-sm text-text-muted">{t('common.loading')}</p>;
 
   const path = streamQuery.data.path;
   const loadError = streamQuery.data.error;
@@ -147,36 +150,37 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
     // No config dir at all: nowhere to read or write, so no editor to offer.
     return (
       <p data-testid="stream-config-absent" className="text-sm text-text-muted">
-        This robot has no stream config to edit — it has no config folder on the server.
-        Create <span className="font-mono">config/&lt;robot&gt;/</span> first.
+        {t('stream.absent')}
       </p>
     );
   }
 
   return (
     <div>
-      <dl className="mb-3 grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
-        <dt className="text-text-muted">Robot</dt>
+      <dl
+        data-testid="stream-config-metadata"
+        className="mb-3 grid grid-cols-1 gap-x-6 gap-y-1.5 text-sm sm:grid-cols-[auto_minmax(0,1fr)]"
+      >
+        <dt className="text-text-muted">{t('common.robot')}</dt>
         <dd className="font-mono text-text-primary">{robot || '—'}</dd>
-        <dt className="text-text-muted">Path</dt>
-        <dd className="font-mono text-xs text-text-muted">{path}</dd>
+        <dt className="text-text-muted">{t('common.path')}</dt>
+        <dd className="min-w-0 break-all font-mono text-xs text-text-muted">{path}</dd>
       </dl>
       {loadError && (
         <div
           data-testid="stream-load-error"
           className="mb-2 rounded-control border border-status-warning-border bg-status-warning-bg p-2 text-sm text-status-warning-text"
         >
-          <p className="font-medium">The file on disk exists but failed to load</p>
+          <p className="font-medium">{t('stream.loadBrokenTitle')}</p>
           <p className="mt-0.5 font-mono text-xs">{loadError}</p>
-          <p className="mt-1 text-xs">
-            The editor below starts from an empty config, NOT from that file — saving
-            REPLACES the broken file. To keep its contents, fix the YAML on disk instead.
-          </p>
+          <p className="mt-1 text-xs">{t('stream.loadBrokenBody')}</p>
         </div>
       )}
-      <label className="mb-1 block text-sm font-medium text-text-primary">Config (JSON)</label>
+      <label className="mb-1 block text-sm font-medium text-text-primary">
+        {t('stream.configLabel')}
+      </label>
       <textarea
-        aria-label="stream config json"
+        aria-label={t('stream.configAria')}
         className="h-48 w-full rounded-control border border-border p-2 font-mono text-xs focus:border-accent focus:outline-none"
         spellCheck={false}
         value={text}
@@ -188,9 +192,11 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
       />
 
       {jsonError ? (
-        <p className="mt-2 text-sm text-status-danger-text">Invalid JSON — {jsonError}</p>
+        <p className="mt-2 text-sm text-status-danger-text">
+          {t('stream.invalidJson', { error: jsonError })}
+        </p>
       ) : (
-        <p className="mt-2 text-xs text-text-muted">Valid JSON</p>
+        <p className="mt-2 text-xs text-text-muted">{t('stream.validJson')}</p>
       )}
 
       {pendingServer && (
@@ -198,12 +204,7 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
           data-testid="stream-server-changed"
           className="mt-2 flex flex-col gap-2 rounded-control border border-status-warning-border bg-status-warning-bg p-2 text-sm text-status-warning-text"
         >
-          <p>
-            <span className="font-medium">The stream config changed on the server</span> while
-            you were editing — another terminal saved it, or the active option changed. Your
-            unsaved edits are kept and nothing here was overwritten, but saving now writes over
-            that newer file.
-          </p>
+          <p>{t('stream.serverChanged')}</p>
           <button
             type="button"
             data-testid="stream-load-server"
@@ -214,7 +215,7 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
             }}
             className="self-start rounded-control border border-status-warning-border bg-surface px-2.5 py-1 text-xs font-semibold text-status-warning-text hover:bg-status-warning-bg"
           >
-            Load the server copy (discards my edits)
+            {t('stream.loadServer')}
           </button>
         </div>
       )}
@@ -239,12 +240,8 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
           data-testid="stream-saved-note"
           className="mt-2 rounded-control border border-accent bg-interaction-selected p-2 text-sm text-accent"
         >
-          <p className="font-medium">Saved</p>
-          <p className="mt-0.5 text-xs">
-            <span className="font-mono">panes</span> applies immediately — the Collect
-            camera panes re-read it. <span className="font-mono">columns</span> is stored
-            in the file but not used by the current console layout.
-          </p>
+          <p className="font-medium">{t('stream.savedNote')}</p>
+          <p className="mt-0.5 text-xs">{t('stream.savedBody')}</p>
         </div>
       )}
 
@@ -252,18 +249,14 @@ export function StreamConfigEditor({ config }: { config: RuntimeConfig }) {
         <button
           type="button"
           data-testid="stream-config-save"
-          aria-label="save stream config"
+          aria-label={t('stream.saveAria')}
           onClick={onSave}
           disabled={saveMutation.isPending || jsonError !== null}
           className="rounded-control bg-accent px-4 py-1.5 text-sm font-medium text-text-inverse hover:bg-accent-strong disabled:opacity-50"
         >
-          {saveMutation.isPending ? 'Saving…' : 'Save'}
+          {saveMutation.isPending ? t('common.saving') : t('common.save')}
         </button>
-        <span className="text-xs text-text-muted">
-          Edits the active stream file; the server validates on save. Schema:{' '}
-          <span className="font-mono">{'{ columns: 1–4, panes: [{ topic }] }'}</span> —
-          only <span className="font-mono">panes</span> drives the console.
-        </span>
+        <span className="text-xs text-text-muted">{t('stream.schemaNote')}</span>
       </div>
     </div>
   );

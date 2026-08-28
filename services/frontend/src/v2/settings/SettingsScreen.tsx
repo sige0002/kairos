@@ -44,15 +44,10 @@ import { Toast } from '../shared/Toast';
 import { useSettingsState } from './useSettingsState';
 import { adoptServerCatalog, usePlansConflict, usePlansUnsynced } from '../plans';
 import { ScreenTitle } from '../shared/ScreenTitle';
+import { useTranslation } from 'react-i18next';
+import { i18n } from '../../i18n';
 
 // Honest rationale for the two sections with nothing to configure yet.
-const PLACEHOLDER_RATIONALE: Record<'dataset-profiles' | 'users-permissions', string> = {
-  'dataset-profiles':
-    'Dataset profiles arrive with the Phase 3 recipe model (build datasets from a reviewed query). There is nothing to configure yet.',
-  'users-permissions':
-    'This deployment is single-team on a trusted LAN with no accounts, so there is nothing to manage yet. Authentication is on the roadmap for beyond-LAN deployments.',
-};
-
 interface SectionRendererContext {
   config: RuntimeConfig | undefined;
   settings: ReturnType<typeof useSettingsState>;
@@ -71,28 +66,31 @@ const SECTION_RENDERERS: Record<
   recording: ({ config }) => <RecordingSection config={config} />,
   'data-quality': ({ config }) => <DataQualitySection config={config} />,
   validation: () => <ValidationSection />,
-  'dataset-profiles': () => (
-    <OtherSection label="Dataset profiles" rationale={PLACEHOLDER_RATIONALE['dataset-profiles']} />
-  ),
-  'users-permissions': () => (
-    <OtherSection label="Users & permissions" rationale={PLACEHOLDER_RATIONALE['users-permissions']} />
-  ),
+  'dataset-profiles': () => <PlaceholderSection kind="datasetProfiles" />,
+  'users-permissions': () => <PlaceholderSection kind="usersPermissions" />,
   system: ({ config }) => <SystemSection config={config} />,
   appearance: () => <AppearanceSection />,
   audio: () => <AudioSection />,
   alerts: () => (
-    <Card className="flex min-w-0 flex-col overflow-auto p-[18px] lg:col-span-2" data-testid="settings-alerts-panel">
+    <Card
+      className="flex min-w-0 flex-col overflow-auto p-[18px] lg:col-span-2"
+      data-testid="settings-alerts-panel"
+    >
       <AlertsCard />
     </Card>
   ),
   'generated-files': () => (
-    <Card className="flex min-w-0 flex-col overflow-auto p-[18px] lg:col-span-2" data-testid="settings-generated-files">
+    <Card
+      className="flex min-w-0 flex-col overflow-auto p-[18px] lg:col-span-2"
+      data-testid="settings-generated-files"
+    >
       <GeneratedFilesSection />
     </Card>
   ),
 };
 
 export function SettingsScreen() {
+  const { t } = useTranslation('settings');
   // Same cache key CollectScreen reads (see src/v2/collect/CollectScreen.tsx)
   // — the app shell fetches this before any tab renders. `config` is used
   // best-effort only: every field read from it here is optional.
@@ -106,7 +104,7 @@ export function SettingsScreen() {
 
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[216px_250px_1fr]">
-      <ScreenTitle>Settings</ScreenTitle>
+      <ScreenTitle>{t('screen.title')}</ScreenTitle>
       <MenuRail settings={settings} />
       {renderSection({ config, settings })}
       <UnsyncedCatalogNote />
@@ -120,6 +118,7 @@ export function SettingsScreen() {
  * stale data would erase a colleague's edit, so only an explicit server adopt
  * is offered here. The local draft remains until that button succeeds. */
 function CatalogConflictNote() {
+  const { t } = useTranslation('settings');
   const conflicted = usePlansConflict();
   if (!conflicted) return null;
   return (
@@ -128,15 +127,14 @@ function CatalogConflictNote() {
       role="alert"
       className="fixed bottom-4 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-control border border-status-danger-border bg-status-danger-bg px-3.5 py-2 text-[12px] text-status-danger-text shadow-card"
     >
-      The shared catalog changed elsewhere. Your local draft was kept and was not
-      retried.
+      {t('screen.catalogConflict')}
       <button
         type="button"
         data-testid="plans-use-server"
         onClick={adoptServerCatalog}
         className="rounded border border-status-danger-border bg-surface px-2 py-1 font-semibold hover:bg-interaction-hover"
       >
-        Use server catalog
+        {i18n.t('common:actions.useServerCatalog')}
       </button>
     </div>
   );
@@ -149,6 +147,7 @@ function CatalogConflictNote() {
  *  BROWSER — but every other terminal reads the server's copy, so saying
  *  nothing let "Project added" stand for a change nobody else would ever see. */
 function UnsyncedCatalogNote() {
+  const { t } = useTranslation('settings');
   const unsynced = usePlansUnsynced();
   if (!unsynced) return null;
   return (
@@ -157,8 +156,21 @@ function UnsyncedCatalogNote() {
       role="status"
       className="fixed bottom-4 left-1/2 z-50 -translate-x-1/2 rounded-control border border-status-warning-border bg-status-warning-bg px-3.5 py-2 text-[12px] text-status-warning-text shadow-card"
     >
-      Saved on this browser only — the shared catalog could not be reached, so other
-      terminals still show the previous one. It is retried on the next edit or reload.
+      {t('screen.catalogUnsynced')}
     </div>
+  );
+}
+
+function PlaceholderSection({
+  kind,
+}: {
+  kind: 'datasetProfiles' | 'usersPermissions';
+}) {
+  const { t } = useTranslation('settings');
+  return (
+    <OtherSection
+      label={t(`screen.placeholders.${kind}`)}
+      rationale={t(`screen.placeholders.${kind}Rationale`)}
+    />
   );
 }

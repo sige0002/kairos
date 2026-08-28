@@ -22,8 +22,14 @@ import { EventsCard } from './EventsCard';
 import { SystemCard } from './SystemCard';
 import { useNowClock } from './useNowClock';
 import { useRecMarkers } from './useRecMarkers';
-import { MONITOR_WINDOWS, type MonitorWindowId, toggleTopic, windowMs } from './chartSeries';
+import {
+  MONITOR_WINDOWS,
+  type MonitorWindowId,
+  toggleTopic,
+  windowMs,
+} from './chartSeries';
 import { configSeedKey } from '../seedKey';
+import { useTranslation } from 'react-i18next';
 import {
   MAX_PANELS,
   addPanel,
@@ -34,13 +40,8 @@ import {
   usePanels,
 } from './panelStore';
 
-/** Coarse "time since Monitor opened" for the honesty note (e.g. `2m`, `45s`). */
-function formatElapsed(ms: number): string {
-  const secs = Math.floor(ms / 1000);
-  return secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m`;
-}
-
 export function TopicsView({ config }: { config: RuntimeConfig }) {
+  const { t } = useTranslation('monitor');
   const { rows, isDiscovering, malformedDropped, metricsStale } =
     useMonitorRows(config);
 
@@ -97,6 +98,10 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
     [now, openedAtMono],
   );
   const windowNotFull = elapsedMs < windowMs(windowId);
+  const elapsed =
+    elapsedMs < 60_000
+      ? t('topics.elapsedSeconds', { value: String(Math.floor(elapsedMs / 1000)) })
+      : t('topics.elapsedMinutes', { value: String(Math.floor(elapsedMs / 60_000)) });
 
   // --- panels ---------------------------------------------------------------
   const panels = usePanels();
@@ -137,14 +142,21 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
         <div className="flex shrink-0 flex-wrap items-center gap-2.5">
           <span
             className="font-mono text-[11.5px] text-text-muted"
-            title="History accumulates from when Monitor opened."
+            title={t('topics.historyTitle')}
           >
-            {rows.length} topics · {panels.length} chart{panels.length === 1 ? '' : 's'} · {windowId}{' '}
-            window{windowNotFull ? ` (${formatElapsed(elapsedMs)} so far)` : ''}
+            {t('topics.toolbar', {
+              topics: String(rows.length),
+              charts: String(panels.length),
+              window: windowId,
+              elapsed: windowNotFull ? t('topics.toolbarElapsed', { elapsed }) : '',
+            })}
           </span>
           {paused && (
-            <span data-testid="freeze-note" className="font-mono text-[11px] text-status-warning-text">
-              Charts frozen · table still live.
+            <span
+              data-testid="freeze-note"
+              className="font-mono text-[11px] text-status-warning-text"
+            >
+              {t('topics.frozen')}
             </span>
           )}
           {/* S3-6: with the SSE stream (or the monitor bridge) down, the
@@ -156,7 +168,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
               data-testid="metrics-stale-note"
               className="font-mono text-[11px] text-status-warning-text"
             >
-              Live metrics unavailable — measured columns withheld.
+              {t('topics.stale')}
             </span>
           )}
           {/* The SSE ingest drops readings it cannot identify rather than
@@ -168,11 +180,10 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
           {malformedDropped > 0 && (
             <span
               data-testid="malformed-note"
-              title="These readings arrived in a shape this screen could not read — no usable topic name — so they were left out rather than shown under an invented one."
+              title={t('topics.malformedTitle')}
               className="font-mono text-[11px] text-status-warning-text"
             >
-              {malformedDropped} reading{malformedDropped === 1 ? '' : 's'} ignored
-              (unreadable)
+              {t('topics.malformed', { count: malformedDropped })}
             </span>
           )}
           <div className="flex-1" />
@@ -199,7 +210,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
             type="button"
             data-testid="freq-pause"
             aria-pressed={paused}
-            title="Freezes the charts only — the topics table keeps updating live."
+            title={t('topics.freezeTitle')}
             onClick={() => setPaused((p) => !p)}
             className={cn(
               'rounded-control border px-3 py-1 text-[11px] font-medium transition-colors',
@@ -208,7 +219,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
                 : 'border-border bg-surface text-text-secondary hover:bg-surface-muted',
             )}
           >
-            {paused ? 'Live' : 'Freeze charts'}
+            {paused ? t('topics.live') : t('topics.freeze')}
           </button>
           <button
             type="button"
@@ -217,7 +228,7 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
             disabled={panels.length >= MAX_PANELS}
             className="rounded-control bg-accent px-3 py-1 text-[11px] font-semibold text-text-inverse shadow-card transition-colors hover:bg-accent-strong disabled:bg-surface-muted"
           >
-            + Add chart
+            {t('topics.addChart')}
           </button>
         </div>
 

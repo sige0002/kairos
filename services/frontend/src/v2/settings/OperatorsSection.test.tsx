@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, screen } from '@testing-library/react';
 import { expect, test, vi } from 'vitest';
 import { OperatorsSection } from './OperatorsSection';
 import type { SettingsState } from './useSettingsState';
+import { renderWithClient } from '../../test/renderWithClient';
 
 test('names each remove action after the operator it affects', () => {
   const removeOperator = vi.fn();
@@ -14,7 +15,7 @@ test('names each remove action after the operator it affects', () => {
     removeOperator,
   } as unknown as SettingsState;
 
-  render(<OperatorsSection settings={settings} />);
+  renderWithClient(<OperatorsSection settings={settings} />);
 
   const aki = screen.getByRole('button', { name: 'Remove operator Aki' });
   const morgan = screen.getByRole('button', { name: 'Remove operator Morgan' });

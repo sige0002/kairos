@@ -31,7 +31,7 @@ export function EndedCard({
     >
       <div className="flex items-center gap-2">
         <h2 className="text-[15px] font-bold text-text-primary">
-          Batch {machine.batchSeq ?? '—'} ended early
+          {t('endedCardTitle', { batch: String(machine.batchSeq ?? '—') })}
         </h2>
         <div className="flex-1" />
         <span className="rounded-chip bg-status-warning-bg px-2 py-0.5 text-[11px] font-bold text-status-warning-text">
@@ -39,9 +39,11 @@ export function EndedCard({
         </span>
       </div>
       <span className="text-[12.5px] leading-relaxed text-text-muted">
-        {endSummary}. All recorded episodes are saved and visible in Review.
+        {endSummary}. {t('endedCardSummary')}
       </span>
-      <span className="text-xs text-text-muted">Reason: {machine.endReason}</span>
+      <span className="text-xs text-text-muted">
+        {t('endReason', { reason: machine.endReason })}
+      </span>
       <button
         type="button"
         data-testid="start-next-set"
@@ -57,7 +59,7 @@ export function EndedCard({
       </button>
       {confirmNextSet && (
         <span data-testid="next-set-note" className="text-[11.5px] text-text-muted">
-          This panel starts a fresh set — the recorded episodes stay saved in Review.
+          {t('nextSetPanelHelp')}
         </span>
       )}
     </Card>

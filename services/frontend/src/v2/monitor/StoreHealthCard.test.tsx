@@ -4,6 +4,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import type { StoreHealth } from '../../api/types';
+import { i18n, LOCALE_STORAGE_KEY } from '../../i18n';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { StoreHealthCard } from './StoreHealthCard';
 
@@ -64,13 +65,19 @@ function mockStore(health: StoreHealth, repair?: () => Response) {
 }
 
 beforeEach(() => setApiBase('/api/v1'));
-afterEach(() => vi.restoreAllMocks());
+afterEach(async () => {
+  vi.restoreAllMocks();
+  window.localStorage.removeItem(LOCALE_STORAGE_KEY);
+  await i18n.changeLanguage('en');
+});
 
 test('ok state: reports the rebuild summary and offers no repair to make', async () => {
   mockStore(OK);
   renderWithClient(<StoreHealthCard />);
 
-  await waitFor(() => expect(screen.getByTestId('store-health-state')).toHaveTextContent('ok'));
+  await waitFor(() =>
+    expect(screen.getByTestId('store-health-state')).toHaveTextContent('ok'),
+  );
   expect(screen.getByTestId('store-health-panel')).toHaveTextContent('pc-01');
   // The rebuild figures are the server's own keys, shown verbatim.
   expect(screen.getByTestId('store-health-rebuild')).toHaveTextContent('captures');
@@ -109,9 +116,28 @@ test('suspect: states the reason, what it stops, what it does not, and repairs',
     ),
   );
   const posts = fetchSpy.mock.calls.filter(
-    (c) => String(c[0]).includes('/store/repair') && (c[1] as RequestInit)?.method === 'POST',
+    (c) =>
+      String(c[0]).includes('/store/repair') &&
+      (c[1] as RequestInit)?.method === 'POST',
   );
   expect(posts).toHaveLength(1);
+});
+
+test('Japanese Store keeps the SUSPECT explanation translated and the server reason raw', async () => {
+  window.localStorage.setItem(LOCALE_STORAGE_KEY, 'ja');
+  await i18n.changeLanguage('ja');
+  mockStore(SUSPECT);
+  renderWithClient(<StoreHealthCard />);
+
+  const suspect = await screen.findByTestId('store-health-suspect');
+  expect(screen.getByTestId('store-health-state')).toHaveTextContent('要確認');
+  expect(suspect).toHaveTextContent('自動クリーンアップを停止');
+  expect(suspect).toHaveTextContent(
+    '31 replicas vanished in one pass (threshold 12 of 128)',
+  );
+  expect(screen.getByTestId('store-health-repair')).toHaveAccessibleName(
+    'ストアを修復',
+  );
 });
 
 test('a 409 volume_unidentified explains itself and keeps Repair disabled', async () => {
@@ -185,7 +211,13 @@ test('corrupt sidecars are listed with path and reason (they have no capture row
 test('a reconciler-found corrupt sidecar shows its path and names the pass', async () => {
   mockStore({
     ...OK,
-    corrupt: [{ capture_id: 'c9', path: 'objects/c9/object_manifest.json', reason: 'unparseable' }],
+    corrupt: [
+      {
+        capture_id: 'c9',
+        path: 'objects/c9/object_manifest.json',
+        reason: 'unparseable',
+      },
+    ],
     corrupt_source: 'reconcile',
     corrupt_observed_at: '2026-08-01T09:05:00Z',
   });
@@ -275,7 +307,10 @@ test('delete_available false explains the one-filesystem rule and why it is deli
 });
 
 test('warnings from the last rebuild are listed', async () => {
-  mockStore({ ...OK, warnings: ['record.json newer than the manifest for 2 captures'] });
+  mockStore({
+    ...OK,
+    warnings: ['record.json newer than the manifest for 2 captures'],
+  });
   renderWithClient(<StoreHealthCard />);
 
   await waitFor(() =>

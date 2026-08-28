@@ -18,6 +18,7 @@
 // Both are the same sentence, so it lives in one place: two surfaces that
 // disagree about what happened are worse than one that says nothing.
 
+import { useTranslation } from 'react-i18next';
 import type { DatasetsState } from './useDatasetsState';
 
 /** The sentence itself, for a dialog that has to explain why its action is no
@@ -30,18 +31,17 @@ export function DatasetGoneNote({
   testId: string;
   datasetId: string | null;
 }) {
+  const { t } = useTranslation('datasets');
   return (
     <p
       data-testid={testId}
       className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12.5px] leading-relaxed text-status-warning-text"
     >
-      This dataset is no longer in the catalog — it was removed outside this
-      screen (another browser, the API, or a rebuild).{' '}
+      {t('datasetGoneBefore')}{' '}
       {datasetId && (
         <span className="break-all font-mono text-[11.5px]">{datasetId}</span>
       )}{' '}
-      Deleting a dataset never removes recordings, so the captures it listed are
-      not affected by this.
+      {t('datasetGoneAfter')}
     </p>
   );
 }
@@ -50,13 +50,17 @@ export function DatasetGoneNote({
  *  also clears it from the query string, so a reload does not land back on the
  *  dead deep link. */
 export function DatasetGonePane({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation('datasets');
   return (
     <div
       data-testid="dataset-center"
       className="flex min-h-0 min-w-0 flex-col items-center justify-center gap-3 rounded-card border border-border bg-surface p-8 shadow-card"
     >
       <div className="max-w-[420px]">
-        <DatasetGoneNote testId="dataset-selection-gone" datasetId={state.selectedDatasetId} />
+        <DatasetGoneNote
+          testId="dataset-selection-gone"
+          datasetId={state.selectedDatasetId}
+        />
       </div>
       <button
         type="button"
@@ -64,7 +68,7 @@ export function DatasetGonePane({ state }: { state: DatasetsState }) {
         onClick={state.clearDataset}
         className="rounded-chip border border-border px-[11px] py-[5px] text-xs font-semibold text-text-secondary hover:bg-surface-muted"
       >
-        Back to the dataset list
+        {t('backToDatasetList')}
       </button>
     </div>
   );

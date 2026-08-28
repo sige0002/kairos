@@ -9,12 +9,14 @@
 // episodes stay aggregable across machines.
 
 import { Card, cn } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { FAILURE_SHORTCUT_SLOTS, type FailureShortcutSlot } from '../plans';
 import type { SettingsState } from './useSettingsState';
 
 const SHORTCUT_SLOTS: FailureShortcutSlot[] = FAILURE_SHORTCUT_SLOTS;
 
 export function PlansSection({ settings }: { settings: SettingsState }) {
+  const { t } = useTranslation('settings');
   const {
     plans,
     planProjIdx,
@@ -47,7 +49,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
       <Card className="flex flex-col overflow-auto" data-testid="plan-projects">
         <div className="border-b border-border px-4 py-[13px]">
           <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-            Projects
+            {t('plans.projects')}
           </h2>
         </div>
         <div className="flex flex-col gap-1.5 p-3">
@@ -59,7 +61,9 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                 data-testid={`plan-project-${i}`}
                 className={cn(
                   'flex items-center gap-2 rounded-[11px] border px-[13px] py-[11px]',
-                  i === planProjIdx ? 'border-accent bg-interaction-selected' : 'border-border',
+                  i === planProjIdx
+                    ? 'border-accent bg-interaction-selected'
+                    : 'border-border',
                 )}
               >
                 <button
@@ -67,15 +71,20 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                   onClick={() => selectProject(i)}
                   className="flex min-w-0 flex-1 flex-col gap-0.5 text-left"
                 >
-                  <span className="text-[13px] font-semibold text-text-primary">{p.name}</span>
+                  <span className="text-[13px] font-semibold text-text-primary">
+                    {p.name}
+                  </span>
                   <span className="text-[11.5px] text-text-muted">
-                    {p.tasks.length} task{p.tasks.length === 1 ? '' : 's'} · {nConditions} conditions
+                    {t('plans.taskConditionSummary', {
+                      tasks: String(p.tasks.length),
+                      conditions: String(nConditions),
+                    })}
                   </span>
                 </button>
                 <button
                   type="button"
                   onClick={() => removeProject(i)}
-                  title="Remove project"
+                  title={t('plans.removeProject')}
                   className="shrink-0 px-0.5 text-xs text-text-muted hover:text-text-muted"
                 >
                   ✕
@@ -88,7 +97,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
             onClick={addProject}
             className="rounded-control border border-dashed border-border-strong bg-surface p-2.5 text-[12.5px] font-semibold text-accent hover:bg-interaction-selected"
           >
-            + Add project
+            {t('plans.addProject')}
           </button>
         </div>
       </Card>
@@ -97,7 +106,10 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
         {project ? (
           <>
             <div className="flex items-center gap-2.5 border-b border-border px-[18px] py-[13px]">
-              <h2 data-testid="plan-project-name" className="text-[15px] font-bold text-text-primary">
+              <h2
+                data-testid="plan-project-name"
+                className="text-[15px] font-bold text-text-primary"
+              >
                 {project.name}
               </h2>
               <button
@@ -105,24 +117,28 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                 onClick={renameProject}
                 className="rounded-[8px] border border-border bg-surface px-2.5 py-1 text-[11.5px] font-semibold text-text-muted hover:bg-surface-muted"
               >
-                Rename
+                {t('common.rename')}
               </button>
               <div className="flex-1" />
-              <span className="text-xs text-text-muted">used by Collect pickers &amp; batch plans</span>
+              <span className="text-xs text-text-muted">
+                {t('plans.usedByCollect')}
+              </span>
             </div>
 
             <div className="grid min-h-0 flex-1 grid-cols-[280px_1fr]">
               <div className="flex flex-col gap-2 overflow-auto border-r border-border p-4">
                 <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-                  Tasks
+                  {t('plans.tasks')}
                 </h3>
-                {project.tasks.map((t, i) => (
+                {project.tasks.map((planTask, i) => (
                   <div
-                    key={t.task_id}
+                    key={planTask.task_id}
                     data-testid={`plan-task-${i}`}
                     className={cn(
                       'flex items-center gap-2 rounded-control border px-3 py-[9px]',
-                      i === planTaskIdx ? 'border-accent bg-interaction-selected' : 'border-border',
+                      i === planTaskIdx
+                        ? 'border-accent bg-interaction-selected'
+                        : 'border-border',
                     )}
                   >
                     <button
@@ -130,15 +146,18 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                       onClick={() => selectTask(i)}
                       className="min-w-0 flex-1 text-left text-[13px] font-semibold text-text-primary"
                     >
-                      {t.name}
+                      {planTask.name}
                     </button>
                     <span className="font-mono text-[11px] text-text-muted">
-                      {t.conditions.length} cond
+                      {t('plans.taskConditionSummary', {
+                        tasks: '0',
+                        conditions: String(planTask.conditions.length),
+                      })}
                     </span>
                     <button
                       type="button"
                       onClick={() => removeTask(i)}
-                      title="Remove task"
+                      title={t('plans.removeTask')}
                       className="px-0.5 text-xs text-text-muted hover:text-text-muted"
                     >
                       ✕
@@ -150,14 +169,14 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                   onClick={addTask}
                   className="rounded-control border border-dashed border-border-strong bg-surface p-[9px] text-[12.5px] font-semibold text-accent hover:bg-interaction-selected"
                 >
-                  + Add task
+                  {t('plans.addTask')}
                 </button>
               </div>
 
               <div className="flex min-w-0 flex-col gap-2 overflow-auto px-[18px] py-[14px]">
                 <div className="flex items-center gap-2">
                   <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-                    Conditions — {task?.name ?? '—'}
+                    {t('plans.conditions')} — {task?.name ?? '—'}
                   </h3>
                   <button
                     type="button"
@@ -165,7 +184,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                     disabled={!task || taskSelectionLost}
                     className="rounded-[7px] border border-border bg-surface px-2.5 py-[3px] text-[11px] font-semibold text-text-muted hover:bg-surface-muted disabled:opacity-40"
                   >
-                    Rename task
+                    {t('plans.renameTask')}
                   </button>
                 </div>
                 {taskSelectionLost && (
@@ -173,9 +192,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                     data-testid="plan-task-selection-lost"
                     className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[11.5px] leading-[1.5] text-status-warning-text"
                   >
-                    The task you had selected is no longer in this project — the catalog changed
-                    elsewhere. <span className="font-semibold">{task?.name}</span> is shown instead;
-                    pick a task to edit it, so nothing is changed on a task you did not choose.
+                    {t('plans.selectionLost', { task: task?.name ?? '—' })}
                   </p>
                 )}
                 {(task?.conditions ?? []).map((condition, i) => (
@@ -185,7 +202,9 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                     className="flex items-center gap-2.5 rounded-control border border-border px-[13px] py-[9px]"
                   >
                     <span className="h-[7px] w-[7px] shrink-0 rounded-sm bg-accent" />
-                    <span className="text-[13px] text-text-primary">{condition.name}</span>
+                    <span className="text-[13px] text-text-primary">
+                      {condition.name}
+                    </span>
                     <div className="flex-1" />
                     <button
                       type="button"
@@ -193,13 +212,13 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                       disabled={taskSelectionLost}
                       className="text-[11.5px] font-semibold text-text-muted hover:text-accent disabled:opacity-40"
                     >
-                      edit
+                      {t('common.edit')}
                     </button>
                     <button
                       type="button"
                       onClick={() => removeCondition(i)}
                       disabled={taskSelectionLost}
-                      title="Remove condition"
+                      title={t('plans.removeCondition')}
                       className="px-0.5 text-xs text-text-muted hover:text-text-muted disabled:opacity-40"
                     >
                       ✕
@@ -212,7 +231,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                   disabled={!task || taskSelectionLost}
                   className="rounded-control border border-dashed border-border-strong bg-surface p-[9px] text-[12.5px] font-semibold text-accent hover:bg-interaction-selected disabled:opacity-40"
                 >
-                  + Add condition
+                  {t('plans.addCondition')}
                 </button>
 
                 {/* Per-task LEFT / CENTER / RIGHT failure-reason shortcuts (#35):
@@ -226,11 +245,10 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                 >
                   <div className="flex items-baseline gap-2 pt-1">
                     <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-                      Failure shortcuts
+                      {t('plans.failureShortcuts')}
                     </h3>
                     <span className="text-[11px] text-text-muted">
-                      {task ? task.name : '—'} · saved by Collect&apos;s LEFT / CENTER / RIGHT
-                      external actions after Failure is selected
+                      {t('plans.shortcutExplanation', { task: task?.name ?? '—' })}
                     </span>
                   </div>
                   {SHORTCUT_SLOTS.map((slot) => {
@@ -261,9 +279,13 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                           }
                           className="h-[34px] min-w-0 flex-1 rounded-control border border-border bg-surface px-2 text-[12.5px] text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
                         >
-                          <option value="">Unassigned</option>
+                          <option value="">{t('plans.unassigned')}</option>
                           {failReasons.map((reason) => (
-                            <option key={reason} value={reason} disabled={takenElsewhere(reason)}>
+                            <option
+                              key={reason}
+                              value={reason}
+                              disabled={takenElsewhere(reason)}
+                            >
                               {reason}
                             </option>
                           ))}
@@ -274,10 +296,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
                 </div>
 
                 <div className="rounded-control border border-border bg-surface-muted px-3 py-2.5 text-xs leading-[1.5] text-text-muted">
-                  Changes here update the Collect Project / Task / Condition pickers immediately.
-                  Episodes already recorded keep the plan version they were recorded under.
-                  Renaming or removing a failure reason updates or clears the shortcuts that
-                  reference it.
+                  {t('plans.changesExplanation')}
                 </div>
               </div>
             </div>
@@ -288,12 +307,10 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
             className="flex flex-1 flex-col items-start justify-center gap-2.5 px-[18px] py-10"
           >
             <span className="text-[15px] font-bold text-text-primary">
-              No projects in the shared catalog
+              {t('plans.emptyTitle')}
             </span>
             <p className="max-w-[420px] text-[13px] leading-[1.6] text-text-muted">
-              The Project / Task / Condition vocabulary is shared by every terminal, and this
-              catalog is currently empty — so Collect&apos;s pickers have nothing to offer. Add the
-              first project to start it.
+              {t('plans.emptyDescription')}
             </p>
             <button
               type="button"
@@ -301,7 +318,7 @@ export function PlansSection({ settings }: { settings: SettingsState }) {
               onClick={addProject}
               className="mt-1 rounded-control bg-accent px-4 py-2 text-[12.5px] font-semibold text-text-inverse shadow-btn hover:bg-accent-strong"
             >
-              + Add the first project
+              {t('plans.addFirstProject')}
             </button>
           </div>
         )}

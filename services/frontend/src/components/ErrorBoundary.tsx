@@ -7,6 +7,7 @@
 // hook equivalent (componentDidCatch / getDerivedStateFromError only).
 
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { i18n } from '../i18n';
 
 interface Props {
   children: ReactNode;
@@ -34,10 +35,11 @@ export class ErrorBoundary extends Component<Props, State> {
     return (
       <div className="flex min-h-screen items-center justify-center bg-app p-6">
         <div className="w-full max-w-md rounded-card border border-border bg-surface p-6 shadow-card">
-          <h1 className="text-[15px] font-semibold text-text-primary">Something went wrong</h1>
+          <h1 className="text-[15px] font-semibold text-text-primary">
+            {i18n.t('common:error.unexpectedTitle')}
+          </h1>
           <p className="mt-2 text-sm text-text-secondary">
-            The interface hit an unexpected error and stopped rendering. Reloading
-            usually recovers it.
+            {i18n.t('common:error.unexpectedBody')}
           </p>
           {error.message && (
             <pre className="mt-3 overflow-x-auto rounded-control border border-border bg-surface-muted p-3 font-mono text-[11.5px] text-status-danger-text">
@@ -49,7 +51,7 @@ export class ErrorBoundary extends Component<Props, State> {
             onClick={() => window.location.reload()}
             className="mt-5 inline-flex items-center justify-center rounded-control bg-accent px-4 py-2 text-sm font-semibold text-text-inverse shadow-btn transition-colors hover:bg-accent-strong"
           >
-            Reload
+            {i18n.t('common:actions.reload')}
           </button>
         </div>
       </div>
@@ -109,17 +111,16 @@ export class PanelBoundary extends Component<
               thing that is actually on screen titles it, matching the root
               ErrorBoundary's h1 above. */}
           <h1 className="text-[15px] font-semibold text-text-primary">
-            This screen stopped rendering
+            {i18n.t('common:error.panelTitle')}
           </h1>
           <p className="mt-2 text-sm text-text-secondary">
-            Something it was given could not be displayed.{' '}
             {/* A popped-out window has no tab bar and a constant `resetKey`, so
                 the recovery the shell offers does not exist here — promising it
                 would send the operator hunting for tabs that are not on the
                 page. */}
             {this.props.standalone
-              ? 'This window shows only this screen, so reloading it is the way back.'
-              : 'The rest of the console is unaffected — switching tabs and coming back reloads this screen.'}
+              ? i18n.t('common:error.panelSoloBody')
+              : i18n.t('common:error.panelBody')}
           </p>
           {error.message && (
             <pre className="mt-3 overflow-x-auto rounded-control border border-border bg-surface-muted p-3 font-mono text-[11.5px] text-status-danger-text">
