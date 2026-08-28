@@ -11,6 +11,7 @@ import { queryKeys } from '../../api/queryKeys';
 import type { AlertEvent } from '../../api/types';
 import { Card, cn } from '../../components/ui';
 import { incidentCount, toAlertRows, type AlertTone } from './alerts';
+import { useTranslation } from 'react-i18next';
 
 const CAP = 12;
 
@@ -20,6 +21,7 @@ const DOT_COLOR: Record<AlertTone, string> = {
 };
 
 export function EventsCard() {
+  const { t } = useTranslation('monitor');
   // Read-only view of the SSE-populated alert buffer: a throwing queryFn that is
   // never enabled (same idiom as useMetricHistory's metrics cache) — the data is
   // whatever useEventStream last wrote, and this subscribes to its changes.
@@ -40,11 +42,15 @@ export function EventsCard() {
     <Card className="flex flex-1 flex-col lg:min-h-0">
       <div className="flex items-center gap-2.5 border-b border-border px-4 py-3">
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-secondary">
-          Events
+          {t('events.title')}
         </h2>
         <div className="flex-1" />
-        <span data-testid="events-count" className="font-mono text-[11.5px] text-text-secondary">
-          {total > CAP ? `${CAP} of ${total}` : `${total}`} alerts
+        <span
+          data-testid="events-count"
+          className="font-mono text-[11.5px] text-text-secondary"
+        >
+          {total > CAP ? `${CAP}/${total} ` : ''}
+          {t('events.alerts', { count: total })}
         </span>
       </div>
       <div className="flex flex-col gap-0.5 overflow-auto p-2.5">
@@ -53,7 +59,7 @@ export function EventsCard() {
             data-testid="events-empty"
             className="px-1.5 py-6 text-center text-[11.5px] leading-relaxed text-text-secondary"
           >
-            No alerts yet — threshold breaches from the monitor will appear here.
+            {t('events.empty')}
           </p>
         ) : (
           rows.map((ev) => (
@@ -65,7 +71,12 @@ export function EventsCard() {
                 ev.state === 'firing' && 'bg-status-danger-bg',
               )}
             >
-              <span className={cn('mt-[5px] h-[7px] w-[7px] shrink-0 rounded-sm', DOT_COLOR[ev.tone])} />
+              <span
+                className={cn(
+                  'mt-[5px] h-[7px] w-[7px] shrink-0 rounded-sm',
+                  DOT_COLOR[ev.tone],
+                )}
+              />
               <div className="flex min-w-0 flex-col gap-px">
                 {/* `min-w-0` above lets the column shrink, but a topic name with
                     no break opportunity — no slash, no space, which is what a
@@ -76,11 +87,20 @@ export function EventsCard() {
                     titles wrap exactly as before. */}
                 <span className="break-words text-[12.5px] font-semibold text-text-primary">
                   {ev.title}
-                  {ev.detail && <span className="font-normal text-text-secondary"> · {ev.detail}</span>}
+                  {ev.detail && (
+                    <span className="font-normal text-text-secondary">
+                      {' '}
+                      · {ev.detail}
+                    </span>
+                  )}
                 </span>
                 <span className="font-mono text-[11px] text-text-secondary">
-                  {ev.state === 'cleared' ? `cleared · ${ev.time}` : `firing · since ${ev.time}`}
-                  {ev.refires > 1 && <span className="text-text-secondary"> · ×{ev.refires}</span>}
+                  {ev.state === 'cleared'
+                    ? t('events.cleared', { time: ev.time })
+                    : t('events.firingSince', { time: ev.time })}
+                  {ev.refires > 1 && (
+                    <span className="text-text-secondary"> · ×{ev.refires}</span>
+                  )}
                 </span>
               </div>
             </div>

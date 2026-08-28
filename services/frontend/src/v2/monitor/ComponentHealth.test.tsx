@@ -3,12 +3,15 @@
 import { render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
 import { useUiStore } from '../../store/uiStore';
+import { i18n } from '../../i18n';
 import { ComponentHealth } from './ComponentHealth';
 
 afterEach(() => {
   vi.restoreAllMocks();
   useUiStore.setState({ sseStatus: 'closed', monitorBridge: null });
 });
+
+void i18n.changeLanguage('en');
 
 test('orchestrator health reflects the live SSE status, monitor health the bridge', () => {
   useUiStore.setState({ sseStatus: 'open', monitorBridge: 'up' });
@@ -34,7 +37,9 @@ test('says plainly that recorder/streamer readiness is server-side (/readyz) —
   const fetchSpy = vi.spyOn(globalThis, 'fetch');
   render(<ComponentHealth />);
   expect(screen.getByTestId('component-health')).toHaveTextContent('/readyz');
-  expect(screen.getByTestId('component-health')).toHaveTextContent(/recorder \/ streamer/);
+  expect(screen.getByTestId('component-health')).toHaveTextContent(
+    /recorder and streamer/i,
+  );
   // /readyz is not browser-reachable in the shipped topology, so we must not call it.
   expect(fetchSpy).not.toHaveBeenCalled();
 });

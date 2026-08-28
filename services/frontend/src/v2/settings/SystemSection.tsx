@@ -16,6 +16,7 @@ import type { RuntimeConfig } from '../../config';
 import { Card } from '../../components/ui';
 import { formatBytes } from '../review/format';
 import { ComponentHealth } from '../monitor/ComponentHealth';
+import { useTranslation } from 'react-i18next';
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
@@ -44,6 +45,7 @@ function Section({ title, children }: { title: string; children: React.ReactNode
 }
 
 export function SystemSection({ config }: { config: RuntimeConfig | undefined }) {
+  const { t } = useTranslation('settings');
   const { data } = useQuery({
     queryKey: ['system'],
     queryFn: ({ signal }) => getSystemInfo({ signal }),
@@ -62,51 +64,46 @@ export function SystemSection({ config }: { config: RuntimeConfig | undefined })
     >
       <div className="flex items-center gap-2.5">
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          System
+          {t('system.title')}
         </h2>
-        <span className="text-[11px] text-text-muted">
-          deployment facts · GET /api/v1/config
-        </span>
+        <span className="text-[11px] text-text-muted">{t('system.facts')}</span>
       </div>
 
-      <Section title="Deployment">
-        <Row label="Robot" value={config?.defaults.robot_name || '—'} />
+      <Section title={t('system.deployment')}>
+        <Row label={t('system.robot')} value={config?.defaults.robot_name || '—'} />
         <Row
-          label="ROS_DOMAIN_ID"
+          label={t('system.rosDomain')}
           value={domain !== undefined ? String(domain) : '—'}
         />
-        <p className="text-[11.5px] text-text-muted">
-          RMW / DDS transport is not exposed by the API — check{' '}
-          <code>RMW_IMPLEMENTATION</code> in the service environment.
-        </p>
+        <p className="text-[11.5px] text-text-muted">{t('system.rmwNote')}</p>
       </Section>
 
-      <Section title="Service endpoints">
-        <Row label="API base" value={endpoints?.api ?? '—'} />
-        <Row label="Events (SSE)" value={endpoints?.events ?? '—'} />
-        <Row label="WebRTC" value={endpoints?.webrtc ?? '—'} />
+      <Section title={t('system.serviceEndpoints')}>
+        <Row label={t('system.apiBase')} value={endpoints?.api ?? '—'} />
+        <Row label={t('system.events')} value={endpoints?.events ?? '—'} />
+        <Row label={t('system.webRtc')} value={endpoints?.webrtc ?? '—'} />
       </Section>
 
-      <Section title="Storage">
+      <Section title={t('system.storage')}>
         {disk ? (
           <>
-            <Row label="Data dir" value={disk.path} />
+            <Row label={t('system.dataDir')} value={disk.path} />
             <Row
-              label="Free"
-              value={`${formatBytes(disk.free_bytes)} of ${formatBytes(disk.total_bytes)}`}
+              label={t('system.free')}
+              value={t('system.freeOf', {
+                free: formatBytes(disk.free_bytes),
+                total: formatBytes(disk.total_bytes),
+              })}
             />
           </>
         ) : (
-          <p className="text-[12.5px] text-text-muted">
-            Disk usage unavailable — the runtime data dir could not be measured.
-          </p>
+          <p className="text-[12.5px] text-text-muted">{t('system.diskUnavailable')}</p>
         )}
       </Section>
 
-      <Section title="Component health">
+      <Section title={t('system.componentHealth')}>
         <ComponentHealth />
       </Section>
-
     </Card>
   );
 }

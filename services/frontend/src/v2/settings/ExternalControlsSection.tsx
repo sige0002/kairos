@@ -16,52 +16,25 @@
 // action an operator can bind to a pedal.
 
 import { Button, Notice, Select, SettingsSection } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import {
   ALLOWED_ACTIONS,
   EXTERNAL_CONTROL_SLOTS,
   EXTERNAL_CONTROL_STATES,
   type ExternalControlAction,
-  type ExternalControlState,
 } from '../collect/machine/externalControlConfig';
 import { Toast } from '../shared/Toast';
 import { useExternalControlsSettings } from './useExternalControlsSettings';
 
-const STATE_LABELS: Record<ExternalControlState, string> = {
-  ready: 'READY',
-  recording: 'RECORDING',
-  result: 'RESULT',
-  failure_reason: 'FAILURE REASON',
-};
-
-const ACTION_LABELS: Record<ExternalControlAction, string> = {
-  none: 'None',
-  start: 'Start',
-  stop: 'Stop',
-  success_save: 'Success + Save',
-  failure: 'Failure',
-  retake: 'Retake',
-  reason_slot_1: 'Reason slot 1',
-  reason_slot_2: 'Reason slot 2',
-  reason_slot_3: 'Reason slot 3',
-};
-
 export function ExternalControlsSection() {
+  const { t } = useTranslation('settings');
   const { config, invalid, setChannel, resetToDefault, toast } =
     useExternalControlsSettings();
 
   return (
     <SettingsSection
-      title="External controls"
-      description={
-        <>
-          Which action each external channel (LEFT / CENTER / RIGHT) performs in each
-          Collect state. Any device may emit the three logical inputs — a keyboard
-          shortcut, a macro pad, or a programmable foot pedal; no specific hardware is
-          required. Only the actions each state allows are offered, and an action cannot
-          sit on two channels of a state. Changes apply immediately and are shared with
-          every terminal.
-        </>
-      }
+      title={t('externalControls.title')}
+      description={t('externalControls.description')}
       className="lg:col-span-2"
       data-testid="settings-ext-controls"
     >
@@ -72,8 +45,7 @@ export function ExternalControlsSection() {
           data-testid="ext-controls-invalid"
           className="mx-3 mt-3 text-[12px]"
         >
-          The saved external-control layout could not be read, so the default layout is
-          active. Change any channel below to store a valid layout.
+          {t('externalControls.invalid')}
         </Notice>
       )}
       <div className="flex flex-col gap-3 p-3">
@@ -85,16 +57,16 @@ export function ExternalControlsSection() {
           >
             <div className="mb-2 flex items-baseline gap-2">
               <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-secondary">
-                {STATE_LABELS[state]}
+                {t(`externalControls.states.${state}`)}
               </h3>
               {state === 'result' && (
                 <span className="text-[11px] text-text-muted">
-                  Retake discards the current take and re-records it.
+                  {t('externalControls.retakeHelp')}
                 </span>
               )}
               {state === 'failure_reason' && (
                 <span className="text-[11px] text-text-muted">
-                  Slots read the current Task&apos;s failure shortcuts.
+                  {t('externalControls.shortcutsHelp')}
                 </span>
               )}
             </div>
@@ -131,7 +103,7 @@ export function ExternalControlsSection() {
                           value={action}
                           disabled={takenElsewhere(action)}
                         >
-                          {ACTION_LABELS[action]}
+                          {t(`externalControls.actions.${action}`)}
                         </option>
                       ))}
                     </Select>
@@ -148,7 +120,7 @@ export function ExternalControlsSection() {
           data-testid="ext-controls-reset"
           className="self-start border-dashed border-border-strong px-3 py-2 text-[12.5px] text-accent hover:bg-interaction-selected"
         >
-          Reset to default
+          {t('externalControls.reset')}
         </Button>
       </div>
       <Toast message={toast} testId="ext-controls-toast" />

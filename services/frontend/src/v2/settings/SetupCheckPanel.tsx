@@ -11,6 +11,7 @@ import type {
 import { Badge, Button, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { formatNumber } from '../../i18n/format';
+import { useTranslation } from 'react-i18next';
 
 function tone(status: SetupCheckItemStatus | SetupCheckReport['status']) {
   if (status === 'pass' || status === 'ready') return 'green' as const;
@@ -28,6 +29,7 @@ function qosLabel(topic: SetupTopicCheck, name: string): string {
 }
 
 export function SetupCheckPanel() {
+  const { t } = useTranslation('settings');
   const check = useMutation({ mutationFn: runSetupCheck });
   const report = check.data;
 
@@ -39,12 +41,10 @@ export function SetupCheckPanel() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-secondary">
-            Setup check
+            {t('setupCheck.run')}
           </h3>
           <p className="mt-1 max-w-2xl text-[12px] leading-relaxed text-text-muted">
-            Read-only. Checks recorder preconditions, configured ROS topic coverage,
-            monitor intake, and camera preview. It does not start a recording or change
-            config.
+            {t('common.readOnly')}
           </p>
         </div>
         <Button
@@ -54,7 +54,11 @@ export function SetupCheckPanel() {
           disabled={check.isPending}
           className="shrink-0"
         >
-          {check.isPending ? 'Checking…' : report ? 'Run again' : 'Run setup check'}
+          {check.isPending
+            ? t('setupCheck.checking')
+            : report
+              ? t('setupCheck.again')
+              : t('setupCheck.run')}
         </Button>
       </div>
 
@@ -71,7 +75,7 @@ export function SetupCheckPanel() {
               <Badge tone={tone(report.status)} dot>
                 {report.status}
               </Badge>
-              <span>{report.robot || 'No robot'}</span>
+              <span>{report.robot || t('setupCheck.noRobot')}</span>
               {report.ros_domain_id != null && (
                 <span className="font-mono">ROS_DOMAIN_ID {report.ros_domain_id}</span>
               )}
@@ -97,10 +101,12 @@ export function SetupCheckPanel() {
                     </span>
                     <Badge tone={tone(item.status)}>{item.status}</Badge>
                   </div>
-                  <p className="mt-1 text-[11.5px] text-text-secondary">{item.summary}</p>
+                  <p className="mt-1 text-[11.5px] text-text-secondary">
+                    {item.summary}
+                  </p>
                   {item.action && (
                     <p className="mt-1 text-[11.5px] font-medium text-text-primary">
-                      Next: {item.action}
+                      {t('setupCheck.next', { action: item.action })}
                     </p>
                   )}
                 </li>
@@ -110,16 +116,20 @@ export function SetupCheckPanel() {
             {report.topics.length > 0 && (
               <div>
                 <h4 className="mb-1.5 text-[12px] font-semibold text-text-primary">
-                  Configured topic coverage
+                  {t('setupCheck.configuredTopicCoverage')}
                 </h4>
                 <div className="max-h-72 overflow-auto rounded-control border border-border bg-surface">
                   <table className="w-full text-[11.5px]">
                     <thead className="sticky top-0 bg-surface-muted text-[10px] uppercase tracking-[0.04em] text-text-muted">
                       <tr>
-                        <th className="px-2.5 py-2 text-left font-medium">Pattern</th>
-                        <th className="px-2.5 py-2 text-left font-medium">Evidence</th>
                         <th className="px-2.5 py-2 text-left font-medium">
-                          Resolved QoS
+                          {t('setupCheck.pattern')}
+                        </th>
+                        <th className="px-2.5 py-2 text-left font-medium">
+                          {t('setupCheck.evidence')}
+                        </th>
+                        <th className="px-2.5 py-2 text-left font-medium">
+                          {t('setupCheck.resolvedQos')}
                         </th>
                       </tr>
                     </thead>
@@ -167,8 +177,7 @@ export function SetupCheckPanel() {
                   </table>
                 </div>
                 <p className="mt-1.5 text-[11px] text-text-muted">
-                  “Received” means the monitor has observed at least one sample; it does
-                  not prove payload validity.
+                  {t('setupCheck.receivedNote')}
                 </p>
               </div>
             )}

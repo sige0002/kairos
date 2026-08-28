@@ -41,6 +41,7 @@ import {
 } from './chartSeries';
 import type { ChartPanel } from './panelStore';
 import { useMeasuredHeight } from './useMeasuredHeight';
+import { useTranslation } from 'react-i18next';
 
 /** Last non-null value in an aligned column (the series' current reading). */
 function lastValue(col: (number | null)[]): number | null {
@@ -103,6 +104,7 @@ export function FrequencyChartCard({
   onToggleTopic: (name: string) => void;
   onRemove: () => void;
 }) {
+  const { t } = useTranslation('monitor');
   const metric = metricDef(panel.metric);
   const ms = windowMs(windowId);
   const sfx = isPrimary ? '' : `-${panel.id}`;
@@ -114,7 +116,8 @@ export function FrequencyChartCard({
 
   const labelMap = useMemo(() => buildLabelMap(topics), [topics]);
   const labelFor = (t: string) => labelMap.get(t) ?? shortName(t);
-  const rowFor = (t: string): MonitorRow | null => rows.find((r) => r.name === t) ?? null;
+  const rowFor = (t: string): MonitorRow | null =>
+    rows.find((r) => r.name === t) ?? null;
   const availableTopics = useMemo(() => rows.map((r) => r.name), [rows]);
 
   // x axis = sorted union of every selected topic's in-window sample times; each
@@ -128,7 +131,11 @@ export function FrequencyChartCard({
   const hasData = hasAnyValue(cols);
 
   const series: UplotSeriesConf[] = useMemo(
-    () => topics.map((t, i) => ({ label: labelMap.get(t) ?? shortName(t), stroke: paletteColor(i) })),
+    () =>
+      topics.map((t, i) => ({
+        label: labelMap.get(t) ?? shortName(t),
+        stroke: paletteColor(i),
+      })),
     [topics, labelMap],
   );
 
@@ -148,12 +155,18 @@ export function FrequencyChartCard({
   const primaryTopic = topics[0] ?? null;
   const primaryRow = primaryTopic ? rowFor(primaryTopic) : null;
   const primaryLast = cols[0] ? lastValue(cols[0]) : null;
-  const current = primaryLast != null ? `${primaryLast.toFixed(metric.digits)} ${metric.unit}` : '—';
+  const current =
+    primaryLast != null ? `${primaryLast.toFixed(metric.digits)} ${metric.unit}` : '—';
   const primaryExpected = primaryRow?.expected_hz ?? null;
+  const baselineLabels = {
+    learning: t('baseline.learning'),
+    baseline: t('baseline.default'),
+    unstable: t('baseline.unstable'),
+  };
   const expectedText =
     primaryExpected != null
       ? `${primaryExpected} Hz`
-      : (primaryRow ? formatBaseline(primaryRow) : null) ?? '—';
+      : ((primaryRow ? formatBaseline(primaryRow, baselineLabels) : null) ?? '—');
   const warnBelow =
     primaryExpected != null
       ? `${(primaryExpected * (1 - DEFAULT_WARN_SHORTFALL_PCT / 100)).toFixed(1)} Hz`
@@ -161,10 +174,10 @@ export function FrequencyChartCard({
 
   const title =
     topics.length === 0
-      ? 'No topic selected'
+      ? t('charts.noTopic')
       : topics.length === 1
         ? topics[0]!
-        : `${topics.length} topics`;
+        : t('charts.multipleTopics', { count: topics.length });
 
   // Non-primary add-topic control: currently-flowing topics not already charted,
   // hidden once the panel hits the MAX_SERIES overlay cap.
@@ -174,18 +187,20 @@ export function FrequencyChartCard({
   return (
     <Card className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-border px-[18px] py-3">
-        <span className="truncate font-mono text-[13px] font-semibold text-text-primary">{title}</span>
+        <span className="truncate font-mono text-[13px] font-semibold text-text-primary">
+          {title}
+        </span>
         <select
           data-testid={`freq-metric-select${sfx}`}
-          aria-label="chart metric"
+          aria-label={t('charts.metricLabel')}
           value={panel.metric}
           onChange={(e) => onMetricChange(e.target.value as MonitorMetricKey)}
           className="rounded-control border border-border px-2 py-1 text-[12px] font-medium text-text-primary focus:border-accent focus:outline-none"
         >
           {MONITOR_METRICS.map((m) => (
             <option key={m.key} value={m.key}>
-              {m.label} ({m.unit})
-              {m.key === 'rate' ? ' · needs expected_hz' : ''}
+              {t(`metrics.${m.labelKey}` as 'metrics.frequency')} ({m.unit})
+              {m.key === 'rate' ? ` · ${t('charts.rateHint')}` : ''}
             </option>
           ))}
         </select>
@@ -194,11 +209,11 @@ export function FrequencyChartCard({
           <button
             type="button"
             data-testid={`freq-remove${sfx}`}
-            aria-label="remove chart"
+            aria-label={t('charts.removeLabel')}
             onClick={onRemove}
             className="rounded-control border border-status-danger-border px-2.5 py-1 text-[11px] font-semibold text-status-danger-text hover:bg-status-danger-bg"
           >
-            Remove
+            {t('charts.remove')}
           </button>
         )}
       </div>
@@ -210,18 +225,24 @@ export function FrequencyChartCard({
           className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-border px-[18px] py-2"
         >
           {topics.length === 0 ? (
-            <span className="text-[11.5px] text-text-muted">No series selected.</span>
+            <span className="text-[11.5px] text-text-muted">
+              {t('charts.noSeries')}
+            </span>
           ) : (
             topics.map((t, i) => {
               const v = cols[i] ? lastValue(cols[i]!) : null;
-              const shown = v != null ? `${v.toFixed(metric.digits)} ${metric.unit}` : '—';
+              const shown =
+                v != null ? `${v.toFixed(metric.digits)} ${metric.unit}` : '—';
               return (
                 <span
                   key={t}
                   data-testid={`freq-legend${sfx}-${t}`}
                   className="inline-flex items-center gap-1.5 text-[11.5px] text-text-muted"
                 >
-                  <span className="h-[3px] w-3.5 rounded-sm" style={{ background: paletteColor(i) }} />
+                  <span
+                    className="h-[3px] w-3.5 rounded-sm"
+                    style={{ background: paletteColor(i) }}
+                  />
                   <span className="font-mono">{labelFor(t)}</span>
                   <span className="font-semibold text-text-primary">{shown}</span>
                 </span>
@@ -234,7 +255,9 @@ export function FrequencyChartCard({
                 className="h-0 w-3.5 border-t-2"
                 style={{ borderTopStyle: 'dashed', borderTopColor: amber[600] }}
               />
-              {metric.key === 'rate' ? '100% target' : `expected ${singleExpected} Hz`}
+              {metric.key === 'rate'
+                ? t('charts.target')
+                : t('charts.expectedHz', { value: String(singleExpected) })}
             </span>
           )}
         </div>
@@ -244,23 +267,27 @@ export function FrequencyChartCard({
           data-testid={`freq-chart-legend${sfx}`}
           className="flex flex-wrap items-center gap-1.5 border-b border-border px-[18px] py-2"
         >
-          {topics.map((t, i) => {
+          {topics.map((topic, i) => {
             const v = cols[i] ? lastValue(cols[i]!) : null;
-            const shown = v != null ? `${v.toFixed(metric.digits)} ${metric.unit}` : '—';
+            const shown =
+              v != null ? `${v.toFixed(metric.digits)} ${metric.unit}` : '—';
             return (
               <span
-                key={t}
-                data-testid={`freq-legend${sfx}-${t}`}
+                key={topic}
+                data-testid={`freq-legend${sfx}-${topic}`}
                 className="inline-flex items-center gap-1.5 rounded-chip border border-border bg-surface py-0.5 pl-2 pr-1 text-[11px] text-text-muted"
               >
-                <span className="h-[3px] w-3.5 rounded-sm" style={{ background: paletteColor(i) }} />
-                <span className="font-mono">{labelFor(t)}</span>
+                <span
+                  className="h-[3px] w-3.5 rounded-sm"
+                  style={{ background: paletteColor(i) }}
+                />
+                <span className="font-mono">{labelFor(topic)}</span>
                 <span className="font-semibold text-text-primary">{shown}</span>
                 <button
                   type="button"
-                  data-testid={`freq-chip-remove${sfx}-${t}`}
-                  aria-label={`remove ${t} from chart`}
-                  onClick={() => onToggleTopic(t)}
+                  data-testid={`freq-chip-remove${sfx}-${topic}`}
+                  aria-label={t('charts.removeTopic', { topic })}
+                  onClick={() => onToggleTopic(topic)}
                   className="ml-0.5 rounded-sm px-1 text-text-muted hover:bg-surface-muted hover:text-text-primary"
                 >
                   ×
@@ -270,12 +297,15 @@ export function FrequencyChartCard({
           })}
           {atCap ? (
             <span className="text-[10.5px] text-status-warning-text">
-              {MAX_SERIES}/{MAX_SERIES} series
+              {t('charts.seriesCap', {
+                current: String(MAX_SERIES),
+                max: String(MAX_SERIES),
+              })}
             </span>
           ) : (
             <select
               data-testid={`freq-add-topic${sfx}`}
-              aria-label="add topic to chart"
+              aria-label={t('charts.addTopicLabel')}
               value=""
               onChange={(e) => {
                 if (e.target.value) onToggleTopic(e.target.value);
@@ -283,7 +313,9 @@ export function FrequencyChartCard({
               disabled={addable.length === 0}
               className="rounded-control border border-border px-2 py-0.5 text-[11px] font-medium text-text-secondary focus:border-accent focus:outline-none disabled:text-text-muted"
             >
-              <option value="">{addable.length === 0 ? 'No more topics' : '+ Add topic'}</option>
+              <option value="">
+                {addable.length === 0 ? t('charts.noMoreTopics') : t('charts.addTopic')}
+              </option>
               {addable.map((t) => (
                 <option key={t} value={t}>
                   {labelFor(t)}
@@ -321,10 +353,13 @@ export function FrequencyChartCard({
           >
             {topics.length === 0
               ? isPrimary
-                ? 'No topic to chart yet — pick one from the table below once topics are discovered.'
-                : 'No topic to chart — use "+ Add topic" above.'
-              : (metric.note ??
-                `No ${metric.label.toLowerCase()} data yet — history builds from when you opened Monitor.`)}
+                ? t('charts.emptyPrimary')
+                : t('charts.emptySecondary')
+              : metric.noteKey
+                ? t(`metrics.${metric.noteKey}` as 'metrics.rateNeedsExpected')
+                : t('charts.noData', {
+                    metric: t(`metrics.${metric.labelKey}` as 'metrics.frequency'),
+                  })}
           </p>
         )}
       </div>
@@ -332,27 +367,36 @@ export function FrequencyChartCard({
       <div className="flex flex-wrap gap-4 border-t border-border px-[18px] py-2.5 text-xs text-text-muted">
         {topics.length > 1 && primaryTopic && (
           <span>
-            primary{' '}
-            <span className="font-mono font-semibold text-text-primary">{labelFor(primaryTopic)}</span>
+            {t('charts.primary')}{' '}
+            <span className="font-mono font-semibold text-text-primary">
+              {labelFor(primaryTopic)}
+            </span>
           </span>
         )}
         <span>
-          current <span className="font-mono font-semibold text-status-warning-text">{current}</span>
+          {t('charts.current')}{' '}
+          <span className="font-mono font-semibold text-status-warning-text">
+            {current}
+          </span>
         </span>
         {metric.hzLike && (
           <>
             <span>
-              expected <span className="font-mono font-semibold text-text-primary">{expectedText}</span>
+              {t('charts.expected')}{' '}
+              <span className="font-mono font-semibold text-text-primary">
+                {expectedText}
+              </span>
             </span>
             <span>
-              warn below <span className="font-mono font-semibold text-text-primary">{warnBelow}</span>
+              {t('charts.warnBelow')}{' '}
+              <span className="font-mono font-semibold text-text-primary">
+                {warnBelow}
+              </span>
             </span>
           </>
         )}
         <div className="flex-1" />
-        <span className="text-text-muted">
-          REC markers are real · observed shortfall — no confirmed loss
-        </span>
+        <span className="text-text-muted">{t('charts.observed')}</span>
       </div>
     </Card>
   );

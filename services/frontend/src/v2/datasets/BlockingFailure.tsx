@@ -15,6 +15,7 @@
 // standing without being taught about them one at a time.
 
 import { Button } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { readCaptureError } from '../captures/errors';
 
 export function BlockingFailure({
@@ -24,6 +25,7 @@ export function BlockingFailure({
   error: unknown;
   onDismiss: () => void;
 }) {
+  const { t } = useTranslation('common');
   if (error == null) return null;
   const reading = readCaptureError(error);
   return (
@@ -37,13 +39,19 @@ export function BlockingFailure({
         {reading.message}
       </p>
       {reading.guidance && (
-        <p className="text-[12.5px] leading-relaxed text-text-secondary">{reading.guidance}</p>
+        <p className="text-[12.5px] leading-relaxed text-text-secondary">
+          {reading.guidance}
+        </p>
       )}
       <div className="flex items-center gap-2">
         <span className="font-mono text-[11px] text-text-muted">({reading.code})</span>
         <div className="flex-1" />
-        <Button variant="ghost" onClick={onDismiss} data-testid="dataset-blocking-failure-dismiss">
-          Dismiss
+        <Button
+          variant="ghost"
+          onClick={onDismiss}
+          data-testid="dataset-blocking-failure-dismiss"
+        >
+          {t('actions.dismiss')}
         </Button>
       </div>
     </div>

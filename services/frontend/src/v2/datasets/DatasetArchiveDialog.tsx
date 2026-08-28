@@ -27,7 +27,7 @@ import { Badge, Button, Modal } from '../../components/ui';
 import { useTranslation } from 'react-i18next';
 import { readCaptureCode } from '../captures/errors';
 import { ArchiveError } from './ArchiveError';
-import { formatBytes, memberCount, shortCaptureId } from './data';
+import { formatBytes, shortCaptureId } from './data';
 import { DatasetGoneNote } from './SelectionGone';
 import type { DatasetsState } from './useDatasetsState';
 
@@ -89,19 +89,15 @@ function ConfirmBody({ state }: { state: DatasetsState }) {
         {/* With no row in view (an external status change can take it off this
             shelf mid-dialog) there is no member count to state — "0 members"
             would be a number nothing measured. */}
-        {row ? (
-          <>
-            <span className="font-semibold text-text-primary">{row.dataset.name}</span>{' '}
-            — {memberCount(row.dataset.member_count)}
-          </>
-        ) : (
-          <span className="break-all font-mono text-text-primary">
-            {state.selectedDatasetId}
-          </span>
-        )}
-        {bytes?.total ? <>, about {formatBytes(bytes.total)}</> : null} — is copied to
-        the destination as numbered folders plus a manifest, and every file is verified
-        (SHA-256).{' '}
+        {t('archiveDatasetSummary', {
+          dataset: row?.dataset.name ?? state.selectedDatasetId ?? '',
+          members: row
+            ? String(t('archiveDatasetMembers', { count: row.dataset.member_count }))
+            : '',
+          bytes: bytes?.total
+            ? String(t('archiveDatasetBytes', { bytes: formatBytes(bytes.total) }))
+            : '',
+        })}{' '}
         <span className="font-semibold text-text-primary">
           {copying ? t('archiveConfirmCopy') : t('archiveConfirmMove')}
         </span>{' '}

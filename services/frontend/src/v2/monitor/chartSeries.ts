@@ -12,7 +12,14 @@ import type { MetricSample } from '../../features/graph/useMetricHistory';
 // v1 GraphTab's palette (src/features/graph/GraphTab.tsx) — distinct line colours
 // assigned by series order, so a chart never draws two topics in one colour. The
 // 6-colour length is also the overlay cap (v1's MAX_SERIES).
-export const PALETTE = ['#0d9488', '#0891b2', '#d97706', '#fb7185', '#16a34a', '#7c3aed'];
+export const PALETTE = [
+  '#0d9488',
+  '#0891b2',
+  '#d97706',
+  '#fb7185',
+  '#16a34a',
+  '#7c3aed',
+];
 export const MAX_SERIES = PALETTE.length;
 
 export function paletteColor(i: number): string {
@@ -31,32 +38,38 @@ export type MonitorMetricKey = 'hz' | 'bw' | 'gap' | 'rate';
 
 export interface MonitorMetricDef {
   key: MonitorMetricKey;
-  /** Full label for the selector. */
-  label: string;
+  /** Translation key for the operator-facing selector label. */
+  labelKey: 'frequency' | 'bandwidth' | 'maxGap' | 'rate';
   /** Short axis/legend unit. */
   unit: string;
   /** Pull this metric's value out of an accumulated sample. */
   select: (s: MetricSample) => number | null;
   /** Legend/footer value precision. */
   digits: number;
-  /** Shown inside the chart when the metric has no data (e.g. why rate is
-   *  empty) rather than leaving a blank panel — honesty principle. */
-  note?: string;
+  /** Translation key for an honest empty-state explanation. */
+  noteKey?: 'rateNeedsExpected';
   /** Whether the expected_hz / warn-below footer stats apply (hz only). */
   hzLike?: boolean;
 }
 
 export const MONITOR_METRICS: MonitorMetricDef[] = [
-  { key: 'hz', label: 'Frequency', unit: 'Hz', select: (s) => s.hz, digits: 1, hzLike: true },
-  { key: 'bw', label: 'Bandwidth', unit: 'MB/s', select: (s) => s.bw, digits: 2 },
-  { key: 'gap', label: 'Max gap', unit: 'ms', select: (s) => s.gap, digits: 0 },
+  {
+    key: 'hz',
+    labelKey: 'frequency',
+    unit: 'Hz',
+    select: (s) => s.hz,
+    digits: 1,
+    hzLike: true,
+  },
+  { key: 'bw', labelKey: 'bandwidth', unit: 'MB/s', select: (s) => s.bw, digits: 2 },
+  { key: 'gap', labelKey: 'maxGap', unit: 'ms', select: (s) => s.gap, digits: 0 },
   {
     key: 'rate',
-    label: 'Rate vs expected',
+    labelKey: 'rate',
     unit: '%',
     select: (s) => s.rate,
     digits: 0,
-    note: 'Only computed for topics with expected_hz set.',
+    noteKey: 'rateNeedsExpected',
   },
 ];
 
@@ -86,8 +99,12 @@ export function shortName(topic: string): string {
 // set, so two topics ending `/image` (or `/compressed`) don't collapse to the
 // same label. Ported from v1 GraphTab.buildLabelMap; falls back to the full path.
 export function buildLabelMap(topics: string[]): Map<string, string> {
-  const tail = (t: string, n: number) => t.split('/').filter(Boolean).slice(-n).join('/') || t;
-  const maxDepth = Math.max(1, ...topics.map((t) => t.split('/').filter(Boolean).length));
+  const tail = (t: string, n: number) =>
+    t.split('/').filter(Boolean).slice(-n).join('/') || t;
+  const maxDepth = Math.max(
+    1,
+    ...topics.map((t) => t.split('/').filter(Boolean).length),
+  );
   const map = new Map<string, string>();
   for (const t of topics) {
     let label = t; // fall back to the full path if nothing shorter is unique
@@ -137,7 +154,9 @@ export function alignMetricSeries(
   window?: { ms: number; nowMs: number },
 ): AlignedSeries {
   const cutoff = window ? window.nowMs - window.ms : -Infinity;
-  const perTopic = topics.map((t) => (history.get(t) ?? []).filter((s) => s.t >= cutoff));
+  const perTopic = topics.map((t) =>
+    (history.get(t) ?? []).filter((s) => s.t >= cutoff),
+  );
 
   const tset = new Set<number>();
   for (const arr of perTopic) for (const s of arr) tset.add(s.t);

@@ -15,6 +15,7 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { jsonResponse } from '../../test/renderWithClient';
+import { i18n } from '../../i18n';
 import {
   __resetPlansStore,
   getOperators,
@@ -24,7 +25,10 @@ import {
 } from '../plans';
 import { useSettingsState } from './useSettingsState';
 
-beforeEach(() => {
+beforeEach(async () => {
+  await act(async () => {
+    await i18n.changeLanguage('en');
+  });
   __resetPlansStore();
   // Hold the once-per-load reconcile open for the whole case: its adopt/seed
   // would otherwise race the catalogs installed below and add PUTs of its own.
@@ -37,7 +41,12 @@ beforeEach(() => {
     return Promise.resolve(jsonResponse({}));
   });
 });
-afterEach(() => vi.restoreAllMocks());
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await act(async () => {
+    await i18n.changeLanguage('en');
+  });
+});
 
 /** How many times the catalog was pushed to the server. A no-op handler must
  *  not write: setPlans persists, marks the browser dirty and PUTs, so a
@@ -176,9 +185,9 @@ test('shared taxonomy deletion requires confirmation and cancel keeps the exact 
   expect(confirmSpy).toHaveBeenCalledTimes(2);
   expect(getPlans()[0]?.name).toBe('Project');
   expect(getPlans()[0]?.tasks.map((task) => task.name)).toEqual(['Task']);
-  expect(getPlans()[0]?.tasks[0]?.conditions.map((condition) => condition.name)).toEqual([
-    'Condition',
-  ]);
+  expect(
+    getPlans()[0]?.tasks[0]?.conditions.map((condition) => condition.name),
+  ).toEqual(['Condition']);
   expect(catalogPuts()).toBe(putsBefore);
 });
 
@@ -199,4 +208,25 @@ test('blank and duplicate taxonomy names are refused without a false success rec
   expect(result.current.toast).toBe('Operator name “alex” already exists');
   expect(getOperators()).toEqual(['Alex']);
   expect(catalogPuts()).toBe(putsAfterSeed);
+});
+
+test('uses a Japanese prompt when adding a condition in Japanese', async () => {
+  await act(async () => {
+    await i18n.changeLanguage('ja');
+  });
+  const promptSpy = vi
+    .spyOn(window, 'prompt')
+    .mockReturnValue('物体: 左 → トレイ: 中央');
+  const { result } = renderHook(() => useSettingsState());
+  act(() => setPlans([{ name: '計画', tasks: [{ name: 'タスク', conditions: [] }] }]));
+
+  act(() => result.current.addCondition());
+
+  expect(promptSpy).toHaveBeenCalledWith(
+    '新しい条件（例: 「物体: 左 → トレイ: 中央」）',
+    '',
+  );
+  expect(
+    getPlans()[0]?.tasks[0]?.conditions.map((condition) => condition.name),
+  ).toEqual(['物体: 左 → トレイ: 中央']);
 });

@@ -9,9 +9,11 @@
 // labeled keep the exact string that was stored on them.
 
 import { Card } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import type { SettingsState } from './useSettingsState';
 
 export function FailureReasonsSection({ settings }: { settings: SettingsState }) {
+  const { t } = useTranslation('settings');
   const { failReasons, addFailReason, renameFailReason, removeFailReason } = settings;
   const lastOne = failReasons.length <= 1;
 
@@ -22,12 +24,10 @@ export function FailureReasonsSection({ settings }: { settings: SettingsState })
     >
       <div className="flex flex-col gap-1 border-b border-border px-4 py-[13px]">
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-          Failure reasons
+          {t('failureReasons.title')}
         </h2>
         <span className="text-[12px] leading-relaxed text-text-muted">
-          The options Collect offers when an episode is marked Failure. Shared
-          with every terminal (saved with the plan catalog). Edits apply to
-          future labels only — already-labeled episodes keep their stored text.
+          {t('failureReasons.description')}
         </span>
       </div>
       <div className="flex max-w-xl flex-col gap-1.5 p-3">
@@ -40,7 +40,7 @@ export function FailureReasonsSection({ settings }: { settings: SettingsState })
             <button
               type="button"
               onClick={() => renameFailReason(i)}
-              title="Rename"
+              title={t('failureReasons.rename')}
               className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-text-primary"
             >
               {reason}
@@ -51,8 +51,8 @@ export function FailureReasonsSection({ settings }: { settings: SettingsState })
               disabled={lastOne}
               title={
                 lastOne
-                  ? 'The last reason cannot be removed — marking a Failure requires one.'
-                  : 'Remove reason'
+                  ? t('failureReasons.lastCannotRemove')
+                  : t('failureReasons.remove')
               }
               className="shrink-0 px-0.5 text-xs text-text-muted enabled:hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
             >
@@ -66,7 +66,7 @@ export function FailureReasonsSection({ settings }: { settings: SettingsState })
           data-testid="fail-reason-add"
           className="rounded-control border border-dashed border-border-strong bg-surface p-2.5 text-[12.5px] font-semibold text-accent hover:bg-interaction-selected"
         >
-          + Add reason
+          {t('failureReasons.add')}
         </button>
       </div>
     </Card>

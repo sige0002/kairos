@@ -19,6 +19,7 @@ import type {
   RecordingConfigPayload,
 } from '../../api/types';
 import { useRecordStatus } from '../captures/useRecordStatus';
+import { useTranslation } from 'react-i18next';
 import type { RuntimeConfig } from '../../config';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { Button, Field, Notice, Textarea } from '../../components/ui';
@@ -58,6 +59,7 @@ function formatValidationDetails(error: unknown): string[] {
 
 /** Editable JSON editor for the active robot's active RECORDING_CONFIG. */
 export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
+  const { t } = useTranslation('settings');
   const queryClient = useQueryClient();
 
   const recordingQuery = useQuery({
@@ -164,7 +166,7 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
       return;
     }
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      setJsonError('config must be an object ({ … })');
+      setJsonError(t('recording.configMustBeObject'));
       return;
     }
     saveMutation.mutate(parsed as Record<string, unknown>);
@@ -177,31 +179,36 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
 
   if (recordingQuery.isError) return <ErrorMessage error={recordingQuery.error} />;
   if (recordingQuery.isPending)
-    return <p className="text-sm text-text-muted">Loading…</p>;
+    return <p className="text-sm text-text-muted">{t('common.loading')}</p>;
 
   return (
     <div>
-      <dl className="mb-3 grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
-        <dt className="text-text-muted">Robot</dt>
+      <dl
+        data-testid="recording-config-metadata"
+        className="mb-3 grid grid-cols-1 gap-x-6 gap-y-1.5 text-sm sm:grid-cols-[auto_minmax(0,1fr)]"
+      >
+        <dt className="text-text-muted">{t('common.robot')}</dt>
         <dd className="font-mono text-text-primary">{robot || '—'}</dd>
-        <dt className="text-text-muted">Default topics</dt>
+        <dt className="text-text-muted">{t('recording.defaultTopics')}</dt>
         <dd className="font-mono text-text-primary">{topics.length}</dd>
         {path && (
           <>
-            <dt className="text-text-muted">Path</dt>
-            <dd className="font-mono text-xs text-text-muted">{path}</dd>
+            <dt className="text-text-muted">{t('common.path')}</dt>
+            <dd className="min-w-0 break-all font-mono text-xs text-text-muted">
+              {path}
+            </dd>
           </>
         )}
       </dl>
       <Field
         id="recording-config-json"
-        label="Config (JSON)"
+        label={t('recording.configLabel')}
         className="mb-2"
-        error={jsonError ? `Invalid JSON — ${jsonError}` : undefined}
-        help={jsonError ? undefined : 'Valid JSON'}
+        error={jsonError ? t('recording.invalidJson', { error: jsonError }) : undefined}
+        help={jsonError ? undefined : t('recording.validJson')}
       >
         <Textarea
-          aria-label="recording config json"
+          aria-label={t('recording.configAria')}
           className="h-80 w-full p-2 font-mono text-xs"
           spellCheck={false}
           value={text}
@@ -220,12 +227,7 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
           className="mt-2 flex flex-col gap-2"
         >
           <p>
-            <span className="font-medium">
-              The recording config changed on the server
-            </span>{' '}
-            while you were editing — another terminal saved it, or the active robot
-            changed. Your unsaved edits are kept and nothing here was overwritten, but
-            saving now writes over that newer file.
+            <span className="font-medium">{t('recording.serverChanged')}</span>
           </p>
           <Button
             size="sm"
@@ -237,30 +239,26 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
             }}
             className="self-start border-status-warning-border text-status-warning-text hover:bg-status-warning-bg"
           >
-            Load the server copy (discards my edits)
+            {t('recording.loadServer')}
           </Button>
         </Notice>
       )}
 
       {recording && (
         <Notice tone="warning" className="mt-2">
-          A recording is in progress — saving recording config won&apos;t change the
-          current one; it applies to the next.
+          {t('recording.recordingInProgress')}
         </Notice>
       )}
 
       {armed && (
         <Notice tone="warning" data-testid="config-armed-note" className="mt-2">
-          A session is armed and waiting to start — nothing is being written yet. It
-          already holds the current topic selection, so a save applies to the recording
-          after it.
+          {t('recording.armedWaiting')}
         </Notice>
       )}
 
       {liveUnknown && (
         <Notice tone="info" data-testid="config-live-unknown" className="mt-2">
-          The recorder has not confirmed what is running, so whether a session is in
-          progress is unknown. A save still only applies to the next recording.
+          {t('recording.liveStateUnknown')}
         </Notice>
       )}
 
@@ -281,11 +279,8 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
 
       {saved && !saveMutation.isPending && (
         <Notice tone="success" className="mt-2">
-          <p className="font-medium">Saved</p>
-          <p className="mt-0.5 text-xs">
-            default_topics / robot_name apply immediately; expected_hz and QoS apply
-            after a service restart.
-          </p>
+          <p className="font-medium">{t('recording.savedNote')}</p>
+          <p className="mt-0.5 text-xs">{t('recording.savedBody')}</p>
         </Notice>
       )}
 
@@ -295,11 +290,9 @@ export function RecordingConfigEditor({ config }: { config: RuntimeConfig }) {
           disabled={saveMutation.isPending || jsonError !== null}
           className="font-medium"
         >
-          {saveMutation.isPending ? 'Saving…' : 'Save'}
+          {saveMutation.isPending ? t('common.saving') : t('common.save')}
         </Button>
-        <span className="text-xs text-text-muted">
-          Edits the active recording file; the server validates on save.
-        </span>
+        <span className="text-xs text-text-muted">{t('recording.schemaNote')}</span>
       </div>
     </div>
   );

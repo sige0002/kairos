@@ -13,11 +13,13 @@ import { queryKeys } from '../../api/queryKeys';
 import type { AlertEvent } from '../../api/types';
 import { Card, cn, StatusDot } from '../../components/ui';
 import { incidentCount, toAlertRows } from './alerts';
+import { useTranslation } from 'react-i18next';
 
 type StateFilter = 'all' | 'firing' | 'cleared';
 const STATE_FILTERS: StateFilter[] = ['all', 'firing', 'cleared'];
 
 export function EventsView() {
+  const { t, i18n } = useTranslation('monitor');
   const { data } = useQuery<AlertEvent[]>({
     queryKey: queryKeys.alerts,
     queryFn: () => {
@@ -27,7 +29,10 @@ export function EventsView() {
   });
   // Reuse the shared incident collapse (one row per topic+metric, newest wins,
   // firing sorted first, distinct-firing-episode `refires` count).
-  const incidents = useMemo(() => toAlertRows(data ?? [], 500), [data]);
+  const incidents = useMemo(
+    () => toAlertRows(data ?? [], 500),
+    [data, i18n.resolvedLanguage],
+  );
 
   const [stateFilter, setStateFilter] = useState<StateFilter>('all');
   const [query, setQuery] = useState('');
@@ -48,18 +53,21 @@ export function EventsView() {
     <Card className="flex flex-1 flex-col lg:min-h-0" data-testid="monitor-events">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-border px-4 py-3">
         <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-secondary">
-          Incidents
+          {t('eventsView.title')}
         </h2>
-        <span data-testid="events-firing-count" className="font-mono text-[11.5px] text-text-secondary">
-          {firingCount} firing · {total} total
+        <span
+          data-testid="events-firing-count"
+          className="font-mono text-[11.5px] text-text-secondary"
+        >
+          {t('eventsView.count', { firing: String(firingCount), total: String(total) })}
         </span>
         <div className="flex-1" />
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Filter by topic…"
-          aria-label="filter incidents by topic"
+          placeholder={t('eventsView.filter')}
+          aria-label={t('eventsView.filterLabel')}
           data-testid="events-filter"
           className="w-44 rounded-control border border-border px-2.5 py-1 text-[12px] focus:border-accent focus:outline-none"
         />
@@ -73,28 +81,35 @@ export function EventsView() {
               onClick={() => setStateFilter(f)}
               className={cn(
                 'rounded-chip px-2.5 py-0.5 text-[11px] font-medium capitalize transition-colors',
-                f === stateFilter ? 'bg-surface text-accent shadow-sm' : 'text-text-secondary hover:text-text-primary',
+                f === stateFilter
+                  ? 'bg-surface text-accent shadow-sm'
+                  : 'text-text-secondary hover:text-text-primary',
               )}
             >
-              {f}
+              {t(`eventsView.states.${f}` as 'eventsView.states.all')}
             </button>
           ))}
         </div>
       </div>
 
       <p className="border-b border-border px-4 py-2 text-[11px] leading-relaxed text-text-secondary">
-        Incidents accumulate from when you opened Monitor (session-local). Each row is one
-        (topic, metric) breach; ×N counts distinct firing episodes (refires) seen this session.
+        {t('eventsView.note')}
       </p>
 
       <div className="flex flex-col gap-0.5 overflow-auto p-2.5">
         {incidents.length === 0 ? (
-          <p data-testid="events-empty" className="px-1.5 py-8 text-center text-[12px] text-text-secondary">
-            No alerts yet — threshold breaches from the monitor will appear here.
+          <p
+            data-testid="events-empty"
+            className="px-1.5 py-8 text-center text-[12px] text-text-secondary"
+          >
+            {t('events.empty')}
           </p>
         ) : filtered.length === 0 ? (
-          <p data-testid="events-no-match" className="px-1.5 py-8 text-center text-[12px] text-text-secondary">
-            No incidents match the current filter.
+          <p
+            data-testid="events-no-match"
+            className="px-1.5 py-8 text-center text-[12px] text-text-secondary"
+          >
+            {t('eventsView.noMatch')}
           </p>
         ) : (
           filtered.map((i) => (
@@ -115,16 +130,23 @@ export function EventsView() {
                     330px rail still fits. Same cause, one column wider. */}
                 <span className="break-words text-[12.5px] font-semibold text-text-primary">
                   {i.title}
-                  {i.detail && <span className="font-normal text-text-secondary"> · {i.detail}</span>}
+                  {i.detail && (
+                    <span className="font-normal text-text-secondary">
+                      {' '}
+                      · {i.detail}
+                    </span>
+                  )}
                 </span>
                 <span className="font-mono text-[11px] text-text-secondary">
-                  {i.state} · since {i.time}
+                  {i.state === 'cleared'
+                    ? t('events.cleared', { time: i.time })
+                    : t('events.firingSince', { time: i.time })}
                 </span>
               </div>
               {i.refires > 1 && (
                 <span
                   className="shrink-0 rounded-chip bg-surface-muted px-1.5 py-0.5 font-mono text-[10.5px] font-semibold text-text-secondary"
-                  title={`${i.refires} distinct firing episodes this session`}
+                  title={t('eventsView.refiresTitle', { count: i.refires })}
                 >
                   ×{i.refires}
                 </span>

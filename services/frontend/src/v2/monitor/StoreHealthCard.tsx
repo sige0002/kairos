@@ -26,6 +26,7 @@ import { Badge, Button, Card, CardHeader } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { readCaptureError } from '../captures/errors';
 import { useStoreHealth } from '../store/useStoreHealth';
+import { useTranslation } from 'react-i18next';
 
 function formatInstant(iso?: string | null): string {
   if (!iso) return '—';
@@ -64,9 +65,10 @@ function Section({
 
 /** Key/value rows straight from a server summary dict (keys shown verbatim). */
 function SummaryRows({ summary }: { summary: Record<string, unknown> }) {
+  const { t } = useTranslation('monitor');
   const entries = Object.entries(summary);
   if (entries.length === 0) {
-    return <p className="text-[12.5px] text-text-muted">The summary is empty.</p>;
+    return <p className="text-[12.5px] text-text-muted">{t('store.summaryEmpty')}</p>;
   }
   return (
     <div className="grid grid-cols-1 gap-x-6 gap-y-1 sm:grid-cols-2">
@@ -87,6 +89,7 @@ function SummaryRows({ summary }: { summary: Record<string, unknown> }) {
 }
 
 function CorruptList({ entries }: { entries: CorruptEntry[] }) {
+  const { t } = useTranslation('monitor');
   return (
     <ul className="flex flex-col gap-1.5" data-testid="store-health-corrupt-list">
       {entries.map((entry, i) => (
@@ -101,7 +104,7 @@ function CorruptList({ entries }: { entries: CorruptEntry[] }) {
           <span className="text-[12px] text-status-danger-text">{entry.reason}</span>
           {entry.capture_id && (
             <span className="font-mono text-[11px] text-status-danger-text">
-              capture {entry.capture_id}
+              {t('store.capture', { id: entry.capture_id })}
             </span>
           )}
         </li>
@@ -111,6 +114,7 @@ function CorruptList({ entries }: { entries: CorruptEntry[] }) {
 }
 
 export function StoreHealthCard() {
+  const { t } = useTranslation('monitor');
   const queryClient = useQueryClient();
   const healthQuery = useStoreHealth();
 
@@ -159,21 +163,21 @@ export function StoreHealthCard() {
         title={
           <div className="flex items-center gap-2.5">
             <h2 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
-              Store health
+              {t('store.title')}
             </h2>
             {state === 'ok' && (
               <Badge tone="green" dot data-testid="store-health-state">
-                ok
+                {t('store.ok')}
               </Badge>
             )}
             {state === 'suspect' && (
               <Badge tone="red" dot data-testid="store-health-state">
-                suspect
+                {t('store.suspect')}
               </Badge>
             )}
             {state === null && (
               <Badge tone="gray" data-testid="store-health-state">
-                not reported
+                {t('store.notReported')}
               </Badge>
             )}
             {health?.instance_id && (
@@ -191,7 +195,7 @@ export function StoreHealthCard() {
             onClick={refresh}
             disabled={healthQuery.isFetching}
           >
-            {healthQuery.isFetching ? 'Reading…' : 'Refresh'}
+            {healthQuery.isFetching ? t('store.reading') : t('store.refresh')}
           </Button>
         }
       />
@@ -199,14 +203,11 @@ export function StoreHealthCard() {
       {healthQuery.isError ? (
         <div className="flex flex-col gap-2 px-[18px] py-4">
           <ErrorMessage error={healthQuery.error} />
-          <p className="text-[12.5px] text-text-muted">
-            The store&apos;s condition could not be read, so nothing below is known —
-            this is not an all-clear.
-          </p>
+          <p className="text-[12.5px] text-text-muted">{t('store.unreadable')}</p>
         </div>
       ) : !health ? (
         <p className="px-[18px] py-6 text-[12.5px] text-text-muted">
-          Reading store health…
+          {t('store.loading')}
         </p>
       ) : (
         <>
@@ -217,36 +218,28 @@ export function StoreHealthCard() {
               data-testid="store-health-suspect"
             >
               <span className="text-[13px] font-bold uppercase tracking-[0.04em] text-status-danger-text">
-                Suspect — automatic clean-up is halted
+                {t('store.suspectTitle')}
               </span>
               <p className="text-[12.5px] font-semibold text-status-danger-text">
-                {health.suspect_reason ?? 'No reason was reported.'}
+                {health.suspect_reason ?? t('store.noReason')}
               </p>
               <p className="text-[11.5px] text-status-danger-text">
-                Latched {formatInstant(health.suspect_at)}. It does not re-fire: only a
-                repair clears it.
+                {t('store.latched', { time: formatInstant(health.suspect_at) })}
               </p>
               <p className="text-[12.5px] leading-relaxed text-status-danger-text">
-                More local copies vanished in one reconciler pass than the store is
-                willing to believe, which is what an unmounted volume looks like from
-                the inside. Until an operator confirms the storage, the store has
-                STOPPED applying automatic missing-transitions, STOPPED the reaper, and
-                STOPPED digests on this storage.
+                {t('store.suspectWhy')}
               </p>
               <p className="text-[12.5px] leading-relaxed text-status-danger-text">
-                It has NOT stopped recording: start and stop still work, review saves
-                still write, and browsing the catalog is unaffected.
+                {t('store.suspectRecording')}
               </p>
             </div>
           )}
 
           <div className="flex flex-col divide-y divide-border">
             {/* ---- Repair (§9-3) ---- */}
-            <Section title="Repair" testId="store-health-repair-section">
+            <Section title={t('store.repair')} testId="store-health-repair-section">
               <p className="text-[12.5px] leading-relaxed text-text-secondary">
-                Repair is the operator&apos;s acknowledgement that the storage really is
-                as it appears. It clears SUSPECT and re-runs the withheld reconciler
-                pass, so the captures whose files are gone are marked missing.
+                {t('store.repairHelp')}
               </p>
               <div className="flex flex-wrap items-center gap-3">
                 <Button
@@ -254,14 +247,14 @@ export function StoreHealthCard() {
                   onClick={() => repair.mutate()}
                   disabled={!suspect || volumeUnidentified || repair.isPending}
                 >
-                  {repair.isPending ? 'Repairing…' : 'Repair store'}
+                  {repair.isPending ? t('store.repairing') : t('store.repairStore')}
                 </Button>
                 {!suspect && (
                   <span
                     className="text-[12px] text-text-muted"
                     data-testid="store-health-repair-idle"
                   >
-                    The store is not in SUSPECT — there is nothing to acknowledge.
+                    {t('store.repairIdle')}
                   </span>
                 )}
               </div>
@@ -277,11 +270,7 @@ export function StoreHealthCard() {
                     <p className="mt-1">{repairError.guidance}</p>
                   )}
                   {volumeUnidentified && (
-                    <p className="mt-1">
-                      Repair stays disabled until the storage is checked again — an
-                      approval that cannot name the volume it is approving is not an
-                      approval.
-                    </p>
+                    <p className="mt-1">{t('store.repairVolume')}</p>
                   )}
                 </div>
               )}
@@ -293,8 +282,8 @@ export function StoreHealthCard() {
                 >
                   <span className="font-semibold">
                     {repair.data.repaired
-                      ? 'Repair applied — SUSPECT cleared and the pass re-ran.'
-                      : 'The server did not report a repair.'}
+                      ? t('store.repairApplied')
+                      : t('store.repairMissing')}
                   </span>
                   {repair.data.reconcile && (
                     <SummaryRows summary={repair.data.reconcile} />
@@ -305,13 +294,11 @@ export function StoreHealthCard() {
 
             {/* ---- Corrupt sidecars (§8 rule 4) ---- */}
             <Section
-              title={`Corrupt sidecars (${corrupt.length})`}
+              title={t('store.corrupt', { count: corrupt.length })}
               testId="store-health-corrupt"
             >
               <p className="text-[12.5px] leading-relaxed text-text-secondary">
-                A sidecar that exists but cannot be read. These captures have no row in
-                the capture list — reporting them as absent would lose the only clue —
-                so this is the only place they appear.
+                {t('store.corruptHelp')}
               </p>
               {corrupt.length > 0 ? (
                 <>
@@ -320,9 +307,12 @@ export function StoreHealthCard() {
                     className="text-[11.5px] text-text-muted"
                     data-testid="store-health-corrupt-observed"
                   >
-                    Observed by the {scanLabel}
-                    {corruptObservedAt ? ` at ${formatInstant(corruptObservedAt)}` : ''}
-                    .
+                    {t('store.observed', {
+                      source: scanLabel,
+                      time: corruptObservedAt
+                        ? ` at ${formatInstant(corruptObservedAt)}`
+                        : '',
+                    })}
                   </p>
                 </>
               ) : !scanned ? (
@@ -330,34 +320,30 @@ export function StoreHealthCard() {
                   className="text-[12.5px] text-status-warning-text"
                   data-testid="store-health-corrupt-empty"
                 >
-                  No scan has completed in this process, so no sidecar has been read.
-                  That is not an all-clear.
+                  {t('store.noScan')}
                 </p>
               ) : (
                 <p
                   className="text-[12.5px] text-text-muted"
                   data-testid="store-health-corrupt-empty"
                 >
-                  The last {scanLabel} read every sidecar it found
-                  {corruptObservedAt ? `, at ${formatInstant(corruptObservedAt)}` : ''}.
+                  {t('store.cleanScan', {
+                    source: scanLabel,
+                    time: corruptObservedAt
+                      ? `, at ${formatInstant(corruptObservedAt)}`
+                      : '',
+                  })}
                 </p>
               )}
             </Section>
 
             {/* ---- Deletion availability (§2) ---- */}
-            <Section title="Deletion" testId="store-health-delete">
+            <Section title={t('store.deletion')} testId="store-health-delete">
               {health.delete_available === false ? (
                 <>
-                  <Badge tone="amber">deletion switched off</Badge>
+                  <Badge tone="amber">{t('store.deletionOff')}</Badge>
                   <p className="text-[12.5px] leading-relaxed text-text-primary">
-                    <code>objects/</code>, <code>.trash/</code> and{' '}
-                    <code>.incoming/</code> are not on one filesystem, so moving a
-                    capture to the trash would be a cross-device copy instead of a
-                    rename. That is why the delete APIs are withheld rather than
-                    silently degraded: an EXDEV copy is not the atomic move the design
-                    depends on, and a half-copied delete is exactly the outcome the
-                    trash step exists to prevent. Put the three directories on one
-                    filesystem and restart the orchestrator.
+                    {t('store.deletionOffHelp')}
                   </p>
                   {health.delete_unavailable_reason && (
                     <p className="font-mono text-[11.5px] text-text-muted">
@@ -367,20 +353,19 @@ export function StoreHealthCard() {
                 </>
               ) : health.delete_available === true ? (
                 <p className="text-[12.5px] text-text-secondary">
-                  Available — the three directories share one filesystem, so a delete is
-                  an atomic rename into <code>.trash/</code>.
+                  {t('store.deletionOn')}
                 </p>
               ) : (
                 <p className="text-[12.5px] text-text-muted">
-                  Delete availability was not reported.
+                  {t('store.deletionUnknown')}
                 </p>
               )}
             </Section>
 
             {/* ---- Rebuild (§8) ---- */}
-            <Section title="Last rebuild" testId="store-health-rebuild">
+            <Section title={t('store.rebuild')} testId="store-health-rebuild">
               <div className="flex items-baseline gap-3 text-[12.5px]">
-                <span className="text-text-muted">Rebuilt at</span>
+                <span className="text-text-muted">{t('store.rebuiltAt')}</span>
                 <div className="flex-1" />
                 <span className="font-mono font-semibold text-text-primary">
                   {formatInstant(health.rebuilt_at)}
@@ -389,10 +374,7 @@ export function StoreHealthCard() {
               {health.rebuild_summary ? (
                 <SummaryRows summary={health.rebuild_summary} />
               ) : (
-                <p className="text-[12.5px] text-text-muted">
-                  No rebuild has run in this process — the catalog was read from the
-                  database as it stood.
-                </p>
+                <p className="text-[12.5px] text-text-muted">{t('store.noRebuild')}</p>
               )}
               {warnings.length > 0 ? (
                 <ul
@@ -408,15 +390,15 @@ export function StoreHealthCard() {
                   className="text-[12px] text-text-muted"
                   data-testid="store-health-warnings-empty"
                 >
-                  No warnings were reported.
+                  {t('store.noWarnings')}
                 </p>
               )}
             </Section>
 
             {/* ---- Last reconciler pass (§9-3 evidence) ---- */}
-            <Section title="Last reconciler pass" testId="store-health-reconcile">
+            <Section title={t('store.reconciler')} testId="store-health-reconcile">
               <div className="flex items-baseline gap-3 text-[12.5px]">
-                <span className="text-text-muted">Ran at</span>
+                <span className="text-text-muted">{t('store.ranAt')}</span>
                 <div className="flex-1" />
                 <span className="font-mono font-semibold text-text-primary">
                   {formatInstant(health.last_reconcile_at)}
@@ -426,7 +408,7 @@ export function StoreHealthCard() {
                 <SummaryRows summary={health.last_reconcile} />
               ) : (
                 <p className="text-[12.5px] text-text-muted">
-                  No pass has completed in this process yet.
+                  {t('store.noReconcile')}
                 </p>
               )}
             </Section>

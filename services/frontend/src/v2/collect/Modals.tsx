@@ -175,9 +175,8 @@ function ResetBatchModal({ machine }: { machine: BatchMachine }) {
             {t('collect:resetBatchHelpAfter')}
           </p>
           <p className="mt-2 text-[12.5px] leading-relaxed text-text-secondary">
-            The{' '}
             <strong className="text-text-primary">
-              {machine.stats.nRecorded} recording(s)
+              {t('collect:resetRecordedCount', { count: machine.stats.nRecorded })}
             </strong>{' '}
             {t('collect:resetRecordedMiddle')}{' '}
             <strong className="text-text-primary">{t('collect:notDeleted')}</strong>

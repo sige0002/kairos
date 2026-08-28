@@ -8,6 +8,7 @@ import { useMemo, useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { Button, Modal } from '../../components/ui';
 import { formatBytes } from '../review/format';
+import { useTranslation } from 'react-i18next';
 import {
   cleanupReports,
   previewReportCleanup,
@@ -24,44 +25,26 @@ const DEFAULT_CRITERIA: ReportCleanupCriteria = {
   capture_scope: 'source_available',
 };
 
-const CATEGORY_OPTIONS: Array<{
-  value: ReportCategory;
-  label: string;
-  detail: string;
-}> = [
-  {
-    value: 'preview',
-    label: 'Video previews',
-    detail: 'MP4 previews; regenerated on demand.',
-  },
-  {
-    value: 'analysis',
-    label: 'Analysis reports',
-    detail: 'Signal, loss, clock and plugin reports.',
-  },
-  {
-    value: 'validation',
-    label: 'Validation results',
-    detail: 'May return captures to Not validated.',
-  },
-];
+const CATEGORY_OPTIONS: ReportCategory[] = ['preview', 'analysis', 'validation'];
 
 function criteriaKey(criteria: ReportCleanupCriteria): string {
   return JSON.stringify(criteria);
 }
 
 function ErrorNote({ error }: { error: unknown }) {
+  const { t } = useTranslation('settings');
   return (
     <p
       role="alert"
       className="rounded-control border border-status-danger-border bg-status-danger-bg px-3 py-2 text-xs text-status-danger-text"
     >
-      {error instanceof Error ? error.message : 'The storage operation failed.'}
+      {error instanceof Error ? error.message : t('generatedFiles.operationFailed')}
     </p>
   );
 }
 
 export function GeneratedFilesSection() {
+  const { t } = useTranslation('settings');
   const [open, setOpen] = useState(false);
   const [criteria, setCriteria] = useState<ReportCleanupCriteria>(DEFAULT_CRITERIA);
   const [previewedKey, setPreviewedKey] = useState<string | null>(null);
@@ -130,31 +113,37 @@ export function GeneratedFilesSection() {
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
           <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
-            Generated files
+            {t('generatedFiles.title')}
           </h3>
           <p className="mt-1 text-[11.5px] text-text-muted">
-            Reclaim derived previews and reports without deleting capture data.
+            {t('generatedFiles.title')}
           </p>
         </div>
         <div className="text-right">
           <div className="font-mono text-[13px] font-semibold text-text-primary">
-            {reportTotal == null ? 'Not analyzed' : formatBytes(reportTotal)}
+            {reportTotal == null
+              ? t('generatedFiles.notAnalyzed')
+              : formatBytes(reportTotal)}
           </div>
           {preview.data && (
             <div className="text-[11px] text-text-muted">
-              {preview.data.report_total_files} generated files
+              {t('generatedFiles.fileCount', {
+                count: preview.data.report_total_files,
+              })}
             </div>
           )}
         </div>
         <Button variant="ghost" onClick={analyze} disabled={preview.isPending}>
-          {reportTotal == null ? 'Analyze storage' : 'Review cleanup'}
+          {reportTotal == null
+            ? t('generatedFiles.analyze')
+            : t('generatedFiles.review')}
         </Button>
       </div>
 
       <Modal
         open={open}
         onClose={() => !cleanup.isPending && setOpen(false)}
-        title="Clean up generated files"
+        title={t('generatedFiles.dialogTitle')}
         footer={
           <>
             <Button
@@ -162,7 +151,7 @@ export function GeneratedFilesSection() {
               onClick={() => setOpen(false)}
               disabled={cleanup.isPending}
             >
-              Close
+              {t('common.cancel')}
             </Button>
             <Button
               variant="danger"
@@ -170,42 +159,47 @@ export function GeneratedFilesSection() {
               onClick={() => cleanup.mutate(criteria)}
             >
               {cleanup.isPending
-                ? 'Deleting…'
-                : `Delete ${formatBytes(preview.data?.selected_bytes ?? 0)}`}
+                ? t('generatedFiles.deleting')
+                : t('generatedFiles.delete', {
+                    size: formatBytes(preview.data?.selected_bytes ?? 0),
+                  })}
             </Button>
           </>
         }
       >
         <div className="flex max-h-[68vh] flex-col gap-4 overflow-y-auto pr-1">
-          <p className="text-xs text-text-muted">
-            Choose conditions, update the preview, then delete. Paths are resolved by
-            the server and cannot be entered here.
-          </p>
+          <p className="text-xs text-text-muted">{t('generatedFiles.dialogIntro')}</p>
 
           <fieldset className="flex flex-col gap-2">
             <legend className="mb-1 text-xs font-semibold text-text-primary">
-              Generated file types
+              {t('generatedFiles.title')}
             </legend>
             {CATEGORY_OPTIONS.map((option) => (
               <label
-                key={option.value}
+                key={option}
                 className="flex items-start gap-2 rounded-control border border-border p-2.5"
               >
                 <input
                   type="checkbox"
-                  checked={categorySet.has(option.value)}
-                  disabled={
-                    categorySet.has(option.value) && criteria.categories.length === 1
-                  }
-                  onChange={() => toggleCategory(option.value)}
+                  checked={categorySet.has(option)}
+                  disabled={categorySet.has(option) && criteria.categories.length === 1}
+                  onChange={() => toggleCategory(option)}
                   className="mt-0.5 accent-accent"
                 />
                 <span>
                   <span className="block text-xs font-semibold text-text-primary">
-                    {option.label}
+                    {option === 'preview'
+                      ? t('generatedFiles.video')
+                      : option === 'analysis'
+                        ? t('generatedFiles.analysis')
+                        : t('generatedFiles.validation')}
                   </span>
                   <span className="block text-[11px] text-text-muted">
-                    {option.detail}
+                    {option === 'preview'
+                      ? t('generatedFiles.videoDetail')
+                      : option === 'analysis'
+                        ? t('generatedFiles.analysisDetail')
+                        : t('generatedFiles.validationDetail')}
                   </span>
                 </span>
               </label>
@@ -214,7 +208,7 @@ export function GeneratedFilesSection() {
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <label className="flex flex-col gap-1 text-xs font-semibold text-text-primary">
-              Generated before
+              {t('generatedFiles.generatedBefore')}
               <select
                 value={criteria.older_than_days}
                 onChange={(event) =>
@@ -222,14 +216,14 @@ export function GeneratedFilesSection() {
                 }
                 className="rounded-control border border-border bg-surface px-2.5 py-2 font-normal text-text-primary"
               >
-                <option value={7}>7 days ago</option>
-                <option value={30}>30 days ago</option>
-                <option value={90}>90 days ago</option>
-                <option value={0}>Any time</option>
+                <option value={7}>{t('generatedFiles.ages.seven')}</option>
+                <option value={30}>{t('generatedFiles.ages.thirty')}</option>
+                <option value={90}>{t('generatedFiles.ages.ninety')}</option>
+                <option value={0}>{t('generatedFiles.ages.any')}</option>
               </select>
             </label>
             <label className="flex flex-col gap-1 text-xs font-semibold text-text-primary">
-              Capture scope
+              {t('generatedFiles.captureScope')}
               <select
                 value={criteria.capture_scope}
                 onChange={(event) =>
@@ -237,13 +231,15 @@ export function GeneratedFilesSection() {
                 }
                 className="rounded-control border border-border bg-surface px-2.5 py-2 font-normal text-text-primary"
               >
-                <option value="source_available">Source on this device</option>
-                <option value="orphaned">Orphaned reports only</option>
-                <option value="all">All reports</option>
+                <option value="source_available">
+                  {t('generatedFiles.scopes.source_available')}
+                </option>
+                <option value="orphaned">{t('generatedFiles.scopes.orphaned')}</option>
+                <option value="all">{t('generatedFiles.scopes.all')}</option>
               </select>
             </label>
             <label className="flex flex-col gap-1 text-xs font-semibold text-text-primary sm:col-span-2">
-              Pipeline
+              {t('generatedFiles.pipeline')}
               <select
                 value={criteria.pipeline ?? ''}
                 onChange={(event) =>
@@ -251,7 +247,7 @@ export function GeneratedFilesSection() {
                 }
                 className="rounded-control border border-border bg-surface px-2.5 py-2 font-normal text-text-primary"
               >
-                <option value="">All selected types</option>
+                <option value="">{t('generatedFiles.allSelected')}</option>
                 {(preview.data?.available_pipelines ?? []).map((pipeline) => (
                   <option key={pipeline} value={pipeline}>
                     {pipeline}
@@ -266,7 +262,9 @@ export function GeneratedFilesSection() {
             onClick={() => preview.mutate(criteria)}
             disabled={preview.isPending || cleanup.isPending}
           >
-            {preview.isPending ? 'Analyzing…' : 'Update preview'}
+            {preview.isPending
+              ? t('generatedFiles.analyzing')
+              : t('generatedFiles.updatePreview')}
           </Button>
 
           {preview.isError && <ErrorNote error={preview.error} />}
@@ -275,7 +273,9 @@ export function GeneratedFilesSection() {
           {preview.data && (
             <div className="rounded-control border border-border bg-surface-muted p-3 text-xs">
               <div className="flex items-baseline gap-2">
-                <span className="font-semibold text-text-primary">Selected</span>
+                <span className="font-semibold text-text-primary">
+                  {t('generatedFiles.selected')}
+                </span>
                 <span
                   data-testid="cleanup-selected"
                   className="ml-auto font-mono font-semibold text-text-primary"
@@ -284,31 +284,37 @@ export function GeneratedFilesSection() {
                 </span>
               </div>
               <p className="mt-1 text-text-muted">
-                {preview.data.selected_units} report sets ·{' '}
-                {preview.data.selected_captures} captures ·{' '}
-                {preview.data.selected_files} files
+                {t('generatedFiles.selectedSummary', {
+                  sets: String(preview.data.selected_units),
+                  captures: String(preview.data.selected_captures),
+                  files: String(preview.data.selected_files),
+                })}
               </p>
               {preview.data.protected_active_units > 0 && (
-                <p data-testid="cleanup-protected" className="mt-2 text-status-warning-text">
-                  {preview.data.protected_active_units} active report sets are protected
-                  and excluded.
+                <p
+                  data-testid="cleanup-protected"
+                  className="mt-2 text-status-warning-text"
+                >
+                  {t('generatedFiles.activeProtected', {
+                    count: preview.data.protected_active_units,
+                  })}
                 </p>
               )}
               {preview.data.source_unavailable_units > 0 && (
                 <p className="mt-2 text-status-danger-text">
-                  {preview.data.source_unavailable_units} report sets have no source on
-                  this device and may not be regenerable here.
+                  {t('generatedFiles.sourceUnavailable', {
+                    count: preview.data.source_unavailable_units,
+                  })}
                 </p>
               )}
               {preview.data.scan_errors > 0 && (
                 <p className="mt-2 text-status-danger-text">
-                  {preview.data.scan_errors} filesystem entries could not be measured
-                  and are excluded.
+                  {t('generatedFiles.scanErrors', { count: preview.data.scan_errors })}
                 </p>
               )}
               {dirty && (
                 <p className="mt-2 font-semibold text-status-warning-text">
-                  Conditions changed — update the preview before deleting.
+                  {t('generatedFiles.criteriaChanged')}
                 </p>
               )}
             </div>
@@ -320,7 +326,9 @@ export function GeneratedFilesSection() {
               className="rounded-control border border-status-danger-border bg-status-danger-bg p-3 text-xs text-status-danger-text"
             >
               <p className="font-semibold">
-                {preview.data?.validation_resets} captures will return to Not validated.
+                {t('generatedFiles.validationResets', {
+                  count: preview.data?.validation_resets ?? 0,
+                })}
               </p>
               <label className="mt-2 flex items-start gap-2">
                 <input
@@ -329,7 +337,7 @@ export function GeneratedFilesSection() {
                   onChange={(event) => setValidationAcknowledged(event.target.checked)}
                   className="mt-0.5 accent-status-danger-accent"
                 />
-                <span>I understand that validation must be run again.</span>
+                <span>{t('generatedFiles.acknowledgment')}</span>
               </label>
             </div>
           )}
@@ -343,13 +351,20 @@ export function GeneratedFilesSection() {
                   : 'border-status-success-border bg-status-success-bg text-status-success-text'
               }`}
             >
-              {cleanupIncomplete ? 'Cleanup incomplete. ' : ''}Deleted{' '}
-              {cleanupResult.deleted_units} report sets (
-              {formatBytes(cleanupResult.deleted_bytes)}).
+              {cleanupIncomplete ? t('generatedFiles.cleanupIncomplete') : ''}
+              {t('generatedFiles.deleted', {
+                files: String(cleanupResult.deleted_files),
+                sets: String(cleanupResult.deleted_units),
+                size: formatBytes(cleanupResult.deleted_bytes),
+              })}
               {cleanupResult.protected_active_units > 0 &&
-                ` ${cleanupResult.protected_active_units} active sets were skipped.`}
+                ` ${t('generatedFiles.activeSkipped', {
+                  count: cleanupResult.protected_active_units,
+                })}`}
               {cleanupResult.failed_units.length > 0 &&
-                ` ${cleanupResult.failed_units.length} sets failed and remain on disk.`}
+                ` ${t('generatedFiles.failedRemain', {
+                  count: cleanupResult.failed_units.length,
+                })}`}
               {cleanupIncomplete && (
                 <ul
                   data-testid="cleanup-failures"

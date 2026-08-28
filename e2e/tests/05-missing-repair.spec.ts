@@ -97,7 +97,7 @@ test('§13-5 rm -rf: removed captures are reported missing after Repair, never s
     /local copies vanished/i,
   );
   // §9-5: recording must never be among the things a suspect store stops.
-  await expect(suspect).toContainText(/has NOT stopped recording/i);
+  await expect(suspect).toContainText(/recording is not stopped/i);
 
   // ---- PRIMARY: Repair is the operator's acknowledgement -----------------
   const repair = page.getByTestId('store-health-repair');

@@ -35,7 +35,8 @@ export interface MonitorRow extends Partial<TopicMetric> {
 }
 
 export function formatHz(m: MonitorRow): string {
-  if (m.hz === undefined || m.hz === null) return m.expected_hz ? `— / ${m.expected_hz}` : '—';
+  if (m.hz === undefined || m.hz === null)
+    return m.expected_hz ? `— / ${m.expected_hz}` : '—';
   const hz = m.hz.toFixed(1);
   if (m.expected_hz) return `${hz} / ${m.expected_hz}`;
   // No static expected_hz: show the learned baseline (OL-②.3) as the reference,
@@ -46,17 +47,25 @@ export function formatHz(m: MonitorRow): string {
 
 // Learned-baseline label for a topic with no static expected_hz (OL-②.3). Null
 // when a static rate is configured (it wins) or no baseline state is reported.
-export function formatBaseline(m: MonitorRow): string | null {
+export type BaselineLabels = {
+  learning: string;
+  baseline: string;
+  unstable: string;
+};
+
+export function formatBaseline(m: MonitorRow, labels: BaselineLabels): string | null {
   if (m.expected_hz) return null;
   switch (m.baseline_state) {
     case 'learning':
-      return 'learning…';
+      return labels.learning;
     case 'stable':
-      return m.baseline_hz != null ? `~${m.baseline_hz.toFixed(1)} Hz` : 'baseline';
+      return m.baseline_hz != null
+        ? `~${m.baseline_hz.toFixed(1)} Hz`
+        : labels.baseline;
     case 'unstable':
       return m.baseline_hz != null
-        ? `~${m.baseline_hz.toFixed(1)} Hz (unstable)`
-        : 'unstable';
+        ? `~${m.baseline_hz.toFixed(1)} Hz (${labels.unstable})`
+        : labels.unstable;
     default:
       return null;
   }
@@ -161,7 +170,9 @@ export function rowTone(m: {
   return 'green';
 }
 
-function asTopicList(data: TopicInfo[] | { topics?: TopicInfo[]; items?: TopicInfo[] }) {
+function asTopicList(
+  data: TopicInfo[] | { topics?: TopicInfo[]; items?: TopicInfo[] },
+) {
   if (Array.isArray(data)) return data;
   return data.topics ?? data.items ?? [];
 }
@@ -195,9 +206,9 @@ export interface MonitorData {
  * console went down, tab bar included, for an operator who was on another tab.
  * A sort is not worth that, so it does not assume its input.
  */
-export function sortRowsForDisplay<T extends { name: string; configured?: boolean; measured?: boolean }>(
-  rows: T[],
-): T[] {
+export function sortRowsForDisplay<
+  T extends { name: string; configured?: boolean; measured?: boolean },
+>(rows: T[]): T[] {
   return [...rows].sort((a, b) => {
     if (a.configured !== b.configured) return a.configured ? -1 : 1;
     if (a.measured !== b.measured) return a.measured ? -1 : 1;
@@ -240,8 +251,7 @@ export function useMonitorRows(config?: RuntimeConfig): MonitorData {
   // Always poll graph discovery so every topic is listed, not just measured ones.
   const topicsQuery = useQuery({
     queryKey: queryKeys.topics,
-    queryFn: ({ signal }) =>
-      getTopics({ signal }),
+    queryFn: ({ signal }) => getTopics({ signal }),
     refetchInterval: TOPIC_DISCOVERY_POLL_MS,
   });
 

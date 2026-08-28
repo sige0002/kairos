@@ -149,9 +149,13 @@ test("Settings: changing appearance leaves an active Collect recording alone", a
 test("Settings: changing language leaves an active Collect recording alone", async ({ page }) => {
   test.setTimeout(5 * 60_000);
   const recordRequests: string[] = [];
+  const configReads: string[] = [];
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
     if (/\/api\/v1\/record\/(?:start|stop)$/.test(path)) recordRequests.push(path);
+    if (request.method() === "GET" && path.startsWith("/api/v1/config")) {
+      configReads.push(path);
+    }
   });
 
   let recordingStarted = false;
@@ -176,11 +180,17 @@ test("Settings: changing language leaves an active Collect recording alone", asy
     const language = page.getByTestId("settings-language");
     await expect(language).toBeVisible();
     await expect(language.getByTestId("language-en")).toBeChecked();
+    const routeBeforeLanguage = page.url();
+    const configReadsBeforeLanguage = [...configReads];
     await language.getByTestId("language-ja").click();
     await expect(page.locator("html")).toHaveAttribute("lang", "ja");
     await expect(page.locator("#tab-collect")).toHaveText("収録");
     expect(await page.evaluate(() => localStorage.getItem("kairos.locale"))).toBe("ja");
     expect(recordRequests, "language sent a recorder command").toEqual(commandsBeforeLanguage);
+    expect(page.url(), "language changed the current Settings route").toBe(routeBeforeLanguage);
+    expect(configReads, "language refetched Settings configuration").toEqual(
+      configReadsBeforeLanguage,
+    );
 
     // Tab IDs are semantic navigation identities, so the return path does not
     // depend on translated display text.
@@ -370,7 +380,7 @@ test("Settings: the recording config loads, a broken edit is refused, and a save
     // The acknowledgement is honest about WHEN it applies — the recorder's QoS
     // and the monitor's rates are read at service startup, and a screen that
     // implied otherwise would have operators believing an edit had taken hold.
-    await expect(advanced).toContainText(/apply after a service restart/i);
+    await expect(advanced).toContainText(/apply on the next recorder restart/i);
 
     // ---- the point of the whole round trip -------------------------------
     // Not "a save succeeded" but "the config every other scenario depends on is

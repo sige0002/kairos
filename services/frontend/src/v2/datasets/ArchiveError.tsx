@@ -31,6 +31,7 @@
 // is not, and errors.ts promises the neutral wording to callers that name none.
 
 import { ErrorMessage } from '../../components/ErrorMessage';
+import { useTranslation } from 'react-i18next';
 import { readCaptureError } from '../captures/errors';
 
 export function ArchiveError({
@@ -44,6 +45,7 @@ export function ArchiveError({
   /** A dataset's name for its id, or null when this catalog has no row. */
   resolveDatasetName?: (datasetId: string) => string | null;
 }) {
+  const { t } = useTranslation('datasets');
   if (error == null) return null;
   const reading = readCaptureError(error);
   const heldBy =
@@ -59,7 +61,7 @@ export function ArchiveError({
           data-testid={`${testIdPrefix}-holder`}
           className="text-[12px] leading-relaxed text-text-secondary"
         >
-          Held by dataset{' '}
+          {t('archiveHeldBy')}{' '}
           <span className="font-semibold text-text-primary">
             {holderName ? `${holderName} (${heldBy})` : heldBy}
           </span>

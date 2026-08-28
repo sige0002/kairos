@@ -393,9 +393,9 @@ export function ReviewScreen() {
         </ul>
         {rv.excludeBatchFailures.length > 0 && !rv.excludeBatchRunning && (
           <p role="alert" className="mt-2 text-sm text-status-danger-text">
-            {rv.excludeBatchFailures.length} exclude
-            {rv.excludeBatchFailures.length === 1 ? '' : 's'} failed — those episodes
-            keep their previous status.
+            {t('review:excludeBatchFailures', {
+              count: rv.excludeBatchFailures.length,
+            })}
           </p>
         )}
       </Modal>

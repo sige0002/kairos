@@ -10,30 +10,24 @@
 // (PUT /api/v1/plans `operators`), so every terminal offers the same names.
 
 import { Button, IconButton, SettingsSection } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import type { SettingsState } from './useSettingsState';
 
 export function OperatorsSection({ settings }: { settings: SettingsState }) {
+  const { t } = useTranslation('settings');
   const { operators, addOperator, renameOperator, removeOperator } = settings;
 
   return (
     <SettingsSection
-      title="Operators"
-      description={
-        <>
-          Attribution, not access control: these names fill the OP picker (top right),
-          and picking one is required before recording once the roster is non-empty.
-          Shared with every terminal. An empty roster turns the picker back into free
-          text and gates nothing.
-        </>
-      }
+      title={t('operators.title')}
+      description={t('operators.description')}
       className="lg:col-span-2"
       data-testid="settings-operators"
     >
       <div className="flex max-w-xl flex-col gap-1.5 p-3">
         {operators.length === 0 && (
           <p className="px-1 py-2 text-[12.5px] text-text-muted">
-            No roster yet — recording works with a free-text name. Add the team&apos;s
-            names to require a pick before every recording.
+            {t('operators.empty')}
           </p>
         )}
         {operators.map((name, i) => (
@@ -45,17 +39,17 @@ export function OperatorsSection({ settings }: { settings: SettingsState }) {
             <button
               type="button"
               onClick={() => renameOperator(i)}
-              title="Rename"
+              title={t('operators.rename')}
               className="min-w-0 flex-1 truncate text-left text-[13px] font-medium text-text-primary"
             >
               {name}
             </button>
             <IconButton
-              label={`Remove operator ${name}`}
+              label={t('operators.remove', { name })}
               size="sm"
               variant="danger"
               onClick={() => removeOperator(i)}
-              title={`Remove operator ${name}`}
+              title={t('operators.remove', { name })}
               className="shrink-0"
             >
               <span aria-hidden>×</span>
@@ -69,7 +63,7 @@ export function OperatorsSection({ settings }: { settings: SettingsState }) {
           data-testid="operator-add"
           className="border-dashed border-border-strong p-2.5 text-[12.5px] text-accent hover:bg-interaction-selected"
         >
-          + Add operator
+          {t('operators.add')}
         </Button>
       </div>
     </SettingsSection>
