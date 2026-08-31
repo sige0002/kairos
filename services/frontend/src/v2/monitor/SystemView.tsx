@@ -15,15 +15,24 @@ import type { RuntimeConfig } from '../../config';
 import { Card } from '../../components/ui';
 import { formatBytes } from '../review/format';
 import { ComponentHealth } from './ComponentHealth';
+import { useTranslation } from 'react-i18next';
 
-function Row({ label, value, testId }: { label: string; value: string; testId?: string }) {
+function Row({
+  label,
+  value,
+  testId,
+}: {
+  label: string;
+  value: string;
+  testId?: string;
+}) {
   return (
     <div className="flex items-baseline gap-3 text-[12.5px]">
-      <span className="text-gray-500">{label}</span>
+      <span className="text-text-muted">{label}</span>
       <div className="flex-1" />
       <span
         data-testid={testId}
-        className="max-w-[60%] truncate text-right font-mono font-semibold text-gray-800"
+        className="max-w-[60%] truncate text-right font-mono font-semibold text-text-primary"
         title={value}
       >
         {value}
@@ -32,18 +41,29 @@ function Row({ label, value, testId }: { label: string; value: string; testId?: 
   );
 }
 
-function Meter({ label, percent, testId }: { label: string; percent: number; testId?: string }) {
+function Meter({
+  label,
+  percent,
+  testId,
+}: {
+  label: string;
+  percent: number;
+  testId?: string;
+}) {
   const pct = Math.max(0, Math.min(100, percent));
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex items-baseline justify-between text-[11.5px] text-gray-500">
+      <div className="flex items-baseline justify-between text-[11.5px] text-text-muted">
         <span>{label}</span>
-        <span data-testid={testId} className="font-mono font-semibold text-gray-700">
+        <span
+          data-testid={testId}
+          className="font-mono font-semibold text-text-primary"
+        >
           {pct.toFixed(0)}%
         </span>
       </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-gray-100">
-        <div className="h-full rounded-full bg-teal-500" style={{ width: `${pct}%` }} />
+      <div className="h-1.5 overflow-hidden rounded-full bg-surface-muted">
+        <div className="h-full rounded-full bg-accent" style={{ width: `${pct}%` }} />
       </div>
     </div>
   );
@@ -52,7 +72,7 @@ function Meter({ label, percent, testId }: { label: string; percent: number; tes
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <Card className="flex flex-col gap-3 px-4 py-3.5">
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
         {title}
       </h2>
       {children}
@@ -61,6 +81,7 @@ function Panel({ title, children }: { title: string; children: React.ReactNode }
 }
 
 export function SystemView({ config }: { config: RuntimeConfig }) {
+  const { t } = useTranslation('monitor');
   const { data } = useQuery({
     queryKey: ['system'],
     queryFn: ({ signal }) => getSystemInfo({ signal }),
@@ -70,7 +91,7 @@ export function SystemView({ config }: { config: RuntimeConfig }) {
 
   const cpuValue =
     data?.cpu?.cores != null
-      ? `${data.cpu.cores}× ${data.cpu.model ?? 'CPU'}`
+      ? `${data.cpu.cores}× ${data.cpu.model ?? t('system.cpu')}`
       : (data?.cpu?.model ?? '—');
   const disk = data?.disk ?? null;
   const usedPct =
@@ -87,48 +108,67 @@ export function SystemView({ config }: { config: RuntimeConfig }) {
       className="grid flex-1 grid-cols-1 gap-2.5 overflow-auto lg:min-h-0 lg:auto-rows-min lg:grid-cols-2"
       data-testid="monitor-system"
     >
-      <Panel title="Host">
-        <Row label="CPU" value={cpuValue} testId="sys-cpu" />
+      <Panel title={t('system.host')}>
+        <Row label={t('system.cpu')} value={cpuValue} testId="sys-cpu" />
         {data?.cpu_percent != null && (
-          <Meter label="CPU load" percent={data.cpu_percent} testId="sys-cpu-load" />
+          <Meter
+            label={t('system.cpuLoad')}
+            percent={data.cpu_percent}
+            testId="sys-cpu-load"
+          />
         )}
-        <Row label="GPU" value={data?.gpu ?? 'not detected'} testId="sys-gpu" />
+        <Row
+          label={t('system.gpu')}
+          value={data?.gpu ?? t('system.notDetected')}
+          testId="sys-gpu"
+        />
         {data?.gpu_percent != null && (
-          <Meter label="GPU load" percent={data.gpu_percent} testId="sys-gpu-load" />
+          <Meter
+            label={t('system.gpuLoad')}
+            percent={data.gpu_percent}
+            testId="sys-gpu-load"
+          />
         )}
       </Panel>
 
-      <Panel title="Storage">
+      <Panel title={t('system.storage')}>
         {disk ? (
           <>
-            <Row label="Data dir" value={disk.path} testId="sys-disk-path" />
+            <Row label={t('system.dataDir')} value={disk.path} testId="sys-disk-path" />
             <Row
-              label="Free"
-              value={`${formatBytes(disk.free_bytes)} of ${formatBytes(disk.total_bytes)}`}
+              label={t('system.free')}
+              value={t('system.freeOf', {
+                free: formatBytes(disk.free_bytes),
+                total: formatBytes(disk.total_bytes),
+              })}
               testId="sys-disk-free"
             />
-            {usedPct != null && <Meter label="Used" percent={usedPct} testId="sys-disk-used" />}
+            {usedPct != null && (
+              <Meter
+                label={t('system.used')}
+                percent={usedPct}
+                testId="sys-disk-used"
+              />
+            )}
           </>
         ) : (
-          <p className="text-[12.5px] text-gray-500">
-            Disk usage unavailable — the runtime data dir could not be measured.
-          </p>
+          <p className="text-[12.5px] text-text-muted">{t('system.diskUnavailable')}</p>
         )}
       </Panel>
 
-      <Panel title="Runtime">
-        <Row label="Robot" value={robot || '—'} testId="sys-robot" />
+      <Panel title={t('system.runtime')}>
+        <Row label={t('system.robot')} value={robot || '—'} testId="sys-robot" />
         <Row
           label="ROS_DOMAIN_ID"
           value={domain !== undefined ? String(domain) : '—'}
           testId="sys-domain"
         />
-        <Row label="API base" value={endpoints.api} testId="sys-api" />
-        <Row label="Events (SSE)" value={endpoints.events} testId="sys-events" />
+        <Row label={t('system.apiBase')} value={endpoints.api} testId="sys-api" />
+        <Row label={t('system.events')} value={endpoints.events} testId="sys-events" />
         <Row label="WebRTC" value={endpoints.webrtc} testId="sys-webrtc" />
       </Panel>
 
-      <Panel title="Component health">
+      <Panel title={t('system.componentHealth')}>
         <ComponentHealth />
       </Panel>
     </div>

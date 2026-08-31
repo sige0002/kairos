@@ -11,6 +11,7 @@
 // had nothing on screen telling them which line to believe (#13).
 
 import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { queryKeys } from '../../../api/queryKeys';
 import { Card, cn } from '../../../components/ui';
 import type { AlertEvent } from '../../../api/types';
@@ -40,6 +41,7 @@ export function WarningsCard({
   defaultTopics: string[];
   config: RuntimeConfig;
 }) {
+  const { t } = useTranslation('collect');
   // Two REAL live signals, never a fabricated one (honesty rule):
   //  - target topics the recorder is not capturing (arming snapshot, OL-①.4 —
   //    re-read live while armed, then frozen at resume as start-time coverage),
@@ -94,36 +96,40 @@ export function WarningsCard({
           column, and a count pushed off the edge is the same silence this card
           is being fixed for. */}
       <div className="flex flex-wrap items-center gap-2">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Active warnings
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+          {t('activeWarnings')}
         </h2>
         <div className="flex-1" />
         {/* The bare "0" is reachable ONLY when there is nothing to report at
             all — neither a warning nor an open check. It is what the all-clear
             looks like, and it may not be shown beside a CHECK. */}
         {hasWarnings ? (
-          <Chip tone={firing.length > 0 ? 'red' : 'amber'}>{count} needs attention</Chip>
+          <Chip tone={firing.length > 0 ? 'red' : 'amber'}>
+            {t('needsAttentionCount', { count })}
+          </Chip>
         ) : checks.length === 0 ? (
           <Chip tone="gray">0</Chip>
         ) : null}
         {checks.length > 0 && (
-          <Chip tone={checksTone}>{checks.length} to check</Chip>
+          <Chip tone={checksTone}>{t('toCheckCount', { count: checks.length })}</Chip>
         )}
       </div>
       {uncaptured && (
         <div
           data-testid="collect-uncaptured-topics"
-          className="flex flex-col gap-0.5 rounded-control border border-amber-200 bg-amber-50 px-3 py-2.5"
+          className="flex flex-col gap-0.5 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2.5"
         >
           <div className="flex items-center gap-2">
-            <span className="h-[7px] w-[7px] shrink-0 rounded-sm bg-amber-600" />
-            <span className="text-[13px] font-semibold text-amber-800">
+            <span className="h-[7px] w-[7px] shrink-0 rounded-sm bg-status-warning-accent" />
+            <span className="text-[13px] font-semibold text-status-warning-text">
               {uncaptured.title}
             </span>
           </div>
-          <span className="pl-[15px] text-xs text-amber-700">{uncaptured.detail}</span>
+          <span className="pl-[15px] text-xs text-status-warning-text">
+            {uncaptured.detail}
+          </span>
           <span
-            className="truncate pl-[15px] font-mono text-[11px] text-amber-700"
+            className="truncate pl-[15px] font-mono text-[11px] text-status-warning-text"
             title={uncaptured.topics.join('\n')}
           >
             {shown.join(', ')}
@@ -132,12 +138,12 @@ export function WarningsCard({
           {mismatch && (
             <span
               data-testid="collect-config-mismatch"
-              className="pl-[15px] pt-1 text-xs font-medium text-amber-800"
+              className="pl-[15px] pt-1 text-xs font-medium text-status-warning-text"
             >
-              {mismatch.configuredSilent} configured topic
-              {mismatch.configuredSilent === 1 ? ' is' : 's are'} silent, but{' '}
-              {mismatch.discovered} topic{mismatch.discovered === 1 ? ' is' : 's are'}{' '}
-              publishing — the wrong robot config may be selected.
+              {t('configMismatchWarning', {
+                silent: String(mismatch.configuredSilent),
+                discovered: String(mismatch.discovered),
+              })}
             </span>
           )}
         </div>
@@ -145,28 +151,29 @@ export function WarningsCard({
       {firing.length > 0 && (
         <div
           data-testid="collect-firing-alerts"
-          className="flex flex-col gap-1 rounded-control border border-red-200 bg-red-50 px-3 py-2.5"
+          className="flex flex-col gap-1 rounded-control border border-status-danger-border bg-status-danger-bg px-3 py-2.5"
         >
           {firingShown.map((a) => (
             <div key={a.key} className="flex flex-col gap-0.5">
               <div className="flex items-center gap-2">
-                <span className="h-[7px] w-[7px] shrink-0 rounded-sm bg-red-600" />
+                <span className="h-[7px] w-[7px] shrink-0 rounded-sm bg-status-danger-accent" />
                 <span
-                  className="truncate text-[13px] font-semibold text-red-800"
+                  className="truncate text-[13px] font-semibold text-status-danger-text"
                   title={a.topic}
                 >
                   {a.title}
                 </span>
               </div>
-              <span className="pl-[15px] font-mono text-[11px] text-red-700">
+              <span className="pl-[15px] font-mono text-[11px] text-status-danger-text">
                 {a.detail}
-                {a.detail ? ' · ' : ''}since {a.time}
+                {a.detail ? ' · ' : ''}
+                {t('sinceTime', { time: a.time })}
               </span>
             </div>
           ))}
           {firing.length > firingShown.length && (
-            <span className="pl-[15px] text-[11px] text-red-700">
-              +{firing.length - firingShown.length} more in Monitor
+            <span className="pl-[15px] text-[11px] text-status-danger-text">
+              {t('moreInMonitor', { count: firing.length - firingShown.length })}
             </span>
           )}
         </div>
@@ -179,31 +186,30 @@ export function WarningsCard({
       {checks.length > 0 && (
         <div
           data-testid="collect-needs-attention"
-          className="flex flex-col gap-1.5 rounded-control border border-gray-200 bg-gray-50 px-3 py-2.5"
+          className="flex flex-col gap-1.5 rounded-control border border-border bg-surface-muted px-3 py-2.5"
         >
-          <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-            System checks ({checks.length})
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+            {t('systemChecks', { count: checks.length })}
           </h3>
           {checks.map((item) => (
             <div
-              key={item.label}
-              data-testid={`collect-check-${item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
+              key={item.id ?? item.label}
+              data-testid={`collect-check-${item.id ?? item.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
               className="flex flex-col gap-0.5"
             >
               <div className="flex items-center gap-2">
-                <span className="shrink-0 text-[13px] font-semibold text-gray-700">
+                <span className="shrink-0 text-[13px] font-semibold text-text-primary">
                   {item.label}
                 </span>
-                {item.label === 'Topic rates' &&
+                {item.id === 'topic-rates' &&
                 (item.cause === 'rates-shortfall' || item.cause === 'rates-mixed') &&
                 rateIssues.length > 0 ? (
-                  <span className="font-mono text-[11px] text-gray-500">
-                    {rateIssues.length} topic{rateIssues.length === 1 ? '' : 's'}{' '}
-                    {rateIssues.length === 1 ? 'needs' : 'need'} attention
+                  <span className="font-mono text-[11px] text-text-muted">
+                    {t('rateTopicsNeedAttention', { count: rateIssues.length })}
                   </span>
                 ) : (
                   <span
-                    className="truncate font-mono text-[11px] text-gray-500"
+                    className="truncate font-mono text-[11px] text-text-muted"
                     title={item.value}
                   >
                     {item.value}
@@ -212,12 +218,12 @@ export function WarningsCard({
                 <div className="flex-1" />
                 <Chip tone={item.tone}>{item.chip}</Chip>
               </div>
-              {item.label === 'Topic rates' &&
+              {item.id === 'topic-rates' &&
                 (item.cause === 'rates-shortfall' || item.cause === 'rates-mixed') &&
                 rateIssues.length > 0 && (
                   <div
                     data-testid="collect-rate-topics"
-                    className="my-1 divide-y divide-gray-200 rounded-control border border-gray-200 bg-white"
+                    className="my-1 divide-y divide-border rounded-control border border-border bg-surface"
                   >
                     {rateIssues.map((issue) => (
                       <div
@@ -225,20 +231,23 @@ export function WarningsCard({
                         data-testid="collect-rate-topic"
                         className="flex flex-col gap-0.5 px-2.5 py-2"
                       >
-                        <span className="break-all font-mono text-[11px] font-semibold text-gray-700">
+                        <span className="break-all font-mono text-[11px] font-semibold text-text-primary">
                           {issue.name}
                         </span>
-                        <span className="font-mono text-[11px] text-gray-500">
-                          Current {formatRateHz(issue.currentHz)} · Expected{' '}
-                          {issue.learnedReference ? '~' : ''}
-                          {formatRateHz(issue.expectedHz)}
+                        <span className="font-mono text-[11px] text-text-muted">
+                          {t('currentExpectedRates', {
+                            current: formatRateHz(issue.currentHz),
+                            expected: `${issue.learnedReference ? '~' : ''}${formatRateHz(issue.expectedHz)}`,
+                          })}
                         </span>
                       </div>
                     ))}
                   </div>
                 )}
-              <span className="text-xs text-gray-600">{item.impact}</span>
-              <span className="text-xs font-medium text-gray-700">{item.action}</span>
+              <span className="text-xs text-text-secondary">{item.impact}</span>
+              <span className="text-xs font-medium text-text-primary">
+                {item.action}
+              </span>
             </div>
           ))}
         </div>
@@ -247,19 +256,21 @@ export function WarningsCard({
         <button
           type="button"
           onClick={machine.goMonitor}
-          className="rounded-control border border-gray-200 bg-white py-2 text-[12.5px] font-semibold text-teal-700 hover:bg-teal-50"
+          className="rounded-control border border-border bg-surface py-2 text-[12.5px] font-semibold text-accent hover:bg-interaction-selected"
         >
-          Open Monitor →
+          {t('openMonitor')}
         </button>
       ) : (
         // The all-clear. It speaks for the checks too now, so it may only
         // appear when both are empty — that pairing IS the bug in #13.
         checks.length === 0 && (
           <div className="flex items-center gap-2 py-1">
-            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-green-100 text-xs font-bold text-green-700">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-status-success-bg text-xs font-bold text-status-success-text">
               ✓
             </span>
-            <span className="text-[12.5px] text-gray-500">No active warnings</span>
+            <span className="text-[12.5px] text-text-muted">
+              {t('noActiveWarnings')}
+            </span>
           </div>
         )
       )}

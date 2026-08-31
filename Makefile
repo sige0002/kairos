@@ -4,6 +4,7 @@
 #   make up                   # start the whole stack (detached) from existing images
 #   make rebuild frontend     # apply code changes: build + recreate that service
 #   make build monitor        # build one service (positional); `make build` = all
+#   make build NO_CACHE=1     # build without using Docker's layer cache
 #   make restart monitor orchestrator   # restart service(s)
 #
 # BUILD vs START are separate on purpose: building needs the network even when
@@ -78,6 +79,12 @@ UID ?= $(shell id -u)
 GID ?= $(shell id -g)
 export UID GID
 
+# Set NO_CACHE=1 (also accepts true/yes) to pass --no-cache to every image-build
+# entry point. Rebuild targets build and recreate in separate Compose calls when
+# enabled because `docker compose up` has no --no-cache option.
+NO_CACHE ?=
+NO_CACHE_FLAG := $(if $(filter 1 true yes,$(strip $(NO_CACHE))),--no-cache,)
+
 # Host timezone → containers (compose maps TZ through x-ros-env). The recorder
 # mints the human-facing run_YYYYMMDD_HHMMSS from ITS clock; without TZ the
 # containers sit on UTC and every run name is hours away from the wall clock.
@@ -113,7 +120,7 @@ export WEBRTC_PUBLIC_URL
 # every `docker compose` invocation below (single-host COMPOSE and the split
 # COMPOSE_ROBOT / COMPOSE_RECORDING) tags the kairos-*:${KAIROS_VERSION} images
 # instead of the :dev fallback baked into compose/compose.yaml. Cutting a release = bump
-# VERSION + update CHANGELOG + git tag (see the README "Releases" section).
+# VERSION + create release notes + git tag (see the README "Releases" section).
 KAIROS_VERSION ?= $(if $(wildcard VERSION),$(strip $(shell cat VERSION)),dev)
 export KAIROS_VERSION
 
@@ -181,14 +188,14 @@ ifneq ($(strip $(MSGS_OVERLAY_DIR)),)
 export MSGS_OVERLAY_DIR
 endif
 
-SERVICES := recorder monitor streamer probe orchestrator dora_runner frontend lerobot-exporter
+SERVICES := recorder monitor streamer probe orchestrator dora_runner frontend lerobot-exporter kokoro
 # Services named on the command line (e.g. `make build monitor`). Empty = all.
 # Override explicitly with SVC=monitor if you prefer.
 SVC ?= $(filter $(SERVICES),$(MAKECMDGOALS))
 
 PY_DIRS := libs/kairos_common services/rosbag2_recorder services/topic_monitor \
            services/topic_probe services/webrtc_streamer services/api_orchestrator \
-           services/dora_runner services/lerobot_exporter
+           services/dora_runner services/lerobot_exporter services/kokoro
 
 .DEFAULT_GOAL := help
 
@@ -223,7 +230,7 @@ define require_images
 	 fi
 endef
 
-.PHONY: up up-nobuild down build build-pull rebuild restart logs ps stop urls msgs-build
+.PHONY: up up-nobuild down build build-pull rebuild restart logs ps stop urls msgs-build compose-check
 up: ## start the stack detached, using existing images (RECORDING_CONFIG-aware)
 	$(call require_images,$(COMPOSE),build)
 	@# Pre-create the RELOCATED exports dir user-owned (a bind mount Docker makes
@@ -250,7 +257,7 @@ msgs-build: ## build custom ROS msgs (dir from MSGS_OVERLAY_DIR / .env; per-robo
 	 echo "Building $$(ls "$$dir/src") into $$dir/install (colcon, recorder image)..."; \
 	 docker run --rm -u $$(id -u):$$(id -g) -e HOME=/overlay \
 	   -v "$(CURDIR)/$$dir:/overlay" -w /overlay \
-	   --entrypoint bash kairos-rosbag2-recorder:$(ROS_DISTRO) -lc \
+	   --entrypoint bash kairos-rosbag2-recorder:$(KAIROS_VERSION)-$(ROS_DISTRO) -lc \
 	   'set -e; source /opt/ros/$(ROS_DISTRO)/setup.bash; colcon build --merge-install' \
 	 && echo "OK -> $$dir/install/setup.bash"
 
@@ -295,14 +302,22 @@ define _lerobot_build
 
 endef
 
-build: ## build images: `make build` (all) or `make build monitor`
-	$(call _lerobot_build,build)
+build: ## build images: `make build` (all), `make build monitor`, `make build NO_CACHE=1`
+	$(call _lerobot_build,build $(NO_CACHE_FLAG))
 
 rebuild: ## rebuild + recreate service(s) — the "apply my code changes" command
+ifneq ($(NO_CACHE_FLAG),)
+	$(call _lerobot_build,build $(NO_CACHE_FLAG))
+	$(call _lerobot_build,up -d --force-recreate)
+else
 	$(call _lerobot_build,up -d --build --force-recreate)
+endif
 
 build-pull: ## rebuild pulling FRESH base images (ros/python/node upstream). NEEDS NETWORK
-	$(COMPOSE) build --pull $(SVC)
+	$(COMPOSE) build --pull $(NO_CACHE_FLAG) $(SVC)
+
+compose-check: ## validate Compose files and the shared build proxy/network policy
+	python3 deploy/check_compose_build_policy.py
 
 restart: ## restart service(s): `make restart monitor orchestrator`
 	$(COMPOSE) restart $(SVC)
@@ -331,7 +346,16 @@ define save_images
 	 echo "$(2): saving these images -> $(IMAGES_FILE)"; \
 	 echo "$$imgs" | sed 's/^/  /'; \
 	 docker save $$imgs | gzip > "$(IMAGES_FILE)"; \
+	 sha256sum "$(IMAGES_FILE)" > "$(IMAGES_FILE).sha256"; \
+	 { printf '# kairos_version\tgit_sha\timage\timage_id\tplatform\n'; \
+	   for img in $$imgs; do \
+	     docker image inspect --format \
+	       '$(KAIROS_VERSION)\t$(KAIROS_GIT_SHA)\t'"$$img"'\t{{.Id}}\t{{.Os}}/{{.Architecture}}' "$$img"; \
+	   done; \
+	 } > "$(IMAGES_FILE).manifest.tsv"; \
 	 echo "OK -> $(IMAGES_FILE) ($$(du -h "$(IMAGES_FILE)" | cut -f1))"; \
+	 echo "     checksum: $(IMAGES_FILE).sha256"; \
+	 echo "     manifest: $(IMAGES_FILE).manifest.tsv"; \
 	 echo "next: copy it over, then on that machine: make images-load IMAGES_FILE=<file>"
 endef
 
@@ -346,6 +370,14 @@ images-save: ## save ALL stack images + the test harness -> kairos-images.tar.gz
 
 images-load: ## load images from kairos-images.tar.gz (IMAGES_FILE=...) on the offline machine
 	@[ -f "$(IMAGES_FILE)" ] || { echo "not found: $(IMAGES_FILE) (set IMAGES_FILE=...)"; exit 1; }
+	@[ ! -f "$(IMAGES_FILE).sha256" ] || { \
+	  expected="$$(awk 'NR == 1 { print $$1; exit }' "$(IMAGES_FILE).sha256")"; \
+	  actual="$$(sha256sum "$(IMAGES_FILE)" | awk '{ print $$1 }')"; \
+	  [ -n "$$expected" ] && [ "$$expected" = "$$actual" ] || { \
+	    echo "checksum mismatch: $(IMAGES_FILE)"; exit 1; \
+	  }; \
+	  echo "$(IMAGES_FILE): OK"; \
+	}
 	gunzip -c "$(IMAGES_FILE)" | docker load
 	@echo "loaded — now: make up"
 
@@ -385,10 +417,15 @@ robot-down: ## [ON THE ROBOT] stop + remove the robot-edge services
 	$(COMPOSE_ROBOT) down
 
 robot-build: ## [ON THE ROBOT] build robot-edge images: `make robot-build` (all) or `make robot-build recorder`
-	$(COMPOSE_ROBOT) build $(SVC)
+	$(COMPOSE_ROBOT) build $(NO_CACHE_FLAG) $(SVC)
 
 robot-rebuild: ## [ON THE ROBOT] rebuild + recreate robot-edge service(s): `make robot-rebuild recorder`
+ifneq ($(NO_CACHE_FLAG),)
+	$(COMPOSE_ROBOT) build $(NO_CACHE_FLAG) $(SVC)
+	$(COMPOSE_ROBOT) up -d --force-recreate $(SVC)
+else
 	$(COMPOSE_ROBOT) up -d --build --force-recreate $(SVC)
+endif
 
 robot-restart: ## [ON THE ROBOT] restart robot-edge service(s): `make robot-restart monitor`
 	$(COMPOSE_ROBOT) restart $(SVC)
@@ -414,10 +451,15 @@ recording-down: ## [ON THE RECORDING PC] stop + remove the recording-host servic
 	$(COMPOSE_RECORDING) down
 
 recording-build: ## [ON THE RECORDING PC] build recording-host images: `make recording-build` (all) or `... frontend`
-	$(COMPOSE_RECORDING) build $(SVC)
+	$(COMPOSE_RECORDING) build $(NO_CACHE_FLAG) $(SVC)
 
 recording-rebuild: ## [ON THE RECORDING PC] rebuild + recreate recording-host service(s): `make recording-rebuild frontend`
+ifneq ($(NO_CACHE_FLAG),)
+	$(COMPOSE_RECORDING) build $(NO_CACHE_FLAG) $(SVC)
+	$(COMPOSE_RECORDING) up -d --force-recreate $(SVC)
+else
 	$(COMPOSE_RECORDING) up -d --build --force-recreate $(SVC)
+endif
 
 recording-restart: ## [ON THE RECORDING PC] restart recording-host service(s): `make recording-restart orchestrator`
 	$(COMPOSE_RECORDING) restart $(SVC)
@@ -501,12 +543,13 @@ smoke-record: ## smoke test incl. record start/stop
 test: test-py test-fe ## run all unit tests (Python + frontend)
 
 test-py: ## run the Python unit-test loop (all services + libs)
-	@for d in $(PY_DIRS); do \
-		printf '### %-32s -> ' "$$d"; \
-		(cd "$$d" && uv run --extra test pytest -q 2>&1 | tail -1); \
-	done
-	@printf '### %-32s -> ' "deploy/sync"; \
-	(cd services/api_orchestrator && uv run --extra test pytest -q ../../deploy/sync/tests 2>&1 | tail -1)
+	@set -e; \
+	for d in $(PY_DIRS); do \
+		printf '\n### %s\n' "$$d"; \
+		(cd "$$d" && uv run --extra test pytest -q); \
+	done; \
+	printf '\n### %s\n' "deploy/sync"; \
+	(cd services/api_orchestrator && uv run --extra test pytest -q ../../deploy/sync/tests)
 
 test-fe: ## frontend build + test + lint
 	cd services/frontend && npm run build && npm test && npm run lint

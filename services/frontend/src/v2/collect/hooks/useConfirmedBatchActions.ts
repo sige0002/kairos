@@ -6,6 +6,7 @@
 
 import { useCallback, useRef, type MutableRefObject } from 'react';
 import { patchBatch } from '../../../api/batches';
+import { i18n } from '../../../i18n';
 import type { Action } from '../machine/reducer';
 import type { MachineError, Phase } from '../machine/types';
 
@@ -141,7 +142,9 @@ export function useConfirmedBatchActions({
         closeEnd();
       } catch (error) {
         showToast(
-          `End batch was not completed — the batch is still open. If the recorder stopped, its take is awaiting review. Retry End batch. (${toMachineError(error).message})`,
+          i18n.t('collect:endBatchNotCompleted', {
+            error: toMachineError(error).message,
+          }),
         );
       }
     });
@@ -166,13 +169,11 @@ export function useConfirmedBatchActions({
         dispatch({ type: 'RESET_BATCH' });
         closeReset();
         showToast(
-          batchId
-            ? 'Set reset — recordings already taken stay in Review'
-            : 'Set reset (local) — recordings already taken stay in Review',
+          batchId ? i18n.t('collect:setReset') : i18n.t('collect:setResetLocal'),
         );
       } catch (error) {
         showToast(
-          `Reset was not completed — the batch is still open. If the recorder stopped, its take is awaiting review. Retry Reset batch. (${toMachineError(error).message})`,
+          i18n.t('collect:resetNotCompleted', { error: toMachineError(error).message }),
         );
       }
     });
@@ -197,12 +198,12 @@ export function useConfirmedBatchActions({
         const newBatchId = await ensureBatch();
         showToast(
           newBatchId
-            ? `Next set ready — same condition, ${targetEpisodes} episodes`
-            : 'Next set is ready locally, but the server batch could not be created. It will retry when recording starts.',
+            ? i18n.t('collect:nextSetReady', { count: targetEpisodes })
+            : i18n.t('collect:nextSetLocalOnly'),
         );
       } catch (error) {
         showToast(
-          `Next set was not started — the completed batch was not confirmed. Retry. (${toMachineError(error).message})`,
+          i18n.t('collect:nextSetNotStarted', { error: toMachineError(error).message }),
         );
       }
     });
@@ -225,10 +226,12 @@ export function useConfirmedBatchActions({
         try {
           if (batchId) await patchBatch(batchId, { target_episodes: nextTarget });
           onTargetConfirmed(nextTarget);
-          showToast(`Set target: ${nextTarget} episodes`);
+          showToast(i18n.t('collect:setTargetToast', { count: nextTarget }));
         } catch (error) {
           showToast(
-            `Set target was not saved — the current target is unchanged. Retry. (${toMachineError(error).message})`,
+            i18n.t('collect:setTargetNotSaved', {
+              error: toMachineError(error).message,
+            }),
           );
         }
       });

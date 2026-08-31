@@ -170,11 +170,26 @@ class RosImageSource:
         return self._meter.rate()
 
     def start(self) -> None:
+        try:
+            # Serialize direct lifecycle calls as well as registry calls. The
+            # source becomes visible as started only after all ROS resources
+            # exist and the executor thread has been launched.
+            with self._lock:
+                if self._started:
+                    return
+                self._spin_up()
+                self._started = True
+        except BaseException:
+            self._abandon_partial()
+            raise
+
+    def _abandon_partial(self) -> None:
+        """Roll back resources allocated by an unsuccessful :meth:`start`."""
         with self._lock:
-            if self._started:
-                return
-            self._started = True
-        self._spin_up()
+            self._started = False
+            node, executor, thread = self._node, self._executor, self._thread
+            self._node = self._executor = self._thread = None
+        self._teardown(node, executor, thread)
 
     def _spin_up(self) -> None:
         """Create the rclpy node + subscription and spin it off-thread."""
@@ -192,6 +207,7 @@ class RosImageSource:
             rclpy.init()
 
         node = Node(self._node_name)
+        self._node = node
         # Preview QoS: best-effort + keep-last-1 mirrors the latest-frame-wins
         # policy at the DDS layer, so the middleware also drops stale frames.
         qos = QoSProfile(
@@ -213,12 +229,11 @@ class RosImageSource:
         from rclpy.executors import SingleThreadedExecutor
 
         executor = SingleThreadedExecutor()
+        self._executor = executor
         executor.add_node(node)
         thread = threading.Thread(
             target=executor.spin, name=f"ros-src-{self._topic}", daemon=True
         )
-        self._node = node
-        self._executor = executor
         self._thread = thread
         thread.start()
         logger.info(
@@ -255,12 +270,26 @@ class RosImageSource:
 
     def stop(self) -> None:
         with self._lock:
-            if not self._started:
+            if (
+                not self._started
+                and self._node is None
+                and self._executor is None
+                and self._thread is None
+            ):
                 return
             self._started = False
             node, executor, thread = self._node, self._executor, self._thread
             self._node = self._executor = self._thread = None
         self._frames.close()
+        self._teardown(node, executor, thread)
+        logger.info(
+            "ros image source stopped",
+            extra={"component": "webrtc_streamer", "topic": self._topic},
+        )
+
+    @staticmethod
+    def _teardown(node: Any, executor: Any, thread: threading.Thread | None) -> None:
+        """Release a detached set of ROS resources, attempting every step."""
         if executor is not None:
             try:
                 executor.shutdown()
@@ -273,10 +302,6 @@ class RosImageSource:
                 logger.exception("error destroying ros node")
         if thread is not None and thread.is_alive():
             thread.join(timeout=2.0)
-        logger.info(
-            "ros image source stopped",
-            extra={"component": "webrtc_streamer", "topic": self._topic},
-        )
 
 
 def _is_compressed_topic(node: Any, topic: str) -> bool:

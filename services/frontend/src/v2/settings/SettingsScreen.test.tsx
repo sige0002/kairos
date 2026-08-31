@@ -1,25 +1,40 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import {
+  act,
+  cleanup,
+  fireEvent,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { ErrorBoundary } from '../../components/ErrorBoundary';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { SettingsScreen } from './SettingsScreen';
+import { getCategorySections, SETTINGS_CATEGORIES, SETTINGS_SECTIONS } from './data';
 import {
   __rehydratePlansStore,
   __resetPlansStore,
+  getExternalControls,
   getFailReasons,
   getPlans,
   setPlans,
 } from '../plans';
+import { DEFAULT_EXTERNAL_CONTROLS } from '../collect/machine/externalControlConfig';
 import { __resetStopConfirmMs, __setStopConfirmMs } from '../captures/stopConfirm';
 import { expectScreenHeadingOutline } from '../../test/headingOutline';
+import { LOCALE_STORAGE_KEY, i18n, useLocale } from '../../i18n';
 
 // Runtime config (GET /api/v1/config): the ACTIVE robot's read-only values that
 // the Robots form surfaces (ROS_DOMAIN_ID + recorded topics).
 const CONFIG_WITH_ROBOT = {
-  endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
+  endpoints: {
+    api: '/api/v1',
+    events: '/api/v1/events',
+    webrtc: 'http://localhost:8002',
+  },
   tabs: [],
   defaults: {
     robot_name: 'hsr',
@@ -43,33 +58,68 @@ const OPTIONS = {
     recording: {
       active: 'default',
       options: [
-        { id: 'default', path: '/config/airoa_hsr/recording/default.yaml', local: false, meta: { default_topics: 7 } },
+        {
+          id: 'default',
+          path: '/config/airoa_hsr/recording/default.yaml',
+          local: false,
+          meta: { default_topics: 7 },
+        },
       ],
     },
     stream: {
       active: 'default',
       options: [
-        { id: 'default', path: '/config/airoa_hsr/stream/default.yaml', local: false, meta: { columns: 2, panes: 2 } },
+        {
+          id: 'default',
+          path: '/config/airoa_hsr/stream/default.yaml',
+          local: false,
+          meta: { columns: 2, panes: 2 },
+        },
       ],
     },
     validation: {
       active: 'default',
       options: [
-        { id: 'default', path: '/config/airoa_hsr/validation/default.yaml', local: false, meta: { name: 'airoa_hsr', version: 1, required_topics: [{ name: '/hsrb/joint_states', type: 'sensor_msgs/msg/JointState' }] } },
-        { id: 'strict', path: '/config/airoa_hsr/validation/strict.yaml', local: false, meta: { name: 'strict', version: 2, required_topics: [{ name: '/a' }] } },
+        {
+          id: 'default',
+          path: '/config/airoa_hsr/validation/default.yaml',
+          local: false,
+          meta: {
+            name: 'airoa_hsr',
+            version: 1,
+            required_topics: [
+              { name: '/hsrb/joint_states', type: 'sensor_msgs/msg/JointState' },
+            ],
+          },
+        },
+        {
+          id: 'strict',
+          path: '/config/airoa_hsr/validation/strict.yaml',
+          local: false,
+          meta: { name: 'strict', version: 2, required_topics: [{ name: '/a' }] },
+        },
       ],
     },
     validators: {
       active: 'loss_report',
       options: [
-        { id: 'loss_report', path: '/config/airoa_hsr/validators/loss_report.yaml', local: false, meta: {} },
+        {
+          id: 'loss_report',
+          path: '/config/airoa_hsr/validators/loss_report.yaml',
+          local: false,
+          meta: {},
+        },
       ],
     },
   },
 };
 
 const RECORDING = {
-  config: { robot_name: 'hsr', default_topics: ['/hsrb/odom'], expected_hz_patterns: [] },
+  config: {
+    robot_name: 'hsr',
+    default_topics: ['/hsrb/odom'],
+    expected_hz_patterns: [],
+  },
   path: '/config/airoa_hsr/recording/default.yaml',
 };
 
@@ -91,7 +141,11 @@ const ROBOT_CONFIG_TEMPLATE = {
   robot: 'template',
   local: false,
   active: false,
-  summary: { robot_name: 'template', default_topics: ['/tmpl/a', '/tmpl/b'], ros_domain_id: null },
+  summary: {
+    robot_name: 'template',
+    default_topics: ['/tmpl/a', '/tmpl/b'],
+    ros_domain_id: null,
+  },
   aspects: {
     recording: {
       id: 'default',
@@ -134,7 +188,7 @@ function holdPlansResponse() {
 
 // The recorder state served by GET /record/status; tests flip it to exercise the
 // recording-aware guards.
-let recordState: 'created' | 'recording' = 'created';
+let recordState: 'armed' | 'created' | 'recording' = 'created';
 // Whether that response carries `live_capture_ids` at all. §10 rev.2.4: a
 // response without it is an unreachable recorder, not an idle one — a distinct
 // case the guards have to handle, so it is switchable here.
@@ -196,7 +250,9 @@ function mockFetch() {
     if (url.includes('/config/recording')) {
       if (method === 'PUT') {
         const body = JSON.parse(String((init as RequestInit).body));
-        return Promise.resolve(jsonResponse({ config: body.config, path: RECORDING.path }));
+        return Promise.resolve(
+          jsonResponse({ config: body.config, path: RECORDING.path }),
+        );
       }
       return Promise.resolve(jsonResponse(RECORDING));
     }
@@ -221,11 +277,11 @@ function mockFetch() {
       return Promise.resolve(jsonResponse({ run_id: 'run_x', state: 'completed' }));
     }
     if (url.includes('/record/status')) {
-      const live = recordState === 'recording' ? ['cap_x'] : [];
+      const live = recordState === 'created' ? [] : ['cap_x'];
       return Promise.resolve(
         jsonResponse({
-          run_id: recordState === 'recording' ? 'run_x' : null,
-          capture_id: recordState === 'recording' ? 'cap_x' : null,
+          run_id: recordState === 'created' ? null : 'run_x',
+          capture_id: recordState === 'created' ? null : 'cap_x',
           state: recordState,
           ...(liveReported ? { live_capture_ids: live } : {}),
         }),
@@ -266,8 +322,32 @@ function selectPosts() {
     .map((c) => JSON.parse(String((c[1] as RequestInit).body)));
 }
 
-beforeEach(() => {
+function LocaleSwitchProbe() {
+  const { setLocale } = useLocale();
+  return (
+    <button
+      type="button"
+      data-testid="locale-switch-to-ja"
+      onClick={() => setLocale('ja')}
+    >
+      Switch locale
+    </button>
+  );
+}
+
+beforeEach(async () => {
+  // i18next notifies `useTranslation` subscribers asynchronously. Reset it
+  // before mounting the next screen, inside act, so a prior test cannot update
+  // this test's MenuRail after its first assertion.
+  await act(async () => {
+    await i18n.changeLanguage('en');
+  });
+  window.history.replaceState(null, '', '/');
   setApiBase('/api/v1');
+  window.localStorage.removeItem('kairos.appearance');
+  window.localStorage.removeItem(LOCALE_STORAGE_KEY);
+  document.documentElement.lang = 'en';
+  document.documentElement.dataset.theme = 'light';
   recordState = 'created';
   liveReported = true;
   streamPayload = {
@@ -275,7 +355,12 @@ beforeEach(() => {
     path: '/config/airoa_hsr/stream/default.yaml',
     error: null,
   };
-  serverPlans = { projects: null, failure_reasons: null, operators: null, updated_at: null };
+  serverPlans = {
+    projects: null,
+    failure_reasons: null,
+    operators: null,
+    updated_at: null,
+  };
   plansGate = null;
   plansPutFails = false;
   activeRobot = 'airoa_hsr';
@@ -284,9 +369,17 @@ beforeEach(() => {
   __resetPlansStore();
   mockFetch();
 });
-afterEach(() => {
+afterEach(async () => {
+  // RTL's automatic cleanup hook may run in a different registration order
+  // from this file's hook. Unmount now, before changing global i18next state.
+  cleanup();
   __resetStopConfirmMs();
   vi.restoreAllMocks();
+  window.localStorage.removeItem(LOCALE_STORAGE_KEY);
+  await act(async () => {
+    await i18n.changeLanguage('en');
+  });
+  document.documentElement.lang = 'en';
 });
 
 test('lists the real robots and marks the active one', async () => {
@@ -294,11 +387,142 @@ test('lists the real robots and marks the active one', async () => {
 
   const row0 = await screen.findByTestId('robot-row-0');
   expect(within(row0).getByText('airoa_hsr')).toBeInTheDocument();
-  expect(within(row0).getByText('active')).toBeInTheDocument();
+  expect(within(row0).getByText('Active')).toBeInTheDocument();
   // Local robots are badged.
   const localRow = screen.getByTestId('robot-row-2');
   expect(within(localRow).getByText('isaac_sim')).toBeInTheDocument();
   expect(within(localRow).getByText('local')).toBeInTheDocument();
+});
+
+test('Appearance applies immediately in Settings and is browser-local', () => {
+  renderWithClient(<SettingsScreen />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Appearance' }));
+  expect(screen.getByTestId('settings-appearance')).toBeInTheDocument();
+  expect(screen.getByTestId('appearance-system')).toBeChecked();
+
+  const fetchCallsBeforeSelection = (globalThis.fetch as ReturnType<typeof vi.fn>).mock
+    .calls.length;
+  fireEvent.click(screen.getByTestId('appearance-dark'));
+  expect(screen.getByTestId('appearance-dark')).toBeChecked();
+  expect(screen.getByTestId('appearance-status')).toHaveTextContent('Using dark');
+  expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+  expect(window.localStorage.getItem('kairos.appearance')).toBe('dark');
+  expect((globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(
+    fetchCallsBeforeSelection,
+  );
+});
+
+test('Language applies immediately, persists separately from Appearance, and keeps the Settings section', async () => {
+  renderWithClient(<SettingsScreen />);
+
+  fireEvent.click(screen.getByTestId('settings-menu-item-language'));
+  expect(screen.getByTestId('settings-language')).toBeInTheDocument();
+  const routeBeforeLocaleChange = window.location.href;
+  const configRequestsBeforeLocaleChange = (
+    globalThis.fetch as ReturnType<typeof vi.fn>
+  ).mock.calls.filter(([input]) => String(input).includes('/config')).length;
+  await act(async () => {
+    fireEvent.click(screen.getByTestId('language-ja'));
+    await Promise.resolve();
+  });
+
+  await waitFor(() =>
+    expect(screen.getByRole('heading', { name: '言語' })).toBeInTheDocument(),
+  );
+  expect(screen.getByTestId('settings-category-general')).toHaveTextContent('一般');
+  expect(screen.getByTestId('settings-section-audio')).toHaveTextContent('音声');
+  expect(screen.getByTestId('language-status')).toHaveTextContent(
+    /このコンソールでは\s*日本語/,
+  );
+  expect(document.documentElement.lang).toBe('ja');
+  expect(window.localStorage.getItem(LOCALE_STORAGE_KEY)).toBe('ja');
+  expect(window.localStorage.getItem('kairos.appearance')).toBeNull();
+  expect(screen.getByTestId('settings-language')).toBeInTheDocument();
+  expect(window.location.href).toBe(routeBeforeLocaleChange);
+  expect(
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([input]) =>
+      String(input).includes('/config'),
+    ),
+  ).toHaveLength(configRequestsBeforeLocaleChange);
+});
+
+test('the locale setter preserves an unsaved Settings draft, route, and config cache', async () => {
+  window.history.replaceState(null, '', '/?settings=robots');
+  renderWithClient(
+    <>
+      <SettingsScreen />
+      <LocaleSwitchProbe />
+    </>,
+  );
+
+  const editor = (await screen.findByLabelText(
+    'recording config json',
+  )) as HTMLTextAreaElement;
+  await waitFor(() => expect(editor.value).toContain('"robot_name": "hsr"'));
+  fireEvent.change(editor, { target: { value: '{"draft": "keep this"}' } });
+  const routeBeforeLocaleChange = window.location.href;
+  const configRequestsBeforeLocaleChange = (
+    globalThis.fetch as ReturnType<typeof vi.fn>
+  ).mock.calls.filter(([input]) => String(input).includes('/config')).length;
+
+  await act(async () => {
+    fireEvent.click(screen.getByTestId('locale-switch-to-ja'));
+    await Promise.resolve();
+  });
+
+  expect(editor).toHaveValue('{"draft": "keep this"}');
+  expect(window.location.href).toBe(routeBeforeLocaleChange);
+  expect(document.documentElement.lang).toBe('ja');
+  expect(
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.filter(([input]) =>
+      String(input).includes('/config'),
+    ),
+  ).toHaveLength(configRequestsBeforeLocaleChange);
+});
+
+test.each([
+  ['en', 'light', 'Language', 'Appearance'],
+  ['en', 'dark', 'Language', 'Appearance'],
+  ['ja', 'light', '言語', '外観'],
+  ['ja', 'dark', '言語', '外観'],
+] as const)(
+  'Settings General is semantic in %s / %s',
+  async (locale, theme, languageTitle, appearanceTitle) => {
+    renderWithClient(<SettingsScreen />);
+
+    fireEvent.click(screen.getByTestId('settings-menu-item-language'));
+    if (locale === 'ja') {
+      await act(async () => {
+        fireEvent.click(screen.getByTestId('language-ja'));
+        await Promise.resolve();
+      });
+    }
+    expect(screen.getByRole('heading', { name: languageTitle })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: appearanceTitle }));
+    expect(screen.getByRole('heading', { name: appearanceTitle })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId(`appearance-${theme}`));
+    expect(document.documentElement).toHaveAttribute('data-theme', theme);
+  },
+);
+
+test('Appearance explains when the browser cannot persist the selection', () => {
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new DOMException('Storage disabled', 'SecurityError');
+  });
+  renderWithClient(<SettingsScreen />);
+
+  fireEvent.click(screen.getByRole('button', { name: 'Appearance' }));
+  fireEvent.click(screen.getByTestId('appearance-dark'));
+
+  expect(document.documentElement).toHaveAttribute('data-theme', 'dark');
+  expect(screen.getByTestId('appearance-status')).toHaveTextContent(
+    'Browser storage is unavailable',
+  );
+  expect(screen.getByTestId('appearance-status')).toHaveTextContent(
+    'choose it again after reload',
+  );
 });
 
 test('the active robot form shows real read-only runtime values + the recording editor', async () => {
@@ -307,14 +531,26 @@ test('the active robot form shows real read-only runtime values + the recording 
   await waitFor(() =>
     expect(screen.getByTestId('robot-form-name')).toHaveTextContent('airoa_hsr'),
   );
-  expect(screen.getByTestId('robot-topics-summary')).toHaveTextContent('3 recorded topics');
+  expect(screen.getByTestId('robot-topics-summary')).toHaveTextContent(
+    '3 recorded topics',
+  );
   const chips = screen.getByTestId('robot-topic-chips');
   expect(within(chips).getByText('/tf')).toBeInTheDocument();
   expect(within(chips).getByText('/camera/top/image_raw')).toBeInTheDocument();
 
   // The embedded ConfigTab RecordingConfigEditor, seeded from GET /config/recording.
-  const editor = (await screen.findByLabelText('recording config json')) as HTMLTextAreaElement;
+  const editor = (await screen.findByLabelText(
+    'recording config json',
+  )) as HTMLTextAreaElement;
   await waitFor(() => expect(editor.value).toContain('"robot_name": "hsr"'));
+  expect(screen.getByTestId('recording-config-metadata')).toHaveClass('grid-cols-1');
+  expect(screen.getByTestId('recording-config-metadata')).toHaveClass(
+    'sm:grid-cols-[auto_minmax(0,1fr)]',
+  );
+  expect(screen.getByText('/config/airoa_hsr/recording/default.yaml')).toHaveClass(
+    'min-w-0',
+    'break-all',
+  );
 });
 
 test('selecting a non-active robot shows its config read-only, without switching', async () => {
@@ -346,8 +582,8 @@ test('+ Add robot opens a persistent explainer panel (not a toast)', async () =>
   fireEvent.click(screen.getByTestId('add-robot'));
   const explainer = screen.getByTestId('robot-add-explainer');
   expect(explainer).toHaveTextContent('config/<robot>/');
-  expect(explainer).toHaveTextContent('no in-console create yet');
-  expect(explainer).toHaveTextContent('inspect its config as a template');
+  expect(explainer).toHaveTextContent('cannot be created from this console');
+  expect(explainer).toHaveTextContent('existing robot as a template');
   // Selecting a robot dismisses the explainer.
   fireEvent.click(screen.getByTestId('robot-row-1'));
   expect(screen.queryByTestId('robot-add-explainer')).not.toBeInTheDocument();
@@ -384,7 +620,7 @@ test('activating a robot while recording confirms first, then stops and switches
   // configs until restarted (S1-3) — pretending otherwise is how a
   // mixed-config recording gets made.
   const note = await screen.findByTestId('robot-switch-note');
-  expect(note).toHaveTextContent(/until they are restarted/);
+  expect(note).toHaveTextContent(/after restarting/);
   expect(note).toHaveTextContent('make restart monitor streamer probe');
 });
 
@@ -482,16 +718,35 @@ test('cancelling the switch-while-recording confirm leaves the recording alone',
   expect(selectPosts()).toHaveLength(0);
 });
 
-test('the recording-config editor warns that a save applies to the next recording', async () => {
+test('the recording-config editor distinguishes a recording already writing from later work', async () => {
   recordState = 'recording';
   renderWithClient(<SettingsScreen />);
   // Active robot (airoa_hsr) renders the editable editor.
   await screen.findByLabelText('recording config json');
   expect(
-    await screen.findByText(
-      /saving recording config won.t change the current one; it applies to the next/i,
-    ),
+    await screen.findByText(/does not change the current recording/i),
   ).toBeInTheDocument();
+});
+
+test('the recording-config editor says an armed session has written nothing', async () => {
+  recordState = 'armed';
+  renderWithClient(<SettingsScreen />);
+
+  expect(await screen.findByTestId('config-armed-note')).toHaveTextContent(
+    /nothing is being written yet/i,
+  );
+  expect(screen.getByTestId('config-armed-note')).toHaveTextContent(
+    /recording after it/i,
+  );
+});
+
+test('the recording-config editor reports an unconfirmed live state as unknown', async () => {
+  liveReported = false;
+  renderWithClient(<SettingsScreen />);
+
+  expect(await screen.findByTestId('config-live-unknown')).toHaveTextContent(
+    /whether a session is in progress is unknown/i,
+  );
 });
 
 test('"Use this robot" POSTs {category: robot} for the previewed robot', async () => {
@@ -517,12 +772,14 @@ test('the activate action is disabled for the already-active robot', async () =>
 
 test('aspect pickers select an option and POST {category: <aspect>}', async () => {
   renderWithClient(<SettingsScreen />);
-  const validation = (await screen.findByLabelText('validation option')) as HTMLSelectElement;
+  const validation = (await screen.findByLabelText(
+    'Validation option',
+  )) as HTMLSelectElement;
   expect(validation.value).toBe('default');
   // All four aspect pickers are present.
-  expect(screen.getByLabelText('recording option')).toBeInTheDocument();
-  expect(screen.getByLabelText('stream option')).toBeInTheDocument();
-  expect(screen.getByLabelText('validators option')).toBeInTheDocument();
+  expect(screen.getByLabelText('Recording option')).toBeInTheDocument();
+  expect(screen.getByLabelText('Stream option')).toBeInTheDocument();
+  expect(screen.getByLabelText('Validators option')).toBeInTheDocument();
 
   fireEvent.change(validation, { target: { value: 'strict' } });
   await waitFor(() =>
@@ -532,10 +789,16 @@ test('aspect pickers select an option and POST {category: <aspect>}', async () =
 
 test('saving the recording editor PUTs the edited config', async () => {
   renderWithClient(<SettingsScreen />);
-  const editor = (await screen.findByLabelText('recording config json')) as HTMLTextAreaElement;
+  const editor = (await screen.findByLabelText(
+    'recording config json',
+  )) as HTMLTextAreaElement;
   await waitFor(() => expect(editor.value).toContain('"robot_name": "hsr"'));
 
-  const edited = { robot_name: 'tiago', default_topics: ['/a'], expected_hz_patterns: [] };
+  const edited = {
+    robot_name: 'tiago',
+    default_topics: ['/a'],
+    expected_hz_patterns: [],
+  };
   fireEvent.change(editor, { target: { value: JSON.stringify(edited, null, 2) } });
   fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
@@ -547,14 +810,20 @@ test('saving the recording editor PUTs the edited config', async () => {
         ((c[1] as RequestInit)?.method ?? 'GET') === 'PUT',
     );
     expect(put).toBeDefined();
-    expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ config: edited });
+    expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({
+      config: edited,
+    });
   });
-  expect(await screen.findByText('Saved')).toBeInTheDocument();
+  const saved = await screen.findByText('Saved');
+  expect(saved).toBeInTheDocument();
+  expect(saved.parentElement).toHaveTextContent(/apply on the next recorder restart/i);
 });
 
 test('saving the stream editor PUTs the edited layout and reports immediate apply', async () => {
   renderWithClient(<SettingsScreen />);
-  const editor = (await screen.findByLabelText('stream config json')) as HTMLTextAreaElement;
+  const editor = (await screen.findByLabelText(
+    'stream config json',
+  )) as HTMLTextAreaElement;
   await waitFor(() => expect(editor.value).toContain('"/cam/a"'));
 
   const edited = { columns: 3, panes: [{ topic: '/cam/a' }] };
@@ -569,7 +838,9 @@ test('saving the stream editor PUTs the edited layout and reports immediate appl
         ((c[1] as RequestInit)?.method ?? 'GET') === 'PUT',
     );
     expect(put).toBeDefined();
-    expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({ config: edited });
+    expect(JSON.parse(String((put![1] as RequestInit).body))).toEqual({
+      config: edited,
+    });
   });
   // The saved note states the immediate apply (no restart caveat — honest:
   // the layout is served per-request by GET /api/v1/config).
@@ -580,7 +851,9 @@ test('saving the stream editor PUTs the edited layout and reports immediate appl
 
 test('invalid JSON in the stream editor disables Save before the server sees it', async () => {
   renderWithClient(<SettingsScreen />);
-  const editor = (await screen.findByLabelText('stream config json')) as HTMLTextAreaElement;
+  const editor = (await screen.findByLabelText(
+    'stream config json',
+  )) as HTMLTextAreaElement;
   await waitFor(() => expect(editor.value).toContain('"/cam/a"'));
 
   fireEvent.change(editor, { target: { value: '{ not json' } });
@@ -616,7 +889,9 @@ test('a present-but-broken stream file is disclosed before a save can replace it
   expect(warning).toHaveTextContent(/exists but failed to load/i);
   expect(warning).toHaveTextContent(/saving REPLACES the broken file/i);
   // The editor stays usable as the recovery path, seeded empty.
-  const editor = (await screen.findByLabelText('stream config json')) as HTMLTextAreaElement;
+  const editor = (await screen.findByLabelText(
+    'stream config json',
+  )) as HTMLTextAreaElement;
   expect(editor.value).toBe('{}');
 });
 
@@ -635,10 +910,12 @@ test('menu switches Robots → Plans → Recording (real, not a placeholder) →
 
   fireEvent.click(screen.getByTestId('settings-menu-item-1'));
   expect(screen.getByTestId('plan-projects')).toBeInTheDocument();
-  expect(screen.getByTestId('plan-project-name')).toHaveTextContent('Tabletop Manipulation');
+  expect(screen.getByTestId('plan-project-name')).toHaveTextContent(
+    'Tabletop Manipulation',
+  );
 
   // Recording is now a real form-first section, not a §12 placeholder.
-  fireEvent.click(screen.getByTestId('settings-menu-item-4'));
+  fireEvent.click(screen.getByTestId('settings-menu-item-5'));
   expect(screen.getByTestId('settings-recording')).toBeInTheDocument();
   expect(screen.queryByTestId('settings-other-placeholder')).not.toBeInTheDocument();
 
@@ -646,20 +923,151 @@ test('menu switches Robots → Plans → Recording (real, not a placeholder) →
   expect(screen.getByTestId('robot-form')).toBeInTheDocument();
 });
 
+test('groups every settings section under stable category and section IDs', () => {
+  renderWithClient(<SettingsScreen />);
+
+  expect(screen.getByTestId('settings-category-general')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-category-collection')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-category-data')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-category-workspace')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-category-notifications')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-category-advanced')).toBeInTheDocument();
+
+  expect(screen.getByTestId('settings-section-alerts')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-section-generated-files')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-section-appearance')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-section-audio')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-section-language')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Language' })).toBeInTheDocument();
+});
+
+test('derives complete, non-overlapping category membership from section metadata', () => {
+  const idsInCategories = SETTINGS_CATEGORIES.flatMap((category) =>
+    getCategorySections(category.id).map((section) => section.id),
+  );
+
+  expect(idsInCategories).toHaveLength(SETTINGS_SECTIONS.length);
+  expect(new Set(idsInCategories)).toHaveLength(SETTINGS_SECTIONS.length);
+  expect(new Set(idsInCategories)).toEqual(
+    new Set(SETTINGS_SECTIONS.map((section) => section.id)),
+  );
+  for (const category of SETTINGS_CATEGORIES) {
+    expect(
+      getCategorySections(category.id).every(
+        (section) => section.categoryId === category.id,
+      ),
+    ).toBe(true);
+  }
+});
+
+test('selects sections by stable ID, keeps focus, and updates the settings deep link', () => {
+  renderWithClient(<SettingsScreen />);
+
+  const recording = screen.getByTestId('settings-menu-item-5');
+  recording.focus();
+  fireEvent.click(recording);
+
+  expect(recording).toHaveFocus();
+  expect(recording).toHaveAttribute('aria-current', 'page');
+  expect(screen.getByTestId('settings-recording')).toBeInTheDocument();
+  expect(new URLSearchParams(window.location.search).get('settings')).toBe('recording');
+});
+
+test('opens a valid Settings deep link and safely falls back for an unknown ID', () => {
+  window.history.replaceState(null, '', '/?tab=settings&settings=alerts');
+  const view = renderWithClient(<SettingsScreen />);
+  expect(screen.getByTestId('settings-alerts-panel')).toBeInTheDocument();
+  expect(screen.getByTestId('settings-menu-item-alerts')).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+
+  view.unmount();
+  window.history.replaceState(null, '', '/?tab=settings&settings=not-a-section');
+  renderWithClient(<SettingsScreen />);
+  expect(screen.getByTestId('robot-form')).toBeInTheDocument();
+  expect(new URLSearchParams(window.location.search).get('settings')).toBeNull();
+});
+
+test('External controls exposes only state-safe actions and persists a rearrangement', async () => {
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('settings-menu-item-3'));
+
+  const readyLeft = screen.getByTestId('ext-control-ready-left');
+  expect(within(readyLeft).getByRole('option', { name: 'Start' })).toBeInTheDocument();
+  expect(within(readyLeft).queryByRole('option', { name: 'Retake' })).toBeNull();
+
+  const resultCenter = screen.getByTestId('ext-control-result-center');
+  expect(within(resultCenter).getByRole('option', { name: 'Failure' })).toBeDisabled();
+  fireEvent.change(resultCenter, { target: { value: 'none' } });
+
+  await waitFor(() =>
+    expect(getExternalControls().result).toEqual({
+      left: 'failure',
+      center: 'none',
+      right: 'success_save',
+    }),
+  );
+  await waitFor(() => {
+    const bodies = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+      .filter(
+        (call) =>
+          String(call[0]).includes('/plans') &&
+          ((call[1] as RequestInit | undefined)?.method ?? 'GET') === 'PUT',
+      )
+      .map((call) => JSON.parse(String((call[1] as RequestInit).body)));
+    expect(bodies.some((body) => body.external_controls.result.center === 'none')).toBe(
+      true,
+    );
+  });
+
+  fireEvent.click(screen.getByTestId('ext-controls-reset'));
+  expect(getExternalControls()).toEqual(DEFAULT_EXTERNAL_CONTROLS);
+  expect(await screen.findByTestId('ext-controls-toast')).toHaveTextContent(
+    /reset to the default layout/i,
+  );
+});
+
+test('External controls explains recovery when stored mapping is invalid', async () => {
+  window.localStorage.setItem(
+    'kairos.v2.external-controls.v1',
+    JSON.stringify({ schema_version: 1, ready: { left: 'retake' } }),
+  );
+  __rehydratePlansStore();
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  fireEvent.click(screen.getByTestId('settings-menu-item-3'));
+
+  const warning = screen.getByTestId('ext-controls-invalid');
+  expect(warning).toHaveTextContent(/default layout is active/i);
+  expect(warning).toHaveTextContent(/Change any channel/i);
+  expect(screen.getByTestId('ext-control-ready-center')).toHaveValue('start');
+});
+
 test('only Dataset profiles + Users & permissions stay honest placeholders', async () => {
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
 
-  fireEvent.click(screen.getByTestId('settings-menu-item-7'));
-  expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent('Dataset profiles');
-  expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent(/Phase 3 recipe/);
-
   fireEvent.click(screen.getByTestId('settings-menu-item-8'));
-  expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent('Users & permissions');
-  expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent(/single-team/);
+  expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent(
+    'Dataset profiles',
+  );
+  expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent(
+    /Phase 3 recipe/,
+  );
+
+  fireEvent.click(screen.getByTestId('settings-menu-item-9'));
+  expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent(
+    'Users & permissions',
+  );
+  expect(screen.getByTestId('settings-other-placeholder')).toHaveTextContent(
+    /single-team/,
+  );
 });
 
 test('Plans: adding and removing a task updates the task list and condition count', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
   const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('New Task');
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
@@ -678,7 +1086,10 @@ test('Plans: adding and removing a task updates the task list and condition coun
 });
 
 test('Plans: adding and removing a condition updates the condition count', async () => {
-  const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('Object: Top → Tray: Left');
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  const promptSpy = vi
+    .spyOn(window, 'prompt')
+    .mockReturnValue('Object: Top → Tray: Left');
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
   fireEvent.click(screen.getByTestId('settings-menu-item-1'));
@@ -689,9 +1100,13 @@ test('Plans: adding and removing a condition updates the condition count', async
   fireEvent.click(screen.getByText('+ Add condition'));
   expect(promptSpy).toHaveBeenCalled();
   expect(screen.getByTestId('plan-task-0')).toHaveTextContent('4 cond');
-  expect(screen.getByTestId('plan-condition-3')).toHaveTextContent('Object: Top → Tray: Left');
+  expect(screen.getByTestId('plan-condition-3')).toHaveTextContent(
+    'Object: Top → Tray: Left',
+  );
 
-  fireEvent.click(within(screen.getByTestId('plan-condition-3')).getByTitle('Remove condition'));
+  fireEvent.click(
+    within(screen.getByTestId('plan-condition-3')).getByTitle('Remove condition'),
+  );
   expect(screen.getByTestId('plan-task-0')).toHaveTextContent('3 cond');
 });
 
@@ -715,8 +1130,12 @@ test('Plans: removing a project (confirmed) drops it from the list and the share
   fireEvent.click(screen.getByTestId('settings-menu-item-1'));
 
   // Default catalog has three projects; remove "Bin Picking" (row 1).
-  expect(within(screen.getByTestId('plan-project-1')).getByText('Bin Picking')).toBeInTheDocument();
-  fireEvent.click(within(screen.getByTestId('plan-project-1')).getByTitle('Remove project'));
+  expect(
+    within(screen.getByTestId('plan-project-1')).getByText('Bin Picking'),
+  ).toBeInTheDocument();
+  fireEvent.click(
+    within(screen.getByTestId('plan-project-1')).getByTitle('Remove project'),
+  );
 
   // Gone from the list AND from the shared store the Collect pickers read.
   expect(screen.queryByText('Bin Picking')).not.toBeInTheDocument();
@@ -729,13 +1148,18 @@ test('Plans: cancelling the remove confirmation keeps the project', async () => 
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
   fireEvent.click(screen.getByTestId('settings-menu-item-1'));
 
-  fireEvent.click(within(screen.getByTestId('plan-project-1')).getByTitle('Remove project'));
+  fireEvent.click(
+    within(screen.getByTestId('plan-project-1')).getByTitle('Remove project'),
+  );
 
-  expect(within(screen.getByTestId('plan-project-1')).getByText('Bin Picking')).toBeInTheDocument();
+  expect(
+    within(screen.getByTestId('plan-project-1')).getByText('Bin Picking'),
+  ).toBeInTheDocument();
   expect(getPlans().some((p) => p.name === 'Bin Picking')).toBe(true);
 });
 
 test('Failure reasons: adding and removing writes the SHARED store (so Collect sees it)', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
   vi.spyOn(window, 'prompt').mockReturnValue('Cable snagged');
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
@@ -749,7 +1173,9 @@ test('Failure reasons: adding and removing writes the SHARED store (so Collect s
   expect(screen.getByTestId('fail-reason-6')).toHaveTextContent('Cable snagged');
   expect(getFailReasons()).toContain('Cable snagged');
 
-  fireEvent.click(within(screen.getByTestId('fail-reason-6')).getByTitle('Remove reason'));
+  fireEvent.click(
+    within(screen.getByTestId('fail-reason-6')).getByTitle('Remove reason'),
+  );
   expect(screen.queryByText('Cable snagged')).not.toBeInTheDocument();
   expect(getFailReasons()).not.toContain('Cable snagged');
 });
@@ -767,13 +1193,16 @@ test('Failure reasons: renaming replaces the entry in place', async () => {
 });
 
 test('Failure reasons: the last remaining reason cannot be removed', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
   fireEvent.click(screen.getByTestId('settings-menu-item-2'));
 
   // Remove all but one — the final ✕ is disabled (a Failure REQUIRES a reason).
   for (let i = 0; i < 5; i += 1) {
-    fireEvent.click(within(screen.getByTestId('fail-reason-0')).getByTitle('Remove reason'));
+    fireEvent.click(
+      within(screen.getByTestId('fail-reason-0')).getByTitle('Remove reason'),
+    );
   }
   expect(getFailReasons()).toHaveLength(1);
   const last = within(screen.getByTestId('fail-reason-0')).getByTitle(
@@ -786,17 +1215,23 @@ test('Failure reasons: the last remaining reason cannot be removed', async () =>
 
 test('Plans: the last project cannot be removed (honest note, no confirm dialog)', async () => {
   const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
-  setPlans([{ name: 'Only Project', tasks: [{ name: 'Only Task', conditions: ['Only Cond'] }] }]);
+  setPlans([
+    { name: 'Only Project', tasks: [{ name: 'Only Task', conditions: ['Only Cond'] }] },
+  ]);
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
   fireEvent.click(screen.getByTestId('settings-menu-item-1'));
 
-  fireEvent.click(within(screen.getByTestId('plan-project-0')).getByTitle('Remove project'));
+  fireEvent.click(
+    within(screen.getByTestId('plan-project-0')).getByTitle('Remove project'),
+  );
 
   // Blocked before any confirm dialog; the project survives and we say why.
   expect(confirmSpy).not.toHaveBeenCalled();
   expect(getPlans().map((p) => p.name)).toEqual(['Only Project']);
-  expect(screen.getByTestId('settings-toast')).toHaveTextContent(/Keep at least one project/i);
+  expect(screen.getByTestId('settings-toast')).toHaveTextContent(
+    /Keep at least one project/i,
+  );
 });
 
 test('Plans: removing the selected project falls back to a surviving one (no crash)', async () => {
@@ -806,12 +1241,142 @@ test('Plans: removing the selected project falls back to a surviving one (no cra
   fireEvent.click(screen.getByTestId('settings-menu-item-1'));
 
   // Tabletop Manipulation (row 0) is the default selection; remove it.
-  expect(screen.getByTestId('plan-project-name')).toHaveTextContent('Tabletop Manipulation');
-  fireEvent.click(within(screen.getByTestId('plan-project-0')).getByTitle('Remove project'));
+  expect(screen.getByTestId('plan-project-name')).toHaveTextContent(
+    'Tabletop Manipulation',
+  );
+  fireEvent.click(
+    within(screen.getByTestId('plan-project-0')).getByTitle('Remove project'),
+  );
 
   // The detail panel shows the neighbour that slid into slot 0 — no crash.
   expect(screen.getByTestId('plan-project-name')).toHaveTextContent('Bin Picking');
   expect(getPlans().some((p) => p.name === 'Tabletop Manipulation')).toBe(false);
+});
+
+// ---------------------------------------------------------------------------
+// Per-task failure-reason shortcuts (#35): the Settings editor for the three
+// LEFT / CENTER / RIGHT slots, the duplicate prevention, and the rename/delete
+// integrity rules (a shortcut must never silently point at a stale label).
+// ---------------------------------------------------------------------------
+
+function openPlansSection() {
+  fireEvent.click(screen.getByTestId('settings-menu-item-1'));
+}
+function openTaskShortcuts() {
+  openPlansSection();
+  // The first task of the first project is the default selection; clicking its
+  // NAME (the row's selector — the same pattern the selection-lost tests use)
+  // keeps the selection explicit (and re-arms the editor after a task swap).
+  // Clicking the row's padding does nothing.
+  fireEvent.click(
+    within(screen.getByTestId('plan-task-0')).getByText('Pick and Place'),
+  );
+  return screen.getByTestId('plan-task-shortcuts');
+}
+function shortcutSelect(slot: 'left' | 'center' | 'right') {
+  return screen.getByTestId(`plan-task-shortcut-${slot}`) as HTMLSelectElement;
+}
+function setShortcut(slot: 'left' | 'center' | 'right', reason: string | null) {
+  fireEvent.change(shortcutSelect(slot), { target: { value: reason ?? '' } });
+}
+function selectedTaskShortcuts() {
+  return getPlans().find((p) => p.name === 'Tabletop Manipulation')!.tasks[0]!
+    .failure_shortcuts;
+}
+
+test('Plans: the shortcut editor offers the shared vocabulary and writes the shared store', async () => {
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  openTaskShortcuts();
+
+  expect(screen.getByTestId('plan-task-shortcut-slot-left')).toHaveTextContent('LEFT');
+  expect(screen.getByTestId('plan-task-shortcut-slot-center')).toHaveTextContent(
+    'CENTER',
+  );
+  expect(screen.getByTestId('plan-task-shortcut-slot-right')).toHaveTextContent(
+    'RIGHT',
+  );
+  // Unassigned by default; the options are the shared failure-reason vocabulary.
+  expect(shortcutSelect('left')).toHaveValue('');
+  expect(screen.getByTestId('plan-task-shortcuts')).toHaveTextContent(
+    new RegExp(getFailReasons()[0]!),
+  );
+
+  setShortcut('left', 'Grasp missed');
+  expect(selectedTaskShortcuts().left).toBe('Grasp missed');
+  // The same reason is offered to no other slot of THIS task (one reason,
+  // one slot — the server would reject a duplicate too).
+  const centerOptions = Array.from(
+    shortcutSelect('center').querySelectorAll('option'),
+  ) as HTMLOptionElement[];
+  const centerGrasp = centerOptions.find((o) => o.value === 'Grasp missed');
+  expect(centerGrasp?.disabled).toBe(true);
+  // A different reason is still assignable to the other slot.
+  setShortcut('center', 'Object dropped');
+  expect(selectedTaskShortcuts()).toMatchObject({
+    left: 'Grasp missed',
+    center: 'Object dropped',
+    right: null,
+  });
+
+  // Unassigning clears the slot.
+  setShortcut('left', null);
+  expect(selectedTaskShortcuts().left).toBeNull();
+});
+
+test('Plans: a task switch shows that task own shortcuts', async () => {
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  openTaskShortcuts();
+  setShortcut('left', 'Grasp missed');
+
+  // Stacking (the second task) starts unassigned — each task maps its own.
+  // The task NAME button is the selector (a click on the row's padding is a
+  // no-op), exactly like the existing selection tests click 'B1'/'B2'.
+  fireEvent.click(within(screen.getByTestId('plan-task-1')).getByText('Stacking'));
+  await waitFor(() => expect(shortcutSelect('left')).toHaveValue(''));
+  expect(selectedTaskShortcuts().left).toBe('Grasp missed'); // first task untouched
+
+  // …and switching back restores the first task's assignment.
+  fireEvent.click(
+    within(screen.getByTestId('plan-task-0')).getByText('Pick and Place'),
+  );
+  await waitFor(() => expect(shortcutSelect('left')).toHaveValue('Grasp missed'));
+});
+
+test('Plans: renaming a referenced reason follows the shortcut to the new name', async () => {
+  vi.spyOn(window, 'prompt').mockReturnValue('Grasp slipped');
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  openTaskShortcuts();
+  setShortcut('left', 'Grasp missed');
+
+  // Rename the reason in its own section — the slot must not go stale.
+  fireEvent.click(screen.getByTestId('settings-menu-item-2'));
+  fireEvent.click(within(screen.getByTestId('fail-reason-0')).getByTitle('Rename'));
+  expect(getFailReasons()[0]).toBe('Grasp slipped');
+
+  openTaskShortcuts();
+  await waitFor(() => expect(selectedTaskShortcuts().left).toBe('Grasp slipped'));
+});
+
+test('Plans: removing a referenced reason clears its slot and says so', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  renderWithClient(<SettingsScreen />);
+  await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
+  openTaskShortcuts();
+  setShortcut('center', 'Object dropped');
+
+  fireEvent.click(screen.getByTestId('settings-menu-item-2'));
+  // 'Object dropped' is fail-reason-1 in the default vocabulary.
+  fireEvent.click(
+    within(screen.getByTestId('fail-reason-1')).getByTitle('Remove reason'),
+  );
+  expect(getFailReasons()).not.toContain('Object dropped');
+
+  openTaskShortcuts();
+  await waitFor(() => expect(selectedTaskShortcuts().center).toBeNull());
+  expect(screen.getByTestId('settings-toast')).toHaveTextContent(/unassigned/i);
 });
 
 // ---------------------------------------------------------------------------
@@ -862,7 +1427,9 @@ test('Plans: a catalog emptied elsewhere does not white-screen Settings', async 
 
   // The adopt lands after GET /plans resolves, i.e. while Settings is mounted.
   await waitFor(() => expect(getPlans()).toEqual([]));
-  await waitFor(() => expect(screen.getByTestId('settings-menu-item-0')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('settings-menu-item-0')).toBeInTheDocument(),
+  );
 
   // The cursor clamp lives in useSettingsState, which SettingsScreen calls for
   // EVERY section — so the whole screen died, not just Projects & tasks. Robots
@@ -901,9 +1468,11 @@ test('Plans: an empty catalog leaves the other settings sections usable', async 
   // Walk the sections that read the same hook — none of them owns a project.
   fireEvent.click(screen.getByTestId('settings-menu-item-2')); // Failure reasons
   expect(screen.getByTestId('settings-fail-reasons')).toBeInTheDocument();
-  fireEvent.click(screen.getByTestId('settings-menu-item-3')); // Operators
+  fireEvent.click(screen.getByTestId('settings-menu-item-3')); // External controls
+  expect(screen.getByTestId('settings-ext-controls')).toBeInTheDocument();
+  fireEvent.click(screen.getByTestId('settings-menu-item-4')); // Operators
   expect(screen.getByTestId('settings-operators')).toBeInTheDocument();
-  fireEvent.click(screen.getByTestId('settings-menu-item-9')); // System
+  fireEvent.click(screen.getByTestId('settings-menu-item-10')); // System
   expectNoRenderCrash(errorSpy);
 });
 
@@ -940,7 +1509,9 @@ test('Plans: a PARTIAL shrink never leaves an enabled control that does nothing'
   vi.spyOn(window, 'prompt').mockReturnValue('added condition');
 
   const errorSpy = renderGuarded();
-  await waitFor(() => expect(screen.getByTestId('settings-menu-item-1')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('settings-menu-item-1')).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId('settings-menu-item-1'));
   fireEvent.click(within(screen.getByTestId('plan-project-1')).getByText('Beta'));
   fireEvent.click(within(screen.getByTestId('plan-task-1')).getByText('B2'));
@@ -948,7 +1519,9 @@ test('Plans: a PARTIAL shrink never leaves an enabled control that does nothing'
 
   // B2 disappears from under the cursor.
   gate.release();
-  await waitFor(() => expect(screen.queryByTestId('plan-task-1')).not.toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.queryByTestId('plan-task-1')).not.toBeInTheDocument(),
+  );
   expectNoRenderCrash(errorSpy);
 
   // The selection the operator made is gone, so the controls that act on "the
@@ -957,14 +1530,18 @@ test('Plans: a PARTIAL shrink never leaves an enabled control that does nothing'
   const addCondition = screen.getByText('+ Add condition');
   expect(addCondition).toBeDisabled();
   fireEvent.click(addCondition);
-  expect(getPlans()[1]!.tasks[0]!.conditions.map((condition) => condition.name)).toEqual(['x']); // nothing added
+  expect(
+    getPlans()[1]!.tasks[0]!.conditions.map((condition) => condition.name),
+  ).toEqual(['x']); // nothing added
 
   // Re-confirming by picking a task restores the control, and it WORKS.
   fireEvent.click(within(screen.getByTestId('plan-task-0')).getByText('B1'));
   expect(screen.queryByTestId('plan-task-selection-lost')).not.toBeInTheDocument();
   expect(screen.getByText('+ Add condition')).toBeEnabled();
   fireEvent.click(screen.getByText('+ Add condition'));
-  expect(getPlans()[1]!.tasks[0]!.conditions.map((condition) => condition.name)).toEqual(['x', 'added condition']);
+  expect(
+    getPlans()[1]!.tasks[0]!.conditions.map((condition) => condition.name),
+  ).toEqual(['x', 'added condition']);
   expectNoRenderCrash(errorSpy);
 });
 
@@ -983,13 +1560,17 @@ test('Settings survives a browser where localStorage access throws', async () =>
   vi.spyOn(window, 'prompt').mockReturnValue('Storage-less project');
   const errorSpy = renderGuarded();
 
-  await waitFor(() => expect(screen.getByTestId('settings-menu-item-1')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('settings-menu-item-1')).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId('settings-menu-item-1'));
 
   // Editing still works for the session; it just cannot be persisted.
   fireEvent.click(screen.getByText('+ Add project'));
   expect(getPlans().some((p) => p.name === 'Storage-less project')).toBe(true);
-  expect(screen.getByTestId('plan-project-name')).toHaveTextContent('Storage-less project');
+  expect(screen.getByTestId('plan-project-name')).toHaveTextContent(
+    'Storage-less project',
+  );
 
   fireEvent.click(screen.getByTestId('settings-menu-item-2')); // Failure reasons
   fireEvent.click(screen.getByTestId('fail-reason-add'));
@@ -1022,7 +1603,9 @@ test('Plans: the catalog empties WHILE the operator is in the detail editor', as
   __rehydratePlansStore();
 
   const errorSpy = renderGuarded();
-  await waitFor(() => expect(screen.getByTestId('settings-menu-item-1')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('settings-menu-item-1')).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId('settings-menu-item-1'));
 
   // Put BOTH cursors off zero: project 1, task 1 (its second condition proves it).
@@ -1061,14 +1644,16 @@ test('Plans: the catalog empties WHILE the operator is in the detail editor', as
 // then no other robot's entry to serve.
 // ---------------------------------------------------------------------------
 
-test('Data quality: alert rules follow the ACTIVE robot across a switch', async () => {
+test('Alerts: alert rules follow the ACTIVE robot across a switch', async () => {
   renderWithClient(<SettingsScreen />);
   await waitFor(() => expect(screen.getByTestId('robot-form')).toBeInTheDocument());
 
-  // Data quality shows airoa_hsr's rule, from airoa_hsr's file.
-  fireEvent.click(screen.getByTestId('settings-menu-item-5'));
+  // Alerts shows airoa_hsr's rule, from airoa_hsr's file.
+  fireEvent.click(screen.getByTestId('settings-section-alerts'));
   await waitFor(() =>
-    expect(screen.getByLabelText('rule topic 0')).toHaveValue('/airoa_hsr/joint_states'),
+    expect(screen.getByLabelText('rule topic 0')).toHaveValue(
+      '/airoa_hsr/joint_states',
+    ),
   );
 
   // Switch the active robot from the Robots section.
@@ -1079,10 +1664,10 @@ test('Data quality: alert rules follow the ACTIVE robot across a switch', async 
     expect(selectPosts()).toContainEqual({ category: 'robot', id: 'template' }),
   );
 
-  // Back to Data quality: the previous robot's rules must never be on screen
+  // Back to Alerts: the previous robot's rules must never be on screen
   // under the new robot — not even for the moment before a refetch lands, since
   // Save in that window would write them into the new robot's file.
-  fireEvent.click(screen.getByTestId('settings-menu-item-5'));
+  fireEvent.click(screen.getByTestId('settings-section-alerts'));
   expect(screen.queryByDisplayValue('/airoa_hsr/joint_states')).not.toBeInTheDocument();
   await waitFor(() =>
     expect(screen.getByLabelText('rule topic 0')).toHaveValue('/template/joint_states'),
@@ -1098,12 +1683,19 @@ test('Data quality: alert rules follow the ACTIVE robot across a switch', async 
 // ---------------------------------------------------------------------------
 
 test('an edit that could not reach the server says so', async () => {
-  serverPlans = { projects: null, failure_reasons: null, operators: null, updated_at: null };
+  serverPlans = {
+    projects: null,
+    failure_reasons: null,
+    operators: null,
+    updated_at: null,
+  };
   plansPutFails = true;
   vi.spyOn(window, 'prompt').mockReturnValue('Warehouse Sort');
   renderGuarded();
 
-  await waitFor(() => expect(screen.getByTestId('settings-menu-item-1')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('settings-menu-item-1')).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId('settings-menu-item-1'));
   fireEvent.click(screen.getByText('+ Add project'));
 
@@ -1116,15 +1708,24 @@ test('an edit that could not reach the server says so', async () => {
 });
 
 test('a catalog edit that DOES reach the server raises no such note', async () => {
-  serverPlans = { projects: null, failure_reasons: null, operators: null, updated_at: null };
+  serverPlans = {
+    projects: null,
+    failure_reasons: null,
+    operators: null,
+    updated_at: null,
+  };
   vi.spyOn(window, 'prompt').mockReturnValue('Warehouse Sort');
   renderGuarded();
 
-  await waitFor(() => expect(screen.getByTestId('settings-menu-item-1')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByTestId('settings-menu-item-1')).toBeInTheDocument(),
+  );
   fireEvent.click(screen.getByTestId('settings-menu-item-1'));
   fireEvent.click(screen.getByText('+ Add project'));
 
-  await waitFor(() => expect(getPlans().some((p) => p.name === 'Warehouse Sort')).toBe(true));
+  await waitFor(() =>
+    expect(getPlans().some((p) => p.name === 'Warehouse Sort')).toBe(true),
+  );
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
   });

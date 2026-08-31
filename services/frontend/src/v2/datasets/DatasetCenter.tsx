@@ -17,6 +17,7 @@
 // row and never hidden.
 
 import { Badge, Button, Modal, TrashIcon, cn } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { CaptureLabelChips } from '../episodeChips';
@@ -56,7 +57,7 @@ function SummaryGlyph({ active }: { active: boolean }) {
         r={6}
         fill="none"
         strokeWidth={3}
-        className={active ? 'stroke-teal-200' : 'stroke-gray-200'}
+        className={active ? 'stroke-accent' : 'stroke-border'}
       />
       <circle
         cx={8}
@@ -67,13 +68,14 @@ function SummaryGlyph({ active }: { active: boolean }) {
         pathLength={100}
         strokeDasharray="62 100"
         transform="rotate(-90 8 8)"
-        className={active ? 'stroke-teal-600' : 'stroke-gray-500'}
+        className={active ? 'stroke-accent' : 'stroke-border'}
       />
     </svg>
   );
 }
 
 function ScopeHeaderBar({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation('datasets');
   const { scope, scopeMembers, memberRows } = state;
   const status = state.selectedDataset?.dataset.status ?? 'active';
   // The header leads with what is actually on screen and keeps the scope total
@@ -81,8 +83,11 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
   const total = scopeMembers.length;
   const rendered = memberRows.length;
   return (
-    <div className="flex flex-wrap items-center gap-2 border-b border-gray-100 px-[18px] py-[11px]">
-      <h2 data-testid="dataset-scope-title" className="text-[15px] font-bold text-gray-900">
+    <div className="flex flex-wrap items-center gap-2 border-b border-border px-[18px] py-[11px]">
+      <h2
+        data-testid="dataset-scope-title"
+        className="text-[15px] font-bold text-text-primary"
+      >
         {scope.label}
       </h2>
       {scope.operator && <Badge tone="gray">{scope.operator}</Badge>}
@@ -92,10 +97,10 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
           <Badge tone={status === 'archived' ? 'gray' : 'amber'}>{status}</Badge>
         </span>
       )}
-      <span data-testid="dataset-scope-count" className="text-[11.5px] text-gray-500">
+      <span data-testid="dataset-scope-count" className="text-[11.5px] text-text-muted">
         {rendered === total
           ? memberCount(total)
-          : `showing ${formatCount(rendered)} of ${memberCount(total)}`}
+          : t('scopeShowing', { shown: String(rendered), total: String(total) })}
       </span>
       <div className="flex-1" />
       <input
@@ -103,36 +108,35 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
         data-testid="dataset-member-search"
         value={state.memberSearch}
         onChange={(e) => state.setMemberSearch(e.target.value)}
-        aria-label="Search members of this dataset"
-        placeholder="Find #N, capture, run, operator…"
-        className="w-[190px] rounded-control border border-gray-200 bg-white px-2.5 py-1 text-[12px] text-gray-700 placeholder:text-gray-500"
+        aria-label={t('searchDatasetMembers')}
+        placeholder={t('searchDatasetMembersPlaceholder')}
+        className="w-[190px] rounded-control border border-border bg-surface px-2.5 py-1 text-[12px] text-text-primary placeholder:text-text-muted"
       />
       {scope.kind === 'dataset' && state.canEditDataset && (
         <button
           type="button"
           data-testid="edit-dataset-btn"
           onClick={state.openEdit}
-          title="Edit the name / operator / task labels. Members and their numbers do not change."
-          className="inline-flex shrink-0 items-center gap-1 rounded-control border border-gray-200 px-2.5 py-1 text-xs font-semibold text-gray-600 hover:bg-gray-50"
+          title={t('editDatasetHint')}
+          className="inline-flex shrink-0 items-center gap-1 rounded-control border border-border px-2.5 py-1 text-xs font-semibold text-text-secondary hover:bg-surface-muted"
         >
-          Edit
+          {t('edit')}
         </button>
       )}
-      {scope.kind === 'dataset' && (state.canArchiveDataset || status === 'archiving') && (
-        <button
-          type="button"
-          data-testid="archive-dataset-btn"
-          onClick={state.openDatasetArchive}
-          title={
-            status === 'archiving'
-              ? 'This dataset is being archived — open the run for progress or to resume it.'
-              : 'Copy this whole dataset to an archive root, verify it, then remove its recordings from this machine. Terminal.'
-          }
-          className="inline-flex shrink-0 items-center gap-1 rounded-control border border-teal-200 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-50"
-        >
-          {status === 'archiving' ? 'Archive run…' : 'Archive dataset'}
-        </button>
-      )}
+      {scope.kind === 'dataset' &&
+        (state.canArchiveDataset || status === 'archiving') && (
+          <button
+            type="button"
+            data-testid="archive-dataset-btn"
+            onClick={state.openDatasetArchive}
+            title={
+              status === 'archiving' ? t('archiveRunHint') : t('archiveDatasetHint')
+            }
+            className="inline-flex shrink-0 items-center gap-1 rounded-control border border-accent px-2.5 py-1 text-xs font-semibold text-accent hover:bg-interaction-selected"
+          >
+            {status === 'archiving' ? t('archiveRun') : t('archiveDataset')}
+          </button>
+        )}
       {/* Renders nothing at all unless this installation has an exporter with
           a profile library (§6.2) — the archive gate's rule, one control over.
           Not gated on status: an archived-copy dataset is still convertible,
@@ -152,15 +156,15 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
           disabled={status !== 'active'}
           title={
             status === 'archived'
-              ? 'Kept: this record is what remembers where the dataset went.'
+              ? t('deleteArchivedHint')
               : status === 'archiving'
-                ? 'Not while the archive run is out copying.'
-                : 'Delete this dataset. The recordings it lists are not touched.'
+                ? t('deleteArchivingHint')
+                : t('deleteDatasetHint')
           }
-          className="inline-flex shrink-0 items-center gap-1 rounded-control border border-red-200 px-2.5 py-1 text-xs font-semibold text-red-700 hover:bg-red-50 disabled:cursor-default disabled:border-gray-200 disabled:text-gray-400"
+          className="inline-flex shrink-0 items-center gap-1 rounded-control border border-status-danger-border px-2.5 py-1 text-xs font-semibold text-status-danger-text hover:bg-status-danger-bg disabled:cursor-default disabled:border-border disabled:text-text-muted"
         >
           <TrashIcon />
-          Delete dataset
+          {t('deleteDataset')}
         </button>
       )}
     </div>
@@ -171,31 +175,29 @@ function ScopeHeaderBar({ state }: { state: DatasetsState }) {
  *  Rendered only for an archived dataset — the run's progress lives in the
  *  archive dialog, not here. */
 function ArchivedBanner({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation('datasets');
   const dataset = state.selectedDataset?.dataset;
   if (!dataset || dataset.status !== 'archived') return null;
   const copied = dataset.archive_mode === 'copy';
   return (
     <p
       data-testid="dataset-archived-banner"
-      className="border-b border-gray-100 bg-gray-50 px-[18px] py-2 text-[12px] leading-relaxed text-gray-600"
+      className="border-b border-border bg-surface-muted px-[18px] py-2 text-[12px] leading-relaxed text-text-secondary"
     >
-      {copied ? 'Copied to' : 'Archived to'}{' '}
-      <span className="break-all font-mono text-gray-800">
+      {copied ? t('copiedTo') : t('archivedTo')}{' '}
+      <span className="break-all font-mono text-text-primary">
         {dataset.archive_destination}
       </span>
-      {dataset.archived_at && <> on {formatWhen(dataset.archived_at)}</>} —{' '}
-      {copied
-        ? 'every recording it lists was verified there and stays on this ' +
-          'machine, free to keep working in other datasets. The dataset is ' +
-          'read-only; this record is what remembers the export.'
-        : 'every recording it lists was verified there and removed from this ' +
-          'machine. The dataset is read-only; this record is what remembers ' +
-          'where it went.'}
+      {dataset.archived_at && (
+        <> {t('archivedOn', { when: formatWhen(dataset.archived_at) })}</>
+      )}{' '}
+      — {copied ? t('archivedCopyDetail') : t('archivedMoveDetail')}
     </p>
   );
 }
 
 function SummaryRow({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation('datasets');
   const active = state.isSummaryActive;
   return (
     <button
@@ -204,24 +206,30 @@ function SummaryRow({ state }: { state: DatasetsState }) {
       aria-pressed={active}
       onClick={state.selectSummary}
       className={cn(
-        'flex w-full items-center gap-2 border-b border-gray-100 px-[18px] py-2 text-left transition-colors',
-        active ? 'border-l-[3px] border-l-teal-600 bg-teal-50 pl-[15px]' : 'hover:bg-gray-50',
+        'flex w-full items-center gap-2 border-b border-border px-[18px] py-2 text-left transition-colors',
+        active
+          ? 'border-l-[3px] border-l-accent bg-interaction-selected pl-[15px]'
+          : 'hover:bg-surface-muted',
       )}
     >
       <SummaryGlyph active={active} />
       <span
-        className={cn('text-[12.5px] font-semibold', active ? 'text-teal-800' : 'text-gray-700')}
+        className={cn(
+          'text-[12.5px] font-semibold',
+          active ? 'text-accent' : 'text-text-primary',
+        )}
       >
-        Summary
+        {t('summary')}
       </span>
-      <span className="truncate text-[11.5px] text-gray-500">
-        success / failure · quality · availability for {state.scope.label}
+      <span className="truncate text-[11.5px] text-text-muted">
+        {t('summaryLine', { scope: state.scope.label })}
       </span>
     </button>
   );
 }
 
 function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }) {
+  const { t } = useTranslation('datasets');
   const selected = state.isMemberSelected(row);
   const capture = row.capture;
   return (
@@ -242,24 +250,24 @@ function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }
       }}
       title={row.captureId}
       className={cn(
-        'grid cursor-pointer items-center gap-2 border-t border-gray-50 px-[18px] py-2 text-sm transition-colors first:border-t-0 hover:bg-gray-50',
+        'grid cursor-pointer items-center gap-2 border-t border-border px-[18px] py-2 text-sm transition-colors first:border-t-0 hover:bg-surface-muted',
         GRID_COLS,
-        selected && 'border-l-[3px] border-l-teal-600 bg-teal-50 pl-[15px]',
+        selected && 'border-l-[3px] border-l-accent bg-interaction-selected pl-[15px]',
       )}
     >
-      <span className="font-mono text-[13px] font-semibold text-gray-900">
+      <span className="font-mono text-[13px] font-semibold text-text-primary">
         #{row.displayIndex}
       </span>
       {/* Identity first (2026-08-03 feedback): when it was taken and what it
           was, with the on-disk run name demoted to the second line. */}
       <div className="flex min-w-0 flex-col">
-        <span className="truncate text-[12px] text-gray-700">
+        <span className="truncate text-[12px] text-text-primary">
           {capture ? captureWhen(capture) : shortCaptureId(row.captureId)}
           {capture && captureFacts(capture) !== '' && (
-            <span className="text-gray-500"> · {captureFacts(capture)}</span>
+            <span className="text-text-muted"> · {captureFacts(capture)}</span>
           )}
         </span>
-        <span className="truncate font-mono text-[10.5px] text-gray-500">
+        <span className="truncate font-mono text-[10.5px] text-text-muted">
           {capture?.run_id ?? shortCaptureId(row.captureId)}
         </span>
       </div>
@@ -271,10 +279,10 @@ function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }
       ) : (
         <span
           data-testid={`dataset-member-unresolved-${row.membershipId}`}
-          title="This dataset lists a capture the loaded catalog has no row for, so nothing can be said about it here."
-          className="text-[11px] italic text-gray-500"
+          title={t('missingCatalogHint')}
+          className="text-[11px] italic text-text-muted"
         >
-          not in the catalog
+          {t('missingCatalog')}
         </span>
       )}
       <div className="flex min-w-0 flex-wrap items-center gap-1.5">
@@ -284,7 +292,7 @@ function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }
             testId={`dataset-member-labels-${row.membershipId}`}
           />
         ) : (
-          <span className="text-[11px] italic text-gray-500">—</span>
+          <span className="text-[11px] italic text-text-muted">—</span>
         )}
         {capture && (
           <CaptureConditionLabel
@@ -294,7 +302,7 @@ function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }
           />
         )}
       </div>
-      <span className="justify-self-end font-mono text-xs text-gray-500">
+      <span className="justify-self-end font-mono text-xs text-text-muted">
         {formatCount(capture?.message_count)}
       </span>
     </div>
@@ -305,16 +313,24 @@ function MemberTableRow({ row, state }: { row: MemberRow; state: DatasetsState }
  *  matched, and a pager through the rest. Never a silent truncation — a dataset
  *  stays fully reachable however large it grows. */
 function MemberPager({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation('datasets');
   const { page, pageCount, pageSize, memberMatchCount, goToPage } = state;
   const first = (page - 1) * pageSize + 1;
   const last = Math.min(page * pageSize, memberMatchCount);
   return (
     <div
       data-testid="dataset-member-pager"
-      className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t border-gray-100 bg-gray-50 px-[18px] py-2.5"
+      className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t border-border bg-surface-muted px-[18px] py-2.5"
     >
-      <span className="text-[11.5px] text-gray-500" data-testid="dataset-member-range">
-        {formatCount(first)}–{formatCount(last)} of {memberCount(memberMatchCount)}
+      <span
+        className="text-[11.5px] text-text-muted"
+        data-testid="dataset-member-range"
+      >
+        {t('memberRange', {
+          start: formatCount(first),
+          end: formatCount(last),
+          total: String(memberCount(memberMatchCount)),
+        })}
       </span>
       <span className="ml-auto flex items-center gap-1.5">
         <button
@@ -322,21 +338,21 @@ function MemberPager({ state }: { state: DatasetsState }) {
           data-testid="dataset-member-prev"
           onClick={() => goToPage(page - 1)}
           disabled={page <= 1}
-          className="rounded-chip border border-gray-200 px-2 py-0.5 text-[11px] font-bold text-gray-600 hover:bg-white disabled:cursor-default disabled:opacity-40"
+          className="rounded-chip border border-border px-2 py-0.5 text-[11px] font-bold text-text-secondary hover:bg-surface disabled:cursor-default disabled:opacity-40"
         >
-          ← Prev
+          {t('pagerPrevious')}
         </button>
-        <span className="text-[11px] text-gray-500" data-testid="dataset-member-page">
-          Page {formatCount(page)} / {formatCount(pageCount)}
+        <span className="text-[11px] text-text-muted" data-testid="dataset-member-page">
+          {t('pagerPage', { page: String(page), total: String(pageCount) })}
         </span>
         <button
           type="button"
           data-testid="dataset-member-next"
           onClick={() => goToPage(page + 1)}
           disabled={page >= pageCount}
-          className="rounded-chip border border-teal-200 px-2 py-0.5 text-[11px] font-bold text-teal-700 hover:bg-teal-50 disabled:cursor-default disabled:border-gray-200 disabled:text-gray-400 disabled:opacity-60"
+          className="rounded-chip border border-accent px-2 py-0.5 text-[11px] font-bold text-accent hover:bg-interaction-selected disabled:cursor-default disabled:border-border disabled:text-text-muted disabled:opacity-60"
         >
-          Next →
+          {t('pagerNext')}
         </button>
       </span>
     </div>
@@ -347,13 +363,14 @@ function MemberPager({ state }: { state: DatasetsState }) {
  *  in the same breath as the word "delete", because the model it replaced DID
  *  take the recordings with it. */
 function DeleteDatasetDialog({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation('datasets');
   const row = state.selectedDataset;
   const gone = state.selectionGone;
   return (
     <Modal
       open={state.confirmingDatasetDelete}
       onClose={state.cancelDatasetDelete}
-      title="Delete dataset"
+      title={t('deleteDataset')}
       footer={
         <>
           <Button
@@ -362,7 +379,7 @@ function DeleteDatasetDialog({ state }: { state: DatasetsState }) {
             disabled={state.deletingDataset}
             data-testid="delete-dataset-cancel"
           >
-            {gone ? 'Close' : 'Cancel'}
+            {t('cancel')}
           </Button>
           <Button
             variant="danger"
@@ -370,7 +387,7 @@ function DeleteDatasetDialog({ state }: { state: DatasetsState }) {
             disabled={state.deletingDataset || gone}
             data-testid="delete-dataset-confirm"
           >
-            {state.deletingDataset ? 'Deleting…' : 'Delete dataset'}
+            {state.deletingDataset ? t('deletingDataset') : t('deleteDataset')}
           </Button>
         </>
       }
@@ -388,30 +405,31 @@ function DeleteDatasetDialog({ state }: { state: DatasetsState }) {
                 then says "" and "0 memberships" would be inventing both. Name
                 what is actually known: the id, and the count only when a row
                 is there to report one. */}
-            <p className="text-[13px] leading-relaxed text-gray-600">
+            <p className="text-[13px] leading-relaxed text-text-secondary">
               {row ? (
                 <>
-                  <span className="font-semibold text-gray-900">
+                  <span className="font-semibold text-text-primary">
                     {row.dataset.name}
                   </span>{' '}
-                  and its {row.dataset.member_count} membership
-                  {row.dataset.member_count === 1 ? ' is' : 's are'} removed.
+                  {t('deleteMembers', {
+                    name: row.dataset.name,
+                    count: String(row.dataset.member_count),
+                  })}
                 </>
               ) : (
                 <>
-                  <span className="break-all font-mono text-gray-900">
+                  <span className="break-all font-mono text-text-primary">
                     {state.selectedDatasetId}
                   </span>{' '}
-                  and its memberships are removed.
+                  {t('deleteUnknownDataset', { id: state.selectedDatasetId ?? '' })}
                 </>
               )}
             </p>
             <p
               data-testid="delete-dataset-scope"
-              className="rounded-control border border-teal-100 bg-teal-50 px-3 py-2 text-[12.5px] text-teal-900"
+              className="rounded-control border border-accent bg-interaction-selected px-3 py-2 text-[12.5px] text-accent-strong"
             >
-              No recording is deleted. A dataset is a list of captures, not a copy
-              of them — every capture it named stays exactly where it is.
+              {t('deleteDatasetScope')}
             </p>
           </>
         )}
@@ -424,6 +442,7 @@ function DeleteDatasetDialog({ state }: { state: DatasetsState }) {
 }
 
 export function DatasetCenter({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation('datasets');
   // The dialogs are mounted OUTSIDE the pane switch on purpose. They used to
   // live inside the "a dataset is selected" branch, so a dataset deleted by
   // someone else took any open Delete/Archive dialog down with it mid-decision
@@ -447,7 +466,9 @@ export function DatasetCenter({ state }: { state: DatasetsState }) {
       <LeRobotExportDialog
         state={state.lerobotExport}
         datasetName={
-          state.selectedDataset?.dataset.name ?? state.selectedDatasetId ?? 'This dataset'
+          state.selectedDataset?.dataset.name ??
+          state.selectedDatasetId ??
+          t('thisDataset')
         }
       />
     </>
@@ -457,31 +478,30 @@ export function DatasetCenter({ state }: { state: DatasetsState }) {
 /** No selection: numbering is per dataset, so a blended every-dataset listing
  *  would show #N columns that identify nothing. */
 function NoSelectionPane() {
+  const { t } = useTranslation('datasets');
   return (
     <div
       data-testid="dataset-center"
-      className="flex min-h-0 min-w-0 flex-col items-center justify-center rounded-card border border-gray-200 bg-white p-8 shadow-card"
+      className="flex min-h-0 min-w-0 flex-col items-center justify-center rounded-card border border-border bg-surface p-8 shadow-card"
     >
       <p
         data-testid="dataset-none-selected"
-        className="max-w-[420px] text-center text-[13px] leading-relaxed text-gray-500"
+        className="max-w-[420px] text-center text-[13px] leading-relaxed text-text-muted"
       >
-        Select a dataset on the left — or create one with{' '}
-        <span className="font-semibold text-gray-700">+ New</span> — to see its
-        members. Exported sets live under the{' '}
-        <span className="font-semibold text-gray-700">Archived</span> view.
+        {t('noDatasetSelected')}
       </p>
     </div>
   );
 }
 
 function SelectedDatasetPane({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation('datasets');
   const { memberRows, scopeMembers, selected } = state;
 
   return (
     <div
       data-testid="dataset-center"
-      className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card"
+      className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-card border border-border bg-surface shadow-card"
     >
       {/* TOP PANE — members, capped ~10 rows then internal scroll. */}
       <div data-testid="dataset-top-pane" className="flex shrink-0 flex-col">
@@ -490,25 +510,28 @@ function SelectedDatasetPane({ state }: { state: DatasetsState }) {
         <SummaryRow state={state} />
         <div
           className={cn(
-            'grid gap-2 border-b border-gray-100 px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500',
+            'grid gap-2 border-b border-border px-[18px] py-2 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted',
             GRID_COLS,
           )}
         >
           <span>#</span>
-          <span>Capture</span>
-          <span>Availability</span>
-          <span>Labels</span>
-          <span className="justify-self-end">Msgs</span>
+          <span>{t('tableCapture')}</span>
+          <span>{t('tableAvailability')}</span>
+          <span>{t('labels')}</span>
+          <span className="justify-self-end">{t('messages')}</span>
         </div>
-        <div data-testid="dataset-member-scroll" className={cn('overflow-y-auto', TABLE_SCROLL)}>
+        <div
+          data-testid="dataset-member-scroll"
+          className={cn('overflow-y-auto', TABLE_SCROLL)}
+        >
           {memberRows.length === 0 ? (
             <p
               data-testid="dataset-member-empty"
-              className="px-[18px] py-4 text-[12.5px] text-gray-500"
+              className="px-[18px] py-4 text-[12.5px] text-text-muted"
             >
               {scopeMembers.length === 0
-                ? 'No members yet — add finished recordings from the right-hand rail.'
-                : `No member matches “${state.memberSearch}”.`}
+                ? t('noMembersYet')
+                : t('noMemberSearchMatch', { search: state.memberSearch })}
             </p>
           ) : (
             <>
@@ -524,7 +547,7 @@ function SelectedDatasetPane({ state }: { state: DatasetsState }) {
       {/* BOTTOM PANE — selected member's capture, else the scope summary. */}
       <div
         data-testid="dataset-bottom-pane"
-        className="min-h-0 flex-1 overflow-y-auto border-t-4 border-gray-100"
+        className="min-h-0 flex-1 overflow-y-auto border-t-4 border-border"
       >
         {selected ? (
           // Keyed by CAPTURE, so selecting another member mounts a fresh

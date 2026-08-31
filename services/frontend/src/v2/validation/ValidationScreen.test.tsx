@@ -439,29 +439,23 @@ beforeEach(() => {
 
 afterEach(() => vi.restoreAllMocks());
 
-test('selecting a pipeline updates the detail header (name + lifecycle chip)', async () => {
+test('pipeline selection shows only server-reported facts, never fake lifecycle state', async () => {
   renderWithClient(<ValidationScreen />);
 
   await screen.findByTestId('pipeline-card-fast_validation');
   const detail = () => screen.getByTestId('detail-header');
-  // First pipeline defaults to Standard.
-  await waitFor(() =>
-    expect(within(detail()).getByText('STANDARD')).toBeInTheDocument(),
-  );
   expect(within(detail()).getByText('fast_validation')).toBeInTheDocument();
+  expect(
+    screen.getByText(/Lifecycle and promotion are not configured/),
+  ).toBeInTheDocument();
 
   fireEvent.click(screen.getByTestId('pipeline-card-hello_kairos'));
-  // Second pipeline is the mock Candidate.
   await waitFor(() =>
-    expect(within(detail()).getByText('CANDIDATE')).toBeInTheDocument(),
+    expect(within(detail()).getByText('hello_kairos')).toBeInTheDocument(),
   );
-  expect(within(detail()).getByText('Promote to Standard…')).toBeInTheDocument();
-
-  fireEvent.click(screen.getByTestId('pipeline-card-loss_report'));
-  await waitFor(() =>
-    expect(within(detail()).getByText('EXPERIMENTAL')).toBeInTheDocument(),
-  );
-  expect(within(detail()).queryByText('Promote to Standard…')).not.toBeInTheDocument();
+  expect(screen.queryByText(/STANDARD|CANDIDATE|EXPERIMENTAL/)).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /Promote/ })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: /New run/ })).not.toBeInTheDocument();
 });
 
 test("the schema-driven form renders the selected pipeline's real fields", async () => {
@@ -619,9 +613,9 @@ test('Cancel run records a durable server intent', async () => {
   fireEvent.click(screen.getByRole('button', { name: 'Run on selection' }));
   fireEvent.click(await screen.findByRole('button', { name: 'Cancel run' }));
   await waitFor(() =>
-    expect(requestedUrls.some((url) => url.endsWith('/validation/runs/vr-1/cancel'))).toBe(
-      true,
-    ),
+    expect(
+      requestedUrls.some((url) => url.endsWith('/validation/runs/vr-1/cancel')),
+    ).toBe(true),
   );
 });
 
@@ -753,7 +747,7 @@ test('a batch target validates every capture of that batch that is here (blast r
   // The batch member whose bytes are elsewhere is excluded from the count.
   expect(
     await screen.findByRole('option', {
-      name: /07\/13 · #4 · pick \(server selection\)/,
+      name: /13\/07 · #4 · pick \(server selection\)/,
     }),
   ).toBeInTheDocument();
 
@@ -776,7 +770,7 @@ test('batch targets survive a list that carries no per-capture rows', async () =
   const target = (await screen.findByLabelText('target')) as HTMLSelectElement;
 
   const option = await screen.findByRole('option', {
-    name: /07\/13 · #4 · pick/,
+    name: /13\/07 · #4 · pick/,
   });
   expect(option).toBeInTheDocument();
   expect((option as HTMLOptionElement).value).toBe('batch:batch_x');
@@ -915,10 +909,14 @@ test('a topic chosen for one capture does not carry to the next one', async () =
 
   // Target defaults to cap_002. Choose its SECOND camera explicitly — an
   // explicit choice is what lands in `overrides`.
-  const select = (await screen.findByLabelText('topic')) as HTMLSelectElement;
-  await waitFor(() =>
-    expect(select.value).toBe('/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed'),
+  await waitFor(
+    () =>
+      expect((screen.getByLabelText('topic') as HTMLSelectElement).value).toBe(
+        '/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed',
+      ),
+    { timeout: 5_000 },
   );
+  const select = screen.getByLabelText('topic') as HTMLSelectElement;
   fireEvent.change(select, {
     target: { value: '/hsrb/hand_camera/image_raw/compressed' },
   });

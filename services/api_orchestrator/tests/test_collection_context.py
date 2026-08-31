@@ -444,7 +444,10 @@ def test_rebuild_keeps_manifest_context_over_an_inconsistent_record_batch(
             batch_id="inconsistent-batch",
         ),
     )
-    client.close()
+    # ``TestClient.close()`` closes HTTP transport only; ending the context is
+    # what runs the app lifespan and drains stop-time work before this test
+    # replaces the catalog file.
+    client.__exit__(None, None, None)
     (data_dir / "kairos.db").unlink()
 
     app = create_orchestrator_app(

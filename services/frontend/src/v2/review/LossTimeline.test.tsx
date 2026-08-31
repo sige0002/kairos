@@ -4,6 +4,7 @@
 
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, expect, test, vi } from 'vitest';
+import '../../i18n';
 import type { SignalReportExt } from './signalReport';
 import { LossTimeline } from './LossTimeline';
 
@@ -26,7 +27,12 @@ function report(): SignalReportExt {
 
 test('renders one worst-severity lane with per-bin colours', () => {
   render(
-    <LossTimeline report={report()} playheadFrac={null} seekEnabled={false} onSeekGlobal={() => {}} />,
+    <LossTimeline
+      report={report()}
+      playheadFrac={null}
+      seekEnabled={false}
+      onSeekGlobal={() => {}}
+    />,
   );
   const bins = screen.getAllByTestId('timeline-bin');
   expect(bins).toHaveLength(4);
@@ -44,7 +50,12 @@ test('renders one worst-severity lane with per-bin colours', () => {
 test('clicking a bin seeks to its global start when sync is enabled', () => {
   const onSeek = vi.fn();
   render(
-    <LossTimeline report={report()} playheadFrac={0.5} seekEnabled onSeekGlobal={onSeek} />,
+    <LossTimeline
+      report={report()}
+      playheadFrac={0.5}
+      seekEnabled
+      onSeekGlobal={onSeek}
+    />,
   );
   fireEvent.click(screen.getAllByTestId('timeline-bin')[2]!);
   expect(onSeek).toHaveBeenCalledWith(20 * MS);
@@ -54,7 +65,12 @@ test('clicking a bin seeks to its global start when sync is enabled', () => {
 test('renders nothing without a global span (v1.0 sidecar)', () => {
   const noSpan: SignalReportExt = { topics: report().topics };
   const { container } = render(
-    <LossTimeline report={noSpan} playheadFrac={null} seekEnabled={false} onSeekGlobal={() => {}} />,
+    <LossTimeline
+      report={noSpan}
+      playheadFrac={null}
+      seekEnabled={false}
+      onSeekGlobal={() => {}}
+    />,
   );
   expect(container).toBeEmptyDOMElement();
 });

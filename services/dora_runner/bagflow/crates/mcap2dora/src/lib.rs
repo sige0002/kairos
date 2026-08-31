@@ -9,8 +9,8 @@
 //! same batches to Arrow IPC files for caching / offline use.
 
 pub mod decode;
-pub mod rosmsg;
 mod reader;
+pub mod rosmsg;
 
 pub use memmap2::Mmap;
 pub use reader::{map_file, McapArrowReader, Mode, ReaderOptions, Stats, TopicBatch};

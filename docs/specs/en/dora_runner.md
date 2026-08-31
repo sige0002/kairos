@@ -259,7 +259,7 @@ are recorded in `VENDOR.md`.
 
 ## API (service-internal API; public exposure is via `api_orchestrator`)
 
-- `POST /jobs` — `{ capture_id, pipeline, params? }` → `{ job_id }`
+- `POST /jobs` — `{ capture_id, pipeline, params? }` → `{ job_id }`. Meta-validate each `params_schema` as Draft 2020-12 at registration, then materialize defaults and validate without coercion at request time. Invalid input returns `400 invalid_pipeline_params` (pipeline / path / schema_path / reason) before creating a job row or task.
 - `GET /jobs/{id}/status` — `{ state: "queued"|"running"|"succeeded"|"failed"|"canceled", progress, logs_tail, cancel_requested }`
 - `GET /jobs/{id}/result` — `{ summary, artifacts: [] }`
 - `POST /jobs/{id}/cancel` — **cooperative cancellation** (2026-08 revision). A `queued` job is `canceled` immediately (the worker honours it before starting). **For a `running` job this is a REQUEST, not a state**: the response stays `running` with `cancel_requested: true`, and the job turns `canceled` only when the worker actually stops the real work at its next checkpoint — for bagflow, a subprocess watcher (checks the cancel event twice a second, kills the CLI and sweeps the dataflow with `dora stop`); for the in-process pipelines, a cancel-event check per message (loss_report / signal_report) or per frame (video_check). Previously the shielded threadpool/subprocess ran to completion while only the label flipped to `canceled`, the orchestrator released the lease, and a running job's capture became deletable (timing sweep S1-1/S1-2). Work that completes before reaching a checkpoint stays `succeeded` (the honest outcome of a cancel that arrived too late). Clients must not stop polling on the cancel response — keep watching until a terminal state.

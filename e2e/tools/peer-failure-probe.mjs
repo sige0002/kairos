@@ -45,7 +45,7 @@ const flag = (n, d = null) => {
   return i === -1 ? d : (args[i + 1] ?? true);
 };
 
-const BASE = flag('base', process.env.E2E_BASE_URL ?? 'http://127.0.0.1:18080');
+const BASE = flag('base', process.env.E2E_BASE_URL ?? 'http://127.0.0.1:28080');
 const SHOTS = flag('shots', 'dev_image');
 const CONTROL = has('control');
 const DEADLINE_MS = Number(flag('deadline', 75000));

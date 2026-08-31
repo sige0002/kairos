@@ -15,6 +15,7 @@
 // standing without being taught about them one at a time.
 
 import { Button } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { readCaptureError } from '../captures/errors';
 
 export function BlockingFailure({
@@ -24,6 +25,7 @@ export function BlockingFailure({
   error: unknown;
   onDismiss: () => void;
 }) {
+  const { t } = useTranslation('common');
   if (error == null) return null;
   const reading = readCaptureError(error);
   return (
@@ -31,19 +33,25 @@ export function BlockingFailure({
       role="alert"
       data-testid="dataset-blocking-failure"
       data-error-code={reading.code}
-      className="fixed bottom-[26px] left-1/2 z-[70] flex w-[min(560px,calc(100vw-40px))] -translate-x-1/2 flex-col gap-2 rounded-card border border-red-200 bg-white px-4 py-3 shadow-float"
+      className="fixed bottom-[26px] left-1/2 z-[70] flex w-[min(560px,calc(100vw-40px))] -translate-x-1/2 flex-col gap-2 rounded-card border border-status-danger-border bg-surface px-4 py-3 shadow-float"
     >
-      <p className="text-[13px] font-semibold leading-relaxed text-red-800">
+      <p className="text-[13px] font-semibold leading-relaxed text-status-danger-text">
         {reading.message}
       </p>
       {reading.guidance && (
-        <p className="text-[12.5px] leading-relaxed text-gray-600">{reading.guidance}</p>
+        <p className="text-[12.5px] leading-relaxed text-text-secondary">
+          {reading.guidance}
+        </p>
       )}
       <div className="flex items-center gap-2">
-        <span className="font-mono text-[11px] text-gray-500">({reading.code})</span>
+        <span className="font-mono text-[11px] text-text-muted">({reading.code})</span>
         <div className="flex-1" />
-        <Button variant="ghost" onClick={onDismiss} data-testid="dataset-blocking-failure-dismiss">
-          Dismiss
+        <Button
+          variant="ghost"
+          onClick={onDismiss}
+          data-testid="dataset-blocking-failure-dismiss"
+        >
+          {t('actions.dismiss')}
         </Button>
       </div>
     </div>

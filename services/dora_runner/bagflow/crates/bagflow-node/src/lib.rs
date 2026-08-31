@@ -17,9 +17,7 @@
 
 use anyhow::{anyhow, Result};
 use arrow::array::{Array, ArrayRef, StringArray, UInt8Array};
-use dora_node_api::{
-    dora_core::config::DataId, DoraNode, Event, EventStream, Parameter,
-};
+use dora_node_api::{dora_core::config::DataId, DoraNode, Event, EventStream, Parameter};
 use std::collections::{BTreeMap, HashSet};
 
 pub use dora_node_api::Parameter as Param;

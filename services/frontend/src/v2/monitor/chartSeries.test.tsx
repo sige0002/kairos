@@ -16,8 +16,7 @@ import {
 } from './chartSeries';
 
 // Minimal sample factory — only `t` and `hz` matter for the Hz overlay.
-const s = (t: number, hz: number | null): MetricSample =>
-  ({ t, hz }) as MetricSample;
+const s = (t: number, hz: number | null): MetricSample => ({ t, hz }) as MetricSample;
 
 // Fuller factory for the metric-registry tests (bw/gap/rate).
 const sample = (t: number, fields: Partial<MetricSample>): MetricSample =>
@@ -87,7 +86,11 @@ test('paletteColor: cycles and covers 6 distinct colours', () => {
 });
 
 test('buildLabelMap: disambiguates topics sharing a trailing segment', () => {
-  const map = buildLabelMap(['/head/camera/image', '/hand/camera/image', '/hsrb/joint_states']);
+  const map = buildLabelMap([
+    '/head/camera/image',
+    '/hand/camera/image',
+    '/hsrb/joint_states',
+  ]);
   expect(map.get('/head/camera/image')).toBe('head/camera/image');
   expect(map.get('/hand/camera/image')).toBe('hand/camera/image');
   // Unique trailing segment collapses to the short name.
@@ -104,8 +107,8 @@ test('metric registry: the four v1 metrics are offered and each selects its own 
   // Only the frequency metric carries the expected_hz/warn-below footer stats.
   expect(metricDef('hz').hzLike).toBe(true);
   expect(metricDef('bw').hzLike).toBeUndefined();
-  // rate advertises the "needs expected_hz" empty-state note.
-  expect(metricDef('rate').note).toMatch(/expected_hz/);
+  // The display layer translates this explicit empty-state key.
+  expect(metricDef('rate').noteKey).toBe('rateNeedsExpected');
 });
 
 test('alignMetricSeries: selects the chosen metric column, not hz', () => {
@@ -122,9 +125,15 @@ test('alignMetricSeries: window trims samples older than nowMs - ms before align
     ['/a', [sample(1000, { hz: 1 }), sample(5000, { hz: 5 }), sample(9000, { hz: 9 })]],
   ]);
   // 30s window at now=9000ms keeps everything; a 5s window keeps only t>=4000.
-  const wide = alignMetricSeries(['/a'], history, metricDef('hz').select, { ms: 30_000, nowMs: 9000 });
+  const wide = alignMetricSeries(['/a'], history, metricDef('hz').select, {
+    ms: 30_000,
+    nowMs: 9000,
+  });
   expect(wide.xs).toEqual([1, 5, 9]);
-  const narrow = alignMetricSeries(['/a'], history, metricDef('hz').select, { ms: 5_000, nowMs: 9000 });
+  const narrow = alignMetricSeries(['/a'], history, metricDef('hz').select, {
+    ms: 5_000,
+    nowMs: 9000,
+  });
   expect(narrow.xs).toEqual([5, 9]);
   expect(narrow.cols).toEqual([[5, 9]]);
 });
@@ -136,7 +145,12 @@ test('windowMs: maps the toggle ids to milliseconds (default 1m)', () => {
 });
 
 test('hasAnyValue: true when any column has a non-null, false for all-null (empty-note trigger)', () => {
-  expect(hasAnyValue([[null, 2], [null, null]])).toBe(true);
+  expect(
+    hasAnyValue([
+      [null, 2],
+      [null, null],
+    ]),
+  ).toBe(true);
   expect(hasAnyValue([[null, null], [null]])).toBe(false);
   expect(hasAnyValue([])).toBe(false);
 });

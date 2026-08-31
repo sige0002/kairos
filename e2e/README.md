@@ -35,7 +35,7 @@ never imports. The acceptance layer is a separate project with its own
 | `07-dataset-archive.spec.ts` | §6.1 | When I archive a finished dataset, the dialog shows me the exact folder it will land in, every recording is copied and hash-verified before its copy here is removed, the folder describes itself with a manifest the ledger can vouch for — and even after the database is destroyed, kairos still says the dataset is archived and where it went. |
 | `08-validation.spec.ts` | screen | I run the required-topic check on a recording from the Validation screen, and it comes back naming every topic the template demands with a tick or a cross beside it — and the report it leaves on disk says the same thing as the screen did. |
 | `09-monitor.spec.ts` | screen | The topics my robot config asks the monitor to watch show live rates on the Monitor screen; the ones it was never asked to watch say nothing rather than reading zero. |
-| `10-settings.spec.ts` | screen | Setup check does not run on page load, runs once on explicit request, and returns structured evidence within five seconds. Settings also shows the recording config that is actually loaded, refuses an edit that is not valid JSON before it can reach the server, and saving it back leaves what the stack reads exactly as it was. |
+| `10-settings.spec.ts` | screen | Setup check does not run on page load, runs once on explicit request, and returns structured evidence within five seconds. Settings also shows the recording config that is actually loaded, refuses an edit that is not valid JSON before it can reach the server, and saving it back leaves what the stack reads exactly as it was. It also proves that Audio feedback is opt-in while Sound and Voice defaults stay independently enabled. |
 
 `01`–`07` are the §13 acceptance minimum. `08`–`10` are not part of it: they
 cover the three screens that minimum never enumerated — Validation, Monitor and
@@ -71,15 +71,17 @@ named, reproducible defect. See below for the history.
 
 ## `tools/` — measurements the suite cannot make
 
-Two probes that are **not part of `make test-e2e` and never run in CI**. They
-answer questions a spec cannot: one needs a layout engine (jsdom has none, so
-every width and overflow is `0` there and an assertion about them passes against
-any stylesheet), the other needs a real ICE agent. They are here so the numbers
-in a review round can be reproduced by someone else instead of being taken on
-trust.
+Three tools that are **not part of `make test-e2e`**. The release gate runs the
+layout probe at 1366×768 (including its self-test); the peer-failure probe and
+audio benchmark remain manual. They answer questions a spec cannot: layout needs
+a layout engine (jsdom has none, so every width and overflow is `0` there and an
+assertion about them passes against any stylesheet), peer classification needs a
+real ICE agent, and the audio comparison needs the real recorder / replay load.
+They are here so measurements in a review round can be reproduced instead of
+taken on trust.
 
-Both need the stack up, and both print measurements rather than pass/fail prose.
-Exit code is `1` when a defect is found, so either can gate a manual round.
+All need the stack up and print measurements rather than pass/fail prose. Exit
+code is `1` when a defect is found, so any can gate a manual round.
 
 ### `layout-probe.mjs` — E-25 layout resilience
 
@@ -90,7 +92,7 @@ node e2e/tools/layout-probe.mjs                # the measurement
 node e2e/tools/layout-probe.mjs --zoom 1.5 --tab collect --shots dev_image
 ```
 
-Walks every tab at 1280x800 at 100% and 150% zoom and reports three things:
+Walks every tab at 1280x800 and 1366x768 at 100% and 150% zoom and reports three things:
 the page scrolling horizontally, Collect scrolling vertically, and text cut off
 with nothing (no ellipsis, no `title`, no scrollable box) telling the operator
 it was cut. Browser zoom is modelled by shrinking the CSS viewport, which is
@@ -110,6 +112,32 @@ names or style strings, because a `truncate` class that cannot take effect is
 still present in the markup; and it treats an ellipsis, a `title`, or a
 scrollable container as a **mark**, because the defect is text that vanishes
 silently, not text that is shortened visibly.
+
+### `audio-benchmark.mjs` — Collect audio feedback comparison
+
+```bash
+make build                 # required after an audio/frontend/orchestrator change
+make test-e2e-up
+node e2e/tools/audio-benchmark.mjs
+make test-e2e-down
+```
+
+Runs two real-stack, UI-driven five-second Collect recordings against the same
+MCAP replay: first Audio master off, then on. It compares Start latency,
+Stop-to-result latency, capture bytes/message count, monitor camera rate and DDS
+loss, container/host CPU snapshots, and completed Voice plays. While recording,
+it calls `POST /api/v1/audio/assets` and records the expected deferred response;
+it never asks Collect to synthesize a phrase. The tool waits for the common
+pre-armed baseline and creates any needed cached assets before the comparison,
+so run it only against a freshly built E2E stack with the local Kokoro sidecar
+available. It fails when either round reports DDS loss or Audio-on has
+no resolved Voice playback. Output is JSON for review; it is a representative
+measurement, not a CI threshold or a replacement for `make test-e2e`.
+
+Defaults target the E2E ports. Set `KAIROS_BENCH_FRONTEND`,
+`KAIROS_BENCH_API`, or `KAIROS_BENCH_MONITOR` only when running an equivalent
+manually started stack. The tool creates and saves two captures in the isolated
+E2E data directory.
 
 ### `peer-failure-probe.mjs` — E-37 `'peer'` stream classification
 
@@ -224,8 +252,9 @@ The stack is deliberately **beside**, not instead of, a developer's own
 
 | | dev stack | e2e stack |
 |---|---|---|
-| UI / API | `:8080` / `:8000` | `:18080` / `:18000` |
-| recorder / dora | `:8010` / `:8020` | `:18010` / `:18020` |
+| UI / API | `:8080` / `:8000` | `:28080` / `:28000` |
+| monitor / WebRTC / probe | `:8001` / `:8002` / `:8003` | `:28001` / `:28002` / `:28003` |
+| recorder / dora | `:8010` / `:8020` | `:28010` / `:28020` |
 | `ROS_DOMAIN_ID` | `.env` (0) | 42 |
 | data dir | `./data` | `./e2e/.run/data` (wiped per run) |
 | robot config | `.env` | `airoa_hsr` (the bundled sample) |
@@ -238,11 +267,13 @@ config for the acceptance stack.
 
 ### The replayed bag
 
-`data/airoa-moma-mcap/235210` (61 MB, ~10 s, HSR topics) plays on a loop for the
-whole run. Its standard-typed topics are exactly the `default_topics` of
-`config/airoa_hsr/recording/default.yaml`, so no custom-message overlay is
-needed and a clean clone can run the suite. Override with
-`BAG=<path under data/> bash e2e/scripts/stack.sh up`.
+The local default is `data/airoa-moma-mcap/235210` (61 MB, ~10 s, HSR topics),
+which is gitignored and therefore is **not** present in a clean clone. Point
+`E2E_REPLAY_DATA_DIR` / `BAG` at a local fixture, or generate the small standard-message
+fixture with `deploy/test/generate_e2e_fixture.sh` in a sourced Jazzy environment with the
+MCAP storage plugin. Release CI performs that generation and runs with `BAG=ci-e2e/fixture`.
+The topics match `config/airoa_hsr/recording/default.yaml`, so no custom-message
+overlay is needed.
 
 Recordings wait on the Collect screen's own `elapsed` counter rather than on a
 sleep, so a slow DDS discovery lengthens the wait instead of silently shortening
@@ -288,14 +319,14 @@ docker save kairos-e2e:<version> | gzip > kairos-e2e-image.tar.gz
 # at the site
 gunzip -c kairos-e2e-image.tar.gz | docker load
 docker run --rm --network host \
-  -e E2E_BASE_URL=http://127.0.0.1:18080 \
+  -e E2E_BASE_URL=http://127.0.0.1:28080 \
   -v "$PWD/e2e/.run:/e2e/.run" kairos-e2e:<version> npx playwright test
 ```
 
 Four things the skill's checklist flags that apply directly here:
 
 - **`--network host`.** Both the stack and the replay harness use host
-  networking; a bridged test container cannot reach `127.0.0.1:18080`.
+  networking; a bridged test container cannot reach `127.0.0.1:28080`.
 - **The data dir must be mounted.** The secondary assertions read
   `objects/<id>/object_manifest.json` and `lifecycle.jsonl` off the host
   filesystem — without the mount, four of the five scenarios lose their

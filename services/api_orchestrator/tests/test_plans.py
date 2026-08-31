@@ -39,6 +39,38 @@ CATALOG = {
     ]
 }
 
+DEFAULT_EXTERNAL_CONTROLS = {
+    "schema_version": 1,
+    "ready": {"left": "none", "center": "start", "right": "none"},
+    "recording": {"left": "none", "center": "stop", "right": "none"},
+    "result": {"left": "failure", "center": "retake", "right": "success_save"},
+    "failure_reason": {
+        "left": "reason_slot_1",
+        "center": "reason_slot_2",
+        "right": "reason_slot_3",
+    },
+}
+
+
+EMPTY_SHORTCUTS = {"left": None, "center": None, "right": None}
+
+
+def canonical_projects(projects: list[dict]) -> list[dict]:
+    """The tree as the API returns it: every task carries its shortcut slots."""
+    return [
+        {
+            **project,
+            "tasks": [
+                {
+                    **task,
+                    "failure_shortcuts": task.get("failure_shortcuts", EMPTY_SHORTCUTS),
+                }
+                for task in project.get("tasks", [])
+            ],
+        }
+        for project in projects
+    ]
+
 
 def test_get_never_set_is_null(client: TestClient) -> None:
     resp = client.get("/api/v1/plans")
@@ -47,6 +79,7 @@ def test_get_never_set_is_null(client: TestClient) -> None:
         "projects": None,
         "failure_reasons": None,
         "operators": None,
+        "external_controls": None,
         "updated_at": None,
         "revision": 0,
     }
@@ -56,12 +89,12 @@ def test_put_then_get_round_trips(client: TestClient) -> None:
     put = client.put("/api/v1/plans", json={"base_revision": 0, **CATALOG})
     assert put.status_code == 200, put.text
     body = put.json()
-    assert body["projects"] == CATALOG["projects"]
+    assert body["projects"] == canonical_projects(CATALOG["projects"])
     assert body["updated_at"]  # stamped server-side
     assert body["revision"] == 1
 
     got = client.get("/api/v1/plans").json()
-    assert got["projects"] == CATALOG["projects"]
+    assert got["projects"] == canonical_projects(CATALOG["projects"])
     assert got["updated_at"] == body["updated_at"]
 
 
@@ -73,6 +106,83 @@ def test_put_empty_is_distinct_from_never_set(client: TestClient) -> None:
     # Explicitly emptied: [] with a timestamp — the client must NOT re-seed.
     assert got["projects"] == []
     assert got["updated_at"] is not None
+
+
+def test_external_controls_round_trip(client: TestClient) -> None:
+    configured = {
+        **DEFAULT_EXTERNAL_CONTROLS,
+        "ready": {"left": "start", "center": "none", "right": "none"},
+        "recording": {"left": "stop", "center": "none", "right": "none"},
+        "result": {
+            "left": "retake",
+            "center": "success_save",
+            "right": "failure",
+        },
+        "failure_reason": {
+            "left": "reason_slot_3",
+            "center": "reason_slot_1",
+            "right": "reason_slot_2",
+        },
+    }
+    put = client.put(
+        "/api/v1/plans",
+        json={"base_revision": 0, **CATALOG, "external_controls": configured},
+    )
+    assert put.status_code == 200, put.text
+    assert put.json()["external_controls"] == configured
+    assert client.get("/api/v1/plans").json()["external_controls"] == configured
+
+
+def test_legacy_put_keeps_external_controls(client: TestClient) -> None:
+    first = client.put(
+        "/api/v1/plans",
+        json={
+            "base_revision": 0,
+            **CATALOG,
+            "external_controls": DEFAULT_EXTERNAL_CONTROLS,
+        },
+    )
+    assert first.status_code == 200, first.text
+
+    legacy = client.put(
+        "/api/v1/plans",
+        json={"base_revision": 1, "projects": []},
+    )
+    assert legacy.status_code == 200, legacy.text
+    assert legacy.json()["external_controls"] == DEFAULT_EXTERNAL_CONTROLS
+
+
+def test_external_controls_reject_invalid_or_ambiguous_actions(
+    client: TestClient,
+) -> None:
+    invalid_state = {
+        **DEFAULT_EXTERNAL_CONTROLS,
+        "ready": {"left": "retake", "center": "none", "right": "none"},
+    }
+    duplicate = {
+        **DEFAULT_EXTERNAL_CONTROLS,
+        "result": {"left": "failure", "center": "failure", "right": "none"},
+    }
+    extra_slot = {
+        **DEFAULT_EXTERNAL_CONTROLS,
+        "ready": {
+            "left": "none",
+            "center": "start",
+            "right": "none",
+            "fourth": "none",
+        },
+    }
+    for external_controls in (invalid_state, duplicate, extra_slot):
+        response = client.put(
+            "/api/v1/plans",
+            json={
+                "base_revision": 0,
+                **CATALOG,
+                "external_controls": external_controls,
+            },
+        )
+        assert response.status_code == 422
+    assert client.get("/api/v1/plans").json()["revision"] == 0
 
 
 def test_put_rejects_malformed_shapes(client: TestClient) -> None:
@@ -131,7 +241,7 @@ def test_failure_reasons_before_first_push_is_null(client: TestClient) -> None:
     # A catalog set before the field existed: projects stored, reasons never set.
     client.put("/api/v1/plans", json={"base_revision": 0, **CATALOG})
     got = client.get("/api/v1/plans").json()
-    assert got["projects"] == CATALOG["projects"]
+    assert got["projects"] == canonical_projects(CATALOG["projects"])
     assert got["failure_reasons"] is None
 
 
@@ -195,7 +305,9 @@ def test_put_requires_a_matching_revision_and_does_not_overwrite(
         "current_revision": 1,
         "base_revision": 0,
     }
-    assert client.get("/api/v1/plans").json()["projects"] == CATALOG["projects"]
+    assert client.get("/api/v1/plans").json()["projects"] == canonical_projects(
+        CATALOG["projects"]
+    )
 
 
 def test_labels_are_canonicalized_and_invalid_duplicates_are_rejected(
@@ -281,3 +393,376 @@ def test_entity_ids_cannot_be_reused_under_different_parents(
         ],
     }
     assert client.put("/api/v1/plans", json=reused_condition).status_code == 422
+
+
+# ---- per-task failure-reason shortcuts (#35) ---------------------------------
+
+SHORTCUTS_CATALOG = {
+    "base_revision": 0,
+    "failure_reasons": ["Grasp missed", "Object dropped", "Wrong placement", "Other"],
+    "projects": [
+        {
+            "project_id": "project-tabletop",
+            "name": "Tabletop Manipulation",
+            "tasks": [
+                {
+                    "task_id": "task-pick-place",
+                    "name": "Pick and Place",
+                    "conditions": [],
+                    "failure_shortcuts": {
+                        "left": "Grasp missed",
+                        "center": "Object dropped",
+                        "right": "Wrong placement",
+                    },
+                },
+                {
+                    "task_id": "task-stacking",
+                    "name": "Stacking",
+                    "conditions": [],
+                },
+            ],
+        }
+    ],
+}
+
+
+def test_failure_shortcuts_round_trip_and_survive_reload(client: TestClient) -> None:
+    put = client.put("/api/v1/plans", json=SHORTCUTS_CATALOG)
+    assert put.status_code == 200, put.text
+    got = client.get("/api/v1/plans").json()
+    tasks = {t["task_id"]: t for t in got["projects"][0]["tasks"]}
+    assert tasks["task-pick-place"]["failure_shortcuts"] == {
+        "left": "Grasp missed",
+        "center": "Object dropped",
+        "right": "Wrong placement",
+    }
+    # A task without the field loads with all slots unassigned.
+    assert tasks["task-stacking"]["failure_shortcuts"] == {
+        "left": None,
+        "center": None,
+        "right": None,
+    }
+
+
+def test_old_payloads_without_shortcuts_stay_valid(client: TestClient) -> None:
+    # A catalog written before the field existed must load without intervention.
+    client.put("/api/v1/plans", json={"base_revision": 0, **CATALOG})
+    got = client.get("/api/v1/plans").json()
+    for project in got["projects"]:
+        for task in project["tasks"]:
+            assert task["failure_shortcuts"] == {
+                "left": None,
+                "center": None,
+                "right": None,
+            }
+    # And a PUT that still omits the field on tasks remains valid.
+    resp = client.put("/api/v1/plans", json={"base_revision": 1, **CATALOG})
+    assert resp.status_code == 200, resp.text
+
+
+def _legacy_projects(projects: list[dict]) -> list[dict]:
+    """The same tree as a pre-shortcut client would PUT: no failure_shortcuts key."""
+    return [
+        {
+            **project,
+            "tasks": [
+                {
+                    key: value
+                    for key, value in task.items()
+                    if key != "failure_shortcuts"
+                }
+                for task in project.get("tasks", [])
+            ],
+        }
+        for project in projects
+    ]
+
+
+def test_legacy_put_without_shortcuts_preserves_stored_mappings(
+    client: TestClient,
+) -> None:
+    # Regression: an older client that omits each task's failure_shortcuts must
+    # not wipe the configured mappings (Pydantic defaults must not win).
+    client.put("/api/v1/plans", json=SHORTCUTS_CATALOG)
+    legacy = {
+        "base_revision": 1,
+        "projects": _legacy_projects(SHORTCUTS_CATALOG["projects"]),
+    }
+    resp = client.put("/api/v1/plans", json=legacy)
+    assert resp.status_code == 200, resp.text
+    tasks = {t["task_id"]: t for t in resp.json()["projects"][0]["tasks"]}
+    # The mapping survives under its stable task_id in the response AND on disk.
+    assert tasks["task-pick-place"]["failure_shortcuts"] == {
+        "left": "Grasp missed",
+        "center": "Object dropped",
+        "right": "Wrong placement",
+    }
+    # A task that never had a mapping keeps unassigned slots.
+    assert tasks["task-stacking"]["failure_shortcuts"] == {
+        "left": None,
+        "center": None,
+        "right": None,
+    }
+    # Omitted failure_reasons still keeps the stored vocabulary (same PUT).
+    assert resp.json()["failure_reasons"] == SHORTCUTS_CATALOG["failure_reasons"]
+    got = client.get("/api/v1/plans").json()
+    tasks = {t["task_id"]: t for t in got["projects"][0]["tasks"]}
+    assert tasks["task-pick-place"]["failure_shortcuts"] == {
+        "left": "Grasp missed",
+        "center": "Object dropped",
+        "right": "Wrong placement",
+    }
+
+
+def test_legacy_put_of_a_new_task_starts_with_empty_slots(client: TestClient) -> None:
+    # A task absent from the stored catalog has no mapping to restore; the
+    # field-less payload must still give it all-unassigned slots.
+    client.put("/api/v1/plans", json=SHORTCUTS_CATALOG)
+    projects = _legacy_projects(SHORTCUTS_CATALOG["projects"])
+    projects[0]["tasks"].append(
+        {"task_id": "task-new", "name": "New Task", "conditions": []}
+    )
+    resp = client.put("/api/v1/plans", json={"base_revision": 1, "projects": projects})
+    assert resp.status_code == 200, resp.text
+    tasks = {t["task_id"]: t for t in resp.json()["projects"][0]["tasks"]}
+    assert tasks["task-new"]["failure_shortcuts"] == {
+        "left": None,
+        "center": None,
+        "right": None,
+    }
+    # The existing task's mapping is preserved in the same PUT.
+    assert tasks["task-pick-place"]["failure_shortcuts"]["left"] == "Grasp missed"
+
+
+def test_explicit_shortcuts_stay_authoritative_over_stored(client: TestClient) -> None:
+    # An explicit object — including explicit nulls — replaces the stored
+    # mapping; only the field ABSENT in the payload triggers the merge.
+    client.put("/api/v1/plans", json=SHORTCUTS_CATALOG)
+    cleared = {
+        "base_revision": 1,
+        "projects": [
+            {
+                "project_id": "project-tabletop",
+                "name": "Tabletop Manipulation",
+                "tasks": [
+                    {
+                        "task_id": "task-pick-place",
+                        "name": "Pick and Place",
+                        "conditions": [],
+                        "failure_shortcuts": {
+                            "left": None,
+                            "center": None,
+                            "right": None,
+                        },
+                    },
+                    {
+                        "task_id": "task-stacking",
+                        "name": "Stacking",
+                        "conditions": [],
+                        "failure_shortcuts": {"left": "Other"},
+                    },
+                ],
+            }
+        ],
+    }
+    resp = client.put("/api/v1/plans", json=cleared)
+    assert resp.status_code == 200, resp.text
+    tasks = {t["task_id"]: t for t in resp.json()["projects"][0]["tasks"]}
+    assert tasks["task-pick-place"]["failure_shortcuts"] == {
+        "left": None,
+        "center": None,
+        "right": None,
+    }
+    assert tasks["task-stacking"]["failure_shortcuts"] == {
+        "left": "Other",
+        "center": None,
+        "right": None,
+    }
+
+
+def test_legacy_put_validates_merged_mapping_against_submitted_vocabulary(
+    client: TestClient,
+) -> None:
+    # Validation runs on the EFFECTIVE merged catalog: a stored mapping the
+    # replaced vocabulary no longer contains must be refused, not persisted
+    # as a stale reference or silently dropped.
+    client.put("/api/v1/plans", json=SHORTCUTS_CATALOG)
+    resp = client.put(
+        "/api/v1/plans",
+        json={
+            "base_revision": 1,
+            "failure_reasons": ["Brand new"],
+            "projects": _legacy_projects(SHORTCUTS_CATALOG["projects"]),
+        },
+    )
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "failure_shortcut_unknown_reason"
+    assert resp.json()["error"]["details"]["task_id"] == "task-pick-place"
+    # The rejected PUT must not have advanced the catalog.
+    assert client.get("/api/v1/plans").json()["revision"] == 1
+
+
+def test_failure_reason_vocabulary_is_not_capped_at_three(client: TestClient) -> None:
+    reasons = [f"Reason {i}" for i in range(10)]
+    put = client.put(
+        "/api/v1/plans",
+        json={"base_revision": 0, **CATALOG, "failure_reasons": reasons},
+    )
+    assert put.status_code == 200, put.text
+    assert put.json()["failure_reasons"] == reasons
+
+
+def test_shortcut_slots_may_be_unassigned(client: TestClient) -> None:
+    catalog = {
+        "base_revision": 0,
+        "failure_reasons": ["Grasp missed"],
+        "projects": [
+            {
+                "project_id": "p",
+                "name": "P",
+                "tasks": [
+                    {
+                        "task_id": "t",
+                        "name": "T",
+                        "conditions": [],
+                        "failure_shortcuts": {"left": "Grasp missed"},
+                    }
+                ],
+            }
+        ],
+    }
+    resp = client.put("/api/v1/plans", json=catalog)
+    assert resp.status_code == 200, resp.text
+    assert client.get("/api/v1/plans").json()["projects"][0]["tasks"][0][
+        "failure_shortcuts"
+    ] == {"left": "Grasp missed", "center": None, "right": None}
+
+
+def test_shortcut_must_reference_the_submitted_vocabulary(client: TestClient) -> None:
+    bad = {
+        "base_revision": 0,
+        "failure_reasons": ["Grasp missed"],
+        "projects": [
+            {
+                "project_id": "p",
+                "name": "P",
+                "tasks": [
+                    {
+                        "task_id": "t",
+                        "name": "T",
+                        "conditions": [],
+                        "failure_shortcuts": {"left": "Not a real reason"},
+                    }
+                ],
+            }
+        ],
+    }
+    resp = client.put("/api/v1/plans", json=bad)
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "failure_shortcut_unknown_reason"
+    assert resp.json()["error"]["details"]["slot"] == "left"
+
+
+def test_shortcut_validates_against_stored_vocabulary_when_omitted(
+    client: TestClient,
+) -> None:
+    client.put(
+        "/api/v1/plans",
+        json={"base_revision": 0, **CATALOG, "failure_reasons": ["Robot fault"]},
+    )
+    # Omitted failure_reasons keeps the stored list — a shortcut naming
+    # something else must be refused, not stored as a stale mapping.
+    catalog = {
+        "base_revision": 1,
+        "projects": [
+            {
+                "project_id": "p",
+                "name": "P",
+                "tasks": [
+                    {
+                        "task_id": "t",
+                        "name": "T",
+                        "conditions": [],
+                        "failure_shortcuts": {"center": "Ghost reason"},
+                    }
+                ],
+            }
+        ],
+    }
+    resp = client.put("/api/v1/plans", json=catalog)
+    assert resp.status_code == 422
+    assert resp.json()["error"]["code"] == "failure_shortcut_unknown_reason"
+
+
+def test_shortcuts_cannot_assign_one_reason_to_two_slots(client: TestClient) -> None:
+    bad = {
+        "base_revision": 0,
+        "failure_reasons": ["Grasp missed"],
+        "projects": [
+            {
+                "project_id": "p",
+                "name": "P",
+                "tasks": [
+                    {
+                        "task_id": "t",
+                        "name": "T",
+                        "conditions": [],
+                        "failure_shortcuts": {
+                            "left": "Grasp missed",
+                            "center": "Grasp missed",
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+    resp = client.put("/api/v1/plans", json=bad)
+    assert resp.status_code == 422
+    assert "failure shortcuts" in resp.text
+
+
+def test_rename_reason_and_shortcut_in_one_put(client: TestClient) -> None:
+    # The client-side integrity story: renaming a reason rewrites the slot
+    # that referenced it in the SAME catalog replacement.
+    client.put("/api/v1/plans", json=SHORTCUTS_CATALOG)
+    renamed = {
+        "base_revision": 1,
+        "failure_reasons": [
+            "Grasp failed",
+            "Object dropped",
+            "Wrong placement",
+            "Other",
+        ],
+        "projects": [
+            {
+                "project_id": "project-tabletop",
+                "name": "Tabletop Manipulation",
+                "tasks": [
+                    {
+                        "task_id": "task-pick-place",
+                        "name": "Pick and Place",
+                        "conditions": [],
+                        "failure_shortcuts": {
+                            "left": "Grasp failed",
+                            "center": "Object dropped",
+                            "right": "Wrong placement",
+                        },
+                    },
+                    {
+                        "task_id": "task-stacking",
+                        "name": "Stacking",
+                        "conditions": [],
+                        "failure_shortcuts": {
+                            "left": None,
+                            "center": None,
+                            "right": None,
+                        },
+                    },
+                ],
+            }
+        ],
+    }
+    resp = client.put("/api/v1/plans", json=renamed)
+    assert resp.status_code == 200, resp.text
+    tasks = {t["task_id"]: t for t in resp.json()["projects"][0]["tasks"]}
+    assert tasks["task-pick-place"]["failure_shortcuts"]["left"] == "Grasp failed"

@@ -78,3 +78,13 @@ def test_archive_roots_answers_to_its_documented_name(
     monkeypatch.delenv("ARCHIVE_ROOTS")
     assert Settings(archive_roots="/direct").archive_roots == "/direct"
     assert Settings().archive_roots == ""
+
+
+def test_kokoro_url_is_runtime_selectable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TTS_KOKORO_URL", "http://127.0.0.1:8050")
+
+    settings = _settings()
+
+    assert settings.tts_kokoro_url == "http://127.0.0.1:8050"

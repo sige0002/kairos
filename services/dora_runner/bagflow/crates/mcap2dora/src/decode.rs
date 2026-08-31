@@ -153,9 +153,18 @@ pub enum ColB {
     U64(Vec<u64>),
     F32(Vec<f32>),
     F64(Vec<f64>),
-    Str { offsets: Vec<i32>, data: Vec<u8> },
-    Bin { offsets: Vec<i64>, data: Vec<u8> },
-    FixedBin { n: usize, data: Vec<u8> },
+    Str {
+        offsets: Vec<i32>,
+        data: Vec<u8>,
+    },
+    Bin {
+        offsets: Vec<i64>,
+        data: Vec<u8>,
+    },
+    FixedBin {
+        n: usize,
+        data: Vec<u8>,
+    },
     List {
         offsets: Vec<i32>,
         child: Box<ColB>,
@@ -164,8 +173,14 @@ pub enum ColB {
         /// type tree on every message
         min_elem: usize,
     },
-    FixedList { n: usize, child: Box<ColB> },
-    Struct { len: usize, children: Vec<ColB> },
+    FixedList {
+        n: usize,
+        child: Box<ColB>,
+    },
+    Struct {
+        len: usize,
+        children: Vec<ColB>,
+    },
 }
 
 /// Arrow's `StringArray`/`ListArray` address their children with i32 offsets,
@@ -494,8 +509,12 @@ mod tests {
 
     #[test]
     fn fixed_array_dimension_is_capped() {
-        assert!(rosmsg::parse("pkg/Top", "pkg/Empty[4294967295] items\n===\nMSG: pkg/Empty\n", false)
-            .is_err());
+        assert!(rosmsg::parse(
+            "pkg/Top",
+            "pkg/Empty[4294967295] items\n===\nMSG: pkg/Empty\n",
+            false
+        )
+        .is_err());
         // a realistic fixed array still resolves
         let reg = rosmsg::parse("pkg/Top", "float64[36] covariance\n", false).unwrap();
         match &reg.defs[reg.top].fields[0].1 {

@@ -26,12 +26,44 @@
 
 import { useEffect, useSyncExternalStore } from 'react';
 import { apiGet, apiPut } from '../api/client';
+import {
+  cloneExternalControls,
+  DEFAULT_EXTERNAL_CONTROLS,
+  normalizeExternalControls,
+  type ExternalControlsConfig,
+} from './collect/machine/externalControlConfig';
 
 export interface PlanTask {
   task_id: string;
   name: string;
   conditions: PlanCondition[];
+  /** Per-task fast paths for the three logical external operator actions
+   *  (LEFT / CENTER / RIGHT). Each slot names one label from the shared
+   *  failure-reason vocabulary, or null when unassigned. Vendor-neutral: a
+   *  foot pedal maps its switches onto these slots, but the slots describe
+   *  the LOGICAL action, not any hardware. */
+  failure_shortcuts: FailureShortcuts;
 }
+
+export type FailureShortcutSlot = 'left' | 'center' | 'right';
+
+export interface FailureShortcuts {
+  left: string | null;
+  center: string | null;
+  right: string | null;
+}
+
+export const EMPTY_FAILURE_SHORTCUTS: FailureShortcuts = {
+  left: null,
+  center: null,
+  right: null,
+};
+
+export const FAILURE_SHORTCUT_SLOTS: FailureShortcutSlot[] = [
+  'left',
+  'center',
+  'right',
+];
 export interface PlanProject {
   project_id: string;
   name: string;
@@ -56,10 +88,20 @@ export const DEFAULT_PLANS: PlanProject[] = [
         task_id: 'task-pick-and-place',
         name: 'Pick and Place',
         conditions: [
-          { condition_id: 'condition-object-left-tray-center', name: 'Object: Left → Tray: Center' },
-          { condition_id: 'condition-object-center-tray-center', name: 'Object: Center → Tray: Center' },
-          { condition_id: 'condition-object-right-tray-center', name: 'Object: Right → Tray: Center' },
+          {
+            condition_id: 'condition-object-left-tray-center',
+            name: 'Object: Left → Tray: Center',
+          },
+          {
+            condition_id: 'condition-object-center-tray-center',
+            name: 'Object: Center → Tray: Center',
+          },
+          {
+            condition_id: 'condition-object-right-tray-center',
+            name: 'Object: Right → Tray: Center',
+          },
         ],
+        failure_shortcuts: { left: null, center: null, right: null },
       },
       {
         task_id: 'task-stacking',
@@ -68,6 +110,7 @@ export const DEFAULT_PLANS: PlanProject[] = [
           { condition_id: 'condition-blocks-3', name: 'Blocks: 3' },
           { condition_id: 'condition-blocks-5', name: 'Blocks: 5' },
         ],
+        failure_shortcuts: { left: null, center: null, right: null },
       },
     ],
   },
@@ -82,6 +125,7 @@ export const DEFAULT_PLANS: PlanProject[] = [
           { condition_id: 'condition-bin-full', name: 'Bin: full' },
           { condition_id: 'condition-bin-sparse', name: 'Bin: sparse' },
         ],
+        failure_shortcuts: { left: null, center: null, right: null },
       },
     ],
   },
@@ -96,6 +140,7 @@ export const DEFAULT_PLANS: PlanProject[] = [
           { condition_id: 'condition-drawer-top', name: 'Drawer: top' },
           { condition_id: 'condition-drawer-bottom', name: 'Drawer: bottom' },
         ],
+        failure_shortcuts: { left: null, center: null, right: null },
       },
     ],
   },
@@ -123,7 +168,11 @@ export function clonePlans(plans: PlanProject[]): PlanProject[] {
     tasks: p.tasks.map((t) => ({
       task_id: t.task_id,
       name: t.name,
-      conditions: t.conditions.map((c) => ({ condition_id: c.condition_id, name: c.name })),
+      conditions: t.conditions.map((c) => ({
+        condition_id: c.condition_id,
+        name: c.name,
+      })),
+      failure_shortcuts: { ...t.failure_shortcuts },
     })),
   }));
 }
@@ -132,13 +181,28 @@ export function clonePlans(plans: PlanProject[]): PlanProject[] {
  *  removed/renamed selection never crashes a picker. Returns an empty project
  *  only when the catalog itself is empty. */
 export function findProject(plans: PlanProject[], name: string): PlanProject {
-  return plans.find((p) => p.name === name) ?? plans[0] ?? { project_id: '', name: '—', tasks: [] };
+  return (
+    plans.find((p) => p.name === name) ??
+    plans[0] ?? { project_id: '', name: '—', tasks: [] }
+  );
 }
 /** The task matching `taskName` within its project, else that project's first
  *  task — same graceful fallback as findProject. */
-export function findTask(plans: PlanProject[], projectName: string, taskName: string): PlanTask {
+export function findTask(
+  plans: PlanProject[],
+  projectName: string,
+  taskName: string,
+): PlanTask {
   const project = findProject(plans, projectName);
-  return project.tasks.find((t) => t.name === taskName) ?? project.tasks[0] ?? { task_id: '', name: '—', conditions: [] };
+  return (
+    project.tasks.find((t) => t.name === taskName) ??
+    project.tasks[0] ?? {
+      task_id: '',
+      name: '—',
+      conditions: [],
+      failure_shortcuts: { ...EMPTY_FAILURE_SHORTCUTS },
+    }
+  );
 }
 
 /** Resolve displayed labels to catalog identities. Custom and absent labels have
@@ -152,7 +216,8 @@ export function resolvePlanIds(
   const project = plans.find((p) => p.name === projectName);
   if (!project) return { project_id: null, task_id: null, condition_id: null };
   const task = project.tasks.find((t) => t.name === taskName);
-  if (!task) return { project_id: project.project_id, task_id: null, condition_id: null };
+  if (!task)
+    return { project_id: project.project_id, task_id: null, condition_id: null };
   const condition = task.conditions.find((c) => c.name === conditionName);
   return {
     project_id: project.project_id,
@@ -195,7 +260,11 @@ function normalizeLegacyPlans(value: unknown): PlanProject[] | null {
       if (!taskName) return null;
       const taskPath = `${projectPath}/${taskIndex}:${taskName}`;
       const conditions: PlanCondition[] = [];
-      for (let conditionIndex = 0; conditionIndex < t.conditions.length; conditionIndex += 1) {
+      for (
+        let conditionIndex = 0;
+        conditionIndex < t.conditions.length;
+        conditionIndex += 1
+      ) {
         const rawCondition = t.conditions[conditionIndex];
         const condition =
           rawCondition && typeof rawCondition === 'object'
@@ -213,6 +282,16 @@ function normalizeLegacyPlans(value: unknown): PlanProject[] | null {
           name,
         });
       }
+      const rawShortcuts =
+        t.failure_shortcuts && typeof t.failure_shortcuts === 'object'
+          ? (t.failure_shortcuts as Record<string, unknown>)
+          : null;
+      // Tolerant, like the server's canonical adapter: a malformed slot
+      // degrades to "unassigned" instead of discarding the whole catalog.
+      const shortcutSlot = (slot: FailureShortcutSlot): string | null =>
+        typeof rawShortcuts?.[slot] === 'string' && rawShortcuts[slot]
+          ? (rawShortcuts[slot] as string)
+          : null;
       tasks.push({
         task_id:
           typeof t.task_id === 'string' && t.task_id
@@ -220,6 +299,11 @@ function normalizeLegacyPlans(value: unknown): PlanProject[] | null {
             : legacyPlanId('task', taskPath),
         name: taskName,
         conditions,
+        failure_shortcuts: {
+          left: shortcutSlot('left'),
+          center: shortcutSlot('center'),
+          right: shortcutSlot('right'),
+        },
       });
     }
     normalized.push({
@@ -380,14 +464,180 @@ export function setFailReasons(next: string[]): void {
   pushCatalogToServer();
 }
 
+// ---- external controls (installation-global, #43) --------------------------
+// Which logical action each LEFT/CENTER/RIGHT external channel performs in
+// each Collect state. One installation-wide mapping (NOT per Task/operator —
+// the physical pedal layout is a property of the installation), synced with
+// the rest of the shared catalog so every terminal shows the same layout in
+// its HUD. The pure shape/default/validation live in
+// collect/machine/externalControlConfig.ts.
+
+const EXTERNAL_CONTROLS_KEY = 'kairos.v2.external-controls.v1';
+
+// Set when a STORED value could not be read back (corrupt or unknown shape):
+// the safe default stands and the Settings section discloses the fallback.
+// Absent (never set) is a normal migration and stays silent.
+let externalControlsInvalid = false;
+let externalControlsRestoredFromStorage = false;
+
+function readInitialExternalControls(): ExternalControlsConfig {
+  try {
+    const raw = window.localStorage.getItem(EXTERNAL_CONTROLS_KEY);
+    if (raw === null) {
+      externalControlsInvalid = false;
+      externalControlsRestoredFromStorage = false;
+      return cloneExternalControls(DEFAULT_EXTERNAL_CONTROLS);
+    }
+    const normalized = normalizeExternalControls(JSON.parse(raw) as unknown);
+    if (normalized !== null) {
+      externalControlsInvalid = false;
+      externalControlsRestoredFromStorage = true;
+      return normalized;
+    }
+    externalControlsInvalid = true;
+    externalControlsRestoredFromStorage = false;
+    // Heal the unusable value in place: the default is what actually drives
+    // the HUD, and persisting it stops the fallback warning from repeating
+    // on every later load (a valid edit or server adopt does the same).
+    persist(EXTERNAL_CONTROLS_KEY, JSON.stringify(DEFAULT_EXTERNAL_CONTROLS));
+    return cloneExternalControls(DEFAULT_EXTERNAL_CONTROLS);
+  } catch {
+    externalControlsInvalid = true;
+    externalControlsRestoredFromStorage = false;
+    return cloneExternalControls(DEFAULT_EXTERNAL_CONTROLS);
+  }
+}
+
+let currentExternalControls: ExternalControlsConfig = readInitialExternalControls();
+
+/** Current external-control mapping snapshot (stable until the next set). */
+export function getExternalControls(): ExternalControlsConfig {
+  return currentExternalControls;
+}
+
+/** True when a stored mapping could not be read and the default stands in. */
+export function getExternalControlsInvalid(): boolean {
+  return externalControlsInvalid;
+}
+
+/** Replace the external-control mapping — same persist/push/notify path as
+ *  setPlans. The value must already be valid (the Settings editor only offers
+ *  allowlisted actions); a malformed value is refused rather than stored. */
+export function setExternalControls(next: unknown): void {
+  const normalized = normalizeExternalControls(next);
+  if (normalized === null) return;
+  currentExternalControls = cloneExternalControls(normalized);
+  externalControlsInvalid = false;
+  editedThisSession = true;
+  if (persist(EXTERNAL_CONTROLS_KEY, JSON.stringify(normalized))) markCatalogDirty();
+  notify();
+  pushCatalogToServer();
+}
+
+// ---- failure-shortcut edits -------------------------------------------------
+
+function mapShortcutSlots(
+  shortcuts: FailureShortcuts,
+  fn: (reason: string | null) => string | null,
+): FailureShortcuts {
+  return {
+    left: fn(shortcuts.left),
+    center: fn(shortcuts.center),
+    right: fn(shortcuts.right),
+  };
+}
+
+/** Re-point every task slot that names `from` at `to` — renaming a reason
+ *  keeps its identity, so the operator's shortcut still means the same
+ *  reason under the new name instead of silently going stale. */
+export function renameFailureShortcuts(
+  plans: PlanProject[],
+  from: string,
+  to: string,
+): PlanProject[] {
+  return plans.map((project) => ({
+    ...project,
+    tasks: project.tasks.map((task) => ({
+      ...task,
+      failure_shortcuts: mapShortcutSlots(task.failure_shortcuts, (r) =>
+        r === from ? to : r,
+      ),
+    })),
+  }));
+}
+
+/** Clear every slot that references `reason`. A removed reason must not leave
+ *  a stale mapping that would save a label nobody configured any more. */
+export function clearFailureShortcutsForReason(
+  plans: PlanProject[],
+  reason: string,
+): PlanProject[] {
+  return plans.map((project) => ({
+    ...project,
+    tasks: project.tasks.map((task) => ({
+      ...task,
+      failure_shortcuts: mapShortcutSlots(task.failure_shortcuts, (r) =>
+        r === reason ? null : r,
+      ),
+    })),
+  }));
+}
+
+/** Set one task's three slots (addressed by task_id, so a concurrent reorder
+ *  cannot retarget the edit). */
+export function withTaskFailureShortcuts(
+  plans: PlanProject[],
+  taskId: string,
+  next: FailureShortcuts,
+): PlanProject[] {
+  return plans.map((project) =>
+    project.tasks.some((task) => task.task_id === taskId)
+      ? {
+          ...project,
+          tasks: project.tasks.map((task) =>
+            task.task_id === taskId
+              ? { ...task, failure_shortcuts: { ...next } }
+              : task,
+          ),
+        }
+      : project,
+  );
+}
+
+/** Replace the fail-reason vocabulary AND the catalog in ONE edit — used when
+ *  a vocabulary edit rewrites (rename) or clears (remove) task shortcuts. One
+ *  dirty mark, one push: the server never sees the intermediate state where a
+ *  slot names a reason the vocabulary no longer carries (its validation would
+ *  reject that PUT, and a rejected push would leave the vocabulary half-done). */
+export function setFailReasonsAndPlans(reasons: string[], plans: PlanProject[]): void {
+  if (reasons.length === 0) return;
+  const normalized = normalizeLegacyPlans(plans);
+  if (normalized === null) return;
+  currentFailReasons = reasons;
+  currentPlans = normalized;
+  editedThisSession = true;
+  // localStorage has no transaction across these two keys. Both writes are
+  // best-effort, but a failure must not strand an in-memory paired edit: mark
+  // it dirty and push the complete current catalog in this session either way.
+  // A successful pair still provides the normal reload retry path.
+  persist(FAIL_REASONS_KEY, JSON.stringify(reasons));
+  persist(STORAGE_KEY, JSON.stringify(normalized));
+  markCatalogDirty();
+  notify();
+  pushCatalogToServer();
+}
+
 // ---- server sync -----------------------------------------------------------
 
 /** GET/PUT /api/v1/plans response shape (see routers/plans.py). A backend
- *  from before the failure_reasons field simply omits it (undefined). */
+ *  from before the failure_reasons field simply omits it (undefined).
+ *  `external_controls` is kept `unknown`: it is normalized before use, so a
+ *  half-written or tampered value can never reach the resolver. */
 interface PlansServerResponse {
   projects: PlanProject[] | null;
   failure_reasons?: string[] | null;
   operators?: string[] | null;
+  external_controls?: unknown;
   updated_at: string | null;
   revision: number;
 }
@@ -411,7 +661,8 @@ function readSyncState(): PlansSyncState {
       const parsed = JSON.parse(raw) as Partial<PlansSyncState>;
       if (
         typeof parsed.acknowledgedRevision === 'number' &&
-        (typeof parsed.dirtyBaseRevision === 'number' || parsed.dirtyBaseRevision === null) &&
+        (typeof parsed.dirtyBaseRevision === 'number' ||
+          parsed.dirtyBaseRevision === null) &&
         typeof parsed.generation === 'number' &&
         typeof parsed.conflicted === 'boolean'
       ) {
@@ -491,18 +742,21 @@ function setPushFailed(value: boolean): void {
 let pushInFlight = false;
 
 function pushCatalogToServer(): void {
-  if (pushInFlight || syncState.conflicted || syncState.dirtyBaseRevision === null) return;
+  if (pushInFlight || syncState.conflicted || syncState.dirtyBaseRevision === null)
+    return;
   pushInFlight = true;
   const generation = syncState.generation;
   const baseRevision = syncState.dirtyBaseRevision;
   const projects = clonePlans(getPlans());
   const failureReasons = getFailReasons().slice();
   const operators = getOperators().slice();
+  const externalControls = getExternalControls();
   apiPut<PlansServerResponse>('/plans', {
     base_revision: baseRevision,
     projects,
     failure_reasons: failureReasons,
     operators,
+    external_controls: externalControls,
   })
     .then((response) => {
       // A newer local mutation can be made while this request is in flight.
@@ -519,7 +773,11 @@ function pushCatalogToServer(): void {
     .catch((error: unknown) => {
       // A CAS conflict is neither offline nor retryable automatically: replay
       // would overwrite somebody else's catalog. Keep the exact local draft.
-      if (error instanceof Error && 'status' in error && (error as { status?: number }).status === 409) {
+      if (
+        error instanceof Error &&
+        'status' in error &&
+        (error as { status?: number }).status === 409
+      ) {
         syncState.conflicted = true;
         persistSyncState();
       }
@@ -599,8 +857,10 @@ export function adoptServerCatalog(): void {
     .then((resp) => {
       if (!resp || !Array.isArray(resp.projects)) return;
       adoptServerPlans(resp.projects);
-      if (isReasonList(resp.failure_reasons)) adoptServerFailReasons(resp.failure_reasons);
+      if (isReasonList(resp.failure_reasons))
+        adoptServerFailReasons(resp.failure_reasons);
       if (isStringList(resp.operators)) adoptServerOperators(resp.operators);
+      adoptServerExternalControls(resp.external_controls);
       acknowledgeCatalog(resp.revision);
       setPushFailed(false);
       notify();
@@ -630,6 +890,25 @@ function adoptServerOperators(operators: string[]): void {
   currentOperators = operators.slice();
   try {
     window.localStorage.setItem(OPERATORS_KEY, JSON.stringify(currentOperators));
+  } catch {
+    /* ignore */
+  }
+  notify();
+}
+
+/** Adopt the server external-control mapping (no dirty mark, no re-push).
+ *  `null`/absent (never set) keeps the local copy — the seed push below
+ *  offers the local mapping. A value that fails normalization also keeps the
+ *  local copy: the server validates on write, so an unusable one here would
+ *  be a bug or tampering, and standing on the known-good local layout is the
+ *  safe choice (the resolver only ever sees trusted configs). */
+function adoptServerExternalControls(value: unknown): void {
+  const normalized = normalizeExternalControls(value);
+  if (normalized === null) return;
+  currentExternalControls = cloneExternalControls(normalized);
+  externalControlsInvalid = false;
+  try {
+    window.localStorage.setItem(EXTERNAL_CONTROLS_KEY, JSON.stringify(normalized));
   } catch {
     /* ignore */
   }
@@ -668,7 +947,11 @@ export function ensurePlansSynced(): void {
         // work — and honoring it would PUT this browser's copy of all three
         // shared vocabularies over the team's: the seed projects, the operator
         // roster, and the failure-reason list.
-        if (editedThisSession || plansRestoredFromStorage) {
+        if (
+          editedThisSession ||
+          plansRestoredFromStorage ||
+          externalControlsRestoredFromStorage
+        ) {
           if (syncState.dirtyBaseRevision === null) {
             syncState.dirtyBaseRevision = 0;
             persistSyncState();
@@ -683,13 +966,15 @@ export function ensurePlansSynced(): void {
         adoptServerFailReasons(resp.failure_reasons);
       }
       if (isStringList(resp.operators)) adoptServerOperators(resp.operators);
+      adoptServerExternalControls(resp.external_controls);
       // Seed whichever half the server has never stored (null, or absent on a
       // pre-field backend). A server-side EMPTY reasons list is neither
       // adopted (unusable, see above) nor re-pushed — the local copy stands.
       if (
         resp.projects === null ||
         resp.failure_reasons == null ||
-        resp.operators == null
+        resp.operators == null ||
+        resp.external_controls == null
       ) {
         if (syncState.dirtyBaseRevision === null) {
           syncState.dirtyBaseRevision = resp.revision;
@@ -759,6 +1044,42 @@ export function useOperators(): string[] {
   );
 }
 
+/** React binding for the external-control mapping — same semantics as
+ *  usePlans (re-render on change, first mount kicks the server reconcile).
+ *  Always a trusted config: the default stands in for anything unusable. */
+export function useExternalControls(): ExternalControlsConfig {
+  useEffect(() => {
+    ensurePlansSynced();
+  }, []);
+  return useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => {
+        listeners.delete(l);
+      };
+    },
+    getExternalControls,
+    getExternalControls,
+  );
+}
+
+/** React binding for the stored-mapping fallback warning. */
+export function useExternalControlsInvalid(): boolean {
+  useEffect(() => {
+    ensurePlansSynced();
+  }, []);
+  return useSyncExternalStore(
+    (l) => {
+      listeners.add(l);
+      return () => {
+        listeners.delete(l);
+      };
+    },
+    getExternalControlsInvalid,
+    getExternalControlsInvalid,
+  );
+}
+
 /** Test-only: reset the catalog + clear its persistence between cases. */
 export function __resetPlansStore(): void {
   try {
@@ -767,6 +1088,7 @@ export function __resetPlansStore(): void {
     window.localStorage.removeItem(SYNC_KEY);
     window.localStorage.removeItem(FAIL_REASONS_KEY);
     window.localStorage.removeItem(OPERATORS_KEY);
+    window.localStorage.removeItem(EXTERNAL_CONTROLS_KEY);
   } catch {
     /* ignore */
   }
@@ -784,6 +1106,9 @@ export function __resetPlansStore(): void {
   currentPlans = clonePlans(DEFAULT_PLANS);
   currentFailReasons = DEFAULT_FAIL_REASONS.slice();
   currentOperators = [];
+  externalControlsInvalid = false;
+  externalControlsRestoredFromStorage = false;
+  currentExternalControls = cloneExternalControls(DEFAULT_EXTERNAL_CONTROLS);
   notify();
 }
 
@@ -794,5 +1119,7 @@ export function __rehydratePlansStore(): void {
   currentPlans = readInitial();
   currentFailReasons = readInitialFailReasons();
   currentOperators = readInitialOperators();
+  externalControlsRestoredFromStorage = false;
+  currentExternalControls = readInitialExternalControls();
   notify();
 }

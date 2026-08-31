@@ -38,6 +38,7 @@ jobs:
           - services/api_orchestrator
           - services/dora_runner
           - services/lerobot_exporter
+          - services/kokoro
     steps:
       - uses: actions/checkout@v4
       - name: Install uv
@@ -86,6 +87,27 @@ jobs:
       - run: uvx ruff check libs services
       - run: uvx ruff format --check libs services
 
+  # ---- Vendored Rust validation engine ------------------------------------
+  bagflow:
+    name: bagflow fmt/clippy/test/release
+    runs-on: ubuntu-latest
+    container:
+      image: rust:1.97.1-bookworm@sha256:77fac8b98f9f46062bb680b6d25d5bcaabfc400143952ebc572e924bcbedc3fa
+    defaults:
+      run:
+        working-directory: services/dora_runner/bagflow
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git cmake pkg-config libturbojpeg0-dev nasm
+      - run: rustup component add rustfmt clippy
+      - run: cargo fmt --all -- --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - run: cargo build --workspace --release --locked
+
   # ---- Compose validation: every compose file parses + interpolates ---------
   # `config -q` fully renders each file (env interpolation + `extends` + merge),
   # so it catches drift the smoke test would only hit at deploy time.
@@ -127,3 +149,5 @@ jobs:
           EXPORTS_DIR=/tmp/ci-exports docker compose --project-directory . \
             -f compose/compose.yaml -f compose/lerobot.yaml \
             -f compose/lerobot-exports.yaml config -q
+      - name: Compose build proxy/network policy
+        run: make compose-check

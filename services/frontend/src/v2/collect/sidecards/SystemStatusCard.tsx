@@ -9,8 +9,10 @@ import { SIDE_PAD } from '../compact';
 import { Chip } from './Chip';
 import { usePublishSystemRows } from './systemRowsStore';
 import { useSystemRows, type SystemRowsInput } from './useSystemRows';
+import { useTranslation } from 'react-i18next';
 
 export function SystemStatusCard(props: SystemRowsInput) {
+  const { t } = useTranslation('collect');
   const rows = useSystemRows(props);
   // Shared with the Active warnings card below, which must not be able to say
   // "no active warnings" while one of these rows says CHECK (#13).
@@ -23,19 +25,19 @@ export function SystemStatusCard(props: SystemRowsInput) {
         SIDE_PAD,
       )}
     >
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-        System status
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+        {t('systemStatus')}
       </h2>
       {rows.map((r) => (
         <div
-          key={r.label}
-          data-testid={`sys-${r.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
+          key={r.id ?? r.label}
+          data-testid={`sys-${r.id ?? r.label.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
           title={r.title}
           className="flex items-center gap-2.5 py-0.5 [@media(max-height:860px)]:py-0"
         >
-          <span className="text-[13px] font-medium text-gray-700">{r.label}</span>
+          <span className="text-[13px] font-medium text-text-primary">{r.label}</span>
           <div className="flex-1" />
-          <span className="font-mono text-xs text-gray-500">{r.value}</span>
+          <span className="font-mono text-xs text-text-muted">{r.value}</span>
           <Chip tone={r.tone}>{r.chip}</Chip>
         </div>
       ))}

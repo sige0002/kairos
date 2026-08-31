@@ -18,6 +18,7 @@ factories. SDP offer/answer is delegated to the stream's peer manager.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import threading
@@ -69,6 +70,10 @@ class _Stream:
     state: StreamState = StreamState.starting
     # Monotonic time the stream last had zero clients (drives idle auto-stop).
     idle_since: float | None = field(default=None)
+    start_done: threading.Event = field(default_factory=threading.Event)
+    stop_done: threading.Event = field(default_factory=threading.Event)
+    stop_requested: bool = False
+    start_error: BaseException | None = None
 
 
 class StreamRegistry:
@@ -98,34 +103,111 @@ class StreamRegistry:
 
     # -- start / stop -------------------------------------------------------
 
-    def start(self, request: StreamStartRequest) -> str:
+    async def start(self, request: StreamStartRequest) -> str:
         """Start a stream for ``request.topic`` (or return the existing one).
 
         Idempotent per topic/encoding: a duplicate start returns the existing
         ``stream_id`` without creating a second source or peer manager.
         """
         sid = stream_id_for(request.topic, request.encoding)
+        owner = False
+        waiting_for_start = False
         with self._lock:
             existing = self._streams.get(sid)
             if existing is not None:
-                return existing.stream_id
+                if existing.state is StreamState.live:
+                    return sid
+                stream = existing
+                waiting_for_start = existing.state is StreamState.starting
+                lifecycle_done = (
+                    existing.start_done if waiting_for_start else existing.stop_done
+                )
+            else:
+                source: FrameSource | None = None
+                try:
+                    source = self._source_factory(request)
+                    peers = self._peer_factory(request, source)
+                except BaseException:
+                    if source is not None:
+                        source.stop()
+                    raise
+                stream = _Stream(
+                    stream_id=sid,
+                    topic=request.topic,
+                    encoding=request.encoding,
+                    source=source,
+                    peers=peers,
+                    idle_since=self._clock(),
+                )
+                self._streams[sid] = stream
+                owner = True
 
-            source = self._source_factory(request)
-            peers = self._peer_factory(request, source)
-            stream = _Stream(
-                stream_id=sid,
-                topic=request.topic,
-                encoding=request.encoding,
-                source=source,
-                peers=peers,
-                idle_since=self._clock(),  # starts idle until a client connects
-            )
-            self._streams[sid] = stream
+        if not owner:
+            # A duplicate request observes the same transaction. It must not
+            # report success while the first request is still starting, nor
+            # resurrect a stream whose concurrent stop/failure rolled it back.
+            await asyncio.to_thread(lifecycle_done.wait)
+            with self._lock:
+                if (
+                    waiting_for_start
+                    and self._streams.get(sid) is stream
+                    and stream.state is StreamState.live
+                ):
+                    return sid
+                error = stream.start_error
+            if error is not None:
+                raise RuntimeError("stream start failed") from error
+            if waiting_for_start:
+                raise RuntimeError("stream stopped while starting")
+            raise RuntimeError("stream is stopping; retry after stop completes")
 
-        # Bring the source up outside the lock (its rclpy spin-up may block).
-        source.start()
+        # Bring the source up outside the lock (its rclpy spin-up may block),
+        # then atomically publish it as live. Cancellation waits for the worker
+        # thread before rollback so start() and stop() never run concurrently on
+        # the same source.
+        source_task = asyncio.create_task(asyncio.to_thread(stream.source.start))
+        try:
+            try:
+                await asyncio.shield(source_task)
+            except asyncio.CancelledError:
+                try:
+                    await source_task
+                except Exception:  # preserve the caller's cancellation
+                    logger.exception("source start also failed during cancellation")
+                raise
+        except BaseException as exc:
+            with self._lock:
+                stream.state = StreamState.stopping
+                stream.start_error = exc
+            try:
+                await self._cleanup(stream, suppress=True)
+            finally:
+                with self._lock:
+                    if self._streams.get(sid) is stream:
+                        self._streams.pop(sid)
+                stream.start_done.set()
+                stream.stop_done.set()
+            raise
+
         with self._lock:
-            stream.state = StreamState.live
+            stopped = stream.stop_requested or self._streams.get(sid) is not stream
+            if stopped:
+                stream.state = StreamState.stopping
+            else:
+                stream.state = StreamState.live
+
+        if stopped:
+            try:
+                await self._cleanup(stream)
+            finally:
+                with self._lock:
+                    if self._streams.get(sid) is stream:
+                        self._streams.pop(sid)
+                stream.start_done.set()
+                stream.stop_done.set()
+            raise RuntimeError("stream stopped while starting")
+
+        stream.start_done.set()
         logger.info(
             "stream started",
             extra={"component": "webrtc_streamer", "topic": request.topic},
@@ -135,17 +217,51 @@ class StreamRegistry:
     async def stop(self, stream_id: str) -> bool:
         """Stop and remove a stream (idempotent). Returns whether it existed."""
         with self._lock:
-            stream = self._streams.pop(stream_id, None)
+            stream = self._streams.get(stream_id)
             if stream is None:
                 return False
-            stream.state = StreamState.stopping
-        await stream.peers.close()
-        stream.source.stop()
+            if stream.state is StreamState.starting:
+                stream.stop_requested = True
+                owns_cleanup = False
+            elif stream.state is StreamState.stopping:
+                owns_cleanup = False
+            else:
+                stream.state = StreamState.stopping
+                owns_cleanup = True
+        if not owns_cleanup:
+            await asyncio.to_thread(stream.stop_done.wait)
+            return True
+
+        try:
+            await self._cleanup(stream)
+        finally:
+            with self._lock:
+                if self._streams.get(stream_id) is stream:
+                    self._streams.pop(stream_id)
+            stream.stop_done.set()
         logger.info(
             "stream stopped",
             extra={"component": "webrtc_streamer", "topic": stream.topic},
         )
         return True
+
+    @staticmethod
+    async def _cleanup(stream: _Stream, *, suppress: bool = False) -> None:
+        """Release peers and source, attempting both even when either fails."""
+        first_error: BaseException | None = None
+        try:
+            await stream.peers.close()
+        except BaseException as exc:
+            first_error = exc
+            logger.exception("error closing stream peers")
+        try:
+            await asyncio.to_thread(stream.source.stop)
+        except BaseException as exc:
+            if first_error is None:
+                first_error = exc
+            logger.exception("error stopping stream source")
+        if first_error is not None and not suppress:
+            raise first_error
 
     async def stop_all(self) -> None:
         """Stop every stream (shutdown)."""
@@ -164,7 +280,7 @@ class StreamRegistry:
         """Answer a client SDP offer on *stream_id*; raise KeyError if unknown."""
         with self._lock:
             stream = self._streams.get(stream_id)
-            if stream is None:
+            if stream is None or stream.state is not StreamState.live:
                 raise KeyError(stream_id)
             stream.idle_since = None  # a client is connecting
             peers = stream.peers
@@ -203,6 +319,8 @@ class StreamRegistry:
         expired: list[str] = []
         with self._lock:
             for stream in self._streams.values():
+                if stream.state is not StreamState.live:
+                    continue
                 if stream.peers.client_count() > 0:
                     stream.idle_since = None
                     continue

@@ -5,11 +5,13 @@
 // never change the write set underneath the operator.
 
 import { Button, Modal } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { shortCaptureId } from './data';
 import type { DatasetsState } from './useDatasetsState';
 
 export function BulkAddDialog({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation(['datasets', 'common']);
   const finishedWithFailures =
     !state.bulkAddBusy && state.bulkAddFailures.length > 0 && state.bulkAddTotal > 0;
   const finishedWithRunError = !state.bulkAddBusy && state.bulkAddError != null;
@@ -28,7 +30,7 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
     <Modal
       open={state.bulkAddOpen}
       onClose={state.cancelBulkAdd}
-      title="Add matching recordings"
+      title={t('datasets:addMatchingRecordings')}
       footer={
         <>
           <Button
@@ -41,8 +43,8 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
             finishedWithRunError ||
             finishedSuccessfully ||
             finishedWithReceiptFailure
-              ? 'Close'
-              : 'Cancel'}
+              ? t('common:actions.close')
+              : t('common:actions.cancel')}
           </Button>
           {finishedWithFailures || finishedWithReceiptFailure ? (
             <Button
@@ -52,9 +54,11 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
             >
               {finishedWithReceiptFailure
                 ? retryableMemberFailures > 0
-                  ? `Retry ${retryableMemberFailures} failed and receipt`
-                  : 'Retry receipt'
-                : `Retry ${retryableMemberFailures} failed`}
+                  ? t('datasets:retryFailedAndReceipt', {
+                      count: retryableMemberFailures,
+                    })
+                  : t('datasets:retryReceipt')
+                : t('datasets:retryFailed', { count: retryableMemberFailures })}
             </Button>
           ) : finishedWithRunError && !state.bulkAddCanRetryRequest ? null : (
             <Button
@@ -68,14 +72,18 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
               data-testid="dataset-bulk-add-confirm"
             >
               {state.bulkAddBusy
-                ? `Adding… ${state.bulkAddDone} / ${state.bulkAddTotal}`
+                ? t('datasets:addingProgress', {
+                    done: String(state.bulkAddDone),
+                    total: String(state.bulkAddTotal),
+                  })
                 : finishedSuccessfully
-                  ? 'Close'
+                  ? t('common:actions.close')
                   : state.bulkAddCanRetryRequest
-                    ? 'Retry request'
-                    : `Add ${state.bulkAddTargetCount} recording${
-                        state.bulkAddTargetCount === 1 ? '' : 's'
-                      }`}
+                    ? t('datasets:retryRequest')
+                    : t('datasets:addRecordings', {
+                        count: state.bulkAddTargetCount,
+                        plural: state.bulkAddTargetCount === 1 ? '' : 's',
+                      })}
             </Button>
           )}
         </>
@@ -85,33 +93,25 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
         {state.bulkAddPreflighting && (
           <p
             data-testid="dataset-bulk-add-preflighting"
-            className="rounded-control border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] text-gray-700"
+            className="rounded-control border border-border bg-surface-muted px-3 py-2 text-[12px] text-text-primary"
           >
-            Freezing the server match set… no recording will be added until you confirm
-            it.
+            {t('datasets:bulkFreezing')}
           </p>
         )}
-        <p className="text-[13px] leading-relaxed text-gray-600">
-          Add{' '}
-          <span className="font-semibold text-gray-900">
-            {state.bulkAddTargetCount} matching recording
-            {state.bulkAddTargetCount === 1 ? '' : 's'}
-          </span>{' '}
-          to{' '}
-          <span className="font-semibold text-gray-900">
-            {state.bulkAddTargetDatasetName ?? 'the selected dataset'}
-          </span>
-          .{' '}
-          {state.bulkAddPreflighting
-            ? 'The server is freezing the match set before it adds anything.'
-            : 'This server match set is frozen until it expires. Confirm to start adding.'}{' '}
-          Each recording receives its dataset number; nothing moves on disk.
+        <p className="text-[13px] leading-relaxed text-text-secondary">
+          {t('datasets:bulkSummary', {
+            count: state.bulkAddTargetCount,
+            plural: state.bulkAddTargetCount === 1 ? '' : 's',
+            dataset: state.bulkAddTargetDatasetName ?? t('datasets:selectedDataset'),
+            state: state.bulkAddPreflighting
+              ? t('datasets:bulkFreezingDetail')
+              : t('datasets:bulkFrozenDetail'),
+          })}
         </p>
 
         {state.bulkAddExpiresAt && (
-          <p className="text-[12px] text-gray-500">
-            Server snapshot expires at {state.bulkAddExpiresAt}. Refresh it before
-            confirming if it expires.
+          <p className="text-[12px] text-text-muted">
+            {t('datasets:bulkExpires', { time: state.bulkAddExpiresAt })}
           </p>
         )}
 
@@ -121,20 +121,18 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
           !state.bulkAddBusy && (
             <p
               data-testid="dataset-bulk-add-empty-selection"
-              className="rounded-control border border-gray-200 bg-gray-50 px-3 py-2 text-[12px] leading-relaxed text-gray-700"
+              className="rounded-control border border-border bg-surface-muted px-3 py-2 text-[12px] leading-relaxed text-text-primary"
             >
-              Nothing eligible matched this server selection. No membership run can be
-              started.
+              {t('datasets:bulkEmpty')}
             </p>
           )}
 
         {state.bulkAddCatalogTruncated && (
           <p
             data-testid="dataset-bulk-add-truncated"
-            className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900"
+            className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
           >
-            This adds every matching recording loaded in this catalog sweep. Older
-            recordings may exist beyond the sweep limit and are not included.
+            {t('datasets:bulkTruncated')}
           </p>
         )}
 
@@ -144,11 +142,12 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
             <div
               aria-live="polite"
               data-testid="dataset-bulk-add-progress"
-              className="rounded-control border border-teal-200 bg-teal-50 px-3 py-2 text-[12px] text-teal-900"
+              className="rounded-control border border-accent bg-interaction-selected px-3 py-2 text-[12px] text-accent-strong"
             >
-              {state.bulkAddDone} / {state.bulkAddTotal} processed. Additions are
-              committed one at a time, so this run cannot be canceled safely once it
-              starts.
+              {t('datasets:bulkProgress', {
+                done: String(state.bulkAddDone),
+                total: String(state.bulkAddTotal),
+              })}
             </div>
           )}
 
@@ -156,11 +155,14 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
           <div
             role="alert"
             data-testid="dataset-bulk-add-failures"
-            className="flex flex-col gap-1 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900"
+            className="flex flex-col gap-1 rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
           >
             <span className="font-semibold">
-              {succeeded} of {state.bulkAddTotal} joined; {state.bulkAddFailures.length}{' '}
-              did not:
+              {t('datasets:bulkJoined', {
+                done: String(succeeded),
+                total: String(state.bulkAddTotal),
+                failed: String(state.bulkAddFailures.length),
+              })}
             </span>
             <div className="flex max-h-40 flex-col gap-1 overflow-y-auto">
               {state.bulkAddFailures.map((failure) => (
@@ -170,37 +172,38 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
                 </span>
               ))}
             </div>
-            <span>The successful additions remain in the dataset.</span>
+            <span>{t('datasets:additionsRemain')}</span>
           </div>
         )}
         {finishedSuccessfully && (
           <p
             data-testid="dataset-bulk-add-complete"
-            className="rounded-control border border-green-200 bg-green-50 px-3 py-2 text-[12px] leading-relaxed text-green-900"
+            className="rounded-control border border-status-success-border bg-status-success-bg px-3 py-2 text-[12px] leading-relaxed text-status-success-text"
           >
-            {state.bulkAddDone} recordings joined. The server saved this run; nothing
-            moved on disk.
+            {t('datasets:bulkComplete', { count: state.bulkAddDone })}
           </p>
         )}
         {finishedWithReceiptFailure && (
           <p
             role="alert"
             data-testid="dataset-bulk-add-receipt-failed"
-            className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900"
+            className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
           >
             {retryableMemberFailures > 0
-              ? `The provenance receipt was not saved, and ${retryableMemberFailures} membership addition${retryableMemberFailures === 1 ? '' : 's'} failed. Retrying re-attempts only those failed additions, then records the receipt; successful additions stay durable.`
-              : 'Members are durable, but the provenance receipt was not saved. Retrying records the receipt only; do not submit a new member add.'}
+              ? t('datasets:receiptAndMembersFailed', {
+                  count: retryableMemberFailures,
+                })
+              : t('datasets:receiptOnly')}
           </p>
         )}
         {finishedWithRunError && !state.bulkAddCanRetryRequest && (
           <p
             role="alert"
-            className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-relaxed text-amber-900"
+            className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] leading-relaxed text-status-warning-text"
           >
             {state.bulkAddSelectionExpired
-              ? 'The frozen server selection expired before the run started. Refresh it, review its current count, then confirm again.'
-              : 'The run status could not be read. Close this dialog and reload the screen before trying again.'}
+              ? t('datasets:selectionExpired')
+              : t('datasets:bulkStatusUnreadable')}
           </p>
         )}
         {finishedWithRunError &&
@@ -211,7 +214,7 @@ export function BulkAddDialog({ state }: { state: DatasetsState }) {
               onClick={state.refreshBulkAddSelection}
               data-testid="dataset-bulk-add-refresh-selection"
             >
-              Refresh selection
+              {t('datasets:refreshSelection')}
             </Button>
           )}
         {state.bulkAddError != null && <ErrorMessage error={state.bulkAddError} />}

@@ -1,6 +1,7 @@
+<!-- AUTO-GENERATED from libs/kairos_common/README.ja.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
 # kairos_common
 
-Shared library for kairos services (Stage 0 skeleton).
+The shared library for kairos services.
 
 Provides:
 
@@ -12,5 +13,8 @@ Provides:
   installs the unified error model, configures CORS, and sets up
   JSON-lines logging.
 - `utc_now_iso8601` — UTC ISO8601 timestamp helper.
+- capture store v2 IDs, sidecars, ledger, atomic I/O, rebuild, and archive paths.
 
-This is a Stage 0 skeleton: shared plumbing only, no service business logic.
+It contains only contracts and infrastructure that must remain identical across
+services, not service-specific business logic. The canonical configuration design
+is `docs/specs/ja/config.md`.

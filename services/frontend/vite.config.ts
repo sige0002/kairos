@@ -1,7 +1,7 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
-// Stage 0 skeleton. The dev server proxies /api to the api_orchestrator and
+// Console v2 dev server. It proxies /api to the api_orchestrator and
 // /webrtc to the webrtc_streamer so the frontend can fetch GET /api/v1/config
 // and run camera signaling without CORS during development — mirroring the
 // served build's nginx reverse proxy (services/frontend/nginx.conf).

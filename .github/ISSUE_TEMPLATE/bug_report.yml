@@ -1,0 +1,47 @@
+name: Bug report
+description: Report a reproducible kairos defect
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not include secrets, private data, MCAP contents, or confidential robot names.
+  - type: input
+    id: version
+    attributes:
+      label: Version and git SHA
+      placeholder: "VERSION; git rev-parse HEAD; clean/dirty"
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Host OS/architecture, Docker/Compose, ROS distro, RMW, domain ID, and deployment topology.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual result
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Include make smoke, compose ps, and relevant recent logs after removing private values.
+    validations:
+      required: true
+  - type: checkboxes
+    id: data
+    attributes:
+      label: Data safety
+      options:
+        - label: I stopped writes and preserved sidecars plus lifecycle.jsonl if data corruption is suspected.

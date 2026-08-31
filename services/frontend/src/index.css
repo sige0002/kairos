@@ -2,13 +2,174 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * Semantic UI palette. These variables are the single palette boundary: use
+ * the semantic Tailwind utilities from tailwind.config.js in components rather
+ * than literal gray/teal/status palette utilities. The values preserve the
+ * existing Neutral Teal light appearance; dark values are purpose-designed so
+ * operational states retain their meaning and contrast.
+ */
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-app: 249 250 251;
+  --color-surface: 255 255 255;
+  --color-surface-muted: 243 244 246;
+  --color-surface-elevated: 255 255 255;
+  --color-surface-control: 255 255 255;
+  --color-text-primary: 17 24 39;
+  --color-text-secondary: 55 65 81;
+  --color-text-muted: 107 114 128;
+  --color-text-disabled: 156 163 175;
+  --color-text-inverse: 255 255 255;
+  --color-border-default: 229 231 235;
+  --color-border-strong: 209 213 219;
+  --color-border-disabled: 229 231 235;
+  --color-interaction-hover: 249 250 251;
+  --color-interaction-selected: 240 253 250;
+  --color-interaction-disabled: 243 244 246;
+  --color-accent: 15 118 110;
+  --color-accent-strong: 17 94 89;
+  --color-accent-soft: 204 251 241;
+  --color-focus: 13 148 136;
+  --color-shadow: 17 24 39;
+  --color-scrim: 17 24 39;
+  --opacity-scrim: 0.3;
+  --color-status-success-bg: 240 253 244;
+  --color-status-success-border: 187 247 208;
+  --color-status-success-text: 21 128 61;
+  --color-status-success-accent: 22 163 74;
+  --color-status-success-contrast: 17 24 39;
+  --color-status-warning-bg: 255 251 235;
+  --color-status-warning-border: 253 230 138;
+  --color-status-warning-text: 180 83 9;
+  --color-status-warning-accent: 217 119 6;
+  --color-status-warning-contrast: 17 24 39;
+  --color-status-danger-bg: 254 242 242;
+  --color-status-danger-border: 254 202 202;
+  --color-status-danger-text: 185 28 28;
+  --color-status-danger-accent: 220 38 38;
+  --color-status-danger-contrast: 255 255 255;
+  --color-status-info-bg: 236 254 255;
+  --color-status-info-border: 165 243 252;
+  --color-status-info-text: 14 116 144;
+  --color-status-info-accent: 8 145 178;
+  --color-status-live-bg: 240 253 250;
+  --color-status-live-border: 153 246 228;
+  --color-status-live-text: 15 118 110;
+  --color-status-live-accent: 13 148 136;
+  --color-status-recording-bg: 255 241 242;
+  --color-status-recording-border: 254 205 211;
+  --color-status-recording-text: 190 24 93;
+  --color-status-recording-accent: 225 29 72;
+  --color-status-paused-bg: 255 251 235;
+  --color-status-paused-border: 253 230 138;
+  --color-status-paused-text: 146 64 14;
+  --color-status-paused-accent: 217 119 6;
+  --color-status-adopted-bg: 240 253 250;
+  --color-status-adopted-border: 153 246 228;
+  --color-status-adopted-text: 15 118 110;
+  --color-status-adopted-accent: 13 148 136;
+  --color-status-needsreview-bg: 255 251 235;
+  --color-status-needsreview-border: 253 230 138;
+  --color-status-needsreview-text: 146 64 14;
+  --color-status-needsreview-accent: 217 119 6;
+  --color-status-excluded-bg: 243 244 246;
+  --color-status-excluded-border: 209 213 219;
+  --color-status-excluded-text: 75 85 99;
+  --color-status-excluded-accent: 107 114 128;
+  --color-status-suspect-bg: 250 245 255;
+  --color-status-suspect-border: 221 214 254;
+  --color-status-suspect-text: 109 40 217;
+  --color-status-suspect-accent: 124 58 237;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --color-app: 15 23 42;
+  --color-surface: 30 41 59;
+  --color-surface-muted: 51 65 85;
+  --color-surface-elevated: 30 41 59;
+  --color-surface-control: 30 41 59;
+  --color-text-primary: 248 250 252;
+  --color-text-secondary: 203 213 225;
+  --color-text-muted: 148 163 184;
+  --color-text-disabled: 100 116 139;
+  --color-text-inverse: 15 23 42;
+  --color-border-default: 71 85 105;
+  --color-border-strong: 100 116 139;
+  --color-border-disabled: 51 65 85;
+  --color-interaction-hover: 51 65 85;
+  --color-interaction-selected: 19 78 74;
+  --color-interaction-disabled: 51 65 85;
+  --color-accent: 45 212 191;
+  --color-accent-strong: 20 184 166;
+  --color-accent-soft: 19 78 74;
+  --color-focus: 94 234 212;
+  --color-shadow: 2 6 23;
+  --color-scrim: 2 6 23;
+  --opacity-scrim: 0.72;
+  --color-status-success-bg: 5 46 22;
+  --color-status-success-border: 22 101 52;
+  --color-status-success-text: 134 239 172;
+  --color-status-success-accent: 74 222 128;
+  --color-status-success-contrast: 17 24 39;
+  --color-status-warning-bg: 69 26 3;
+  --color-status-warning-border: 161 98 7;
+  --color-status-warning-text: 252 211 77;
+  --color-status-warning-accent: 251 191 36;
+  --color-status-warning-contrast: 17 24 39;
+  --color-status-danger-bg: 69 10 10;
+  --color-status-danger-border: 185 28 28;
+  --color-status-danger-text: 252 165 165;
+  --color-status-danger-accent: 251 113 133;
+  --color-status-danger-contrast: 17 24 39;
+  --color-status-info-bg: 12 74 110;
+  --color-status-info-border: 3 105 161;
+  --color-status-info-text: 125 211 252;
+  --color-status-info-accent: 56 189 248;
+  --color-status-live-bg: 4 47 46;
+  --color-status-live-border: 15 118 110;
+  --color-status-live-text: 153 246 228;
+  --color-status-live-accent: 45 212 191;
+  --color-status-recording-bg: 76 5 25;
+  --color-status-recording-border: 190 24 93;
+  --color-status-recording-text: 253 164 175;
+  --color-status-recording-accent: 251 113 133;
+  --color-status-paused-bg: 66 32 6;
+  --color-status-paused-border: 161 98 7;
+  --color-status-paused-text: 253 230 138;
+  --color-status-paused-accent: 251 191 36;
+  --color-status-adopted-bg: 4 47 46;
+  --color-status-adopted-border: 15 118 110;
+  --color-status-adopted-text: 153 246 228;
+  --color-status-adopted-accent: 45 212 191;
+  --color-status-needsreview-bg: 69 26 3;
+  --color-status-needsreview-border: 161 98 7;
+  --color-status-needsreview-text: 253 230 138;
+  --color-status-needsreview-accent: 251 191 36;
+  --color-status-excluded-bg: 30 41 59;
+  --color-status-excluded-border: 71 85 105;
+  --color-status-excluded-text: 203 213 225;
+  --color-status-excluded-accent: 148 163 184;
+  --color-status-suspect-bg: 59 7 100;
+  --color-status-suspect-border: 126 34 206;
+  --color-status-suspect-text: 216 180 254;
+  --color-status-suspect-accent: 192 132 252;
+}
+
 @layer base {
   html {
     /* Slightly tighter tracking matches the handoff wordmark/heading feel. */
     font-feature-settings: 'cv11', 'ss01';
   }
   body {
-    @apply bg-gray-50 font-sans text-gray-900 antialiased;
+    @apply bg-app font-sans text-text-primary antialiased;
+  }
+  input:not([type='checkbox']):not([type='radio']):not([type='range']),
+  select,
+  textarea {
+    @apply bg-surface-control text-text-primary;
   }
   /* Status indicators are rounded squares (2px), not circles — a brand cue. */
 }
@@ -19,9 +180,63 @@
   height: 8px;
 }
 ::-webkit-scrollbar-thumb {
-  @apply bg-gray-300;
+  @apply bg-border-strong;
   border-radius: 4px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
+}
+
+/*
+ * Collect is operated at a glance from a large display rather than read at a
+ * desk. Browsers expose CSS viewport dimensions, not the panel's physical size
+ * or viewing distance, so a near-native 4K viewport is the practical signal.
+ * Scale typography only: the Collect grid, cards, spacing, and camera layout
+ * keep their established geometry. At higher browser zoom the CSS viewport
+ * drops below this threshold, avoiding a second layer of magnification.
+ */
+@media (min-width: 3200px) and (min-height: 1800px) {
+  .collect-large-screen-type .text-\[9\.5px\] {
+    font-size: 14.25px;
+  }
+  .collect-large-screen-type .text-\[10px\] {
+    font-size: 15px;
+  }
+  .collect-large-screen-type .text-\[10\.5px\] {
+    font-size: 15.75px;
+  }
+  .collect-large-screen-type .text-\[11px\] {
+    font-size: 16.5px;
+  }
+  .collect-large-screen-type .text-\[11\.5px\] {
+    font-size: 17.25px;
+  }
+  .collect-large-screen-type .text-xs,
+  .collect-large-screen-type .text-\[12px\] {
+    font-size: 18px;
+  }
+  .collect-large-screen-type .text-\[12\.5px\] {
+    font-size: 18.75px;
+  }
+  .collect-large-screen-type .text-\[13px\] {
+    font-size: 19.5px;
+  }
+  .collect-large-screen-type .text-sm {
+    font-size: 21px;
+  }
+  .collect-large-screen-type .text-\[15px\] {
+    font-size: 22.5px;
+  }
+  .collect-large-screen-type .text-\[17px\] {
+    font-size: 25.5px;
+  }
+  .collect-large-screen-type .text-lg {
+    font-size: 27px;
+  }
+  .collect-large-screen-type .text-xl {
+    font-size: 30px;
+  }
+  .collect-large-screen-type .text-\[34px\] {
+    font-size: 51px;
+  }
 }

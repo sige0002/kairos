@@ -27,7 +27,7 @@ export function LeRobotExportButton({ state }: { state: LeRobotExportState }) {
           ? 'A conversion is running for this dataset — open it for progress, or to cancel it.'
           : 'Convert this dataset to a LeRobot v3 dataset under exports/. The recordings and the dataset itself are not changed.'
       }
-      className="inline-flex shrink-0 items-center gap-1 rounded-control border border-teal-200 px-2.5 py-1 text-xs font-semibold text-teal-700 hover:bg-teal-50"
+      className="inline-flex shrink-0 items-center gap-1 rounded-control border border-accent px-2.5 py-1 text-xs font-semibold text-accent hover:bg-interaction-selected"
     >
       {state.live ? 'Converting…' : 'Convert to LeRobot'}
     </button>

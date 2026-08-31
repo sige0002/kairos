@@ -23,7 +23,7 @@ name: kairos-turn
 
 services:
   turn:
-    image: coturn/coturn:latest
+    image: coturn/coturn:4.16.0-r0@sha256:01fc8655e7c262fa4ccfb8dca74ff80fb372b0ee021e80370a4d3e3dd01a951e
     restart: unless-stopped
     # host networking so the relayed UDP ports are reachable without per-port
     # docker publishing (coturn allocates within the min/max range below).

@@ -224,4 +224,5 @@ class TestRowLossWithoutALedgerEvent:
             matching = [w for w in health["warnings"] if destination in w]
             assert len(matching) == 1, health["warnings"]
             assert "more than one dataset" in matching[0]
+            assert matching[0] not in health["dismissible_warnings"]
             assert health["rebuild_summary"]["warning_count"] >= 1

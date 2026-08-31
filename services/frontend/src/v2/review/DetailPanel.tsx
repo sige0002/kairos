@@ -12,30 +12,31 @@
 
 import type { ReactNode } from 'react';
 import { useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import { i18n } from '../../i18n';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getCapture } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { Badge, cn, type Tone } from '../../components/ui';
 import { AvailabilityChip } from '../captures/AvailabilityChip';
 import { availabilityOf } from '../captures/availability';
+import { qualityLabel, qualityTone, taskResultLabel } from '../episodeChips';
 import { CaptureInspection } from './CaptureInspection';
 import type { CaptureLabels, LabelEditing } from './LabelRows';
 import { episodeLabel } from './types';
-import type { DisplayQuality, ReviewLane } from './types';
+import type { Quality } from '../../api/types';
+import type { ReviewLane, ReviewIssue } from './types';
 import type { ReviewState } from './useReviewState';
-
-function qualityTone(q: DisplayQuality): Tone {
-  if (q === 'Good') return 'green';
-  if (q === 'Needs review') return 'amber';
-  return 'red';
-}
 
 // Header badge: the exception-review lane (READY / NEEDS CHECK / EXCLUDED) — the
 // same vocabulary as the row chip, so the detail header and the list agree.
-function headerBadge(lane: ReviewLane): { label: string; tone: Tone } {
-  if (lane === 'ready') return { label: 'READY', tone: 'green' };
-  if (lane === 'excluded') return { label: 'EXCLUDED', tone: 'red' };
-  return { label: 'NEEDS CHECK', tone: 'amber' };
+function headerBadge(
+  lane: ReviewLane,
+  t: (key: 'readyBadge' | 'excludedBadge' | 'needsCheckBadge') => string,
+): { label: string; tone: Tone } {
+  if (lane === 'ready') return { label: t('readyBadge'), tone: 'green' };
+  if (lane === 'excluded') return { label: t('excludedBadge'), tone: 'red' };
+  return { label: t('needsCheckBadge'), tone: 'amber' };
 }
 
 // The Collect → Review → Datasets pipeline for this capture, so the operator can
@@ -45,15 +46,25 @@ function headerBadge(lane: ReviewLane): { label: string; tone: Tone } {
 // used to light up "●" for any READY capture, contradicting a Datasets tab
 // with zero datasets (audit P1). Unknown (detail still loading) stays "○".
 type StepState = 'done' | 'current' | 'todo' | 'off';
-function PipelineStrip({ lane, inDataset }: { lane: ReviewLane; inDataset: boolean | null }) {
+function PipelineStrip({
+  lane,
+  inDataset,
+}: {
+  lane: ReviewLane;
+  inDataset: boolean | null;
+}) {
+  const { t } = useTranslation('review');
   const ready = lane === 'ready';
   const excluded = lane === 'excluded';
   const steps: { label: string; state: StepState }[] = [
-    { label: 'Recorded', state: 'done' },
+    { label: t('pipelineRecorded'), state: 'done' },
     // NEEDS CHECK is the current review step; READY/EXCLUDED are past it.
-    { label: 'Reviewed', state: lane === 'needs_check' ? 'current' : 'done' },
-    { label: 'Ready', state: ready ? 'done' : excluded ? 'off' : 'todo' },
-    { label: 'In dataset', state: inDataset === true ? 'done' : 'todo' },
+    {
+      label: t('pipelineReviewed'),
+      state: lane === 'needs_check' ? 'current' : 'done',
+    },
+    { label: t('pipelineReady'), state: ready ? 'done' : excluded ? 'off' : 'todo' },
+    { label: t('pipelineDataset'), state: inDataset === true ? 'done' : 'todo' },
   ];
   const glyph: Record<StepState, string> = {
     done: '✓',
@@ -62,19 +73,19 @@ function PipelineStrip({ lane, inDataset }: { lane: ReviewLane; inDataset: boole
     off: '✕',
   };
   const tone: Record<StepState, string> = {
-    done: 'text-teal-700',
-    current: 'text-teal-700 font-semibold',
-    todo: 'text-gray-500',
-    off: 'text-gray-500 line-through',
+    done: 'text-accent',
+    current: 'text-accent font-semibold',
+    todo: 'text-text-muted',
+    off: 'text-text-muted line-through',
   };
   return (
     <div
       data-testid="review-pipeline-strip"
-      className="flex flex-wrap items-center gap-x-1.5 gap-y-1 rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-2 text-[11.5px]"
+      className="flex flex-wrap items-center gap-x-1.5 gap-y-1 rounded-[10px] border border-border bg-surface-muted px-3 py-2 text-[11.5px]"
     >
       {steps.map((s, i) => (
         <span key={s.label} className="flex items-center gap-1.5">
-          {i > 0 && <span className="text-gray-300">·</span>}
+          {i > 0 && <span className="text-text-muted">·</span>}
           <span className={tone[s.state]}>
             {glyph[s.state]} {s.label}
           </span>
@@ -101,14 +112,14 @@ function DecisionButton({
 }) {
   const styles: Record<string, string> = {
     adopt: active
-      ? 'bg-teal-700 text-white'
-      : 'border border-gray-200 bg-white text-teal-700 hover:bg-teal-50',
+      ? 'bg-accent text-text-inverse'
+      : 'border border-border bg-surface text-accent hover:bg-interaction-selected',
     review: active
-      ? 'border border-amber-200 bg-amber-100 text-amber-800'
-      : 'border border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100',
+      ? 'border border-status-warning-border bg-status-warning-bg text-status-warning-text'
+      : 'border border-status-warning-border bg-status-warning-bg text-status-warning-text hover:bg-status-warning-bg',
     exclude: active
-      ? 'border border-gray-300 bg-gray-100 text-gray-700'
-      : 'border border-gray-200 bg-white text-gray-500 hover:bg-gray-50',
+      ? 'border border-border-strong bg-surface-muted text-text-primary'
+      : 'border border-border bg-surface text-text-muted hover:bg-surface-muted',
   };
   return (
     <button
@@ -128,16 +139,21 @@ function DecisionButton({
 }
 
 /** A quality badge, or a muted "—" when unset. */
-function QualityValue({ quality }: { quality: DisplayQuality | null }) {
-  if (!quality) return <span className="text-[12.5px] text-gray-500">—</span>;
+function QualityValue({ quality }: { quality: Quality | null }) {
+  if (!quality) return <span className="text-[12.5px] text-text-muted">—</span>;
   return (
     <Badge tone={qualityTone(quality)} className="w-fit">
-      {quality}
+      {qualityLabel(quality)}
     </Badge>
   );
 }
 
+function issueLabel(issue: ReviewIssue | null): string | null {
+  return issue === 'recording_incomplete' ? i18n.t('review:recordingIncomplete') : null;
+}
+
 export function DetailPanel({ rv }: { rv: ReviewState }) {
+  const { t } = useTranslation('review');
   const sel = rv.selected;
   // Same key CaptureInspection uses — React Query dedupes the request; this
   // just lets the pipeline strip read REAL dataset membership (see
@@ -160,10 +176,14 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
   const capture = sel?.capture ?? null;
   const saveLabels = useCallback(
     async (next: CaptureLabels): Promise<string | null> => {
-      if (!capture || !captureId) return 'Nothing is selected.';
-      const { capture: updated, error, skipped } = await rv.reviewSave.save(capture, next);
+      if (!capture || !captureId) return t('nothingSelected');
+      const {
+        capture: updated,
+        error,
+        skipped,
+      } = await rv.reviewSave.save(capture, next);
       if (skipped) {
-        return 'A save for this recording is still going — try again in a moment.';
+        return t('saveStillRunning');
       }
       if (error) return `${error.message} ${error.guidance}`.trim();
       // The save invalidates the capture LIST, which is not what this panel
@@ -189,10 +209,8 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
 
   if (!sel) {
     return (
-      <div className="flex flex-col overflow-auto rounded-card border border-gray-200 bg-white shadow-card">
-        <p className="p-[18px] text-sm text-gray-500">
-          Select an episode to see details.
-        </p>
+      <div className="flex flex-col overflow-auto rounded-card border border-border bg-surface shadow-card">
+        <p className="p-[18px] text-sm text-text-muted">{t('selectEpisode')}</p>
       </div>
     );
   }
@@ -203,7 +221,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
   // spent. The hook refuses to send it either way (useReviewSave); this is the
   // half the operator can see, so the refusal is not a click into silence.
   const saving = rv.reviewSave.savingCaptureIds.has(sel.captureId);
-  const badge = headerBadge(sel.reviewLane);
+  const badge = headerBadge(sel.reviewLane, t);
   const availability = availabilityOf(sel.capture);
   // Whether this machine actually holds the bytes. `usable` is the same fact
   // the inspection gates on: present and readable.
@@ -218,15 +236,17 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
     // pipeline) scrolls. Previously the whole panel scrolled and the decision
     // buttons sat below the tall inspection — the operator had to scroll to
     // the very bottom for every Mark OK / Exclude (user-reported UX pain).
-    <div className="flex flex-col overflow-hidden rounded-card border border-gray-200 bg-white shadow-card">
+    <div className="flex flex-col overflow-hidden rounded-card border border-border bg-surface shadow-card">
       <div
         data-testid="review-detail-header"
-        className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-3"
+        className="flex items-center gap-2.5 border-b border-border px-[18px] py-3"
       >
-        <h2 className="font-mono text-sm font-semibold text-gray-900">
-          Episode {episodeLabel(sel.ep)}
+        <h2 className="font-mono text-sm font-semibold text-text-primary">
+          {t('episodeLabel', { episode: episodeLabel(sel.ep) })}
         </h2>
-        <span className="text-xs text-gray-500">Batch {sel.batch}</span>
+        <span className="text-xs text-text-muted">
+          {t('batchLabel', { batch: sel.batch })}
+        </span>
         <AvailabilityChip capture={sel.capture} testId="review-detail-availability" />
         <div className="flex-1" />
         <span data-testid="review-detail-status">
@@ -254,23 +274,26 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           <div
             data-testid="review-no-local-copy"
             data-availability={availability.kind}
-            className="flex flex-col items-center justify-center gap-2.5 rounded-[10px] border border-dashed border-gray-300 bg-gray-50 px-4 py-8 text-center"
+            className="flex flex-col items-center justify-center gap-2.5 rounded-[10px] border border-dashed border-border-strong bg-surface-muted px-4 py-8 text-center"
           >
-            <span className="text-sm font-medium text-gray-600">
-              Nothing to inspect here
+            <span className="text-sm font-medium text-text-secondary">
+              {t('nothingToInspect')}
             </span>
-            <span className="max-w-[320px] text-xs text-gray-500">
+            <span className="max-w-[320px] text-xs text-text-muted">
               {availability.detail}
             </span>
             {sel.transferSlot.phase === 'transferring' ? (
               // Indeterminate: rsync progress isn't observable through the pull
               // channel, so we show motion + honest words instead of a fake %.
               <div className="mt-1 flex w-full max-w-[220px] flex-col items-center gap-1.5">
-                <div className="relative h-[5px] w-full overflow-hidden rounded-[3px] bg-gray-200">
-                  <span className="absolute inset-0 animate-pulse rounded-[3px] bg-teal-600" />
+                <div className="relative h-[5px] w-full overflow-hidden rounded-[3px] bg-surface-muted">
+                  <span className="absolute inset-0 animate-pulse rounded-[3px] bg-accent" />
                 </div>
-                <span data-testid="review-transferring" className="text-[11px] text-gray-500">
-                  Transferring from the robot… a long episode can take a while
+                <span
+                  data-testid="review-transferring"
+                  className="text-[11px] text-text-muted"
+                >
+                  {t('transferFromRobot')}
                 </span>
               </div>
             ) : (
@@ -282,87 +305,83 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
                   type="button"
                   data-testid="review-transfer-button"
                   onClick={() => rv.transferOne(sel.captureId)}
-                  className="rounded-control bg-teal-700 px-3.5 py-2 text-[13px] font-semibold text-white transition-colors hover:bg-teal-800"
+                  className="rounded-control bg-accent px-3.5 py-2 text-[13px] font-semibold text-text-inverse transition-colors hover:bg-accent-strong"
                 >
-                  Transfer to recording PC
+                  {t('transferToRecordingPc')}
                 </button>
               )
             )}
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-2 border-t border-gray-100 pt-3">
-          <div className="flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5">
-            <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-              Auto quality
+        <div className="grid grid-cols-2 gap-2 border-t border-border pt-3">
+          <div className="flex flex-col gap-0.5 rounded-[10px] border border-border px-3 py-2.5">
+            <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+              {t('autoQuality')}
             </h3>
             <QualityValue quality={sel.quality} />
           </div>
           <div
             onClick={saving ? undefined : rv.cycleFinalQuality}
             aria-disabled={saving}
-            title={
-              saving
-                ? 'Saving the last change…'
-                : 'Click to set: Good → Needs review → Not usable'
-            }
+            title={saving ? t('savingLastChange') : t('qualityCycleHint')}
             data-testid="review-final-quality"
             className={cn(
-              'flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5 transition-colors',
+              'flex flex-col gap-0.5 rounded-[10px] border border-border px-3 py-2.5 transition-colors',
               saving
                 ? 'cursor-not-allowed opacity-50'
-                : 'cursor-pointer hover:border-teal-200 hover:bg-teal-50',
+                : 'cursor-pointer hover:border-accent hover:bg-interaction-selected',
             )}
           >
             <div className="flex items-center gap-1.5">
-              <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-                Final quality
+              <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+                {t('finalQuality')}
               </h3>
-              <span className="text-[10px] text-gray-500">✎</span>
+              <span className="text-[10px] text-text-muted">✎</span>
             </div>
             <QualityValue quality={sel.effectiveQuality} />
           </div>
           <div
             onClick={saving ? undefined : rv.cycleTaskResult}
             aria-disabled={saving}
-            title={saving ? 'Saving the last change…' : 'Click to set: Success ↔ Failure'}
+            title={saving ? t('savingLastChange') : t('taskCycleHint')}
             data-testid="review-task-result"
             className={cn(
-              'flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5 transition-colors',
+              'flex flex-col gap-0.5 rounded-[10px] border border-border px-3 py-2.5 transition-colors',
               saving
                 ? 'cursor-not-allowed opacity-50'
-                : 'cursor-pointer hover:border-teal-200 hover:bg-teal-50',
+                : 'cursor-pointer hover:border-accent hover:bg-interaction-selected',
             )}
           >
             <div className="flex items-center gap-1.5">
-              <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-                Task result
+              <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+                {t('detailTaskResult')}
               </h3>
-              <span className="text-[10px] text-gray-500">✎</span>
+              <span className="text-[10px] text-text-muted">✎</span>
             </div>
-            <span className="text-[12.5px] font-medium text-gray-700">
-              {sel.effectiveTask ?? '—'}
+            <span className="text-[12.5px] font-medium text-text-primary">
+              {taskResultLabel(sel.effectiveTask) ?? '—'}
             </span>
-            {sel.effectiveTask === 'Failure' && sel.failReason && (
+            {sel.effectiveTask === 'failure' && sel.failReason && (
               <span
                 data-testid="review-fail-reason"
-                className="text-[11px] leading-snug text-red-700"
+                className="text-[11px] leading-snug text-status-danger-text"
               >
                 {sel.failReason}
               </span>
             )}
           </div>
-          <div className="flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-3 py-2.5">
-            <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-              Issues
+          <div className="flex flex-col gap-0.5 rounded-[10px] border border-border px-3 py-2.5">
+            <h3 className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+              {t('issues')}
             </h3>
             <span
               className={cn(
                 'text-[12.5px] font-medium',
-                sel.issues ? 'text-amber-800' : 'text-gray-500',
+                sel.issue ? 'text-status-warning-text' : 'text-text-muted',
               )}
             >
-              {sel.issues ?? '—'}
+              {issueLabel(sel.issue) ?? '—'}
             </span>
           </div>
         </div>
@@ -370,52 +389,47 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
         <PipelineStrip lane={sel.reviewLane} inDataset={inDataset} />
 
         {sel.isExcluded && (
-          <div className="flex flex-col gap-1.5 rounded-[10px] border border-gray-200 bg-gray-50 px-3 py-2.5">
+          <div className="flex flex-col gap-1.5 rounded-[10px] border border-border bg-surface-muted px-3 py-2.5">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-[12px] font-semibold text-gray-600">
-                {bytesHere ? 'Excluded — still on disk' : 'Excluded'}
+              <span className="text-[12px] font-semibold text-text-secondary">
+                {bytesHere ? t('excludedStillOnDisk') : t('excluded')}
               </span>
               <div className="flex-1" />
               <button
                 type="button"
                 data-testid="review-discard-one"
                 onClick={() => rv.requestDiscard([sel.captureId])}
-                title="Never uploaded and not worth keeping. Irreversible; a reason is required."
-                className="rounded-control border border-red-200 px-2.5 py-1 text-[11.5px] font-bold text-red-700 transition-colors hover:bg-red-50"
+                title={t('discardOneHint')}
+                className="rounded-control border border-status-danger-border px-2.5 py-1 text-[11.5px] font-bold text-status-danger-text transition-colors hover:bg-status-danger-bg"
               >
-                Discard (not uploaded)…
+                {t('discardOne')}
               </button>
               <button
                 type="button"
                 data-testid="review-delete-one"
                 onClick={() => rv.requestDelete([sel.captureId])}
-                title="Remove this recording from this machine. The catalog keeps a record of it."
-                className="rounded-control border border-gray-300 px-2.5 py-1 text-[11.5px] font-semibold text-gray-700 transition-colors hover:bg-gray-100"
+                title={t('deleteOneHint')}
+                className="rounded-control border border-border-strong px-2.5 py-1 text-[11.5px] font-semibold text-text-primary transition-colors hover:bg-surface-muted"
               >
-                Delete…
+                {t('deleteOne')}
               </button>
             </div>
             {/* Only claim there is space to reclaim when the bytes are actually
                 here. Printing it directly under "The files vanished from this
                 machine" told the operator to free space that is already gone. */}
-            <span className="text-[11px] text-gray-500">
-              {bytesHere
-                ? 'Excluding is only a label — the recording still occupies disk. ' +
-                  'Both removals free that space and neither can be undone.'
-                : 'Excluding is only a label. This machine no longer holds the ' +
-                  'files, so there is no space to reclaim — a removal records ' +
-                  'the decision, and cannot be undone.'}
+            <span className="text-[11px] text-text-muted">
+              {bytesHere ? t('excludedBytesHereHelp') : t('excludedBytesRemoteHelp')}
             </span>
           </div>
         )}
 
-        <div className="flex items-center gap-3 border-t border-gray-100 pt-2.5">
+        <div className="flex items-center gap-3 border-t border-border pt-2.5">
           <button
             type="button"
             onClick={rv.goMonitor}
-            className="text-[12.5px] font-semibold text-teal-700 hover:underline"
+            className="text-[12.5px] font-semibold text-accent hover:underline"
           >
-            Open in Monitor →
+            {t('openInMonitor')}
           </button>
           {/* Validation reads the local MCAP — gated until it's on this PC. */}
           <button
@@ -426,19 +440,19 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             className={cn(
               'text-[12.5px] font-semibold',
               showInspection
-                ? 'text-teal-700 hover:underline'
-                : 'cursor-not-allowed text-gray-300',
+                ? 'text-accent hover:underline'
+                : 'cursor-not-allowed text-text-muted',
             )}
           >
-            Open in Validation →
+            {t('openInValidation')}
           </button>
           <div className="flex-1" />
           {/* The CAS token. Shown because it is the thing a conflict is about:
               when another terminal saves first, this is the number that moved. */}
-          <span data-testid="review-revision" className="text-[11.5px] text-gray-500">
+          <span data-testid="review-revision" className="text-[11.5px] text-text-muted">
             {sel.reviewRevision === 0
-              ? 'not reviewed yet'
-              : `revision ${sel.reviewRevision}`}
+              ? t('notReviewedYet')
+              : t('revision', { revision: String(sel.reviewRevision) })}
           </span>
         </div>
       </div>
@@ -449,7 +463,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
           been ADOPTED before Datasets will take it. */}
       <div
         data-testid="review-decision-bar"
-        className="flex flex-col gap-2 border-t border-gray-100 bg-gray-50/60 px-[18px] py-3"
+        className="flex flex-col gap-2 border-t border-border bg-surface-muted/60 px-[18px] py-3"
       >
         <div className="flex flex-wrap gap-1.5">
           {/* One control, two vocabularies. Adoption is what Datasets requires
@@ -470,8 +484,8 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               disabled={saving}
             >
               {sel.reviewLane === 'needs_check'
-                ? 'Mark OK — include'
-                : 'Adopt — include in datasets'}
+                ? t('markOkInclude')
+                : t('adoptInclude')}
             </DecisionButton>
           )}
           {sel.reviewLane !== 'excluded' && (
@@ -481,7 +495,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               onClick={() => rv.decide('excluded')}
               disabled={saving}
             >
-              Exclude
+              {t('exclude')}
             </DecisionButton>
           )}
           {/* Return to review (reversible, non-scary): an excluded item goes back
@@ -489,7 +503,7 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               be sent back to the queue. Hidden for good-quality READY (no-op). */}
           {(sel.reviewLane === 'excluded' ||
             (sel.effectiveReviewStatus === 'adopted' &&
-              sel.effectiveQuality !== 'Good')) && (
+              sel.effectiveQuality !== 'good')) && (
             <DecisionButton
               tone="review"
               testId="review-return-to-review"
@@ -497,8 +511,8 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
               disabled={saving}
             >
               {sel.reviewLane === 'excluded'
-                ? '↩ Return to review'
-                : '↩ Reset to needs check'}
+                ? t('returnToReview')
+                : t('resetNeedsCheck')}
             </DecisionButton>
           )}
         </div>
@@ -507,8 +521,8 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             operator's second click lands in silence, which reads as a screen
             that has stopped responding. */}
         {saving && (
-          <span data-testid="review-saving" className="text-[11.5px] text-gray-500">
-            Saving…
+          <span data-testid="review-saving" className="text-[11.5px] text-text-muted">
+            {t('saving')}
           </span>
         )}
 
@@ -521,13 +535,12 @@ export function DetailPanel({ rv }: { rv: ReviewState }) {
             type="button"
             data-testid="review-delete-direct"
             onClick={() => rv.requestDelete([sel.captureId])}
-            title="Remove this recording from this machine. The catalog keeps a record. A dialog confirms first."
-            className="self-start rounded-control px-2 py-1 text-[11.5px] font-medium text-gray-500 transition-colors hover:bg-red-50 hover:text-red-700"
+            title={t('deleteDirectHint')}
+            className="self-start rounded-control px-2 py-1 text-[11.5px] font-medium text-text-muted transition-colors hover:bg-status-danger-bg hover:text-status-danger-text"
           >
-            🗑 Delete this recording…
+            {t('deleteThisRecording')}
           </button>
         )}
-
       </div>
     </div>
   );

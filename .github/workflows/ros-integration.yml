@@ -29,7 +29,7 @@ jobs:
     # Same base as the recorder image (services/rosbag2_recorder/Dockerfile) so
     # the test exercises the real ROS 2 + rosbag2 stack it ships on.
     container:
-      image: ros:jazzy-ros-base
+      image: ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9
     env:
       ROS_DISTRO: jazzy
       # Isolate this run's DDS graph from anything else on the runner network.
@@ -72,3 +72,51 @@ jobs:
           uv sync --frozen --extra test
           . /opt/venv/bin/activate
           pytest tests/test_integration_ros.py -v
+
+  live-services:
+    name: monitor/probe/streamer live ROS graph
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      ROS_DOMAIN_ID: "98"
+      KAIROS_GIT_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the shipped ROS service images
+        run: |
+          export KAIROS_VERSION="$(cat VERSION)"
+          docker compose --project-directory . -f compose/compose.yaml build monitor probe streamer
+      - name: Start a real compressed-image publisher
+        run: |
+          docker run -d --name kairos-ci-camera --network host --ipc host \
+            -e ROS_DOMAIN_ID \
+            ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9 \
+            bash -lc 'source /opt/ros/jazzy/setup.bash && exec ros2 topic pub --rate 10 /hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed sensor_msgs/msg/CompressedImage "{format: jpeg, data: [255, 216, 255, 217]}"'
+      - name: Start services and verify live readiness
+        run: |
+          export KAIROS_VERSION="$(cat VERSION)"
+          docker compose --project-directory . -f compose/compose.yaml up -d monitor probe streamer
+          for attempt in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:8001/readyz >/dev/null \
+              && curl -fsS http://127.0.0.1:8003/readyz >/dev/null \
+              && curl -fsS http://127.0.0.1:8002/healthz >/dev/null; then
+              break
+            fi
+            test "$attempt" -lt 60
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:8001/diagnostics | python3 -m json.tool
+          curl -fsS -X POST -H 'content-type: application/json' \
+            -d '{"topic":"/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed"}' \
+            http://127.0.0.1:8002/stream/start | python3 -m json.tool
+      - name: Service logs
+        if: failure()
+        run: |
+          export KAIROS_VERSION="$(cat VERSION)"
+          docker compose --project-directory . -f compose/compose.yaml logs --tail=200 monitor probe streamer
+      - name: Stop live graph
+        if: always()
+        run: |
+          export KAIROS_VERSION="$(cat VERSION)"
+          docker compose --project-directory . -f compose/compose.yaml down --remove-orphans || true
+          docker rm -f kairos-ci-camera >/dev/null 2>&1 || true

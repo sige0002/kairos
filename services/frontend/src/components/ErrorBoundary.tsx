@@ -7,6 +7,7 @@
 // hook equivalent (componentDidCatch / getDerivedStateFromError only).
 
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { i18n } from '../i18n';
 
 interface Props {
   children: ReactNode;
@@ -32,24 +33,25 @@ export class ErrorBoundary extends Component<Props, State> {
     const { error } = this.state;
     if (!error) return this.props.children;
     return (
-      <div className="flex min-h-screen items-center justify-center bg-gray-50 p-6">
-        <div className="w-full max-w-md rounded-card border border-gray-200 bg-white p-6 shadow-card">
-          <h1 className="text-[15px] font-semibold text-gray-900">Something went wrong</h1>
-          <p className="mt-2 text-sm text-gray-600">
-            The interface hit an unexpected error and stopped rendering. Reloading
-            usually recovers it.
+      <div className="flex min-h-screen items-center justify-center bg-app p-6">
+        <div className="w-full max-w-md rounded-card border border-border bg-surface p-6 shadow-card">
+          <h1 className="text-[15px] font-semibold text-text-primary">
+            {i18n.t('common:error.unexpectedTitle')}
+          </h1>
+          <p className="mt-2 text-sm text-text-secondary">
+            {i18n.t('common:error.unexpectedBody')}
           </p>
           {error.message && (
-            <pre className="mt-3 overflow-x-auto rounded-control border border-gray-100 bg-gray-50 p-3 font-mono text-[11.5px] text-red-700">
+            <pre className="mt-3 overflow-x-auto rounded-control border border-border bg-surface-muted p-3 font-mono text-[11.5px] text-status-danger-text">
               {error.message}
             </pre>
           )}
           <button
             type="button"
             onClick={() => window.location.reload()}
-            className="mt-5 inline-flex items-center justify-center rounded-control bg-teal-700 px-4 py-2 text-sm font-semibold text-white shadow-btn transition-colors hover:bg-teal-800"
+            className="mt-5 inline-flex items-center justify-center rounded-control bg-accent px-4 py-2 text-sm font-semibold text-text-inverse shadow-btn transition-colors hover:bg-accent-strong"
           >
-            Reload
+            {i18n.t('common:actions.reload')}
           </button>
         </div>
       </div>
@@ -102,27 +104,26 @@ export class PanelBoundary extends Component<
         data-testid="panel-error"
         className="flex h-full min-h-[240px] items-center justify-center p-6"
       >
-        <div className="w-full max-w-md rounded-card border border-red-200 bg-white p-6 shadow-card">
+        <div className="w-full max-w-md rounded-card border border-status-danger-border bg-surface p-6 shadow-card">
           {/* h1, not h2: this fallback REPLACES the screen, and the screen's
               own ScreenTitle h1 unmounts with it. An h2 here would leave the
               document with no h1 at all — the exact gap #14 closed — so the
               thing that is actually on screen titles it, matching the root
               ErrorBoundary's h1 above. */}
-          <h1 className="text-[15px] font-semibold text-gray-900">
-            This screen stopped rendering
+          <h1 className="text-[15px] font-semibold text-text-primary">
+            {i18n.t('common:error.panelTitle')}
           </h1>
-          <p className="mt-2 text-sm text-gray-600">
-            Something it was given could not be displayed.{' '}
+          <p className="mt-2 text-sm text-text-secondary">
             {/* A popped-out window has no tab bar and a constant `resetKey`, so
                 the recovery the shell offers does not exist here — promising it
                 would send the operator hunting for tabs that are not on the
                 page. */}
             {this.props.standalone
-              ? 'This window shows only this screen, so reloading it is the way back.'
-              : 'The rest of the console is unaffected — switching tabs and coming back reloads this screen.'}
+              ? i18n.t('common:error.panelSoloBody')
+              : i18n.t('common:error.panelBody')}
           </p>
           {error.message && (
-            <pre className="mt-3 overflow-x-auto rounded-control border border-gray-100 bg-gray-50 p-3 font-mono text-[11.5px] text-red-700">
+            <pre className="mt-3 overflow-x-auto rounded-control border border-border bg-surface-muted p-3 font-mono text-[11.5px] text-status-danger-text">
               {error.message}
             </pre>
           )}

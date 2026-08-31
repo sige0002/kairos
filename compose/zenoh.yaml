@@ -12,13 +12,13 @@
 #     export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 #     docker compose -f compose/zenoh.yaml up -d
 # The recording PC then consumes via a peer Zenoh session (rmw_zenoh nodes or a
-# second bridge). SKELETON — pin the image tag to your ROS distro and verify.
+# second bridge). SKELETON — verify the pinned bridge against your ROS distro.
 # =============================================================================
 name: kairos-zenoh
 
 services:
   zenoh_bridge:
-    image: eclipse/zenoh-bridge-ros2dds:latest
+    image: eclipse/zenoh-bridge-ros2dds@sha256:5aca6798ae112e390a97788450fd37360ddd72ac092032a25acf9fac17b2d9af
     # Host networking so the bridge shares the robot's (loopback-pinned) DDS
     # graph and can listen on the robot's LAN IP for the recording PC.
     network_mode: host

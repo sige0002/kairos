@@ -5,6 +5,7 @@
 
 import { useCallback, useRef } from 'react';
 import { getBatch } from '../../../api/batches';
+import { i18n } from '../../../i18n';
 import type { CaptureListItem } from '../../../api/types';
 import { applyServerRestore, dispatch } from '../machine/store';
 
@@ -37,9 +38,7 @@ export function useUnsavedTakeRecovery({
         // Do not open Result with a guessed current batch. The recovery banner
         // stays visible, so the operator can retry after the service recovers.
         recoveredBatch.current = null;
-        showToast(
-          'Could not restore this take’s original batch. It remains pending; retry Label it.',
-        );
+        showToast(i18n.t('collect:restoreOriginalBatchFailed'));
         return false;
       } finally {
         recoveringCaptureId.current = null;

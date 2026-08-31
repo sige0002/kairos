@@ -22,6 +22,7 @@ from __future__ import annotations
 import signal
 import subprocess
 import sys
+import threading
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -119,6 +120,94 @@ def test_a_flush_that_survives_one_wait_needs_no_escalation(
 
     assert sent == [signal.SIGINT]
     assert proc.poll() is not None
+
+
+def test_sigterm_wait_reports_confirmed_reap(
+    monkeypatch: pytest.MonkeyPatch, settings: Settings, fake_process: type
+) -> None:
+    """A child collected after SIGTERM is safe to finalize synchronously."""
+    import rosbag2_recorder.recorder as rec
+
+    sent: list[int] = []
+    monkeypatch.setattr(rec.os, "getpgid", lambda _pid: 424242)
+    monkeypatch.setattr(rec.os, "killpg", lambda _pgid, sig: sent.append(sig))
+    proc = fake_process(["ros2", "bag", "record"], wait_timeouts=1)
+
+    reaped = RecorderSession(settings, None)._signal_and_wait(proc)
+
+    assert reaped is True
+    assert sent == [signal.SIGINT, signal.SIGTERM]
+    assert proc.poll() is not None
+
+
+def test_unreaped_writer_keeps_lease_until_background_reap(
+    monkeypatch: pytest.MonkeyPatch,
+    settings: Settings,
+    fake_process: type,
+    write_metadata: Callable[..., Path],
+) -> None:
+    """A bounded-stop timeout must not publish a terminal capture."""
+
+    class DeferredReapProcess(fake_process):
+        def __init__(self, cmd: list[str]) -> None:
+            super().__init__(cmd)
+            self.reap_entered = threading.Event()
+            self.allow_reap = threading.Event()
+
+        def wait(self, timeout: float | None = None) -> int:
+            self.wait_calls += 1
+            if timeout is not None:
+                raise subprocess.TimeoutExpired(self.cmd, timeout)
+            assert timeout is None
+            self.reap_entered.set()
+            assert self.allow_reap.wait(5.0)
+            self._alive = False
+            return self.returncode
+
+    process: DeferredReapProcess | None = None
+    session = RecorderSession(settings, None)
+    sent: list[int] = []
+    monkeypatch.setattr("rosbag2_recorder.recorder.os.getpgid", lambda _pid: 424242)
+    monkeypatch.setattr(
+        "rosbag2_recorder.recorder.os.killpg",
+        lambda _pgid, sent_signal: sent.append(sent_signal),
+    )
+
+    def fake_spawn(cmd: list[str]) -> DeferredReapProcess:
+        nonlocal process
+        process = DeferredReapProcess(cmd)
+        write_metadata(Path(cmd[cmd.index("--output") + 1]))
+        return process
+
+    session._spawn_process = fake_spawn  # type: ignore[method-assign]
+    session.start(RecordStartRequest(run_id="run_unreaped", topics=["/joint_states"]))
+    capture_id = session.status().capture_id
+    assert capture_id is not None
+
+    stopped = session.stop()
+
+    assert process is not None
+    assert process.reap_entered.wait(5.0)
+    assert sent == [signal.SIGINT, signal.SIGTERM, signal.SIGKILL]
+    assert process.wait_calls == 4  # three bounded waits, then the blocking reap
+    assert stopped.state is RunState.stopping
+    assert session.status().state is RunState.stopping
+    assert session.status().live_capture_ids == [capture_id]
+    assert session._process is process
+    manifest = read_object_manifest(capture_dir(settings.data_dir, capture_id)).manifest
+    assert manifest is not None
+    assert manifest.state == "stopping"
+
+    process.allow_reap.set()
+    assert session._reaper_thread is not None
+    session._reaper_thread.join(timeout=5.0)
+    assert not session._reaper_thread.is_alive()
+
+    assert session.status().state is RunState.completed
+    assert session.status().live_capture_ids == []
+    terminal = read_object_manifest(capture_dir(settings.data_dir, capture_id)).manifest
+    assert terminal is not None
+    assert terminal.state == "completed"
 
 
 def _recording_session(

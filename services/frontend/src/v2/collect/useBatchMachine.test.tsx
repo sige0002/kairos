@@ -6,6 +6,7 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { ReactNode } from 'react';
 import { setApiBase } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
+import { i18n } from '../../i18n';
 import { makeTestClient, jsonResponse } from '../../test/renderWithClient';
 import { __setPreArmRetryBaseMs } from './hooks/usePreArm';
 import {
@@ -25,7 +26,6 @@ import {
   __setStopConfirmMs,
   __rehydrateBatchStore,
   EPISODES_PER_BATCH,
-  OPERATOR_GATE_HINT,
 } from './useBatchMachine';
 import { getStoreSnapshot } from './machine/store';
 import { getOperators } from '../plans';
@@ -1328,8 +1328,8 @@ test('startRecording is refused with no operator, and says so', async () => {
     false,
   );
   // And the refusal explains itself rather than reading as a dead button.
-  expect(result.current.toast).toBe(OPERATOR_GATE_HINT);
-  expect(result.current.toast).toContain('OP');
+  expect(result.current.toast).toBe(i18n.t('collect:operatorGateHint'));
+  expect(result.current.toast).toContain('operator control');
 });
 
 // The gate is not the roster's any more: it holds in the shipped default,
@@ -3527,7 +3527,7 @@ test('changing the task before any recording PATCHes {task, condition} onto the 
   await waitFor(() => expect(result.current.batchSeq).toBe(4));
 
   await act(async () => {
-    await result.current.pickTask('Stacking');
+    await result.current.pickTask('project-tabletop-manipulation', 'task-stacking');
   });
 
   // In place: same set, task + its first condition synced to the server.
@@ -3573,7 +3573,7 @@ test('changing the project before any recording PATCHes {project, task, conditio
   await waitFor(() => expect(result.current.batchSeq).toBe(4));
 
   await act(async () => {
-    await result.current.pickProject('Bin Picking');
+    await result.current.pickProject('project-bin-picking');
   });
 
   expect(result.current.batchSeq).toBe(4);
@@ -3631,7 +3631,13 @@ test('a custom task before any recording PATCHes only {task} (no condition sent 
   const patch = calls.find(
     (c) => c.url.includes('/batches/batch0') && c.method === 'PATCH',
   )!;
-  expect(patch.body).toEqual({ task: 'Handover', condition: null });
+  expect(patch.body).toEqual({
+    project_id: null,
+    task_id: null,
+    condition_id: null,
+    task: 'Handover',
+    condition: null,
+  });
 });
 
 test('changing the task once the set has a recording rolls over with a Task change reason', async () => {
@@ -3707,7 +3713,7 @@ test('changing the project once the set has a recording rolls over with a Plan c
   expect(result.current.batchSeq).toBe(2);
 
   await act(async () => {
-    await result.current.pickProject('Bin Picking');
+    await result.current.pickProject('project-bin-picking');
   });
 
   // The new project reloads its first task + condition into a fresh set.
@@ -5057,4 +5063,161 @@ test('only a successful, good take is adopted by the save itself', () => {
   // "Not usable" is the same statement Review's exclude makes, either way round.
   expect(collectReviewStatus('ok', 'notusable')).toBe('excluded');
   expect(collectReviewStatus('fail', 'notusable')).toBe('excluded');
+});
+
+// ---------------------------------------------------------------------------
+// Compound external actions (#36): Success + Save and reason + Save are ONE
+// step through the same save flow the mouse Save uses — no sequential
+// pick-then-confirm for a render to interleave, no "Other" fallback.
+// ---------------------------------------------------------------------------
+
+async function reachResult(result: { current: ReturnType<typeof useBatchMachine> }) {
+  act(() => result.current.startRecording());
+  await waitFor(() => expect(result.current.phase).toBe('recording'));
+  act(() => result.current.stopRecording());
+  await waitFor(() => expect(result.current.phase).toBe('result'), { timeout: 4000 });
+}
+
+type FetchMockLike = {
+  mock: {
+    calls: Array<[unknown, ({ method?: string; body?: unknown } | undefined)?]>;
+  };
+};
+
+function reviewPatchCall(fetchMock: FetchMockLike) {
+  const call = fetchMock.mock.calls.find(
+    ([u, i]) =>
+      String(u).includes('/review') &&
+      (i as RequestInit | undefined)?.method === 'PATCH',
+  );
+  // The api client hands the body to fetch pre-serialized or as a plain
+  // object depending on the transport shim; normalize both.
+  const raw = call?.[1] as unknown;
+  const init = raw as { body?: unknown };
+  const body =
+    typeof init?.body === 'string'
+      ? (JSON.parse(init.body) as Record<string, unknown>)
+      : ((init?.body as Record<string, unknown>) ?? {});
+  return { url: String(call?.[0]), body };
+}
+
+test('saveSuccess saves Success + Save in one action (no prior pick needed)', async () => {
+  const fetchMock = recordFlowFetch('cap_ss1');
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await reachResult(result);
+  expect(result.current.pendingTask).toBe('ok'); // pre-selected
+
+  act(() => result.current.saveSuccess());
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+  const { body } = reviewPatchCall(fetchMock);
+  expect(body.task_result).toBe('success');
+  expect(body.failure_reason).toBeNull();
+  expect(result.current.phase).toBe('ready');
+});
+
+test('saveSuccess is refused while Failure is selected (the reason slots own the keys)', async () => {
+  recordFlowFetch('cap_ss2');
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await reachResult(result);
+  act(() => result.current.pickFailure());
+  expect(result.current.pendingTask).toBe('fail');
+
+  act(() => result.current.saveSuccess());
+  expect(result.current.phase).toBe('result'); // untouched
+  expect(result.current.stats.nRecorded).toBe(0);
+});
+
+test('saveFailureWithReason saves THAT exact reason, never a fallback', async () => {
+  const fetchMock = recordFlowFetch('cap_fs1');
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await reachResult(result);
+  act(() => result.current.pickFailure());
+  expect(result.current.pendingTask).toBe('fail');
+
+  // One step from the failure-selected state: the exact reason + Save.
+  act(() => result.current.saveFailureWithReason('Object dropped'));
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+  const { body } = reviewPatchCall(fetchMock);
+  expect(body.task_result).toBe('failure');
+  expect(body.failure_reason).toBe('Object dropped');
+  expect(result.current.phase).toBe('ready');
+});
+
+test('saveFailureWithReason is refused before Failure is selected', async () => {
+  const fetchMock = recordFlowFetch('cap_fs3');
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await reachResult(result);
+  expect(result.current.pendingTask).toBe('ok'); // result pre-selects Success
+
+  // The reason slots own the keys ONLY after Failure: a press (or any other
+  // caller) in the pre-selection state must not stamp a failure reason, and
+  // a Success-selected result must not be flipped into a Failure save.
+  act(() => result.current.saveFailureWithReason('Grasp missed'));
+  expect(result.current.phase).toBe('result');
+  expect(result.current.pendingTask).toBe('ok');
+  expect(result.current.stats.nRecorded).toBe(0);
+  expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/review'))).toBe(false);
+
+  // …and it still works the moment Failure is selected.
+  act(() => result.current.pickFailure());
+  act(() => result.current.saveFailureWithReason('Grasp missed'));
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+  const { body } = reviewPatchCall(fetchMock);
+  expect(body.failure_reason).toBe('Grasp missed');
+});
+
+test('saveFailureWithReason with no reason is a no-op (no silent "Other")', async () => {
+  const fetchMock = recordFlowFetch('cap_fs2');
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await reachResult(result);
+
+  act(() => result.current.saveFailureWithReason(''));
+  expect(result.current.phase).toBe('result');
+  expect(result.current.stats.nRecorded).toBe(0);
+  expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/review'))).toBe(false);
+});
+
+test('a double press in one tick saves exactly once', async () => {
+  const fetchMock = recordFlowFetch('cap_dbl');
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  await reachResult(result);
+
+  // Two presses before the save's state flip has rendered: the synchronous
+  // in-flight marker is what refuses the second, not a re-render.
+  act(() => {
+    result.current.saveSuccess();
+    result.current.saveSuccess();
+  });
+  await waitFor(() => expect(result.current.stats.nRecorded).toBe(1));
+  const patches = fetchMock.mock.calls.filter(
+    ([u, i]) =>
+      String(u).includes('/review') &&
+      (i as RequestInit | undefined)?.method === 'PATCH',
+  );
+  expect(patches).toHaveLength(1);
+});
+
+test('the compound actions respect the machine guards (wrong phase = no-op)', async () => {
+  recordFlowFetch('cap_guards');
+  const { result } = renderHook(() => useBatchMachine({ defaultTopics: [] }), {
+    wrapper,
+  });
+  expect(result.current.phase).toBe('ready');
+
+  act(() => result.current.saveSuccess());
+  act(() => result.current.saveFailureWithReason('Grasp missed'));
+  expect(result.current.phase).toBe('ready');
+  expect(result.current.stats.nRecorded).toBe(0);
 });

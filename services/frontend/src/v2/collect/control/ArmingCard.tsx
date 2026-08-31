@@ -13,6 +13,7 @@
 // the next Space press scrolls the page instead of reaching the flow.
 
 import { Card, cn } from '../../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { CARD_PAD } from '../compact';
 import type { BatchMachine } from '../useBatchMachine';
 import { ArmingNote } from './banners';
@@ -29,28 +30,29 @@ export function ArmingCard({
    *  the hand-off from this to the Cancel button. */
   titleRef: React.Ref<HTMLHeadingElement>;
 }) {
+  const { t } = useTranslation(['collect', 'common']);
   const armed = machine.canCancelArming;
   return (
     <Card
       className={cn(
-        'flex shrink-0 flex-col gap-2.5 border-2 border-amber-200',
+        'flex shrink-0 flex-col gap-2.5 border-2 border-status-warning-border',
         CARD_GAP_COMPACT,
         CARD_PAD,
       )}
     >
       <div className="flex items-center gap-2">
-        <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-100 border-t-amber-600" />
+        <span className="h-4 w-4 animate-spin rounded-full border-2 border-border border-t-status-warning-accent" />
         <h2
           ref={titleRef}
           data-testid="phase-title"
           tabIndex={-1}
-          className="text-[17px] font-bold text-amber-700 outline-none"
+          className="text-[17px] font-bold text-status-warning-text outline-none"
         >
-          ARMING…
+          {t('collect:arming')}
         </h2>
       </div>
-      <span className="text-[12.5px] leading-relaxed text-amber-800">
-        Hold still. Recording starts automatically once the recorder confirms.
+      <span className="text-[12.5px] leading-relaxed text-status-warning-text">
+        {t('collect:holdStill')}
       </span>
       <button
         ref={cancelRef}
@@ -59,11 +61,11 @@ export function ArmingCard({
         onClick={machine.cancelArming}
         disabled={!armed}
         className={cn(
-          'h-10 rounded-control border border-gray-200 bg-white text-[13px] font-semibold text-gray-500',
-          armed ? 'hover:bg-gray-50' : 'cursor-not-allowed opacity-50',
+          'h-10 rounded-control border border-border bg-surface text-[13px] font-semibold text-text-muted',
+          armed ? 'hover:bg-surface-muted' : 'cursor-not-allowed opacity-50',
         )}
       >
-        Cancel
+        {t('common:actions.cancel')}
       </button>
       {machine.arming && <ArmingNote arming={machine.arming} />}
     </Card>

@@ -19,40 +19,52 @@
 // label.
 
 import { Badge } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { red, teal } from '../tokens';
 import {
   bytesSegment,
   formatBytes,
   formatCount,
   formatWhen,
-  memberCount,
-  memberNoun,
   operatorSegment,
   outcomeBreakdown,
 } from './data';
+import { formatMemberLabel } from '../../i18n/format';
 import type { DatasetAggregate } from './data';
 import type { ScopeSummary as Scope } from './useDatasetsState';
 import type { CaptureSearchQuery } from '../../api/types';
 
-function selectionQuerySummary(
-  query: CaptureSearchQuery | null | undefined,
-): string | null {
+function SelectionQuerySummary({
+  query,
+}: {
+  query: CaptureSearchQuery | null | undefined;
+}) {
+  const { t } = useTranslation('datasets');
   if (!query) return null;
   const parts: string[] = [];
-  if (query.states?.length) parts.push(`states: ${query.states.join(', ')}`);
+  if (query.states?.length) {
+    parts.push(t('selectionStates', { states: query.states.join(', ') }));
+  }
   if (query.review_statuses?.length) {
-    parts.push(`review: ${query.review_statuses.join(', ')}`);
+    parts.push(t('selectionReview', { statuses: query.review_statuses.join(', ') }));
   }
   if (query.present_on_instance !== undefined && query.present_on_instance !== null) {
     parts.push(
-      query.present_on_instance ? 'present on this instance' : 'not present here',
+      query.present_on_instance
+        ? t('selectionPresentHere')
+        : t('selectionNotPresentHere'),
     );
   }
   if (query.started_from || query.started_to) {
-    parts.push(`recorded: ${query.started_from ?? '…'} to ${query.started_to ?? '…'}`);
+    parts.push(
+      t('selectionRecordedRange', {
+        from: query.started_from ?? '…',
+        to: query.started_to ?? '…',
+      }),
+    );
   }
   if (query.exclude_dataset_id) {
-    parts.push(`excluding dataset ${query.exclude_dataset_id}`);
+    parts.push(t('selectionExcludingDataset', { id: query.exclude_dataset_id }));
   }
   if (query.predicates?.length) {
     const predicates = query.predicates
@@ -60,9 +72,9 @@ function selectionQuerySummary(
         (predicate) => `${predicate.field} ${predicate.operator} “${predicate.value}”`,
       )
       .join(` ${(query.join ?? 'and').toUpperCase()} `);
-    parts.push(`predicates: ${predicates}`);
+    parts.push(t('selectionPredicates', { predicates }));
   }
-  return parts.length > 0 ? parts.join('; ') : 'all recordings';
+  return <>{parts.length > 0 ? parts.join('; ') : t('allRecordings')}</>;
 }
 
 /** Success/failure donut over labeled members. Direct-labelled legend + centered
@@ -78,6 +90,7 @@ function OutcomeDonut({
   labeled: number;
   rate: number; // 0..1, caller guarantees labeled > 0
 }) {
+  const { t } = useTranslation('datasets');
   const size = 132;
   const stroke = 20;
   const c = size / 2;
@@ -91,7 +104,11 @@ function OutcomeDonut({
     <figure
       data-testid="dataset-outcome-donut"
       className="m-0 flex flex-col items-center gap-2"
-      aria-label={`Task outcome: ${pct}% success (${success} of ${labeled} labeled members)`}
+      aria-label={t('outcomeAria', {
+        percent: String(pct),
+        success: String(success),
+        labeled: String(labeled),
+      })}
     >
       <div className="relative" style={{ width: size, height: size }}>
         <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} role="img">
@@ -143,29 +160,26 @@ function OutcomeDonut({
         <div className="absolute inset-0 flex flex-col items-center justify-center">
           <span
             data-testid="dataset-success-rate"
-            className="font-mono text-[26px] font-bold text-gray-900"
+            className="font-mono text-[26px] font-bold text-text-primary"
           >
             {pct}%
           </span>
-          <span className="text-[10.5px] uppercase tracking-[0.05em] text-gray-500">
-            success
+          <span className="text-[10.5px] uppercase tracking-[0.05em] text-text-muted">
+            {t('success')}
           </span>
         </div>
       </div>
-      <figcaption className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11.5px] text-gray-600">
+      <figcaption className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-[11.5px] text-text-secondary">
         <span className="flex items-center gap-1.5">
-          <span
-            className="inline-block h-2.5 w-2.5 rounded-sm bg-teal-600"
-            aria-hidden
-          />
-          ✓ {success} success
+          <span className="inline-block h-2.5 w-2.5 rounded-sm bg-accent" aria-hidden />
+          ✓ {success} {t('success')}
         </span>
         <span className="flex items-center gap-1.5">
           <span
-            className="inline-block h-2.5 w-2.5 rounded-sm bg-red-600"
+            className="inline-block h-2.5 w-2.5 rounded-sm bg-status-danger-accent"
             aria-hidden
           />
-          ✗ {failure} failure
+          ✗ {failure} {t('failure')}
         </span>
       </figcaption>
     </figure>
@@ -188,20 +202,21 @@ function AvailabilitySection({
   agg: DatasetAggregate;
   unresolved: number;
 }) {
+  const { t } = useTranslation('datasets');
   const { slices, awaiting, warn } = agg.availability;
 
   return (
-    <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
-      <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-        Where the recordings are
+    <div className="flex flex-col gap-1.5 border-t border-border pt-3">
+      <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+        {t('availabilityWhere')}
       </h3>
 
       {slices.length === 0 ? (
         <span
           data-testid="dataset-availability-empty"
-          className="text-[12px] text-gray-500"
+          className="text-[12px] text-text-muted"
         >
-          No member capture is loaded, so nothing can be said about where the bytes are.
+          {t('availabilityEmpty')}
         </span>
       ) : (
         <div
@@ -212,7 +227,7 @@ function AvailabilitySection({
             <span
               key={slice.kind}
               data-testid={`dataset-availability-${slice.kind}`}
-              className="flex items-center gap-1.5 text-[12px] text-gray-600"
+              className="flex items-center gap-1.5 text-[12px] text-text-secondary"
             >
               <Badge
                 tone={slice.tone}
@@ -231,29 +246,25 @@ function AvailabilitySection({
       {awaiting > 0 && (
         <span
           data-testid="dataset-availability-awaiting"
-          className="text-[11.5px] text-gray-500"
+          className="text-[11.5px] text-text-muted"
         >
-          {awaiting} of these have no local copy yet. On a split deployment the bytes
-          are pulled after the review — expected, not a failure.
+          {t('availabilityAwaiting', { count: awaiting })}
         </span>
       )}
       {warn > 0 && (
         <span
           data-testid="dataset-availability-warn"
-          className="text-[11.5px] font-semibold text-amber-700"
+          className="text-[11.5px] font-semibold text-status-warning-text"
         >
-          {warn} need a look: the files vanished outside kairos, or a manifest cannot be
-          read.
+          {t('availabilityWarn', { count: warn })}
         </span>
       )}
       {unresolved > 0 && (
         <span
           data-testid="dataset-availability-unresolved"
-          className="text-[11.5px] font-semibold text-amber-700"
+          className="text-[11.5px] font-semibold text-status-warning-text"
         >
-          {memberCount(unresolved)} {unresolved === 1 ? 'has' : 'have'} no capture row
-          in the loaded catalog — nothing above describes{' '}
-          {unresolved === 1 ? 'it' : 'them'}.
+          {t('availabilityUnresolved', { count: String(unresolved) })}
         </span>
       )}
     </div>
@@ -272,16 +283,16 @@ function StatTile({
   return (
     <div
       title={title}
-      className="flex flex-col gap-0.5 rounded-[10px] border border-gray-100 px-[12px] py-[9px]"
+      className="flex flex-col gap-0.5 rounded-[10px] border border-border px-[12px] py-[9px]"
     >
       {/* Most values here are numbers, but "operator" puts a NAME in this slot
           and an operator id has no break opportunity — measured 360px outside
           the tile. `break-words` only breaks what cannot otherwise fit, so the
           numbers are untouched. */}
-      <span className="break-words font-mono text-[16px] font-semibold text-gray-900">
+      <span className="break-words font-mono text-[16px] font-semibold text-text-primary">
         {value}
       </span>
-      <span className="text-[11px] text-gray-500">{label}</span>
+      <span className="text-[11px] text-text-muted">{label}</span>
     </div>
   );
 }
@@ -304,6 +315,7 @@ function QualityDot({
 }
 
 export function ScopeSummary({ scope }: { scope: Scope }) {
+  const { t } = useTranslation(['datasets', 'common']);
   const agg = scope.aggregate;
   const outcome = outcomeBreakdown(agg);
   const bytes = bytesSegment(agg);
@@ -315,25 +327,23 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
       className="flex min-w-0 flex-col gap-4 px-[18px] py-4"
     >
       <div className="flex flex-wrap items-baseline gap-2">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Summary
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+          {t('summary')}
         </h3>
         <span
           data-testid="dataset-summary-scope"
-          className="text-[15px] font-bold text-gray-900"
+          className="text-[15px] font-bold text-text-primary"
         >
           {scope.label}
         </span>
-        <span className="text-[11.5px] text-gray-500">
-          {scope.kind === 'catalog'
-            ? 'every member, across the datasets in view'
-            : 'for this dataset'}
+        <span className="text-[11.5px] text-text-muted">
+          {scope.kind === 'catalog' ? t('catalogScope') : t('datasetScope')}
         </span>
       </div>
 
       {agg.memberCount === 0 ? (
-        <p data-testid="dataset-summary-empty" className="text-[13px] text-gray-500">
-          No members in this scope yet.
+        <p data-testid="dataset-summary-empty" className="text-[13px] text-text-muted">
+          {t('noMembersScope')}
         </p>
       ) : (
         <>
@@ -348,10 +358,9 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
             ) : (
               <p
                 data-testid="dataset-donut-empty"
-                className="max-w-[190px] text-[12.5px] leading-relaxed text-gray-500"
+                className="max-w-[190px] text-[12.5px] leading-relaxed text-text-muted"
               >
-                No task-result labels in this scope yet — there&apos;s no
-                success/failure rate to chart.
+                {t('noTaskResults')}
               </p>
             )}
 
@@ -361,43 +370,43 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
             >
               <StatTile
                 value={formatCount(agg.memberCount)}
-                label={memberNoun(agg.memberCount)}
+                label={formatMemberLabel(agg.memberCount)}
               />
               <StatTile
                 value={formatCount(agg.availability.usable)}
-                label="readable here"
+                label={t('readableHere')}
               />
               <StatTile
                 value={bytes ? bytes.text : '—'}
-                label="total size"
-                title={bytes?.title ?? 'No member reports a size.'}
+                label={t('totalSize')}
+                title={bytes?.title ?? t('noMemberSize')}
               />
               <StatTile
                 value={agg.messages.known > 0 ? formatCount(agg.messages.total) : '—'}
-                label="messages"
+                label={t('messages')}
                 title={
                   agg.messages.known > 0
-                    ? `Total over the ${memberCount(agg.messages.known)} reporting a count.`
-                    : 'No member reports a message count.'
+                    ? t('totalMessages', { count: agg.messages.known })
+                    : t('noMemberMessages')
                 }
               />
-              <StatTile value={operatorSegment(agg).text} label="operators" />
+              <StatTile value={operatorSegment(agg).text} label={t('operators')} />
               <StatTile
                 value={formatWhen(agg.lastRecordedAt).split(',')[0] ?? '—'}
-                label="last recorded"
+                label={t('lastRecorded')}
               />
             </div>
           </div>
 
           <AvailabilitySection agg={agg} unresolved={scope.unresolved} />
 
-          <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
-            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-              Recorded conditions
+          <div className="flex flex-col gap-1.5 border-t border-border pt-3">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+              {t('recordedConditions')}
             </h3>
             <div
               data-testid="dataset-summary-conditions"
-              className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-gray-600"
+              className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-text-secondary"
             >
               {scope.conditions.labels.map(({ value, count }) => (
                 <span key={value}>
@@ -405,57 +414,66 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
                 </span>
               ))}
               {scope.conditions.notRecorded > 0 && (
-                <span>Not recorded: {scope.conditions.notRecorded}</span>
+                <span>
+                  {t('notRecordedCount', { count: scope.conditions.notRecorded })}
+                </span>
               )}
               {scope.conditions.unavailable > 0 && (
-                <span>Unavailable: {scope.conditions.unavailable}</span>
+                <span>
+                  {t('unavailableCount', { count: scope.conditions.unavailable })}
+                </span>
               )}
             </div>
           </div>
 
           {scope.kind === 'dataset' && (
-            <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
-              <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-                Selection history
+            <div className="flex flex-col gap-1.5 border-t border-border pt-3">
+              <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+                {t('selectionHistory')}
               </h3>
               {selectionRecipes.length === 0 ? (
                 <span
                   data-testid="dataset-selection-recipes-empty"
-                  className="text-[12px] text-gray-500"
+                  className="text-[12px] text-text-muted"
                 >
-                  No saved selection recipe.
+                  {t('noSelectionRecipe')}
                 </span>
               ) : (
                 <ul
                   data-testid="dataset-selection-recipes"
-                  className="space-y-1 text-[12px] text-gray-600"
+                  className="space-y-1 text-[12px] text-text-secondary"
                 >
                   {selectionRecipes.map((recipe) => (
                     <li key={recipe.recipe_id}>
                       {formatWhen(recipe.recorded_at)} — {recipe.join.toUpperCase()}{' '}
                       {recipe.conditions.length === 0
-                        ? 'all recordings'
+                        ? t('allRecordings')
                         : recipe.conditions
                             .map(
                               (condition) =>
                                 `${condition.field} ${condition.operator} “${condition.value}”`,
                             )
                             .join(` ${recipe.join.toUpperCase()} `)}
-                      {'; '} {recipe.succeeded} added, {recipe.failed} failed from{' '}
-                      {recipe.matched} matched
+                      {'; '}{' '}
+                      {t('selectionRecipe', {
+                        added: String(recipe.succeeded),
+                        failed: String(recipe.failed),
+                        matched: String(recipe.matched),
+                      })}
                       {recipe.bulk_run_id &&
-                        `; server run ${recipe.bulk_run_id}${
-                          recipe.attempt != null ? `, attempt ${recipe.attempt}` : ''
-                        }${recipe.cumulative ? ' (cumulative receipt)' : ''}`}
-                      {recipe.catalog_truncated &&
-                        ' — catalog was truncated; older recordings were not evaluated.'}
-                      {selectionQuerySummary(recipe.selection_query) && (
+                        `; ${t('selectionServerRun', { id: recipe.bulk_run_id })}${
+                          recipe.attempt != null
+                            ? `, ${t('selectionAttempt', { count: recipe.attempt })}`
+                            : ''
+                        }${recipe.cumulative ? ` ${t('selectionCumulativeReceipt')}` : ''}`}
+                      {recipe.catalog_truncated && ` — ${t('selectionTruncated')}`}
+                      {recipe.selection_query && (
                         <span
                           data-testid={`dataset-selection-query-${recipe.recipe_id}`}
-                          className="mt-0.5 block break-words text-[11px] leading-relaxed text-gray-500"
+                          className="mt-0.5 block break-words text-[11px] leading-relaxed text-text-muted"
                         >
-                          Server selection:{' '}
-                          {selectionQuerySummary(recipe.selection_query)}
+                          {t('serverSelectionLabel')}{' '}
+                          <SelectionQuerySummary query={recipe.selection_query} />
                         </span>
                       )}
                     </li>
@@ -465,48 +483,54 @@ export function ScopeSummary({ scope }: { scope: Scope }) {
             </div>
           )}
 
-          <div className="flex flex-col gap-1.5 border-t border-gray-100 pt-3">
-            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-              Quality
+          <div className="flex flex-col gap-1.5 border-t border-border pt-3">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+              {t('quality')}
             </h3>
             {agg.qualityLabeledCount > 0 ? (
               <div
                 data-testid="dataset-summary-quality"
-                className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-gray-600"
+                className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] text-text-secondary"
               >
-                <QualityDot tone="bg-green-600" label="Good" count={agg.qualityGood} />
                 <QualityDot
-                  tone="bg-amber-600"
-                  label="Needs review"
+                  tone="bg-status-success-accent"
+                  label={t('common:status.good')}
+                  count={agg.qualityGood}
+                />
+                <QualityDot
+                  tone="bg-status-warning-accent"
+                  label={t('common:status.needsReview')}
                   count={agg.qualityNeedsReview}
                 />
                 <QualityDot
-                  tone="bg-red-600"
-                  label="Not usable"
+                  tone="bg-status-danger-accent"
+                  label={t('common:status.notUsable')}
                   count={agg.qualityNotUsable}
                 />
               </div>
             ) : (
-              <span className="text-[12px] text-gray-500">
-                No quality labels in this scope.
+              <span className="text-[12px] text-text-muted">
+                {t('noQualityLabels')}
               </span>
             )}
             {outcome.unlabeled > 0 && (
               <span
                 data-testid="dataset-summary-unlabeled"
-                className="text-[11.5px] text-gray-500"
+                className="text-[11.5px] text-text-muted"
               >
-                {outcome.unlabeled} without labels — excluded from the success rate (not
-                counted as successes).
+                {t('unlabeledOutcome', { count: outcome.unlabeled })}
               </span>
             )}
             {agg.bytes.unknown > 0 && (
               <span
                 data-testid="dataset-summary-sizeless"
-                className="text-[11.5px] text-gray-500"
+                className="text-[11.5px] text-text-muted"
               >
-                {agg.bytes.unknown} report no size — {formatBytes(agg.bytes.total)}{' '}
-                covers the other {agg.bytes.known}.
+                {t('unknownSize', {
+                  unknown: String(agg.bytes.unknown),
+                  total: formatBytes(agg.bytes.total),
+                  known: String(agg.bytes.known),
+                })}
               </span>
             )}
           </div>

@@ -22,7 +22,7 @@ import type {
   CollectionContextSnapshot,
 } from '../../../api/types';
 import { useUiStore } from '../../../store/uiStore';
-import { resolvePlanIds, usePlans } from '../../plans';
+import { usePlans } from '../../plans';
 import { type Phase } from '../machine/types';
 import {
   TOMBSTONE_STATES,
@@ -66,8 +66,19 @@ export function useBatchLifecycle(): {
     const project = textOrNull(state.project);
     const task = textOrNull(state.task);
     const condition = textOrNull(state.condition);
+    const selectedProject = plans.find(
+      (candidate) => candidate.project_id === state.projectId,
+    );
+    const selectedTask = selectedProject?.tasks.find(
+      (candidate) => candidate.task_id === state.taskId,
+    );
+    const selectedCondition = selectedTask?.conditions.find(
+      (candidate) => candidate.name === condition,
+    );
     return {
-      ...resolvePlanIds(plans, project, task, condition),
+      project_id: selectedProject?.project_id ?? null,
+      task_id: selectedTask?.task_id ?? null,
+      condition_id: selectedCondition?.condition_id ?? null,
       project,
       task,
       condition,
@@ -137,7 +148,9 @@ export function useBatchLifecycle(): {
             dispatch({
               type: 'ROLLOVER_SET',
               project: local.project,
+              projectId: local.projectId,
               task: local.task,
+              taskId: local.taskId,
               condition: local.condition,
             });
             continue;
@@ -155,7 +168,9 @@ export function useBatchLifecycle(): {
             dispatch({
               type: 'ROLLOVER_SET',
               project: local.project,
+              projectId: local.projectId,
               task: local.task,
+              taskId: local.taskId,
               condition: local.condition,
             });
             continue;

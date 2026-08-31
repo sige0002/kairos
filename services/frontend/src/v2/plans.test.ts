@@ -11,16 +11,30 @@ import {
   clonePlans,
   findProject,
   findTask,
+  getExternalControls,
+  getExternalControlsInvalid,
   getPlansConflict,
   getFailReasons,
   getPlans,
   adoptServerCatalog,
   resolvePlanIds,
   setFailReasons,
+  setExternalControls,
   setPlans,
+  setFailReasonsAndPlans,
+  clearFailureShortcutsForReason,
+  renameFailureShortcuts,
+  withTaskFailureShortcuts,
 } from './plans';
+import {
+  cloneExternalControls,
+  DEFAULT_EXTERNAL_CONTROLS,
+  type ExternalControlsConfig,
+} from './collect/machine/externalControlConfig';
 
 const KEY = 'kairos.v2.plans.v1';
+const FAIL_REASONS_KEY = 'kairos.v2.failreasons.v1';
+const EXTERNAL_CONTROLS_KEY = 'kairos.v2.external-controls.v1';
 
 beforeEach(() => __resetPlansStore());
 
@@ -42,6 +56,7 @@ test('setPlans updates the snapshot and persists to localStorage', () => {
         task_id: 'task-sort-bins',
         name: 'Sort bins',
         conditions: [{ condition_id: 'condition-bin-a', name: 'Bin: A' }],
+        failure_shortcuts: { left: null, center: null, right: null },
       },
     ],
   });
@@ -117,6 +132,7 @@ interface PutCall {
   projects: { name: string }[];
   operators?: string[];
   failure_reasons?: string[];
+  external_controls?: ExternalControlsConfig;
 }
 
 function mockPlansFetch(getBody: unknown, opts: { putFails?: boolean } = {}) {
@@ -127,14 +143,20 @@ function mockPlansFetch(getBody: unknown, opts: { putFails?: boolean } = {}) {
     if (url.includes('/plans') && method === 'GET') {
       const body = getBody as { projects?: unknown } | null;
       return Promise.resolve(
-        jsonResponse({ revision: Array.isArray(body?.projects) ? 1 : 0, ...body }),
+        jsonResponse({
+          revision: Array.isArray(body?.projects) ? 1 : 0,
+          external_controls: DEFAULT_EXTERNAL_CONTROLS,
+          ...body,
+        }),
       );
     }
     if (url.includes('/plans') && method === 'PUT') {
       const body = JSON.parse(String(init?.body)) as PutCall;
       puts.push(body);
       if (opts.putFails) {
-        return Promise.resolve(jsonResponse({ error: { code: 'io', message: 'down' } }, 500));
+        return Promise.resolve(
+          jsonResponse({ error: { code: 'io', message: 'down' } }, 500),
+        );
       }
       return Promise.resolve(
         jsonResponse({ ...body, updated_at: 't1', revision: body.base_revision + 1 }),
@@ -151,11 +173,15 @@ test('a never-set server catalog is seeded from this browser', async () => {
   const puts = mockPlansFetch({ projects: null, updated_at: null });
   ensurePlansSynced();
   await vi.waitFor(() => expect(puts).toHaveLength(1));
-  expect(puts[0]!.projects.map((p) => p.name)).toEqual(DEFAULT_PLANS.map((p) => p.name));
+  expect(puts[0]!.projects.map((p) => p.name)).toEqual(
+    DEFAULT_PLANS.map((p) => p.name),
+  );
 });
 
 test('the server catalog is adopted when no local edits are unsynced', async () => {
-  const server = [{ name: 'Server Project', tasks: [{ name: 'T', conditions: ['C'] }] }];
+  const server = [
+    { name: 'Server Project', tasks: [{ name: 'T', conditions: ['C'] }] },
+  ];
   const puts = mockPlansFetch({
     projects: server,
     failure_reasons: ['Server reason'],
@@ -170,6 +196,87 @@ test('the server catalog is adopted when no local edits are unsynced', async () 
     { name: 'Server Project', tasks: [{ name: 'T', conditions: [{ name: 'C' }] }] },
   ]);
   expect(puts).toHaveLength(0);
+});
+
+test('the server external-control mapping is adopted and persisted', async () => {
+  const configured = cloneExternalControls(DEFAULT_EXTERNAL_CONTROLS);
+  configured.ready = { left: 'start', center: 'none', right: 'none' };
+  const puts = mockPlansFetch({
+    projects: [],
+    failure_reasons: ['Server reason'],
+    operators: [],
+    external_controls: configured,
+    updated_at: 't0',
+  });
+  ensurePlansSynced();
+  await vi.waitFor(() => expect(getExternalControls()).toEqual(configured));
+  expect(JSON.parse(window.localStorage.getItem(EXTERNAL_CONTROLS_KEY)!)).toEqual(
+    configured,
+  );
+  expect(puts).toHaveLength(0);
+});
+
+test('a never-set server external-control mapping is seeded with the safe default', async () => {
+  const puts = mockPlansFetch({
+    projects: [],
+    failure_reasons: ['Server reason'],
+    operators: [],
+    external_controls: null,
+    updated_at: 't0',
+  });
+  ensurePlansSynced();
+  await vi.waitFor(() => expect(puts).toHaveLength(1));
+  expect(puts[0]!.external_controls).toEqual(DEFAULT_EXTERNAL_CONTROLS);
+});
+
+test('external-control edits persist only valid mappings', () => {
+  const configured = cloneExternalControls(DEFAULT_EXTERNAL_CONTROLS);
+  configured.result = {
+    left: 'retake',
+    center: 'success_save',
+    right: 'failure',
+  };
+  setExternalControls(configured);
+  expect(getExternalControls()).toEqual(configured);
+  expect(JSON.parse(window.localStorage.getItem(EXTERNAL_CONTROLS_KEY)!)).toEqual(
+    configured,
+  );
+
+  setExternalControls({ ...configured, schema_version: 2 });
+  expect(getExternalControls()).toEqual(configured);
+});
+
+test('a corrupt stored external-control mapping falls back visibly and safely', () => {
+  window.localStorage.setItem(
+    EXTERNAL_CONTROLS_KEY,
+    JSON.stringify({ schema_version: 1, ready: { left: 'retake' } }),
+  );
+  __rehydratePlansStore();
+  expect(getExternalControls()).toEqual(DEFAULT_EXTERNAL_CONTROLS);
+  expect(getExternalControlsInvalid()).toBe(true);
+  expect(JSON.parse(window.localStorage.getItem(EXTERNAL_CONTROLS_KEY)!)).toEqual(
+    DEFAULT_EXTERNAL_CONTROLS,
+  );
+});
+
+test('a valid offline external-control edit survives reload and wins reconcile', async () => {
+  const local = cloneExternalControls(DEFAULT_EXTERNAL_CONTROLS);
+  local.recording = { left: 'stop', center: 'none', right: 'none' };
+  window.localStorage.setItem(EXTERNAL_CONTROLS_KEY, JSON.stringify(local));
+  window.localStorage.setItem('kairos.v2.plans.dirty.v1', '1');
+  __rehydratePlansStore();
+
+  const puts = mockPlansFetch({
+    projects: [],
+    failure_reasons: ['Server reason'],
+    operators: [],
+    external_controls: DEFAULT_EXTERNAL_CONTROLS,
+    updated_at: 't0',
+  });
+  ensurePlansSynced();
+  await vi.waitFor(() => expect(puts).toHaveLength(1));
+  expect(puts[0]!.external_controls).toEqual(local);
+  expect(getExternalControls()).toEqual(local);
 });
 
 test('an explicitly emptied server catalog is honored (no re-seed)', async () => {
@@ -213,9 +320,7 @@ test('a failed push keeps the dirty flag so the edit retries later', async () =>
 });
 
 test('a 409 keeps the local draft and only an explicit server adopt clears it', async () => {
-  const server = [
-    { project_id: 'server-p', name: 'Server project', tasks: [] },
-  ];
+  const server = [{ project_id: 'server-p', name: 'Server project', tasks: [] }];
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const method = (init?.method ?? 'GET').toUpperCase();
     if (String(input).includes('/plans') && method === 'PUT') {
@@ -226,7 +331,9 @@ test('a 409 keeps the local draft and only an explicit server adopt clears it', 
         ),
       );
     }
-    return Promise.resolve(jsonResponse({ projects: server, revision: 3, updated_at: 't3' }));
+    return Promise.resolve(
+      jsonResponse({ projects: server, revision: 3, updated_at: 't3' }),
+    );
   });
   const local = clonePlans(getPlans());
   local[0]!.name = 'Local draft';
@@ -311,9 +418,9 @@ test('a never-set server vocabulary is seeded from this browser', async () => {
   });
   ensurePlansSynced();
   await vi.waitFor(() => expect(puts).toHaveLength(1));
-  expect(
-    (puts[0] as unknown as { failure_reasons: string[] }).failure_reasons,
-  ).toEqual(DEFAULT_FAIL_REASONS);
+  expect((puts[0] as unknown as { failure_reasons: string[] }).failure_reasons).toEqual(
+    DEFAULT_FAIL_REASONS,
+  );
   // The projects half was still adopted, not clobbered by the seed push.
   expect(getPlans()).toMatchObject([{ name: 'P', tasks: [] }]);
 });
@@ -357,10 +464,12 @@ const TEAM_SERVER = {
  *  is one byte) and the shape private mode has historically taken. */
 function failWritesTo(key: string) {
   const real = window.localStorage.setItem.bind(window.localStorage);
-  return vi.spyOn(Storage.prototype, 'setItem').mockImplementation((k: string, v: string) => {
-    if (k === key) throw new DOMException('exceeded the quota', 'QuotaExceededError');
-    real(k, v);
-  });
+  return vi
+    .spyOn(Storage.prototype, 'setItem')
+    .mockImplementation((k: string, v: string) => {
+      if (k === key) throw new DOMException('exceeded the quota', 'QuotaExceededError');
+      real(k, v);
+    });
 }
 
 /** What each push would put on the server, across ALL THREE shared vocabularies.
@@ -446,7 +555,9 @@ test('a RESTORED catalog with a dirty flag still pushes (the guard is not a mute
   // That claim is backed by something, so it must still reach the server.
   window.localStorage.setItem(
     KEY,
-    JSON.stringify([{ name: 'Real offline edit', tasks: [{ name: 'T', conditions: [] }] }]),
+    JSON.stringify([
+      { name: 'Real offline edit', tasks: [{ name: 'T', conditions: [] }] },
+    ]),
   );
   window.localStorage.setItem(DIRTY, '1');
   const puts = mockPlansFetch(TEAM_SERVER);
@@ -475,7 +586,9 @@ test('an edit made while the reconcile is in flight is kept, not overwritten', a
       puts.push(JSON.parse(String(init?.body)) as PutCall);
       // Failing push: the dirty flag stays set, which is what the reconcile
       // then has to judge.
-      return Promise.resolve(jsonResponse({ error: { code: 'io', message: 'down' } }, 500));
+      return Promise.resolve(
+        jsonResponse({ error: { code: 'io', message: 'down' } }, 500),
+      );
     }
     return gate.then(() => jsonResponse(TEAM_SERVER));
   });
@@ -490,9 +603,11 @@ test('an edit made while the reconcile is in flight is kept, not overwritten', a
   // re-pushes rather than adopting the server copy over the operator's work.
   await vi.waitFor(() => expect(puts.length).toBeGreaterThanOrEqual(1));
   expect(getPlans()[0]!.name).toBe('Edited before the sync landed');
-  expect(puts.some((p) => p.projects.some((x) => x.name === 'Edited before the sync landed'))).toBe(
-    true,
-  );
+  expect(
+    puts.some((p) =>
+      p.projects.some((x) => x.name === 'Edited before the sync landed'),
+    ),
+  ).toBe(true);
 });
 
 test('storage that THROWS on every access leaves the store usable', () => {
@@ -516,6 +631,174 @@ test('storage that THROWS on every access leaves the store usable', () => {
   expect(getPlans()[0]!.name).toBe('Incognito edit');
   expect(() => setFailReasons(['Only reason'])).not.toThrow();
   expect(() => __resetPlansStore()).not.toThrow();
+});
+
+// ---- per-task failure-reason shortcuts (#35) --------------------------------
+
+function catalogWithShortcuts(): ReturnType<typeof getPlans> {
+  const plans = clonePlans(getPlans());
+  plans[0]!.tasks[0]!.failure_shortcuts = {
+    left: 'Grasp missed',
+    center: 'Object dropped',
+    right: null,
+  };
+  plans[1]!.tasks[0]!.failure_shortcuts = {
+    left: 'Other',
+    center: null,
+    right: null,
+  };
+  return plans;
+}
+
+test('a pre-field local catalog restores with empty shortcut slots', () => {
+  window.localStorage.setItem(
+    KEY,
+    JSON.stringify([{ name: 'Saved', tasks: [{ name: 'S', conditions: ['x'] }] }]),
+  );
+  __rehydratePlansStore();
+  expect(getPlans()[0]!.tasks[0]!.failure_shortcuts).toEqual({
+    left: null,
+    center: null,
+    right: null,
+  });
+});
+
+test('malformed shortcut values degrade to unassigned, not to a dropped catalog', () => {
+  window.localStorage.setItem(
+    KEY,
+    JSON.stringify([
+      {
+        name: 'Saved',
+        tasks: [
+          {
+            name: 'S',
+            conditions: [],
+            failure_shortcuts: {
+              left: 42,
+              center: 'Object dropped',
+              right: { nope: true },
+            },
+          },
+        ],
+      },
+    ]),
+  );
+  __rehydratePlansStore();
+  expect(getPlans()[0]!.tasks[0]!.failure_shortcuts).toEqual({
+    left: null,
+    center: 'Object dropped',
+    right: null,
+  });
+});
+
+test('clonePlans deep-copies the shortcut slots', () => {
+  const plans = catalogWithShortcuts();
+  setPlans(plans);
+  const clone = clonePlans(getPlans());
+  clone[0]!.tasks[0]!.failure_shortcuts.left = 'Tampered';
+  expect(getPlans()[0]!.tasks[0]!.failure_shortcuts.left).toBe('Grasp missed');
+});
+
+test('renameFailureShortcuts re-points only the slots naming the old label', () => {
+  const plans = catalogWithShortcuts();
+  const renamed = renameFailureShortcuts(plans, 'Grasp missed', 'Grasp failed');
+  expect(renamed[0]!.tasks[0]!.failure_shortcuts).toEqual({
+    left: 'Grasp failed',
+    center: 'Object dropped',
+    right: null,
+  });
+  // A reason no slot used is untouched, and the original is not mutated.
+  expect(plans[0]!.tasks[0]!.failure_shortcuts.left).toBe('Grasp missed');
+  expect(renamed[1]!.tasks[0]!.failure_shortcuts.left).toBe('Other');
+});
+
+test('clearFailureShortcutsForReason clears exactly the referencing slots', () => {
+  const plans = catalogWithShortcuts();
+  const cleared = clearFailureShortcutsForReason(plans, 'Object dropped');
+  expect(cleared[0]!.tasks[0]!.failure_shortcuts.center).toBeNull();
+  expect(cleared[0]!.tasks[0]!.failure_shortcuts.left).toBe('Grasp missed');
+  expect(cleared[1]!.tasks[0]!.failure_shortcuts.left).toBe('Other');
+});
+
+test('withTaskFailureShortcuts targets one task by task_id', () => {
+  const plans = catalogWithShortcuts();
+  const target = plans[1]!.tasks[0]!.task_id;
+  const next = withTaskFailureShortcuts(plans, target, {
+    left: 'Robot fault',
+    center: 'Grasp missed',
+    right: null,
+  });
+  expect(next[1]!.tasks[0]!.failure_shortcuts).toEqual({
+    left: 'Robot fault',
+    center: 'Grasp missed',
+    right: null,
+  });
+  // The other task is untouched, and a missing task_id changes nothing.
+  expect(next[0]!.tasks[0]!.failure_shortcuts.left).toBe('Grasp missed');
+  expect(
+    withTaskFailureShortcuts(
+      plans,
+      'task-does-not-exist',
+      next[0]!.tasks[0]!.failure_shortcuts,
+    ),
+  ).toEqual(plans);
+});
+
+test('setFailReasonsAndPlans updates both halves in ONE edit', () => {
+  const plans = catalogWithShortcuts();
+  setPlans(plans);
+  const reasons = getFailReasons().slice();
+  const newReason = 'New reason';
+  setFailReasonsAndPlans(
+    [...reasons, newReason],
+    renameFailureShortcuts(plans, 'Grasp missed', newReason),
+  );
+  expect(getFailReasons()).toContain(newReason);
+  expect(getPlans()[0]!.tasks[0]!.failure_shortcuts.left).toBe(newReason);
+  // The stored catalog is consistent: every assigned slot names a stored reason.
+  for (const project of getPlans()) {
+    for (const task of project.tasks) {
+      for (const slot of ['left', 'center', 'right'] as const) {
+        const reason = task.failure_shortcuts[slot];
+        if (reason !== null) expect(getFailReasons()).toContain(reason);
+      }
+    }
+  }
+});
+
+test('setFailReasonsAndPlans syncs the complete pair when one localStorage write fails', async () => {
+  const puts = mockPlansFetch({ projects: null, updated_at: null });
+  const plans = catalogWithShortcuts();
+  setPlans(plans);
+  await vi.waitFor(() => expect(puts).toHaveLength(1));
+
+  const nativeSetItem = Storage.prototype.setItem;
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+    this: Storage,
+    key: string,
+    value: string,
+  ) {
+    if (key === FAIL_REASONS_KEY) {
+      throw new DOMException('The quota is exceeded.', 'QuotaExceededError');
+    }
+    return nativeSetItem.call(this, key, value);
+  });
+
+  const nextReason = 'New reason';
+  setFailReasonsAndPlans(
+    [...getFailReasons(), nextReason],
+    renameFailureShortcuts(plans, 'Grasp missed', nextReason),
+  );
+
+  // The two keys cannot be transactionally persisted, but a partial local
+  // failure must not leave the in-memory paired edit unsent this session.
+  await vi.waitFor(() => expect(puts).toHaveLength(2));
+  const latest = puts[1] as unknown as {
+    failure_reasons: string[];
+    projects: Array<{ tasks: Array<{ failure_shortcuts: { left: string | null } }> }>;
+  };
+  expect(latest.failure_reasons).toContain(nextReason);
+  expect(latest.projects[0]!.tasks[0]!.failure_shortcuts.left).toBe(nextReason);
 });
 
 test('the module survives being IMPORTED with storage that throws', async () => {

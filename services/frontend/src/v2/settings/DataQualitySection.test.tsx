@@ -49,20 +49,11 @@ const ROBOT = {
   },
 };
 
-// The per-robot editor aspect the section hosts (AlertsCard).
-const ALERTS = {
-  path: '/config/airoa_hsr/monitoring/alerts.yaml',
-  raw: 'rules: []\n',
-  warnings: [],
-  config: { rules: [{ topic: '/hsrb/joint_states', metric: 'hz', op: 'lt', threshold: 15 }] },
-};
-
 function mockFetch() {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/config/robots/')) return Promise.resolve(jsonResponse(ROBOT));
     if (url.includes('/config/options')) return Promise.resolve(jsonResponse(OPTIONS));
-    if (url.includes('/config/alerts')) return Promise.resolve(jsonResponse(ALERTS));
     return Promise.resolve(jsonResponse({}));
   });
 }
@@ -85,21 +76,16 @@ test('shows real expected rates, threshold convention, and required topics from 
   expect(screen.getByTestId('dq-required-topics')).toHaveTextContent('/hsrb/joint_states');
 });
 
-test('hosts the alert-rules editor (the old "not exposed" note is gone)', async () => {
+test('does not load alert rules; Alerts has its own Notifications section', async () => {
   renderWithClient(<DataQualitySection config={CONFIG} />);
 
-  // The alert rules are now an editable surface (from GET /config/alerts), not a
-  // note pointing at a file — the seeded rule's topic renders in the table.
   await waitFor(() =>
-    expect(screen.getByTestId('settings-alerts')).toHaveTextContent('applies on monitor restart'),
+    expect(screen.getByTestId('dq-required-topics')).toBeInTheDocument(),
   );
-  expect((await screen.findByLabelText('rule topic 0')) as HTMLInputElement).toHaveValue(
-    '/hsrb/joint_states',
-  );
-  // The retired Signals-defaults editor must be gone (removed with the Review
-  // waveform chart it configured).
-  expect(screen.queryByTestId('settings-signals')).not.toBeInTheDocument();
-  // The removed note must be gone.
-  expect(screen.queryByTestId('dq-alerts-note')).not.toBeInTheDocument();
-  expect(screen.queryByText(/not exposed by the API/)).not.toBeInTheDocument();
+  expect(screen.queryByTestId('settings-alerts')).not.toBeInTheDocument();
+  expect(
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls.some((call) =>
+      String(call[0]).includes('/config/alerts'),
+    ),
+  ).toBe(false);
 });

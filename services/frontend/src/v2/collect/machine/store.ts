@@ -5,11 +5,7 @@
 // persistence and the Phase 2 server restore. Split out of useBatchMachine.ts.
 
 import { useSyncExternalStore } from 'react';
-import type {
-  BatchSummary,
-  Capture,
-  CaptureListItem,
-} from '../../../api/types';
+import type { BatchSummary, Capture, CaptureListItem } from '../../../api/types';
 import {
   EPISODES_PER_BATCH,
   STOP_FLOOR_MS,
@@ -62,7 +58,10 @@ interface PersistedBatch {
   batchId: string | null;
   episodes: EpisodeRecord[];
   project: string | null;
+  /** Missing from older blobs; it must not be guessed from a display label. */
+  projectId?: string | null;
   task: string | null;
+  taskId?: string | null;
   condition: string;
   /** Last capture this browser started — durable so a reload can still
    *  recognise a recording it started as "resumed own", not another session's. */
@@ -78,7 +77,9 @@ function serializeDurable(state: MachineState): string {
     batchId: state.batchId,
     episodes: state.episodes,
     project: state.project,
+    projectId: state.projectId,
     task: state.task,
+    taskId: state.taskId,
     condition: state.condition,
     lastCaptureId: state.lastCaptureId,
   };
@@ -148,10 +149,11 @@ function readInitialState(): MachineState {
       batchId: typeof blob.batchId === 'string' ? blob.batchId : null,
       episodes,
       project: typeof blob.project === 'string' ? blob.project : base.project,
+      projectId: typeof blob.projectId === 'string' ? blob.projectId : null,
       task: typeof blob.task === 'string' ? blob.task : base.task,
+      taskId: typeof blob.taskId === 'string' ? blob.taskId : null,
       condition: typeof blob.condition === 'string' ? blob.condition : base.condition,
-      lastCaptureId:
-        typeof blob.lastCaptureId === 'string' ? blob.lastCaptureId : null,
+      lastCaptureId: typeof blob.lastCaptureId === 'string' ? blob.lastCaptureId : null,
     };
   } catch {
     return base;
@@ -195,7 +197,9 @@ function readDismissed(): Set<string> {
     if (!raw) return new Set();
     const parsed: unknown = JSON.parse(raw);
     return new Set(
-      Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [],
+      Array.isArray(parsed)
+        ? parsed.filter((v): v is string => typeof v === 'string')
+        : [],
     );
   } catch {
     // Unreadable or unavailable storage: the banner simply re-offers them,
@@ -274,7 +278,10 @@ function serverEpisodeToRecord(capture: Capture): EpisodeRecord {
  *  alone (a no-op) rather than clobber it — the local blob may hold a
  *  just-finished batch whose PATCH has not landed yet; it self-heals on the
  *  next recording. Volatile phase stays at rest. */
-export function applyServerRestore(batch: BatchSummary | null, captures: Capture[]): void {
+export function applyServerRestore(
+  batch: BatchSummary | null,
+  captures: Capture[],
+): void {
   if (!batch) return;
   const serverEpisodes = captures.map(serverEpisodeToRecord);
   // Same batch as the local blob? Then local episodes the server does NOT have
@@ -332,7 +339,9 @@ export function applyServerRestore(batch: BatchSummary | null, captures: Capture
     recordedIsFloor: batch.episodes_recorded_is_floor === true,
     targetEpisodes,
     project: batch.project,
+    projectId: typeof batch.project_id === 'string' ? batch.project_id : null,
     task: batch.task,
+    taskId: typeof batch.task_id === 'string' ? batch.task_id : null,
     condition: batch.condition ?? '—',
     episodes,
     phase,
@@ -384,7 +393,10 @@ export function hasLocalBatchContext(s: MachineState): boolean {
  *  (Apple P0: an operator wipes the catalog, then the next load shows "Batch 6 ·
  *  3 recorded" that no longer exists). Only reports phantom on POSITIVE evidence
  *  of absence: one surviving capture keeps the whole context. */
-export function localBatchIsPhantom(s: MachineState, captures: CaptureListItem[]): boolean {
+export function localBatchIsPhantom(
+  s: MachineState,
+  captures: CaptureListItem[],
+): boolean {
   const serverCaptureIds = new Set(captures.map((c) => c.capture_id));
   const localCaptureIds = s.episodes
     .map((e) => e.captureId)

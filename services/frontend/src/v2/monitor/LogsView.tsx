@@ -12,15 +12,11 @@ import { useQuery } from '@tanstack/react-query';
 import { queryKeys } from '../../api/queryKeys';
 import type { SessionLogEntry, SessionLogType } from '../../api/types';
 import { Card, cn, type Tone } from '../../components/ui';
+import { formatTime } from '../../i18n/format';
+import { useTranslation } from 'react-i18next';
 
 type TypeFilter = 'all' | SessionLogType;
 const TYPE_FILTERS: TypeFilter[] = ['all', 'record_status', 'alert', 'job'];
-const TYPE_LABEL: Record<TypeFilter, string> = {
-  all: 'All',
-  record_status: 'Recording',
-  alert: 'Alerts',
-  job: 'Jobs',
-};
 const TYPE_TONE: Record<SessionLogType, Tone> = {
   record_status: 'teal',
   alert: 'red',
@@ -28,15 +24,17 @@ const TYPE_TONE: Record<SessionLogType, Tone> = {
 };
 
 function formatClock(ts: number): string {
-  return new Date(ts).toLocaleTimeString('en-GB', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  return formatTime(new Date(ts));
 }
 
 export function LogsView() {
+  const { t } = useTranslation('monitor');
+  const typeLabel: Record<TypeFilter, string> = {
+    all: t('logs.all'),
+    record_status: t('logs.recording'),
+    alert: t('logs.alerts'),
+    job: t('logs.jobs'),
+  };
   const { data } = useQuery<SessionLogEntry[]>({
     queryKey: queryKeys.eventLog,
     queryFn: () => {
@@ -60,24 +58,27 @@ export function LogsView() {
 
   return (
     <Card className="flex flex-1 flex-col lg:min-h-0" data-testid="monitor-logs">
-      <div className="flex flex-wrap items-center gap-2.5 border-b border-gray-100 px-4 py-3">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Event log
+      <div className="flex flex-wrap items-center gap-2.5 border-b border-border px-4 py-3">
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+          {t('logs.title')}
         </h2>
-        <span data-testid="logs-count" className="font-mono text-[11.5px] text-gray-500">
-          {entries.length} event{entries.length === 1 ? '' : 's'}
+        <span
+          data-testid="logs-count"
+          className="font-mono text-[11.5px] text-text-muted"
+        >
+          {t('logs.count', { count: entries.length })}
         </span>
         <div className="flex-1" />
         <input
           type="text"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Filter…"
-          aria-label="filter events"
+          placeholder={t('logs.filter')}
+          aria-label={t('logs.filterLabel')}
           data-testid="logs-filter"
-          className="w-40 rounded-control border border-gray-200 px-2.5 py-1 text-[12px] focus:border-teal-600 focus:outline-none"
+          className="w-40 rounded-control border border-border px-2.5 py-1 text-[12px] focus:border-accent focus:outline-none"
         />
-        <div className="flex gap-[3px] rounded-control border border-gray-200 bg-gray-100 p-1">
+        <div className="flex gap-[3px] rounded-control border border-border bg-surface-muted p-1">
           {TYPE_FILTERS.map((f) => (
             <button
               key={f}
@@ -87,52 +88,62 @@ export function LogsView() {
               onClick={() => setTypeFilter(f)}
               className={cn(
                 'rounded-chip px-2.5 py-0.5 text-[11px] font-medium transition-colors',
-                f === typeFilter ? 'bg-white text-teal-700 shadow-sm' : 'text-gray-600 hover:text-gray-800',
+                f === typeFilter
+                  ? 'bg-surface text-accent shadow-sm'
+                  : 'text-text-secondary hover:text-text-primary',
               )}
             >
-              {TYPE_LABEL[f]}
+              {typeLabel[f]}
             </button>
           ))}
         </div>
       </div>
 
-      <p className="border-b border-gray-100 px-4 py-2 text-[11px] leading-relaxed text-gray-500">
-        Live event log — since this page opened (session-local, newest first). Full service logs
-        live in <code>docker compose logs</code>.
+      <p className="border-b border-border px-4 py-2 text-[11px] leading-relaxed text-text-muted">
+        {t('logs.note')}
       </p>
 
       <div className="flex flex-col overflow-auto p-2.5">
         {entries.length === 0 ? (
-          <p data-testid="logs-empty" className="px-1.5 py-8 text-center text-[12px] text-gray-500">
-            No events yet — recording, alert and job events will stream in here as they happen.
+          <p
+            data-testid="logs-empty"
+            className="px-1.5 py-8 text-center text-[12px] text-text-muted"
+          >
+            {t('logs.empty')}
           </p>
         ) : filtered.length === 0 ? (
-          <p data-testid="logs-no-match" className="px-1.5 py-8 text-center text-[12px] text-gray-500">
-            No events match the current filter.
+          <p
+            data-testid="logs-no-match"
+            className="px-1.5 py-8 text-center text-[12px] text-text-muted"
+          >
+            {t('logs.noMatch')}
           </p>
         ) : (
           filtered.map((e) => (
             <div
               key={e.id}
               data-testid="logs-row"
-              className="flex items-baseline gap-2.5 rounded-control px-2 py-1.5 hover:bg-gray-50"
+              className="flex items-baseline gap-2.5 rounded-control px-2 py-1.5 hover:bg-surface-muted"
             >
-              <span className="shrink-0 font-mono text-[11px] tabular-nums text-gray-500">
+              <span className="shrink-0 font-mono text-[11px] tabular-nums text-text-muted">
                 {formatClock(e.ts)}
               </span>
               <span
                 className={cn(
                   'shrink-0 rounded-chip px-1.5 py-0.5 text-[10px] font-semibold',
                   TYPE_TONE[e.type] === 'red'
-                    ? 'bg-red-50 text-red-700'
+                    ? 'bg-status-danger-bg text-status-danger-text'
                     : TYPE_TONE[e.type] === 'info'
-                      ? 'bg-cyan-100 text-cyan-700'
-                      : 'bg-teal-100 text-teal-700',
+                      ? 'bg-status-info-bg text-status-info-text'
+                      : 'bg-interaction-selected text-accent',
                 )}
               >
-                {TYPE_LABEL[e.type]}
+                {typeLabel[e.type]}
               </span>
-              <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-gray-700" title={e.summary}>
+              <span
+                className="min-w-0 flex-1 truncate font-mono text-[12px] text-text-primary"
+                title={e.summary}
+              >
                 {e.summary}
               </span>
             </div>

@@ -12,7 +12,14 @@ const ALERTS = {
   warnings: [],
   config: {
     rules: [
-      { topic: '/hsrb/joint_states', metric: 'hz', op: 'lt', threshold: 15, clear_after_s: 3, cooldown_s: 10 },
+      {
+        topic: '/hsrb/joint_states',
+        metric: 'hz',
+        op: 'lt',
+        threshold: 15,
+        clear_after_s: 3,
+        cooldown_s: 10,
+      },
     ],
     derived_rules: { enabled: true, warn_ratio: 0.8 },
   },
@@ -27,7 +34,11 @@ const okPut: PutHandler = () => jsonResponse({ ...ALERTS });
 
 // alerts.yaml is the ACTIVE robot's file, so AlertsCard resolves the robot
 // first (GET /config/options) and keys its cache on it — see alertsConfigKey.
-const OPTIONS = { active_robot: 'airoa_hsr', robots: [{ id: 'airoa_hsr', local: false }], aspects: {} };
+const OPTIONS = {
+  active_robot: 'airoa_hsr',
+  robots: [{ id: 'airoa_hsr', local: false }],
+  aspects: {},
+};
 
 function mockFetch(put: PutHandler = okPut) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
@@ -58,9 +69,13 @@ test('renders the rules table seeded from the alerts aspect + honest badge', asy
 
   const topic = (await screen.findByLabelText('rule topic 0')) as HTMLInputElement;
   expect(topic.value).toBe('/hsrb/joint_states');
-  expect((screen.getByLabelText('rule metric 0') as HTMLSelectElement).value).toBe('hz');
+  expect((screen.getByLabelText('rule metric 0') as HTMLSelectElement).value).toBe(
+    'hz',
+  );
   expect((screen.getByLabelText('rule op 0') as HTMLSelectElement).value).toBe('lt');
-  expect((screen.getByLabelText('rule threshold 0') as HTMLInputElement).value).toBe('15');
+  expect((screen.getByLabelText('rule threshold 0') as HTMLInputElement).value).toBe(
+    '15',
+  );
   // derived_rules block is shown read-only, and the badge is honest about timing.
   expect(screen.getByTestId('alerts-derived')).toHaveTextContent('warn_ratio');
   expect(screen.getByText('applies on monitor restart')).toBeInTheDocument();
@@ -81,7 +96,9 @@ test('Save posts the edited rules and shows the saved banner', async () => {
   mockFetch(put);
   renderWithClient(<AlertsCard />);
 
-  const threshold = (await screen.findByLabelText('rule threshold 0')) as HTMLInputElement;
+  const threshold = (await screen.findByLabelText(
+    'rule threshold 0',
+  )) as HTMLInputElement;
   fireEvent.change(threshold, { target: { value: '20' } });
   fireEvent.click(screen.getByTestId('alerts-save'));
 
@@ -98,7 +115,9 @@ test('a server loss warning is surfaced after save', async () => {
   const lossPut: PutHandler = () =>
     jsonResponse({
       ...ALERTS,
-      warnings: ["Rule for /x: metric 'loss' can never fire (loss_rate is null in the monitor); use hz or gap instead."],
+      warnings: [
+        "Rule for /x: metric 'loss' can never fire (loss_rate is null in the monitor); use hz or gap instead.",
+      ],
     });
   mockFetch(lossPut);
   renderWithClient(<AlertsCard />);
@@ -115,7 +134,14 @@ test('a 422 surfaces the pydantic field errors inline', async () => {
         error: {
           code: 'invalid_config',
           message: 'Alerts config failed validation.',
-          details: { errors: [{ loc: ['rules', 0, 'metric'], msg: 'Input should be hz, bandwidth, ...' }] },
+          details: {
+            errors: [
+              {
+                loc: ['rules', 0, 'metric'],
+                msg: 'Input should be hz, bandwidth, ...',
+              },
+            ],
+          },
         },
       },
       422,
@@ -133,7 +159,9 @@ test('Add rule appends an editable row', async () => {
   renderWithClient(<AlertsCard />);
   await screen.findByLabelText('rule topic 0');
   fireEvent.click(screen.getByTestId('alerts-add-rule'));
-  await waitFor(() => expect(screen.getByLabelText('rule topic 1')).toBeInTheDocument());
+  await waitFor(() =>
+    expect(screen.getByLabelText('rule topic 1')).toBeInTheDocument(),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -149,22 +177,33 @@ test('unsaved raw-YAML edits block the form Save and say why', async () => {
 
   fireEvent.click(screen.getByTestId('alerts-advanced-toggle'));
   fireEvent.change(screen.getByLabelText('alerts config yaml'), {
-    target: { value: ALERTS.raw + '  - topic: /edited\n    metric: gap\n    op: gt\n    threshold: 2\n' },
+    target: {
+      value:
+        ALERTS.raw +
+        '  - topic: /edited\n    metric: gap\n    op: gt\n    threshold: 2\n',
+    },
   });
 
   // The main Save is disabled with the reason inline; the dirty chip shows.
   expect(screen.getByTestId('alerts-save')).toBeDisabled();
-  expect(screen.getByTestId('alerts-form-save-blocked')).toHaveTextContent('Save YAML');
-  expect(screen.getByTestId('alerts-raw-dirty')).toHaveTextContent('unsaved');
+  expect(screen.getByTestId('alerts-form-save-blocked')).toHaveTextContent(
+    'Unsaved YAML',
+  );
+  expect(screen.getByTestId('alerts-raw-dirty')).toHaveTextContent('Unsaved YAML');
   // Nothing was PUT — the stale table state cannot overwrite the file.
-  expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(0);
+  expect(fetchSpy.mock.calls.filter(([, init]) => init?.method === 'PUT')).toHaveLength(
+    0,
+  );
 });
 
 test('Save YAML sends the raw text and re-seeds both editors from the response', async () => {
   const serverPayload = {
     ...ALERTS,
     raw: 'rules:\n- topic: /edited\n  metric: gap\n  op: gt\n  threshold: 2.0\n',
-    config: { rules: [{ topic: '/edited', metric: 'gap', op: 'gt', threshold: 2 }], derived_rules: null },
+    config: {
+      rules: [{ topic: '/edited', metric: 'gap', op: 'gt', threshold: 2 }],
+      derived_rules: null,
+    },
   };
   const puts: unknown[] = [];
   mockFetch((body) => {
@@ -176,15 +215,23 @@ test('Save YAML sends the raw text and re-seeds both editors from the response',
 
   fireEvent.click(screen.getByTestId('alerts-advanced-toggle'));
   fireEvent.change(screen.getByLabelText('alerts config yaml'), {
-    target: { value: 'rules:\n- topic: /edited\n  metric: gap\n  op: gt\n  threshold: 2\n' },
+    target: {
+      value: 'rules:\n- topic: /edited\n  metric: gap\n  op: gt\n  threshold: 2\n',
+    },
   });
   fireEvent.click(screen.getByTestId('alerts-save-raw'));
 
   await screen.findByTestId('alerts-saved');
-  expect(puts).toEqual([{ raw: 'rules:\n- topic: /edited\n  metric: gap\n  op: gt\n  threshold: 2\n' }]);
+  expect(puts).toEqual([
+    { raw: 'rules:\n- topic: /edited\n  metric: gap\n  op: gt\n  threshold: 2\n' },
+  ]);
   // BOTH views now show what the server wrote (canonical raw + parsed table)…
-  expect((screen.getByLabelText('alerts config yaml') as HTMLTextAreaElement).value).toBe(serverPayload.raw);
-  expect((screen.getByLabelText('rule topic 0') as HTMLInputElement).value).toBe('/edited');
+  expect(
+    (screen.getByLabelText('alerts config yaml') as HTMLTextAreaElement).value,
+  ).toBe(serverPayload.raw);
+  expect((screen.getByLabelText('rule topic 0') as HTMLInputElement).value).toBe(
+    '/edited',
+  );
   // …and nothing is dirty anymore: the form Save is usable again.
   expect(screen.getByTestId('alerts-save')).toBeEnabled();
   expect(screen.queryByTestId('alerts-raw-dirty')).not.toBeInTheDocument();
@@ -240,7 +287,14 @@ const ALERTS_CHANGED = {
   raw: 'rules:\n  - topic: /hsrb/odom\n    metric: gap\n    op: gt\n    threshold: 2\n',
   config: {
     rules: [
-      { topic: '/hsrb/odom', metric: 'gap', op: 'gt', threshold: 2, clear_after_s: 1, cooldown_s: 5 },
+      {
+        topic: '/hsrb/odom',
+        metric: 'gap',
+        op: 'gt',
+        threshold: 2,
+        clear_after_s: 1,
+        cooldown_s: 5,
+      },
     ],
     derived_rules: { enabled: true, warn_ratio: 0.55 },
   },
@@ -267,7 +321,9 @@ test('a reconnect refetch does not silently discard unsaved YAML edits', async (
 
   fireEvent.click(screen.getByTestId('alerts-advanced-toggle'));
   const edited = ALERTS.raw + '# threshold raised after the 08-05 run\n';
-  fireEvent.change(screen.getByLabelText('alerts config yaml'), { target: { value: edited } });
+  fireEvent.change(screen.getByLabelText('alerts config yaml'), {
+    target: { value: edited },
+  });
   expect(screen.getByTestId('alerts-raw-dirty')).toBeInTheDocument();
 
   // Another terminal rewrites alerts.yaml, then the connection comes back.
@@ -276,7 +332,9 @@ test('a reconnect refetch does not silently discard unsaved YAML edits', async (
 
   // The operator's buffer is still theirs, and they are TOLD the file moved
   // rather than having the change applied behind their back.
-  expect((screen.getByLabelText('alerts config yaml') as HTMLTextAreaElement).value).toBe(edited);
+  expect(
+    (screen.getByLabelText('alerts config yaml') as HTMLTextAreaElement).value,
+  ).toBe(edited);
   expect(screen.getByTestId('alerts-server-changed')).toBeInTheDocument();
 });
 
@@ -286,7 +344,9 @@ test('a reconnect refetch does not silently discard unsaved rule-table edits', a
   const topic = (await screen.findByLabelText('rule topic 0')) as HTMLInputElement;
 
   fireEvent.change(topic, { target: { value: '/hsrb/hand_camera' } });
-  fireEvent.change(screen.getByLabelText('rule threshold 0'), { target: { value: '42' } });
+  fireEvent.change(screen.getByLabelText('rule threshold 0'), {
+    target: { value: '42' },
+  });
 
   serverAlerts = ALERTS_CHANGED;
   await resyncRefetch(client);
@@ -294,7 +354,9 @@ test('a reconnect refetch does not silently discard unsaved rule-table edits', a
   expect((screen.getByLabelText('rule topic 0') as HTMLInputElement).value).toBe(
     '/hsrb/hand_camera',
   );
-  expect((screen.getByLabelText('rule threshold 0') as HTMLInputElement).value).toBe('42');
+  expect((screen.getByLabelText('rule threshold 0') as HTMLInputElement).value).toBe(
+    '42',
+  );
   expect(screen.getByTestId('alerts-server-changed')).toBeInTheDocument();
 });
 
@@ -302,16 +364,22 @@ test('a CLEAN buffer still adopts the refetched file (the guard is not a freeze)
   const fetchSpy = mockFetch();
   const { client } = renderWithClient(<AlertsCard />);
   await screen.findByLabelText('rule topic 0');
-  const getsBefore = fetchSpy.mock.calls.filter(([, i]) => (i?.method ?? 'GET') === 'GET').length;
+  const getsBefore = fetchSpy.mock.calls.filter(
+    ([, i]) => (i?.method ?? 'GET') === 'GET',
+  ).length;
 
   // No local edits — the newer file is simply the truth now.
   serverAlerts = ALERTS_CHANGED;
   await resyncRefetch(client);
 
   // The refetch really happened (otherwise the tests above prove nothing).
-  const getsAfter = fetchSpy.mock.calls.filter(([, i]) => (i?.method ?? 'GET') === 'GET').length;
+  const getsAfter = fetchSpy.mock.calls.filter(
+    ([, i]) => (i?.method ?? 'GET') === 'GET',
+  ).length;
   expect(getsAfter).toBeGreaterThan(getsBefore);
-  expect((screen.getByLabelText('rule topic 0') as HTMLInputElement).value).toBe('/hsrb/odom');
+  expect((screen.getByLabelText('rule topic 0') as HTMLInputElement).value).toBe(
+    '/hsrb/odom',
+  );
   expect(screen.queryByTestId('alerts-server-changed')).not.toBeInTheDocument();
 });
 
@@ -322,8 +390,12 @@ test('an unchanged refetch leaves a dirty buffer alone and raises no alarm', asy
 
   fireEvent.click(screen.getByTestId('alerts-advanced-toggle'));
   const edited = ALERTS.raw + '# still mine\n';
-  fireEvent.change(screen.getByLabelText('alerts config yaml'), { target: { value: edited } });
-  const getsBefore = fetchSpy.mock.calls.filter(([, i]) => (i?.method ?? 'GET') === 'GET').length;
+  fireEvent.change(screen.getByLabelText('alerts config yaml'), {
+    target: { value: edited },
+  });
+  const getsBefore = fetchSpy.mock.calls.filter(
+    ([, i]) => (i?.method ?? 'GET') === 'GET',
+  ).length;
 
   // The file did NOT change; the reconnect refetch returns the same bytes. There
   // is nothing observable to wait for here (that IS the claim), so the refetch is
@@ -339,7 +411,9 @@ test('an unchanged refetch leaves a dirty buffer alone and raises no alarm', asy
     fetchSpy.mock.calls.filter(([, i]) => (i?.method ?? 'GET') === 'GET').length,
   ).toBeGreaterThan(getsBefore);
 
-  expect((screen.getByLabelText('alerts config yaml') as HTMLTextAreaElement).value).toBe(edited);
+  expect(
+    (screen.getByLabelText('alerts config yaml') as HTMLTextAreaElement).value,
+  ).toBe(edited);
   // Nothing moved, so there is nothing to warn about.
   expect(screen.queryByTestId('alerts-server-changed')).not.toBeInTheDocument();
 });
@@ -359,10 +433,12 @@ test('the operator can take the server copy, losing their edits deliberately', a
   fireEvent.click(screen.getByTestId('alerts-load-server'));
 
   // Both views now hold the server's file, and the notice is gone.
-  expect((screen.getByLabelText('alerts config yaml') as HTMLTextAreaElement).value).toBe(
-    ALERTS_CHANGED.raw,
+  expect(
+    (screen.getByLabelText('alerts config yaml') as HTMLTextAreaElement).value,
+  ).toBe(ALERTS_CHANGED.raw);
+  expect((screen.getByLabelText('rule topic 0') as HTMLInputElement).value).toBe(
+    '/hsrb/odom',
   );
-  expect((screen.getByLabelText('rule topic 0') as HTMLInputElement).value).toBe('/hsrb/odom');
   expect(screen.queryByTestId('alerts-server-changed')).not.toBeInTheDocument();
   expect(screen.queryByTestId('alerts-raw-dirty')).not.toBeInTheDocument();
 });
@@ -398,7 +474,9 @@ test('saving anchors shows the EXPANDED file back, and says the file is normalis
   const authored =
     'rules:\n  - &base\n    topic: /hsrb/joint_states\n    metric: hz\n    op: lt\n' +
     '    threshold: 15\n  - <<: *base\n    topic: /hsrb/odom\n';
-  fireEvent.change(screen.getByLabelText('alerts config yaml'), { target: { value: authored } });
+  fireEvent.change(screen.getByLabelText('alerts config yaml'), {
+    target: { value: authored },
+  });
   fireEvent.click(screen.getByTestId('alerts-save-raw'));
 
   await screen.findByTestId('alerts-saved');
@@ -409,7 +487,9 @@ test('saving anchors shows the EXPANDED file back, and says the file is normalis
   expect(ta.value).not.toContain('&base');
   expect(ta.value).not.toContain('<<');
   // Both rules survived — the meaning is intact, only the structure is not.
-  expect((screen.getByLabelText('rule topic 1') as HTMLInputElement).value).toBe('/hsrb/odom');
+  expect((screen.getByLabelText('rule topic 1') as HTMLInputElement).value).toBe(
+    '/hsrb/odom',
+  );
   // And the rewrite is STATED, not merely observable by noticing the text moved.
   expect(screen.getByTestId('alerts-saved')).toHaveTextContent(/canonical form/i);
   expect(screen.getByTestId('alerts-saved')).toHaveTextContent(/comments/i);
@@ -474,7 +554,9 @@ test('an impatient second click during a slow save does not send a second PUT', 
   });
 
   renderWithClient(<AlertsCard />);
-  const threshold = (await screen.findByLabelText('rule threshold 0')) as HTMLInputElement;
+  const threshold = (await screen.findByLabelText(
+    'rule threshold 0',
+  )) as HTMLInputElement;
   fireEvent.change(threshold, { target: { value: '20' } });
 
   const save = screen.getByTestId('alerts-save');

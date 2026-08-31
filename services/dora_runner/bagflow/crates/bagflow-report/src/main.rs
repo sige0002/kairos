@@ -218,12 +218,7 @@ fn main() -> Result<()> {
 
     let node_received_rows: Map<String, Value> = counts
         .iter()
-        .map(|(k, c)| {
-            (
-                k.clone(),
-                json!({"received": c.received, "sent": c.sent}),
-            )
-        })
+        .map(|(k, c)| (k.clone(), json!({"received": c.received, "sent": c.sent})))
         .collect();
     let incomplete: Vec<&String> = inputs.iter().filter(|i| !eos.contains(*i)).collect();
 

@@ -6,14 +6,16 @@
 // features/validation/PipelineForm + SummaryResult over GET /pipelines ·
 // GET /captures · GET /config/options · GET /validation/presets · POST /jobs ·
 // GET /jobs/{id}/status|result (see docs/specs/ja/dora_plugins.md §"UI 非依存の契約").
-// Only the pipeline lifecycle chip is a client-side placeholder — the
-// orchestrator doesn't report a lifecycle yet (see lifecycle.ts).
+// Pipeline lifecycle is intentionally not rendered: the orchestrator does not
+// report that state yet, so an index-derived badge or promotion receipt would
+// be fabricated.
 //
 // Every target here is a capture (contract §10.5): a job resolves its source as
 // `objects/<capture_id>` and writes to `report/<pipeline>/<capture_id>/`. A
 // dataset has no directory to aim a job at (§6), so there is no second kind of
 // target — a dataset's captures are validated as the captures they are.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   useMutation,
   useQuery,
@@ -160,6 +162,7 @@ function clientRunState(job: ValidationRun['jobs'][number]): JobProbeUpdate {
 }
 
 export function ValidationScreen() {
+  const { t } = useTranslation('validation');
   const queryClient = useQueryClient();
   // Null until the operator picks one, so a screen that has not been chosen
   // for can defer to the run in progress (see selectedIndex below).
@@ -178,7 +181,7 @@ export function ValidationScreen() {
     readPendingValidationRequest,
   );
   const submittedRequestIds = useRef(new Set<string>());
-  const { toast, showToast } = useToast();
+  const { toast } = useToast();
 
   const setPersistedPendingRequest = useCallback(
     (request: PendingValidationRequest | null) => {
@@ -793,15 +796,14 @@ export function ValidationScreen() {
   if (!selectedPipeline) {
     return (
       <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[290px_1fr]">
-        <ScreenTitle>Validation</ScreenTitle>
+        <ScreenTitle>{t('title')}</ScreenTitle>
         <PipelineRail
           pipelines={pipelines}
           selectedIndex={0}
           onSelect={selectPipeline}
-          onNewRun={() => showToast('New run — pick pipeline, targets, parameters')}
         />
-        <Card className="flex items-center justify-center p-8 text-sm text-gray-500">
-          {pipelinesQuery.isPending ? 'Loading pipelines…' : 'No enabled pipelines.'}
+        <Card className="flex items-center justify-center p-8 text-sm text-text-muted">
+          {pipelinesQuery.isPending ? t('loading') : t('noEnabledPipelines')}
         </Card>
       </div>
     );
@@ -809,24 +811,15 @@ export function ValidationScreen() {
 
   return (
     <div className="grid grid-cols-1 gap-2.5 lg:h-full lg:min-h-0 lg:grid-cols-[290px_1fr]">
-      <ScreenTitle>Validation</ScreenTitle>
+      <ScreenTitle>{t('title')}</ScreenTitle>
       <PipelineRail
         pipelines={pipelines}
         selectedIndex={selectedIndex}
         onSelect={selectPipeline}
-        onNewRun={() => showToast('New run — pick pipeline, targets, parameters')}
       />
 
       <Card className="flex min-h-0 flex-col overflow-auto">
-        <DetailHeader
-          pipeline={selectedPipeline}
-          index={selectedIndex}
-          onPromote={() =>
-            showToast(
-              `${selectedPipeline.id} promoted to Standard — applies to new captures`,
-            )
-          }
-        />
+        <DetailHeader pipeline={selectedPipeline} />
         <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[300px_1fr]">
           <ParamsPanel
             schema={schema}
@@ -882,12 +875,10 @@ export function ValidationScreen() {
               <Card
                 role="alert"
                 data-testid="validation-run-unavailable"
-                className="flex flex-col gap-2 border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"
+                className="flex flex-col gap-2 border-status-warning-border bg-status-warning-bg p-4 text-sm text-status-warning-text"
               >
-                <span className="font-semibold">Run not available</span>
-                <span>
-                  Jobs were not assumed. Select an active run or start a new one.
-                </span>
+                <span className="font-semibold">{t('runNotAvailable')}</span>
+                <span>{t('runNotAvailableHelp')}</span>
                 <button
                   type="button"
                   onClick={() => {
@@ -900,7 +891,7 @@ export function ValidationScreen() {
                   }}
                   className="self-start text-xs font-semibold underline"
                 >
-                  Clear unavailable run
+                  {t('clearUnavailableRun')}
                 </button>
               </Card>
             </div>

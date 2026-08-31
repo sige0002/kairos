@@ -136,10 +136,7 @@ def test_video_check_missing_capture_dir_raises(tmp_path: Path) -> None:
 
 
 def test_create_job_rejects_missing_topic(tmp_path: Path) -> None:
-    """A video_check job with no topic param fails fast with topic_required."""
-    # A writable data dir (the app now opens a SQLite store beneath it); the
-    # capture dir stays absent, but the worker rejects on the missing topic
-    # before any read.
+    """A missing required param is rejected before a job is created."""
     app = create_dora_app(Settings(data_dir=str(tmp_path)))
     with TestClient(app) as client:
         created = client.post(
@@ -150,20 +147,9 @@ def test_create_job_rejects_missing_topic(tmp_path: Path) -> None:
                 "params": {},
             },
         )
-        # The job is accepted (201) but the worker fails it on the missing topic.
-        assert created.status_code == 201
-        job_id = created.json()["job_id"]
-        status: dict = {}
-        for _ in range(100):
-            status = client.get(f"/jobs/{job_id}/status").json()
-            if status["state"] in {"succeeded", "failed"}:
-                break
-            time.sleep(0.05)
-        assert status["state"] == "failed"
-        body = client.get(f"/jobs/{job_id}/result").json()
-        # ApiError.to_model() nests under "error"; the worker stores that whole
-        # model under summary["error"], so the code is one level deeper.
-        assert body["summary"]["error"]["error"]["code"] == "topic_required"
+        assert created.status_code == 400
+        assert created.json()["error"]["code"] == "invalid_pipeline_params"
+        assert created.json()["error"]["details"]["path"] == []
 
 
 # ---- Cache: (capture_id, topic) results are reused without re-encoding -----

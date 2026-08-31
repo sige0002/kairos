@@ -13,11 +13,12 @@ import { apiGet } from '../../api/client';
 import { getConfigOptions, selectConfig } from '../../api/config';
 import { queryKeys } from '../../api/queryKeys';
 import type { ConfigAspect, ValidationPreset } from '../../api/types';
-import { Badge, Card } from '../../components/ui';
+import { Badge, Card, Select } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
 import { optionLabel } from './RecordingConfigEditor';
 import { useUiStore } from '../../store/uiStore';
+import { useTranslation } from 'react-i18next';
 
 interface PresetListResponse {
   items: ValidationPreset[];
@@ -25,12 +26,17 @@ interface PresetListResponse {
 
 // Both aspects load at service startup (validators) / inject into template-less
 // jobs (validation), so neither is a live hot-swap; label honestly.
-const ASPECTS: { id: ConfigAspect; label: string; immediate: boolean }[] = [
-  { id: 'validation', label: 'Validation template', immediate: true },
-  { id: 'validators', label: 'Validators', immediate: false },
+const ASPECTS: {
+  id: ConfigAspect;
+  label: 'validationTemplate' | 'validators';
+  immediate: boolean;
+}[] = [
+  { id: 'validation', label: 'validationTemplate', immediate: true },
+  { id: 'validators', label: 'validators', immediate: false },
 ];
 
 export function ValidationSection() {
+  const { t } = useTranslation('settings');
   const queryClient = useQueryClient();
   const setActiveTab = useUiStore((s) => s.setActiveTab);
 
@@ -40,12 +46,12 @@ export function ValidationSection() {
   });
   const presetsQuery = useQuery({
     queryKey: queryKeys.validationPresets,
-    queryFn: ({ signal }) => apiGet<PresetListResponse>('/validation/presets', { signal }),
+    queryFn: ({ signal }) =>
+      apiGet<PresetListResponse>('/validation/presets', { signal }),
   });
 
   const selectMutation = useMutation({
-    mutationFn: (vars: { category: string; id: string }) =>
-      selectConfig(vars),
+    mutationFn: (vars: { category: string; id: string }) => selectConfig(vars),
     onSuccess: (data) => {
       queryClient.setQueryData(queryKeys.configOptions, data);
       queryClient.invalidateQueries({ queryKey: queryKeys.runtimeConfig });
@@ -58,25 +64,30 @@ export function ValidationSection() {
   const presets = presetsQuery.data?.items ?? [];
 
   return (
-    <Card className="flex min-w-0 flex-col gap-5 overflow-auto p-[18px] lg:col-span-2" data-testid="settings-validation">
+    <Card
+      className="flex min-w-0 flex-col gap-5 overflow-auto p-[18px] lg:col-span-2"
+      data-testid="settings-validation"
+    >
       <div className="flex items-center gap-2.5">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Validation
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+          {t('validation.title')}
         </h2>
         {data && (
-          <span className="font-mono text-[13px] font-semibold text-gray-900">{data.active_robot}</span>
+          <span className="font-mono text-[13px] font-semibold text-text-primary">
+            {data.active_robot}
+          </span>
         )}
       </div>
 
       {/* Aspect selection */}
       <div className="flex flex-col gap-2.5" data-testid="validation-aspects">
-        <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
-          Active options
+        <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
+          {t('validation.activeOptions')}
         </h3>
         {optionsQuery.isError ? (
           <ErrorMessage error={optionsQuery.error} />
         ) : !data ? (
-          <p className="text-sm text-gray-500">Loading options…</p>
+          <p className="text-sm text-text-muted">{t('validation.loadingOptions')}</p>
         ) : (
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             {ASPECTS.map(({ id, label, immediate }) => {
@@ -85,28 +96,36 @@ export function ValidationSection() {
               return (
                 <label key={id} className="flex flex-col gap-1.5 text-sm">
                   <span className="flex flex-wrap items-center gap-2">
-                    <span className="font-medium text-gray-700">{label}</span>
+                    <span className="font-medium text-text-primary">
+                      {t(`validation.${label}`)}
+                    </span>
                     <Badge tone={immediate ? 'green' : 'gray'} dot>
-                      {immediate ? 'applies immediately' : 'applies on restart'}
+                      {immediate
+                        ? t('common.applyImmediately')
+                        : t('common.applyOnRestart')}
                     </Badge>
                   </span>
                   {options.length === 0 ? (
-                    <span className="text-[12.5px] text-gray-500">No options for this robot.</span>
+                    <span className="text-[12.5px] text-text-muted">
+                      {t('common.noOptions')}
+                    </span>
                   ) : (
-                    <select
-                      aria-label={`${id} option`}
-                      className="rounded-control border border-gray-200 px-2 py-1.5 font-mono text-[12.5px] focus:border-teal-600 focus:outline-none disabled:opacity-50"
+                    <Select
+                      aria-label={t('validation.optionAria', { aspect: id })}
+                      className="font-mono text-[12.5px]"
                       value={state.active}
                       disabled={selectMutation.isPending}
-                      onChange={(e) => selectMutation.mutate({ category: id, id: e.target.value })}
+                      onChange={(e) =>
+                        selectMutation.mutate({ category: id, id: e.target.value })
+                      }
                     >
                       {options.map((o) => (
                         <option key={o.id} value={o.id}>
                           {optionLabel(id, o)}
-                          {o.local ? ' · local' : ''}
+                          {o.local ? t('validation.local') : ''}
                         </option>
                       ))}
-                    </select>
+                    </Select>
                   )}
                 </label>
               );
@@ -118,16 +137,19 @@ export function ValidationSection() {
 
       {/* One-click presets (read-only) */}
       <div className="flex flex-col gap-2.5">
-        <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
-          One-click presets
+        <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
+          {t('validation.oneClickPresets')}
         </h3>
         {presetsQuery.isError ? (
           <ErrorMessage error={presetsQuery.error} />
         ) : presetsQuery.isPending ? (
-          <p className="text-sm text-gray-500">Loading presets…</p>
+          <p className="text-sm text-text-muted">{t('validation.loadingPresets')}</p>
         ) : presets.length === 0 ? (
-          <p className="text-[12.5px] text-gray-500" data-testid="validation-presets-empty">
-            No presets configured — add them to <code>config/&lt;robot&gt;/validation_presets.yaml</code>.
+          <p
+            className="text-[12.5px] text-text-muted"
+            data-testid="validation-presets-empty"
+          >
+            {t('validation.noPresets')}
           </p>
         ) : (
           <div className="flex flex-col gap-2" data-testid="validation-presets">
@@ -135,23 +157,32 @@ export function ValidationSection() {
               <div
                 key={p.id}
                 data-testid={`preset-${p.id}`}
-                className="flex items-center gap-3 rounded-control border border-gray-200 px-3.5 py-2.5"
+                className="flex items-center gap-3 rounded-control border border-border px-3.5 py-2.5"
               >
                 <div className="flex min-w-0 flex-col">
-                  <span className="text-[13px] font-semibold text-gray-800">{p.name}</span>
+                  <span className="text-[13px] font-semibold text-text-primary">
+                    {p.name}
+                  </span>
                   {p.description && (
-                    <span className="truncate text-[11.5px] text-gray-500" title={p.description}>
+                    <span
+                      className="truncate text-[11.5px] text-text-muted"
+                      title={p.description}
+                    >
                       {p.description}
                     </span>
                   )}
-                  <span className="font-mono text-[11px] text-gray-500">pipeline: {p.pipeline}</span>
+                  <span className="font-mono text-[11px] text-text-muted">
+                    {t('validation.pipeline', { pipeline: p.pipeline })}
+                  </span>
                 </div>
                 <div className="flex-1" />
                 {p.pending > 0 ? (
-                  <Badge tone="amber">{p.pending} pending</Badge>
+                  <Badge tone="amber">
+                    {t('validation.pending', { count: p.pending })}
+                  </Badge>
                 ) : (
                   <Badge tone="green" dot>
-                    up to date
+                    {t('validation.upToDate')}
                   </Badge>
                 )}
               </div>
@@ -160,18 +191,18 @@ export function ValidationSection() {
         )}
       </div>
 
-      <div className="flex items-center gap-2 rounded-control border border-gray-200 bg-gray-50 px-3.5 py-2.5">
-        <span className="text-[12px] text-gray-500">
-          Run pipelines and see results in the Validation tab.
+      <div className="flex items-center gap-2 rounded-control border border-border bg-surface-muted px-3.5 py-2.5">
+        <span className="text-[12px] text-text-muted">
+          {t('validation.runElsewhere')}
         </span>
         <div className="flex-1" />
         <button
           type="button"
           data-testid="validation-goto-tab"
           onClick={() => setActiveTab('validation')}
-          className="rounded-control bg-teal-700 px-3.5 py-1.5 text-[12.5px] font-semibold text-white hover:bg-teal-800"
+          className="rounded-control bg-accent px-3.5 py-1.5 text-[12.5px] font-semibold text-text-inverse hover:bg-accent-strong"
         >
-          Open Validation tab →
+          {t('validation.openTab')}
         </button>
       </div>
     </Card>

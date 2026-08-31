@@ -85,6 +85,23 @@ def test_readyz_not_ready_before_start() -> None:
     assert resp.json()["status"] == "not_ready"
 
 
+def test_diagnostics_endpoint_exposes_subscriber_state() -> None:
+    class DiagnosticSubscriber(FakeSubscriber):
+        def diagnostics(self) -> dict[str, object]:
+            return {
+                "state": "ready",
+                "executor_thread_alive": True,
+                "subscription_count": 1,
+                "subscriptions": [{"topic": "/cam", "last_sample_age_s": 0.5}],
+            }
+
+    fake_app = create_monitor_app(subscriber=DiagnosticSubscriber())
+    client = TestClient(fake_app)
+    response = client.get("/diagnostics")
+    assert response.status_code == 200
+    assert response.json()["subscriptions"][0]["last_sample_age_s"] == 0.5
+
+
 def test_alert_rules_wired_from_config_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

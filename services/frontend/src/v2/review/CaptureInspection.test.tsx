@@ -371,7 +371,7 @@ test('a take stopped by its own cap is not shown as a failure', async () => {
   const note = await screen.findByTestId('review-capture-error');
   // The defect itself, asserted first so the failure names it: a take that
   // did what it was told rendered in the red fault box.
-  expect(note.className).not.toMatch(/red/);
+  expect(note.className).not.toContain('status-danger');
   expect(note).toHaveAttribute('data-severity', 'notice');
   // Not a colour-only signal: the classification is also in words, because
   // "why is this box grey" is not a question the colour can answer.
@@ -401,7 +401,7 @@ test('a real recorder fault still reads as one', async () => {
 
   const note = await screen.findByTestId('review-capture-error');
   expect(note).toHaveAttribute('data-severity', 'fault');
-  expect(note.className).toMatch(/red/);
+  expect(note.className).toContain('status-danger');
   expect(note.textContent).not.toMatch(/Stopped at the configured limit/);
 });
 
@@ -418,7 +418,7 @@ test('an unrecognised code keeps the server sentence and stays red', async () =>
 
   const note = await screen.findByTestId('review-capture-error');
   expect(note).toHaveAttribute('data-severity', 'fault');
-  expect(note.className).toMatch(/red/);
+  expect(note.className).toContain('status-danger');
   expect(note.textContent).toContain('the disk went away mid-write');
   expect(note).toHaveTextContent('(some_future_code)');
 });
@@ -712,6 +712,65 @@ test('loss report shows exact gap time bands instead of a heatmap', async () => 
   expect(events).toHaveTextContent('/joint_states');
   expect(events).toHaveTextContent('≈5');
   expect(events).toHaveTextContent(/does not identify where the loss occurred/i);
+});
+
+test('a Quick Check reason focuses only its stored gap evidence and never starts loss_report', async () => {
+  const api = mockApi({
+    capture: detail({
+      quick_check: {
+        verdict: {
+          quality: 'needs_review',
+          reasons: ['/joint_states avg 80Hz < expected 100Hz'],
+        },
+        layer0: { available: true },
+        layer1: {
+          available: true,
+          summary_available: true,
+          topics: { '/joint_states': { avg_hz: 80, expected_hz: 100 } },
+        },
+      },
+      loss: {
+        topics: [
+          { name: '/joint_states', count: 800, hz: 80, loss_rate: 0.2, gap_max_ms: 50 },
+          { name: '/camera', count: 30, hz: 30, loss_rate: 0, gap_max_ms: 0 },
+        ],
+        events: [
+          {
+            topic: '/joint_states',
+            start_offset_ms: 1_000,
+            end_offset_ms: 1_050,
+            gap_ms: 50,
+            expected_interval_ms: 10,
+            estimated_missing: 4,
+            gap_ratio: 5,
+            time_source: 'publish_time',
+          },
+          {
+            topic: '/camera',
+            start_offset_ms: 2_000,
+            end_offset_ms: 2_034,
+            gap_ms: 34,
+            expected_interval_ms: 33,
+            estimated_missing: 1,
+            gap_ratio: 1,
+            time_source: 'publish_time',
+          },
+        ],
+      },
+    }),
+  });
+  renderWithClient(<CaptureInspection captureId={CAP} />);
+
+  fireEvent.click(await screen.findByTestId('review-quick-check-inspect-0'));
+
+  const focused = await screen.findByTestId('review-loss-focus');
+  expect(focused).toHaveTextContent('/joint_states');
+  const events = screen.getByTestId('loss-events');
+  expect(events).toHaveTextContent('/joint_states');
+  expect(events).not.toHaveTextContent('/camera');
+  // The one-click bridge is navigation/filtering only; the deep pipeline stays
+  // an explicit operator action.
+  expect(api.posted).toEqual([]);
 });
 
 // ---- F2: one note, for the latest attempt --------------------------------

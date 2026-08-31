@@ -26,7 +26,21 @@
 # =============================================================================
 name: kairos-recording
 
+# The importer is defined only in this standalone file, so it repeats the core
+# build policy. deploy/check_compose_build_policy.py prevents the copy drifting.
+x-build-proxy-args: &build-proxy-args
+  HTTP_PROXY: ${HTTP_PROXY:-${http_proxy:-}}
+  HTTPS_PROXY: ${HTTPS_PROXY:-${https_proxy:-}}
+  NO_PROXY: ${NO_PROXY:-${no_proxy:-}}
+  http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
+  https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
+  no_proxy: ${no_proxy:-${NO_PROXY:-}}
+
 services:
+  kokoro:
+    extends:
+      file: compose/compose.yaml
+      service: kokoro
   orchestrator:
     extends:
       file: compose/compose.yaml
@@ -59,6 +73,9 @@ services:
   importer:
     build:
       context: deploy/sync
+      network: host
+      args:
+        <<: *build-proxy-args
     image: kairos-importer:${KAIROS_VERSION:-dev}
     restart: unless-stopped
     # Host networking like the rest of the stack; the daemon binds 127.0.0.1

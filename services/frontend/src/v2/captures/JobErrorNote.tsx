@@ -46,14 +46,14 @@ export function JobErrorNote({
       role="alert"
       data-testid={testId}
       data-error-code={reading.code}
-      className="flex flex-col gap-1.5 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-[11.5px] leading-relaxed text-red-700"
+      className="flex flex-col gap-1.5 rounded-control border border-status-danger-border bg-status-danger-bg px-3 py-2 text-[11.5px] leading-relaxed text-status-danger-text"
     >
       <p>
         <span className="font-semibold">{reading.message}</span>
         {reading.guidance && <> {reading.guidance}</>}
       </p>
       {staleNote && (
-        <p data-testid={`${testId}-stale`} className="text-red-800">
+        <p data-testid={`${testId}-stale`} className="text-status-danger-text">
           {staleNote}
         </p>
       )}
@@ -63,7 +63,7 @@ export function JobErrorNote({
           data-testid={`${testId}-retry`}
           onClick={onRetry}
           disabled={retryDisabled}
-          className="self-start rounded-control border border-red-300 bg-white px-2.5 py-1 font-semibold text-red-700 transition-colors hover:bg-red-100 disabled:opacity-50"
+          className="self-start rounded-control border border-status-danger-border bg-surface px-2.5 py-1 font-semibold text-status-danger-text transition-colors hover:bg-status-danger-bg disabled:opacity-50"
         >
           {retryLabel}
         </button>

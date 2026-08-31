@@ -167,8 +167,7 @@ def create_streamer_app(
                 message="H.264 encoding is not available in this build.",
                 details={"encoding": request.encoding.value},
             )
-        # Source start may block on rclpy spin-up; keep the event loop free.
-        sid = await asyncio.to_thread(registry.start, request)
+        sid = await registry.start(request)
         return StreamStartResponse(stream_id=sid)
 
     @app.post("/stream/stop")

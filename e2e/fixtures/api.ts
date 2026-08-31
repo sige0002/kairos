@@ -111,6 +111,15 @@ export interface StoreHealth {
   corrupt: { capture_id: string | null; path: string; reason: string }[];
 }
 
+export interface PlansCatalog {
+  projects: Record<string, unknown>[] | null;
+  failure_reasons: string[] | null;
+  operators: string[] | null;
+  external_controls: Record<string, unknown> | null;
+  updated_at: string | null;
+  revision: number;
+}
+
 /** An HTTP answer the server actually gave. Never retried: a 409 or a 500 is
  *  the result, and quietly asking again would hide it. */
 export class ApiHttpError extends Error {
@@ -208,6 +217,11 @@ export const api = {
    *  state what the screen must be showing, and to prove a save changed
    *  nothing. */
   recordingConfig: (): Promise<RecordingConfigPayload> => call('GET', '/config/recording'),
+
+  plansCatalog: (): Promise<PlansCatalog> => call('GET', '/plans'),
+
+  replacePlansCatalog: (body: Record<string, unknown>): Promise<PlansCatalog> =>
+    call('PUT', '/plans', body),
 
   listDatasets: (): Promise<{
     items: {

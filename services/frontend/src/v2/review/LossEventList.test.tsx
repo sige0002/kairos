@@ -2,6 +2,7 @@
 // Copyright 2026 Sadasue Yuki
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { expect, test, vi } from 'vitest';
+import '../../i18n';
 import type { SignalReportExt, SignalTopicReportExt } from './signalReport';
 import { LossEventList } from './LossEventList';
 
@@ -16,10 +17,24 @@ test('ranks events worst-first: majors before minors even when later in time', (
     span: { duration_ns: 500 * MS },
     topics: {
       '/a': topic({
-        loss_events: [{ start_ns: 100 * MS, duration_ns: 20 * MS, estimated_lost: 2, severity: 'minor' }],
+        loss_events: [
+          {
+            start_ns: 100 * MS,
+            duration_ns: 20 * MS,
+            estimated_lost: 2,
+            severity: 'minor',
+          },
+        ],
       }),
       '/b': topic({
-        loss_events: [{ start_ns: 300 * MS, duration_ns: 40 * MS, estimated_lost: 5, severity: 'major' }],
+        loss_events: [
+          {
+            start_ns: 300 * MS,
+            duration_ns: 40 * MS,
+            estimated_lost: 5,
+            severity: 'major',
+          },
+        ],
       }),
     },
   };
@@ -63,7 +78,14 @@ test('clicking a loss row seeks to its global start time', () => {
     span: { duration_ns: 500 * MS },
     topics: {
       '/b': topic({
-        loss_events: [{ start_ns: 100 * MS, duration_ns: 40 * MS, estimated_lost: 5, severity: 'major' }],
+        loss_events: [
+          {
+            start_ns: 100 * MS,
+            duration_ns: 40 * MS,
+            estimated_lost: 5,
+            severity: 'major',
+          },
+        ],
       }),
     },
   };
@@ -73,7 +95,10 @@ test('clicking a loss row seeks to its global start time', () => {
 });
 
 test('honest empty state when no losses were detected', () => {
-  const report: SignalReportExt = { span: { duration_ns: 500 * MS }, topics: { '/a': topic() } };
+  const report: SignalReportExt = {
+    span: { duration_ns: 500 * MS },
+    topics: { '/a': topic() },
+  };
   render(<LossEventList report={report} onSeekGlobal={() => {}} />);
   expect(screen.getByTestId('review-loss-empty')).toHaveTextContent(
     'No losses detected — threshold 1.5× median interval.',
@@ -107,7 +132,14 @@ test('shows the truncation note when any topic capped its event list', () => {
     span: { duration_ns: 500 * MS },
     topics: {
       '/a': topic({
-        loss_events: [{ start_ns: 100 * MS, duration_ns: 40 * MS, estimated_lost: 5, severity: 'major' }],
+        loss_events: [
+          {
+            start_ns: 100 * MS,
+            duration_ns: 40 * MS,
+            estimated_lost: 5,
+            severity: 'major',
+          },
+        ],
         loss_events_truncated: 50,
       }),
     },

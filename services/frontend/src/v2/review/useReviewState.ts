@@ -36,9 +36,10 @@ import type {
   TaskResult,
 } from '../../api/types';
 import { useUiStore } from '../../store/uiStore';
+import { i18n } from '../../i18n';
 import { useCaptureDeletion } from '../captures/useCaptureDeletion';
 import { useBulkRun } from '../shared/useBulkRun';
-import { displayQuality } from '../episodeChips';
+import { qualityLabel, taskResultLabel } from '../episodeChips';
 import { mapCapturesToEpisodes, type BatchSeqLookup } from './mapCaptures';
 import { initialTransferSlot, transferReducer } from './transfer';
 import { setSplitMode, useSplitMode } from '../captures/splitMode';
@@ -52,8 +53,6 @@ import {
 import type {
   DecoratedEpisode,
   Decision,
-  DisplayQuality,
-  DisplayTaskResult,
   EpisodeRow,
   ReviewLane,
   TransferSlot,
@@ -64,7 +63,7 @@ import { readReviewSearch, writeReviewSearch } from './url';
 /** Review's bounded server-search scope, distinct from generic capture lists. */
 const REVIEW_SCOPE = 'review';
 
-const QUALITY_ORDER: DisplayQuality[] = ['Good', 'Needs review', 'Not usable'];
+const QUALITY_ORDER: Quality[] = ['good', 'needs_review', 'not_usable'];
 
 // Default work-queue order: NEEDS CHECK first (the exceptions), then READY,
 // then EXCLUDED.
@@ -81,15 +80,6 @@ const utcDayAfter = (day: string) => {
   return date.toISOString();
 };
 
-// ---- display vocabulary -> the server enums the API takes ------------------
-function toServerQuality(q: DisplayQuality): Quality {
-  if (q === 'Needs review') return 'needs_review';
-  if (q === 'Not usable') return 'not_usable';
-  return 'good';
-}
-function toServerTask(t: DisplayTaskResult): TaskResult {
-  return t === 'Failure' ? 'failure' : 'success';
-}
 function toServerReview(d: Decision): ReviewStatus {
   if (d === 'adopted') return 'adopted';
   if (d === 'excluded') return 'excluded';
@@ -100,7 +90,8 @@ function toServerReview(d: Decision): ReviewStatus {
  *  then the run id, then the raw id. Module-level and pure so a caller holding
  *  a row can name it without taking a dependency on the hook's render. */
 function subjectOf(row: Pick<DecoratedEpisode, 'ep' | 'runId' | 'captureId'>): string {
-  if (row.ep != null) return `Episode #${row.ep}`;
+  if (row.ep != null)
+    return i18n.t('review:episodeSubject', { episode: String(row.ep) });
   return row.runId ?? row.captureId;
 }
 
@@ -110,11 +101,11 @@ function subjectOf(row: Pick<DecoratedEpisode, 'ep' | 'runId' | 'captureId'>): s
 function describePrior(prior: ExcludeUndo['prior']): string {
   const status =
     prior.review_status === 'adopted'
-      ? 'Adopted'
+      ? i18n.t('review:adopted')
       : prior.review_status === 'excluded'
-        ? 'Excluded'
-        : 'Pending';
-  const quality = displayQuality(prior.quality);
+        ? i18n.t('review:excluded')
+        : i18n.t('review:pending');
+  const quality = qualityLabel(prior.quality);
   return quality ? `${status} · ${quality}` : status;
 }
 
@@ -268,12 +259,10 @@ export interface ReviewState {
  *  counted as done — nothing was written — but it is not "save failed": the
  *  server never refused anything, and saying so would send the operator
  *  looking for a fault that is not there. */
-const SKIPPED_BY_OWN_SAVE =
-  'Skipped — a change you saved for this episode was still being written, so ' +
-  'this did not overwrite it. Run it again.';
+const skippedByOwnSave = () => i18n.t('review:skippedByOwnSave');
 
 const reasonFor = (error: CaptureErrorReading | null) =>
-  error ? `${error.message} ${error.guidance}`.trim() : 'save failed';
+  error ? `${error.message} ${error.guidance}`.trim() : i18n.t('review:saveFailed');
 
 /** One refused capture in a batch-level run, named so the operator can find it. */
 interface BatchFailure {
@@ -287,7 +276,7 @@ const batchFailure = (
   skipped: boolean | undefined,
 ): BatchFailure => ({
   captureId,
-  error: skipped ? SKIPPED_BY_OWN_SAVE : reasonFor(error),
+  error: skipped ? skippedByOwnSave() : reasonFor(error),
 });
 
 export function useReviewState(): ReviewState {
@@ -528,10 +517,7 @@ export function useReviewState(): ReviewState {
   // the row snaps back to what is actually stored — the screen never keeps
   // showing a value the server rejected.
   const [pending, setPending] = useState<
-    Record<
-      string,
-      { quality?: DisplayQuality; task?: DisplayTaskResult; status?: ReviewStatus }
-    >
+    Record<string, { quality?: Quality; task?: TaskResult; status?: ReviewStatus }>
   >({});
   const [transfers, setTransfers] = useState<Record<string, TransferSlot>>({});
   // A save banner can outlive a server-side filter change. Retain only the
@@ -562,7 +548,7 @@ export function useReviewState(): ReviewState {
         // good AND still pending); EXCLUDED is set aside.
         const reviewLane: ReviewLane = isExcluded
           ? 'excluded'
-          : effectiveQuality === 'Good' || effectiveReviewStatus === 'adopted'
+          : effectiveQuality === 'good' || effectiveReviewStatus === 'adopted'
             ? 'ready'
             : 'needs_check';
         return {
@@ -735,8 +721,8 @@ export function useReviewState(): ReviewState {
     async (
       row: DecoratedEpisode,
       overlay: {
-        quality?: DisplayQuality;
-        task?: DisplayTaskResult;
+        quality?: Quality;
+        task?: TaskResult;
         status?: ReviewStatus;
       },
       changes: Parameters<ReviewSaveState['save']>[1],
@@ -784,7 +770,7 @@ export function useReviewState(): ReviewState {
       const subject = subjectOf(row);
       void applyReview(
         row,
-        { status: 'excluded', quality: 'Not usable' },
+        { status: 'excluded', quality: 'not_usable' },
         {
           review_status: 'excluded',
           quality: 'not_usable',
@@ -800,7 +786,12 @@ export function useReviewState(): ReviewState {
         // The undo band announces itself (role="status"), so this does not
         // repeat the offer — two live regions saying "Undo available" in the
         // same breath is noise, and the band is the one with the button in it.
-        showToast(`${subject} → Not usable · Excluded (recording kept)`);
+        showToast(
+          i18n.t('review:toastExcluded', {
+            subject,
+            quality: qualityLabel('not_usable') ?? '',
+          }),
+        );
       });
     },
     [applyReview, showToast],
@@ -823,7 +814,7 @@ export function useReviewState(): ReviewState {
             // Datasets, which take adopted captures only.
             if (capture)
               showToast(
-                `${subjectOf(row)} returned to review — Adopt to include in datasets`,
+                i18n.t('review:toastReturnedToReview', { subject: subjectOf(row) }),
               );
           },
         );
@@ -862,9 +853,7 @@ export function useReviewState(): ReviewState {
         // Only when there is a value to show. `undefined` leaves the overlay
         // alone, which is right: a prior of "no quality set" cannot be drawn
         // optimistically, and it settles on the server's answer either way.
-        ...(memo.prior.quality
-          ? { quality: displayQuality(memo.prior.quality) ?? undefined }
-          : {}),
+        ...(memo.prior.quality ? { quality: memo.prior.quality } : {}),
       },
       {
         review_status: memo.prior.review_status,
@@ -885,13 +874,18 @@ export function useReviewState(): ReviewState {
       if (!capture) return;
       setExcludeUndo(null);
       showToast(
-        `${memo.subject} restored to ${describePrior(memo.prior)}` +
+        i18n.t('review:toastRestored', {
+          subject: memo.subject,
+          prior: describePrior(memo.prior),
+        }) +
           // Said out loud, because the screen cannot put back a quality that
           // was never set: the server refills an explicitly-null quality from
           // the capture's quick check. Claiming a bare "restored to Pending"
           // would hide a value arriving from somewhere the operator did not
           // choose.
-          (memo.prior.quality === null ? ' — quality re-derived from quick check' : ''),
+          (memo.prior.quality === null
+            ? ` — ${i18n.t('review:toastQualityReDerived')}`
+            : ''),
       );
     });
   }, [excludeUndo, decorated, applyReview, showToast]);
@@ -1004,7 +998,7 @@ export function useReviewState(): ReviewState {
         attempt: async (t) => {
           const { capture, error, skipped } = await applyReview(
             t,
-            { status: 'excluded', quality: 'Not usable' },
+            { status: 'excluded', quality: 'not_usable' },
             {
               review_status: 'excluded',
               quality: 'not_usable',
@@ -1025,12 +1019,15 @@ export function useReviewState(): ReviewState {
       if (!outcome) return;
       const { succeeded, failures } = outcome;
       if (failures.length === 0) {
-        showToast(
-          `Excluded ${succeeded} episode${succeeded === 1 ? '' : 's'} — recordings kept, reversible`,
-        );
+        showToast(i18n.t('review:toastExcludedBatch', { count: succeeded }));
         setExcludeBatchOpen(false);
       } else {
-        showToast(`Excluded ${succeeded}, ${failures.length} failed`);
+        showToast(
+          i18n.t('review:toastExcludedPartial', {
+            succeeded: String(succeeded),
+            failed: String(failures.length),
+          }),
+        );
       }
     })();
   }, [
@@ -1072,8 +1069,11 @@ export function useReviewState(): ReviewState {
       const { succeeded, failures } = outcome;
       showToast(
         failures.length === 0
-          ? `Returned ${succeeded} episode${succeeded === 1 ? '' : 's'} to review — Adopt to include in datasets`
-          : `Returned ${succeeded}, ${failures.length} failed`,
+          ? i18n.t('review:toastReturnedBatch', { count: succeeded })
+          : i18n.t('review:toastReturnedPartial', {
+              succeeded: String(succeeded),
+              failed: String(failures.length),
+            }),
       );
     })();
   }, [batchExcluded, applyReview, reviewSave, showToast, runReturnBatch, excludeUndo]);
@@ -1104,11 +1104,21 @@ export function useReviewState(): ReviewState {
           // Same outstanding step as the table's Return: `pending` is not a
           // finished state, and Datasets take adopted captures only.
           showToast(
-            `${subjectOf(selected)} ${wasExcluded ? 'returned to review' : 'reset to needs check'} — Adopt to include in datasets`,
+            i18n.t('review:toastDecisionReview', {
+              subject: subjectOf(selected),
+              state: wasExcluded
+                ? i18n.t('review:returnedToReview')
+                : i18n.t('review:resetNeedsCheck'),
+            }),
           );
           return;
         }
-        showToast(`${subjectOf(selected)} → ${d}`);
+        showToast(
+          i18n.t('review:toastDecision', {
+            subject: subjectOf(selected),
+            decision: i18n.t('review:adopted'),
+          }),
+        );
       });
     },
     [selected, applyReview, showToast, excludeCapture, excludeUndo],
@@ -1132,8 +1142,8 @@ export function useReviewState(): ReviewState {
       if (capture) {
         showToast(
           exception
-            ? `${subjectOf(selected)} marked OK — included`
-            : `${subjectOf(selected)} adopted — datasets can use it`,
+            ? i18n.t('review:toastMarkedOk', { subject: subjectOf(selected) })
+            : i18n.t('review:toastAdopted', { subject: subjectOf(selected) }),
         );
       }
     });
@@ -1149,24 +1159,34 @@ export function useReviewState(): ReviewState {
     void applyReview(
       selected,
       { quality: next },
-      { quality: toServerQuality(next), quality_source: 'operator' },
+      { quality: next, quality_source: 'operator' },
     ).then(({ capture }) => {
-      if (capture) showToast(`${subjectOf(selected)} quality → ${next}`);
+      if (capture)
+        showToast(
+          i18n.t('review:toastQuality', {
+            subject: subjectOf(selected),
+            quality: qualityLabel(next) ?? '',
+          }),
+        );
     });
   }, [selected, applyReview, showToast]);
 
   const cycleTaskResult = useCallback(() => {
     if (!selected) return;
     // Unset base → the first click sets Success; thereafter it toggles.
-    const next: DisplayTaskResult =
-      selected.effectiveTask === 'Success' ? 'Failure' : 'Success';
-    void applyReview(
-      selected,
-      { task: next },
-      { task_result: toServerTask(next) },
-    ).then(({ capture }) => {
-      if (capture) showToast(`${subjectOf(selected)} task result → ${next}`);
-    });
+    const next: TaskResult =
+      selected.effectiveTask === 'success' ? 'failure' : 'success';
+    void applyReview(selected, { task: next }, { task_result: next }).then(
+      ({ capture }) => {
+        if (capture)
+          showToast(
+            i18n.t('review:toastTaskResult', {
+              subject: subjectOf(selected),
+              result: taskResultLabel(next) ?? '',
+            }),
+          );
+      },
+    );
   }, [selected, applyReview, showToast]);
 
   // ---- deep links ---------------------------------------------------------
@@ -1214,8 +1234,8 @@ export function useReviewState(): ReviewState {
         failTransfer(
           [captureId],
           err instanceof Error
-            ? `Transfer couldn't start — ${err.message}`
-            : "Transfer couldn't start",
+            ? i18n.t('review:toastTransferStartError', { error: err.message })
+            : i18n.t('review:toastTransferStartErrorUnknown'),
         );
       });
     },
@@ -1240,8 +1260,8 @@ export function useReviewState(): ReviewState {
     });
     showToast(
       doneIds.length === 1
-        ? 'Episode transferred to the recording PC'
-        : `${doneIds.length} episodes transferred to the recording PC`,
+        ? i18n.t('review:toastTransferredOne')
+        : i18n.t('review:toastTransferredMany', { count: doneIds.length }),
     );
   }, [baseEpisodes, transfers, showToast]);
 
@@ -1284,8 +1304,8 @@ export function useReviewState(): ReviewState {
             failTransfer(
               [id],
               pull.reason
-                ? `Transfer failed — ${pull.reason}`
-                : 'Transfer failed (see the importer log)',
+                ? i18n.t('review:toastTransferFailed', { reason: pull.reason })
+                : i18n.t('review:toastTransferFailedUnknown'),
             );
           })
           .catch(() => {
@@ -1311,13 +1331,11 @@ export function useReviewState(): ReviewState {
       (r) => !r.isExcluded && r.transferSlot.phase === 'awaiting',
     );
     if (!targets.length) {
-      showToast('Nothing to transfer');
+      showToast(i18n.t('review:toastNothingToTransfer'));
       return;
     }
     targets.forEach((r) => transferOne(r.captureId));
-    showToast(
-      `Transferring ${targets.length} episode${targets.length === 1 ? '' : 's'}…`,
-    );
+    showToast(i18n.t('review:toastTransferring', { count: targets.length }));
   }, [decorated, transferOne, showToast]);
 
   return {

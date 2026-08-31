@@ -130,6 +130,28 @@ def test_discover_isolates_a_broken_plugin(tmp_path: Path) -> None:
     assert "broken" in errors[0].source
 
 
+def test_discover_rejects_a_plugin_with_an_invalid_params_schema(
+    tmp_path: Path,
+) -> None:
+    plugins_dir = tmp_path / "plugins"
+    _make_plugin(
+        plugins_dir / "bad_schema",
+        "apiVersion: kairos.plugin/v1\n"
+        "id: bad_schema\n"
+        "name: Bad schema\n"
+        "entrypoint: {dataflow: dataflow.yml}\n"
+        "params_schema:\n"
+        "  type: definitely_not_a_json_schema_type\n",
+    )
+
+    registry = PipelineRegistry()
+    errors = discover_plugins(registry, plugins_dir)
+
+    assert registry.get("bad_schema") is None
+    assert len(errors) == 1
+    assert "params_schema" in errors[0].error
+
+
 def test_discover_rejects_duplicate_id(tmp_path: Path) -> None:
     plugins_dir = tmp_path / "plugins"
     _make_plugin(

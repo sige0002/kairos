@@ -22,6 +22,12 @@ import {
   useMonitorRows,
   type MonitorRow,
 } from './useMonitorRows';
+
+const EN_BASELINE_LABELS = {
+  learning: 'learning…',
+  baseline: 'baseline',
+  unstable: 'unstable',
+};
 import type { MonitorSelfLoad } from '../../api/types';
 import { useUiStore } from '../../store/uiStore';
 
@@ -36,7 +42,11 @@ const CONFIG = {
 } as RuntimeConfig;
 
 const DISCOVERED = [
-  { name: '/hsrb/joint_states', type: 'sensor_msgs/msg/JointState', publisher_count: 1 },
+  {
+    name: '/hsrb/joint_states',
+    type: 'sensor_msgs/msg/JointState',
+    publisher_count: 1,
+  },
   { name: '/hsrb/odom', type: 'nav_msgs/msg/Odometry', publisher_count: 1 },
 ];
 
@@ -54,7 +64,9 @@ beforeEach(() => {
         }),
       );
     }
-    return Promise.resolve(new Response('{}', { headers: { 'Content-Type': 'application/json' } }));
+    return Promise.resolve(
+      new Response('{}', { headers: { 'Content-Type': 'application/json' } }),
+    );
   });
 });
 
@@ -110,9 +122,15 @@ test('rowTone prefers status, stays gray when unmeasured', () => {
 });
 
 test('formatRateShortfall: badge only for notable statuses', () => {
-  expect(formatRateShortfall(row({ status: 'inactive', rate_shortfall: 1 }))).toBe('silent');
-  expect(formatRateShortfall(row({ status: 'danger', rate_shortfall: 0.5 }))).toBe('50%');
-  expect(formatRateShortfall(row({ status: 'warning', rate_shortfall: 0.03 }))).toBe('3.0%');
+  expect(formatRateShortfall(row({ status: 'inactive', rate_shortfall: 1 }))).toBe(
+    'silent',
+  );
+  expect(formatRateShortfall(row({ status: 'danger', rate_shortfall: 0.5 }))).toBe(
+    '50%',
+  );
+  expect(formatRateShortfall(row({ status: 'warning', rate_shortfall: 0.03 }))).toBe(
+    '3.0%',
+  );
   // `ok` with a sub-threshold shortfall must NOT show a (misleading green) badge.
   expect(formatRateShortfall(row({ status: 'ok', rate_shortfall: 0.01 }))).toBeNull();
   expect(formatRateShortfall(row({ status: 'ok', rate_shortfall: 0 }))).toBeNull();
@@ -121,7 +139,9 @@ test('formatRateShortfall: badge only for notable statuses', () => {
 
 test('formatHz shows a learned baseline (~) only when no static expected_hz (OL-②.3)', () => {
   // Static expected_hz always wins.
-  expect(formatHz(row({ hz: 49.6, expected_hz: 50, baseline_hz: 12 }))).toBe('49.6 / 50');
+  expect(formatHz(row({ hz: 49.6, expected_hz: 50, baseline_hz: 12 }))).toBe(
+    '49.6 / 50',
+  );
   // No expected_hz but a learned baseline -> tilde reference.
   expect(formatHz(row({ hz: 11.8, baseline_hz: 12 }))).toBe('11.8 / ~12.0');
   // No reference at all.
@@ -129,27 +149,42 @@ test('formatHz shows a learned baseline (~) only when no static expected_hz (OL-
 });
 
 test('formatBaseline reflects the learning state (OL-②.3)', () => {
-  expect(formatBaseline(row({ baseline_state: 'learning' }))).toBe('learning…');
-  expect(formatBaseline(row({ baseline_state: 'stable', baseline_hz: 12.3 }))).toBe('~12.3 Hz');
-  expect(formatBaseline(row({ baseline_state: 'unstable', baseline_hz: 12.3 }))).toBe(
-    '~12.3 Hz (unstable)',
+  expect(formatBaseline(row({ baseline_state: 'learning' }), EN_BASELINE_LABELS)).toBe(
+    'learning…',
   );
+  expect(
+    formatBaseline(
+      row({ baseline_state: 'stable', baseline_hz: 12.3 }),
+      EN_BASELINE_LABELS,
+    ),
+  ).toBe('~12.3 Hz');
+  expect(
+    formatBaseline(
+      row({ baseline_state: 'unstable', baseline_hz: 12.3 }),
+      EN_BASELINE_LABELS,
+    ),
+  ).toBe('~12.3 Hz (unstable)');
   // A configured rate wins -> no learned-baseline label.
-  expect(formatBaseline(row({ baseline_state: 'stable', baseline_hz: 12, expected_hz: 50 }))).toBeNull();
-  expect(formatBaseline(row({}))).toBeNull();
+  expect(
+    formatBaseline(
+      row({ baseline_state: 'stable', baseline_hz: 12, expected_hz: 50 }),
+      EN_BASELINE_LABELS,
+    ),
+  ).toBeNull();
+  expect(formatBaseline(row({}), EN_BASELINE_LABELS)).toBeNull();
 });
 
 test('rowReason explains baseline learning/instability (OL-②.3)', () => {
-  expect(rowReason(row({ baseline_state: 'learning', status_reason: 'no expected_hz' }))).toBe(
-    'learning baseline…',
-  );
+  expect(
+    rowReason(row({ baseline_state: 'learning', status_reason: 'no expected_hz' })),
+  ).toBe('learning baseline…');
   expect(rowReason(row({ baseline_state: 'unstable' }))).toBe(
     'baseline unstable (using last good)',
   );
   // A stable baseline keeps the backend status reason (e.g. a shortfall message).
-  expect(rowReason(row({ baseline_state: 'stable', status_reason: '50% under 12 Hz' }))).toBe(
-    '50% under 12 Hz',
-  );
+  expect(
+    rowReason(row({ baseline_state: 'stable', status_reason: '50% under 12 Hz' })),
+  ).toBe('50% under 12 Hz');
 });
 
 test('selfLoad helpers summarise the monitor self-load (OL-②.4)', () => {
@@ -177,7 +212,11 @@ test('selfLoad helpers summarise the monitor self-load (OL-②.4)', () => {
 test('a row whose name is not a string cannot take the whole sort down', () => {
   const rows = sortRowsForDisplay([
     { name: '/b/topic', configured: false, measured: true },
-    { name: { unexpected: 'object' } as unknown as string, configured: false, measured: true },
+    {
+      name: { unexpected: 'object' } as unknown as string,
+      configured: false,
+      measured: true,
+    },
     { name: '/a/topic', configured: false, measured: true },
   ]);
   // It sorts, it does not throw, and the usable names are still in order.

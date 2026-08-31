@@ -1,12 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { useUiStore } from '../../store/uiStore';
 import { CollectScreen } from './CollectScreen';
-import { __resetBatchStore, __setStopFloorMs, __resetStopFloorMs } from './useBatchMachine';
+import {
+  __rehydrateBatchStore,
+  __resetBatchStore,
+  __setStopFloorMs,
+  __resetStopFloorMs,
+} from './useBatchMachine';
 import { __resetCameraStore } from './cameraStore';
 import { __resetPlansStore, clonePlans, getPlans, setPlans } from '../plans';
 import {
@@ -15,7 +20,11 @@ import {
 } from '../../test/headingOutline';
 
 const CONFIG = {
-  endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
+  endpoints: {
+    api: '/api/v1',
+    events: '/api/v1/events',
+    webrtc: 'http://localhost:8002',
+  },
   tabs: [],
   defaults: { default_topics: [] },
   schemas: {},
@@ -42,7 +51,8 @@ function mockFetch(startExtra: Record<string, unknown> = {}) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
-    if (url.includes('/record/start')) return Promise.resolve(jsonResponse(capture(startExtra)));
+    if (url.includes('/record/start'))
+      return Promise.resolve(jsonResponse(capture(startExtra)));
     if (url.includes('/record/stop'))
       return Promise.resolve(jsonResponse(capture({ state: 'completed' })));
     return Promise.resolve(jsonResponse({}));
@@ -70,8 +80,18 @@ function mockFetchWithStatus(opts: {
       return Promise.resolve(
         jsonResponse(
           started
-            ? { capture_id: CAP_1, run_id: RUN_1, live_capture_ids: [], ...(opts.status ?? {}) }
-            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+            ? {
+                capture_id: CAP_1,
+                run_id: RUN_1,
+                live_capture_ids: [],
+                ...(opts.status ?? {}),
+              }
+            : {
+                capture_id: null,
+                run_id: null,
+                state: 'created',
+                live_capture_ids: [],
+              },
         ),
       );
     if (url.includes('/record/start')) {
@@ -83,7 +103,15 @@ function mockFetchWithStatus(opts: {
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
     if (url.includes('/batches') && method === 'POST')
       return Promise.resolve(
-        jsonResponse({ ...(init?.body ? JSON.parse(String(init.body)) : {}), batch_id: 'batch_1', batch_seq: 1, status: 'active' }, 201),
+        jsonResponse(
+          {
+            ...(init?.body ? JSON.parse(String(init.body)) : {}),
+            batch_id: 'batch_1',
+            batch_seq: 1,
+            status: 'active',
+          },
+          201,
+        ),
       );
     if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
     if (url.includes('/review') && method === 'PATCH') {
@@ -112,7 +140,9 @@ async function driveToResult() {
   fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING'));
   fireEvent.click(screen.getByRole('button', { name: /Stop recording/ }));
-  await waitFor(() => expect(phaseTitle()).toHaveTextContent('Episode 1 result'), { timeout: 4000 });
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('Episode 1 result'), {
+    timeout: 4000,
+  });
 }
 
 function phaseTitle() {
@@ -216,7 +246,12 @@ test('Stop recording moves to SAVING and shows the honest finalizing copy', asyn
                 state: 'recording',
                 live_capture_ids: [CAP_1],
               }
-            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+            : {
+                capture_id: null,
+                run_id: null,
+                state: 'created',
+                live_capture_ids: [],
+              },
         ),
       );
     if (url.includes('/record/stop')) return new Promise(() => {}); // never resolves
@@ -233,7 +268,7 @@ test('Stop recording moves to SAVING and shows the honest finalizing copy', asyn
   // Honest, non-fabricated copy (no fake MB/percent): while the stop waits on
   // the recorder's flush, the card shows the real elapsed seconds.
   expect(
-    screen.getByText(/Finalizing the recording — the recorder is flushing \(\d+s\)…/),
+    screen.getByText(/Finalizing the recording — the recorder is flushing \(\d+ s\)…/),
   ).toBeInTheDocument();
 });
 
@@ -256,7 +291,9 @@ test('a failed task on a clean recording stays good quality; the single Save act
     'Task outcome: Failed — choose a reason below.',
   );
   fireEvent.click(screen.getByRole('button', { name: 'Object dropped' }));
-  expect(screen.getByTestId('episode-summary')).toHaveTextContent('Task outcome: Failed — object dropped.');
+  expect(screen.getByTestId('episode-summary')).toHaveTextContent(
+    'Task outcome: Failed — Object dropped.',
+  );
 
   fireEvent.click(screen.getByRole('button', { name: /Save — failure/ }));
 
@@ -280,7 +317,7 @@ test('result panel shows honest auto quality and an operator override', async ()
   expect(screen.getByText('· auto')).toBeInTheDocument();
 
   // Expand the override chips and choose Not usable.
-  fireEvent.click(screen.getByRole('button', { name: 'change' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Change' }));
   fireEvent.click(screen.getByRole('button', { name: 'Not usable' }));
   // The "· auto" provenance is gone once the operator overrides.
   expect(screen.queryByText('· auto')).toBeNull();
@@ -338,7 +375,9 @@ test('result panel shows the settled quick-check reasons and a NEEDS REVIEW chip
       quick_check: {
         verdict: {
           quality: 'needs_review',
-          reasons: ['/hsrb/hand_camera/image_raw/compressed avg 9.982Hz < expected 30Hz'],
+          reasons: [
+            '/hsrb/hand_camera/image_raw/compressed avg 9.982Hz < expected 30Hz',
+          ],
         },
       },
     },
@@ -376,15 +415,20 @@ test('result panel shows a running note while the quick-check verdict is unsettl
 // ---------------------------------------------------------------------------
 
 test('Save PATCHes the capture review with base_revision and the batch stamp', async () => {
-  const fetchSpy = mockFetchWithStatus({ status: { state: 'completed', integrity: 'ok' } });
+  const fetchSpy = mockFetchWithStatus({
+    status: { state: 'completed', integrity: 'ok' },
+  });
   renderWithClient(<CollectScreen />);
   await driveToResult();
 
   fireEvent.click(screen.getByTestId('save-episode'));
-  await waitFor(() => expect(screen.getByTestId('stat-recorded')).toHaveTextContent('1'));
+  await waitFor(() =>
+    expect(screen.getByTestId('stat-recorded')).toHaveTextContent('1'),
+  );
 
   const patch = fetchSpy.mock.calls.find(
-    ([u, i]) => String(u).includes(`/captures/${CAP_1}/review`) && i?.method === 'PATCH',
+    ([u, i]) =>
+      String(u).includes(`/captures/${CAP_1}/review`) && i?.method === 'PATCH',
   );
   expect(patch).toBeTruthy();
   const body = JSON.parse(String((patch![1] as RequestInit).body));
@@ -405,14 +449,18 @@ test('Save PATCHes the capture review with base_revision and the batch stamp', a
 });
 
 test('an operator quality override rides along with operator provenance', async () => {
-  const fetchSpy = mockFetchWithStatus({ status: { state: 'completed', integrity: 'ok' } });
+  const fetchSpy = mockFetchWithStatus({
+    status: { state: 'completed', integrity: 'ok' },
+  });
   renderWithClient(<CollectScreen />);
   await driveToResult();
 
-  fireEvent.click(screen.getByRole('button', { name: 'change' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Change' }));
   fireEvent.click(screen.getByRole('button', { name: 'Not usable' }));
   fireEvent.click(screen.getByTestId('save-episode'));
-  await waitFor(() => expect(screen.getByTestId('stat-recorded')).toHaveTextContent('1'));
+  await waitFor(() =>
+    expect(screen.getByTestId('stat-recorded')).toHaveTextContent('1'),
+  );
 
   const patch = fetchSpy.mock.calls.find(
     ([u, i]) => String(u).includes('/review') && i?.method === 'PATCH',
@@ -567,7 +615,9 @@ test('on a split deployment the discard toast says a robot copy may remain', asy
   const inner = base.getMockImplementation()!;
   base.mockImplementation((input, init) => {
     if (String(input).includes('/transfer/status'))
-      return Promise.resolve(jsonResponse({ available: true, auto_pull_on_save: true }));
+      return Promise.resolve(
+        jsonResponse({ available: true, auto_pull_on_save: true }),
+      );
     return inner(input, init);
   });
   renderWithClient(<CollectScreen />);
@@ -575,9 +625,7 @@ test('on a split deployment the discard toast says a robot copy may remain', asy
 
   fireEvent.click(screen.getByTestId('discard-episode'));
   await waitFor(() =>
-    expect(
-      screen.getByText(/a copy may remain on the robot/i),
-    ).toBeInTheDocument(),
+    expect(screen.getByText(/a copy may remain on the robot/i)).toBeInTheDocument(),
   );
 });
 
@@ -600,14 +648,17 @@ test('Robot cell lists real robots and switches via POST /config/select', async 
   });
   renderWithClient(<CollectScreen />);
 
-  const cell = () => screen.getByTitle('Switch robot config (disabled while recording)');
+  const cell = () =>
+    screen.getByTitle('Switch robot config (disabled while recording)');
   await waitFor(() => expect(cell()).toHaveTextContent('airoa_hsr'));
 
   fireEvent.click(cell());
   fireEvent.click(await screen.findByRole('button', { name: /myrobot/ }));
 
   await waitFor(() => {
-    const call = fetchSpy.mock.calls.find((c) => String(c[0]).includes('/config/select'));
+    const call = fetchSpy.mock.calls.find((c) =>
+      String(c[0]).includes('/config/select'),
+    );
     expect(call).toBeTruthy();
     expect(JSON.parse(String((call![1] as RequestInit).body))).toEqual({
       category: 'robot',
@@ -662,13 +713,19 @@ test('a custom task typed via the Task picker flows into the /record/start body'
 
   // Shown as the selected task, and NOT added to the plans catalog.
   await waitFor(() => expect(screen.getByText('Fold the towel')).toBeInTheDocument());
-  expect(getPlans().some((p) => p.tasks.some((t) => t.name === 'Fold the towel'))).toBe(false);
+  expect(getPlans().some((p) => p.tasks.some((t) => t.name === 'Fold the towel'))).toBe(
+    false,
+  );
 
   fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
   await waitFor(() => {
-    const start = fetchSpy.mock.calls.find((c) => String(c[0]).includes('/record/start'));
+    const start = fetchSpy.mock.calls.find((c) =>
+      String(c[0]).includes('/record/start'),
+    );
     expect(start).toBeTruthy();
-    expect(JSON.parse(String((start![1] as RequestInit).body)).task).toBe('Fold the towel');
+    expect(JSON.parse(String((start![1] as RequestInit).body)).task).toBe(
+      'Fold the towel',
+    );
   });
 });
 
@@ -697,6 +754,169 @@ test('Collect degrades gracefully when its selected project is absent from the s
   expect(screen.getByText('Tabletop Manipulation')).toBeInTheDocument();
   fireEvent.click(screen.getByTitle('Change task (from plan)'));
   expect(screen.getByRole('button', { name: 'Only Task' })).toBeInTheDocument();
+});
+
+test('a fallback task relabels an empty active batch with matching labels and IDs after reload', async () => {
+  const calls: Array<{ url: string; method: string; body?: Record<string, unknown> }> =
+    [];
+  let remote = {
+    batch_id: 'batch-stale',
+    batch_seq: 4,
+    status: 'active',
+    operator: 'tester',
+    project: 'Removed project',
+    project_id: 'project-removed',
+    task: 'Removed task',
+    task_id: 'task-removed',
+    condition: 'Removed condition',
+    condition_id: 'condition-removed',
+    target_episodes: 30,
+    captures: [],
+  };
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+    const url = String(input);
+    const method = (init?.method ?? 'GET').toUpperCase();
+    const body = init?.body
+      ? (JSON.parse(String(init.body)) as Record<string, unknown>)
+      : undefined;
+    calls.push({ url, method, body });
+    if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
+    if (url.includes('/batches/batch-stale') && method === 'GET') {
+      return Promise.resolve(jsonResponse(remote));
+    }
+    if (url.includes('/batches/batch-stale') && method === 'PATCH') {
+      remote = { ...remote, ...body };
+      return Promise.resolve(jsonResponse(remote));
+    }
+    if (url.includes('/record/start')) return Promise.resolve(jsonResponse(capture()));
+    if (url.includes('/record/status')) {
+      return Promise.resolve(
+        jsonResponse({
+          capture_id: null,
+          run_id: null,
+          state: 'created',
+          live_capture_ids: [],
+        }),
+      );
+    }
+    if (url.includes('/batches')) return Promise.resolve(jsonResponse({ items: [] }));
+    return Promise.resolve(jsonResponse({}));
+  });
+
+  window.localStorage.setItem(
+    'kairos.collect.batch',
+    JSON.stringify({
+      batchSeq: 4,
+      recordedCount: 0,
+      targetEpisodes: 30,
+      batchId: 'batch-stale',
+      episodes: [],
+      project: 'Removed project',
+      projectId: 'project-removed',
+      task: 'Removed task',
+      taskId: 'task-removed',
+      condition: 'Removed condition',
+      lastCaptureId: null,
+    }),
+  );
+  __rehydrateBatchStore();
+  setPlans([
+    {
+      project_id: 'project-surviving',
+      name: 'Surviving project',
+      tasks: [
+        {
+          task_id: 'task-surviving',
+          name: 'Surviving task',
+          conditions: [
+            { condition_id: 'condition-surviving', name: 'Surviving condition' },
+          ],
+        },
+      ],
+    },
+  ]);
+
+  const first = renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  fireEvent.click(screen.getByTitle('Change task (from plan)'));
+  fireEvent.click(screen.getByRole('button', { name: 'Surviving task' }));
+
+  await waitFor(() =>
+    expect(
+      calls.find(
+        (call) => call.url.includes('/batches/batch-stale') && call.method === 'PATCH',
+      )?.body,
+    ).toMatchObject({
+      project: 'Surviving project',
+      project_id: 'project-surviving',
+      task: 'Surviving task',
+      task_id: 'task-surviving',
+      condition: 'Surviving condition',
+      condition_id: 'condition-surviving',
+    }),
+  );
+
+  first.unmount();
+  __rehydrateBatchStore();
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
+
+  await waitFor(() =>
+    expect(calls.some((call) => call.url.includes('/record/start'))).toBe(true),
+  );
+  expect(
+    calls.find((call) => call.url.includes('/record/start'))?.body?.collection_context,
+  ).toMatchObject({
+    batch_id: 'batch-stale',
+    project: 'Surviving project',
+    project_id: 'project-surviving',
+    task: 'Surviving task',
+    task_id: 'task-surviving',
+    condition: 'Surviving condition',
+    condition_id: 'condition-surviving',
+  });
+});
+
+test('a stale same-name project/task shows no catalog conditions but keeps custom input', async () => {
+  mockFetch();
+  renderWithClient(<CollectScreen />);
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
+  await act(async () => {
+    setPlans([
+      {
+        project_id: 'project-replaced',
+        name: 'Tabletop Manipulation',
+        tasks: [
+          {
+            task_id: 'task-replaced',
+            name: 'Pick and Place',
+            conditions: [
+              { condition_id: 'condition-replaced', name: 'Replacement condition' },
+            ],
+          },
+        ],
+      },
+    ]);
+  });
+
+  fireEvent.click(
+    screen.getByTitle(
+      'Change condition (starts a new set once this one has recordings)',
+    ),
+  );
+  expect(
+    screen.getByText(/project or task is no longer in the catalog/i),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByRole('button', { name: 'Replacement condition' }),
+  ).not.toBeInTheDocument();
+  const custom = screen.getByTestId('custom-condition-input');
+  fireEvent.change(custom, { target: { value: 'Manual recovery condition' } });
+  fireEvent.click(screen.getByTestId('custom-condition-add'));
+  await waitFor(() =>
+    expect(screen.getByText('Manual recovery condition')).toBeInTheDocument(),
+  );
 });
 
 test('Batch menu → Reset batch on an empty batch is a no-op (honest wording)', async () => {
@@ -857,12 +1077,16 @@ test('focus follows the phase — Start on ready, Save on result (no focus falls
   renderWithClient(<CollectScreen />);
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
   await waitFor(() =>
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: /Start recording/ })),
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: /Start recording/ }),
+    ),
   );
 
   await driveToResult();
   await waitFor(() =>
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: /Save — success/ })),
+    expect(document.activeElement).toBe(
+      screen.getByRole('button', { name: /Save — success/ }),
+    ),
   );
 });
 
@@ -926,9 +1150,7 @@ test('a recorder that stops answering stops being reported as recording', async 
   renderWithClient(<CollectScreen />);
   // A recording this screen did not start reads as a takeover while the
   // recorder is answering for it.
-  await waitFor(() =>
-    expect(phaseTitle()).toHaveTextContent('RECORDING IN PROGRESS'),
-  );
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDING IN PROGRESS'));
 
   recorderAlive = false;
   // Once the poll fails the screen stops asserting a recording is running: it
@@ -954,7 +1176,12 @@ test('a recorder that dies mid-recording flips the card to unreachable and freez
       if (!recorderAlive) {
         return Promise.resolve(
           jsonResponse(
-            { error: { code: 'recorder_unreachable', message: 'the recorder is unreachable' } },
+            {
+              error: {
+                code: 'recorder_unreachable',
+                message: 'the recorder is unreachable',
+              },
+            },
             503,
           ),
         );
@@ -971,7 +1198,12 @@ test('a recorder that dies mid-recording flips the card to unreachable and freez
                 live_capture_ids: [CAP_1],
                 started_at: '2026-08-01T00:00:00.000Z',
               }
-            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+            : {
+                capture_id: null,
+                run_id: null,
+                state: 'created',
+                live_capture_ids: [],
+              },
         ),
       );
     }
@@ -994,7 +1226,7 @@ test('a recorder that dies mid-recording flips the card to unreachable and freez
   recorderAlive = false;
 
   // The card stops asserting a recording is in progress …
-  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDER UNREACHABLE'), {
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('Recorder unreachable'), {
     timeout: 10000,
   });
   // … and says what it actually knows, and how old that is.
@@ -1050,7 +1282,12 @@ function mockRecorderDyingAtStart(): { stopAttempts: () => number } {
                 live_capture_ids: [CAP_1],
                 started_at: '2026-08-01T00:00:00.000Z',
               }
-            : { capture_id: null, run_id: null, state: 'created', live_capture_ids: [] },
+            : {
+                capture_id: null,
+                run_id: null,
+                state: 'created',
+                live_capture_ids: [],
+              },
         ),
       );
     }
@@ -1078,7 +1315,7 @@ function mockRecorderDyingAtStart(): { stopAttempts: () => number } {
 async function reachUnreachableRecordingPastFloor(): Promise<HTMLElement> {
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('READY'));
   fireEvent.click(screen.getByRole('button', { name: /Start recording/ }));
-  await waitFor(() => expect(phaseTitle()).toHaveTextContent('RECORDER UNREACHABLE'), {
+  await waitFor(() => expect(phaseTitle()).toHaveTextContent('Recorder unreachable'), {
     timeout: 10000,
   });
   // The card says it cannot see the recorder, and the elapsed figure is frozen
@@ -1107,7 +1344,7 @@ test('a recorder that dies inside the stop floor still lets the operator end the
   await waitFor(() => expect(phaseTitle()).toHaveTextContent('SAVING'));
   expect(recorder.stopAttempts()).toBeGreaterThan(0);
   await waitFor(() =>
-    expect(screen.getByText(/Can't reach the recorder/)).toBeInTheDocument(),
+    expect(screen.getByText(/Can.t reach the recorder/)).toBeInTheDocument(),
   );
 }, 20000);
 
@@ -1146,7 +1383,7 @@ test('titles itself with a single h1 and skips no heading level', async () => {
     'h2 READY',
     'h2 System status',
     'h2 Active warnings',
-    'h2 Advice for next episode',
+    'h2 General tip · static guidance',
     'h2 Batch stats',
     'h2 Coverage — Pick and Place',
   ]);

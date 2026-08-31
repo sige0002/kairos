@@ -38,6 +38,7 @@ ROS 2 トピックの**数値フィールドをライブにプロットする**�
 - `GET /probe/fields?topic=<name>` — そのトピック型の数値フィールドパス一覧（ライブ introspection）。配列はインデックス展開。メッセージ未受信・数値フィールド無しのときは空配列 + `reason`。
 - `GET /probe/stream?topic=<name>&fields=<a,b,c>&hz=<n>` — SSE サンプルストリーム。**1 接続で 1 トピックの複数フィールド**を多値で配る（旧 v0 の単一 `field` を `fields` に拡張。単一フィールドはその特殊形）。`hz` はサーバ側 max でクランプ。
 - `GET /healthz` / `GET /readyz`
+- `/readyz` は rclpy node / executor thread の起動成功後だけ ready。部分初期化の失敗は全 resource を破棄して再試行可能にし、thread 死亡後は ready を返さない。
 - API 共通規約（エラー形式・型・時刻）は [config](config.md) に従う。
 
 ## 出力スキーマ（例、SSE / JSON）

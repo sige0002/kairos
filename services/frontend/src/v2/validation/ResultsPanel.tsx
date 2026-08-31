@@ -7,6 +7,7 @@
 // fallback is the point: a new plugin's summary.json renders here with no UI
 // change required.
 import { Card } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import type { JobState, LossEvent, LossTopic } from '../../api/types';
 import { isCancellable } from './useJobCancel';
 import { SummaryResult, type Summary } from '../../features/validation/SummaryResult';
@@ -51,6 +52,7 @@ export interface ActiveOutcome {
  *  the good renderer sat ten lines away). Worst offenders first, flagged count
  *  as the headline; the generic card follows as the evidence trail. */
 function LossReportCard({ summary }: { summary: Summary }) {
+  const { t } = useTranslation('validation');
   const raw = (summary as Record<string, unknown>).topics;
   if (!Array.isArray(raw) || raw.length === 0) return null;
   const topics = [...(raw as LossTopic[])].sort(
@@ -64,8 +66,11 @@ function LossReportCard({ summary }: { summary: Summary }) {
   return (
     <div className="flex flex-col gap-2" data-testid="loss-report-table">
       {flaggedCount !== null && flaggedCount > 0 && worst && (
-        <p className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] font-semibold text-amber-800">
-          ⚠ {flaggedCount} of {topics.length} topics exceeded the gap threshold — worst:{' '}
+        <p className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12.5px] font-semibold text-status-warning-text">
+          {t('lossGapWarning', {
+            flagged: String(flaggedCount),
+            total: String(topics.length),
+          })}{' '}
           <span className="font-mono">{worst.name}</span>{' '}
           {worst.loss_rate != null ? `${(worst.loss_rate * 100).toFixed(1)}%` : ''}
         </p>
@@ -122,42 +127,34 @@ function exportRowsCsv(pipeline: string, rows: EpisodeRow[]) {
 }
 
 const TILE_STYLES = {
-  ok: 'border-green-200 bg-green-50 text-green-700',
-  warning: 'border-amber-200 bg-amber-50 text-amber-700',
-  fail: 'border-red-200 bg-red-50 text-red-700',
+  ok: 'border-status-success-border bg-status-success-bg text-status-success-text',
+  warning: 'border-status-warning-border bg-status-warning-bg text-status-warning-text',
+  fail: 'border-status-danger-border bg-status-danger-bg text-status-danger-text',
 } as const;
 
 const ROW_TONE_CLASS: Record<string, string> = {
-  OK: 'bg-green-100 text-green-700',
-  WARNING: 'bg-amber-100 text-amber-700',
-  FAIL: 'bg-red-50 text-red-700 border border-red-200',
+  OK: 'bg-status-success-bg text-status-success-text',
+  WARNING: 'bg-status-warning-bg text-status-warning-text',
+  FAIL: 'bg-status-danger-bg text-status-danger-text border border-status-danger-border',
   // Grey, like every other "this did not happen" in the console — a stopped job
   // is not a bad result, it is an absent one.
-  CANCELED: 'bg-gray-100 text-gray-600',
+  CANCELED: 'bg-surface-muted text-text-secondary',
 };
 
 const BAR_TONE_CLASS: Record<string, string> = {
-  OK: 'bg-green-600',
-  WARNING: 'bg-amber-500',
-  FAIL: 'bg-red-600',
-  CANCELED: 'bg-gray-300',
+  OK: 'bg-status-success-accent',
+  WARNING: 'bg-status-warning-accent',
+  FAIL: 'bg-status-danger-accent',
+  CANCELED: 'bg-surface-muted',
 };
 
 /** What each job state is called on screen while a run is in flight. */
-const JOB_STATE_LABEL: Record<JobState, string> = {
-  queued: 'Queued',
-  running: 'Running',
-  succeeded: 'Done',
-  failed: 'Failed',
-  canceled: 'Canceled',
-};
-
 const JOB_STATE_CLASS: Record<JobState, string> = {
-  queued: 'bg-gray-100 text-gray-600',
-  running: 'bg-teal-100 text-teal-700',
-  succeeded: 'bg-green-100 text-green-700',
-  failed: 'bg-red-50 text-red-700',
-  canceled: 'bg-gray-100 text-gray-600',
+  queued: 'bg-surface-muted text-text-secondary',
+  running: 'bg-interaction-selected text-accent',
+  succeeded: 'bg-status-success-bg text-status-success-text',
+  failed: 'bg-status-danger-bg text-status-danger-text',
+  canceled: 'bg-surface-muted text-text-secondary',
 };
 
 /** One job of the run in flight. */
@@ -183,20 +180,21 @@ function RunningJobs({
   onCancelJob?: (jobId: string) => void;
   cancelPending: ReadonlySet<string>;
 }) {
+  const { t } = useTranslation('validation');
   if (jobs.length === 0) return null;
   return (
     <Card className="flex flex-col gap-1.5 p-4" data-testid="running-jobs">
-      <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-        Jobs in this run
+      <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+        {t('jobsInRun')}
       </h3>
       {jobs.map((job) => (
         <div
           key={job.jobId}
           data-testid={`running-job-${job.captureId}`}
-          className="flex items-center gap-2 border-b border-gray-50 py-1.5 last:border-b-0"
+          className="flex items-center gap-2 border-b border-border py-1.5 last:border-b-0"
         >
           <span
-            className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-gray-800"
+            className="min-w-0 flex-1 truncate font-mono text-[12.5px] text-text-primary"
             title={job.captureId}
           >
             {job.label}
@@ -205,7 +203,15 @@ function RunningJobs({
             data-testid={`job-state-${job.captureId}`}
             className={`shrink-0 rounded-chip px-2 py-0.5 text-[11px] font-semibold ${JOB_STATE_CLASS[job.state]}`}
           >
-            {JOB_STATE_LABEL[job.state]}
+            {job.state === 'queued'
+              ? t('queued')
+              : job.state === 'running'
+                ? t('running')
+                : job.state === 'succeeded'
+                  ? t('done')
+                  : job.state === 'failed'
+                    ? t('failed')
+                    : t('canceled')}
           </span>
           {isCancellable(job.state) && onCancelJob && (
             <button
@@ -213,11 +219,11 @@ function RunningJobs({
               data-testid={`cancel-job-${job.captureId}`}
               disabled={cancelPending.has(job.jobId) || job.cancelRequested}
               onClick={() => onCancelJob(job.jobId)}
-              className="shrink-0 rounded-chip border border-gray-200 bg-white px-2 py-0.5 text-[11px] font-semibold text-gray-600 hover:border-red-200 hover:text-red-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className="shrink-0 rounded-chip border border-border bg-surface px-2 py-0.5 text-[11px] font-semibold text-text-secondary hover:border-status-danger-border hover:text-status-danger-text disabled:cursor-not-allowed disabled:opacity-50"
             >
               {cancelPending.has(job.jobId) || job.cancelRequested
-                ? 'Cancelling…'
-                : 'Cancel'}
+                ? t('canceling')
+                : t('cancel')}
             </button>
           )}
         </div>
@@ -242,11 +248,12 @@ export function ResultsPanel({
   onCancelJob?: (jobId: string) => void;
   cancelPending?: ReadonlySet<string>;
 }) {
+  const { t } = useTranslation('validation');
   if (!active) {
     return (
       <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
-        <Card className="p-8 text-center text-sm text-gray-500">
-          Run a pipeline on the left to see results here.
+        <Card className="p-8 text-center text-sm text-text-muted">
+          {t('runPipelineHint')}
         </Card>
       </div>
     );
@@ -255,7 +262,7 @@ export function ResultsPanel({
   if (!active.allSettled) {
     return (
       <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
-        <Card className="p-8 text-center text-sm text-gray-500">Running…</Card>
+        <Card className="p-8 text-center text-sm text-text-muted">{t('running')}</Card>
         <RunningJobs
           jobs={runJobs}
           onCancelJob={onCancelJob}
@@ -277,13 +284,12 @@ export function ResultsPanel({
       return (
         <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
           <Card
-            className="flex flex-col gap-1 p-8 text-center text-sm text-gray-500"
+            className="flex flex-col gap-1 p-8 text-center text-sm text-text-muted"
             data-testid="run-canceled"
           >
-            <span className="font-semibold text-gray-700">Canceled</span>
+            <span className="font-semibold text-text-primary">{t('canceled')}</span>
             <span>
-              This run was stopped before it finished, so there is no result for{' '}
-              <span className="font-mono">{outcome.label ?? outcome.captureId}</span>.
+              {t('runCanceled', { capture: outcome.label ?? outcome.captureId })}
             </span>
           </Card>
         </div>
@@ -292,8 +298,8 @@ export function ResultsPanel({
     if (!outcome || !outcome.summary) {
       return (
         <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
-          <Card className="p-8 text-center text-sm text-gray-500">
-            Nothing to run — every target is already validated.
+          <Card className="p-8 text-center text-sm text-text-muted">
+            {t('nothingToRun')}
           </Card>
         </div>
       );
@@ -301,10 +307,10 @@ export function ResultsPanel({
     return (
       <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
         <div className="flex items-center gap-2">
-          <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-            Latest run
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+            {t('latestRun')}
           </h3>
-          <span className="font-mono text-xs text-gray-500">
+          <span className="font-mono text-xs text-text-muted">
             {outcome.label ?? outcome.captureId}
           </span>
         </div>
@@ -332,17 +338,19 @@ export function ResultsPanel({
   return (
     <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
       <div className="flex items-center gap-2">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Latest run
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+          {t('latestRun')}
         </h3>
-        <span className="font-mono text-xs text-gray-500">{counts.total} captures</span>
+        <span className="font-mono text-xs text-text-muted">
+          {t('captures', { count: counts.total })}
+        </span>
         <div className="flex-1" />
         <button
           type="button"
           onClick={() => exportRowsCsv(active.pipeline, rows)}
-          className="text-xs font-semibold text-gray-700 hover:text-teal-700"
+          className="text-xs font-semibold text-text-primary hover:text-accent"
         >
-          Export CSV →
+          {t('exportCsv')}
         </button>
       </div>
 
@@ -357,34 +365,45 @@ export function ResultsPanel({
         <Tile tone="fail" count={counts.fail} pct={counts.failPct} label="FAIL" />
       </div>
 
-      <div className="flex h-2 overflow-hidden rounded-full bg-gray-100">
-        <span className="bg-green-600" style={{ width: `${counts.okPct}%` }} />
-        <span className="bg-amber-500" style={{ width: `${counts.warningPct}%` }} />
-        <span className="bg-red-600" style={{ width: `${counts.failPct}%` }} />
+      <div className="flex h-2 overflow-hidden rounded-full bg-surface-muted">
+        <span
+          className="bg-status-success-accent"
+          style={{ width: `${counts.okPct}%` }}
+        />
+        <span
+          className="bg-status-warning-accent"
+          style={{ width: `${counts.warningPct}%` }}
+        />
+        <span
+          className="bg-status-danger-accent"
+          style={{ width: `${counts.failPct}%` }}
+        />
       </div>
 
       {canceled > 0 && (
-        <p data-testid="canceled-note" className="text-[11.5px] text-gray-500">
-          {canceled} of {counts.total} canceled — stopped before finishing, so they are
-          counted in none of the three results above.
+        <p data-testid="canceled-note" className="text-[11.5px] text-text-muted">
+          {t('canceledSummary', {
+            canceled: String(canceled),
+            total: String(counts.total),
+          })}
         </p>
       )}
 
-      <div className="grid grid-cols-[minmax(0,1fr)_100px_90px_1fr_60px] gap-2 border-b border-gray-100 px-1 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-        <span>Capture</span>
-        <span>Result</span>
-        <span>Coverage</span>
-        <span>Timeline</span>
+      <div className="grid grid-cols-[minmax(0,1fr)_100px_90px_1fr_60px] gap-2 border-b border-border px-1 py-1.5 text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+        <span>{t('capture')}</span>
+        <span>{t('result')}</span>
+        <span>{t('coverage')}</span>
+        <span>{t('timeline')}</span>
         <span />
       </div>
       <div className="flex flex-col">
         {rows.map((row) => (
           <div
             key={row.captureId}
-            className="grid grid-cols-[minmax(0,1fr)_100px_90px_1fr_60px] items-center gap-2 border-b border-gray-50 px-1 py-2"
+            className="grid grid-cols-[minmax(0,1fr)_100px_90px_1fr_60px] items-center gap-2 border-b border-border px-1 py-2"
           >
             <span
-              className="truncate font-mono text-[13px] font-semibold text-gray-900"
+              className="truncate font-mono text-[13px] font-semibold text-text-primary"
               title={row.captureId}
             >
               {row.label ?? row.captureId}
@@ -394,10 +413,10 @@ export function ResultsPanel({
             >
               {row.tone}
             </span>
-            <span className="font-mono text-[12.5px] text-gray-700">
+            <span className="font-mono text-[12.5px] text-text-primary">
               {row.coverage != null ? `${row.coverage}%` : '—'}
             </span>
-            <div className="flex h-[14px] overflow-hidden rounded-[5px] bg-gray-100">
+            <div className="flex h-[14px] overflow-hidden rounded-[5px] bg-surface-muted">
               <span
                 className={`opacity-75 ${BAR_TONE_CLASS[row.tone]}`}
                 style={{
@@ -408,9 +427,9 @@ export function ResultsPanel({
             <button
               type="button"
               onClick={() => onSelectCapture(row.captureId)}
-              className="text-[11.5px] font-semibold text-gray-700 hover:text-teal-700"
+              className="text-[11.5px] font-semibold text-text-primary hover:text-accent"
             >
-              detail
+              {t('detail')}
             </button>
           </div>
         ))}
@@ -453,10 +472,10 @@ function Tile({
 }
 
 function FooterNote() {
+  const { t } = useTranslation('validation');
   return (
-    <div className="rounded-[10px] border border-gray-100 bg-gray-50 px-3 py-[9px] text-[11.5px] leading-relaxed text-gray-500">
-      Raw JSON, artifacts and false-positive notes live in each capture&apos;s detail
-      view.
+    <div className="rounded-[10px] border border-border bg-surface-muted px-3 py-[9px] text-[11.5px] leading-relaxed text-text-muted">
+      {t('rawEvidence')}
     </div>
   );
 }

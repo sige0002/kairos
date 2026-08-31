@@ -11,6 +11,7 @@
 // the fact that a filter is on (self-descriptiveness).
 
 import { forwardRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { Quality, TaskResult } from '../../api/types';
 import { Card, SectionLabel, cn } from '../../components/ui';
 import { ALL_OPERATORS } from './useReviewState';
@@ -28,6 +29,8 @@ const CollapseToggle = forwardRef<
   HTMLButtonElement,
   { collapsed: boolean; onToggle: () => void; className?: string }
 >(function CollapseToggle({ collapsed, onToggle, className }, ref) {
+  const { t } = useTranslation('review');
+  const label = t(collapsed ? 'expandFilters' : 'collapseFilters');
   return (
     <button
       ref={ref}
@@ -36,10 +39,10 @@ const CollapseToggle = forwardRef<
       onClick={onToggle}
       aria-expanded={!collapsed}
       aria-controls={REGION_ID}
-      aria-label={collapsed ? 'Expand filters' : 'Collapse filters'}
-      title={collapsed ? 'Expand filters' : 'Collapse filters'}
+      aria-label={label}
+      title={label}
       className={cn(
-        'flex h-7 w-7 items-center justify-center rounded-control text-[15px] leading-none text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-600',
+        'flex h-7 w-7 items-center justify-center rounded-control text-[15px] leading-none text-text-muted transition-colors hover:bg-surface-muted hover:text-text-secondary',
         className,
       )}
     >
@@ -98,6 +101,7 @@ export const FiltersRail = forwardRef<
   },
   toggleRef,
 ) {
+  const { t } = useTranslation(['review', 'common', 'datasets']);
   const hasActiveFilters =
     operatorFilter !== ALL_OPERATORS ||
     batchFilterLabel !== null ||
@@ -113,15 +117,15 @@ export const FiltersRail = forwardRef<
       {collapsed && (
         <div
           data-testid="review-filters-collapsed"
-          className="hidden min-h-0 flex-1 flex-col items-center gap-1 rounded-card border border-gray-200 bg-white py-2 shadow-card lg:flex"
+          className="hidden min-h-0 flex-1 flex-col items-center gap-1 rounded-card border border-border bg-surface py-2 shadow-card lg:flex"
         >
           <CollapseToggle ref={toggleRef} collapsed onToggle={onToggleCollapsed} />
           {hasActiveFilters && (
             <span
               data-testid="review-filters-active-dot"
-              title="Filters are active — expand to see them"
-              className="h-1.5 w-1.5 rounded-full bg-teal-600"
-              aria-label="Filters active"
+              title={t('review:filtersActiveHint')}
+              className="h-1.5 w-1.5 rounded-full bg-accent"
+              aria-label={t('review:filtersActive')}
             />
           )}
         </div>
@@ -137,7 +141,7 @@ export const FiltersRail = forwardRef<
         )}
       >
         <div className="flex items-center justify-between gap-2">
-          <SectionLabel>Filters</SectionLabel>
+          <SectionLabel>{t('review:filters')}</SectionLabel>
           {!collapsed && (
             <CollapseToggle
               ref={toggleRef}
@@ -151,18 +155,18 @@ export const FiltersRail = forwardRef<
         <div className="flex flex-col gap-1.5">
           <label
             htmlFor={OPERATOR_SELECT_ID}
-            className="text-[11.5px] font-semibold text-gray-500"
+            className="text-[11.5px] font-semibold text-text-muted"
           >
-            Operator
+            {t('review:operator')}
           </label>
           <select
             id={OPERATOR_SELECT_ID}
             data-testid="review-operator-filter"
             value={operatorFilter}
             onChange={(e) => onOperatorChange(e.target.value)}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] text-text-primary"
           >
-            <option value={ALL_OPERATORS}>All operators</option>
+            <option value={ALL_OPERATORS}>{t('review:allOperators')}</option>
             {operatorOptions.map((op) => (
               <option key={op} value={op}>
                 {op}
@@ -172,74 +176,77 @@ export const FiltersRail = forwardRef<
         </div>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-[11.5px] font-semibold text-gray-500">Batch</span>
+          <span className="text-[11.5px] font-semibold text-text-muted">
+            {t('review:batch')}
+          </span>
           {batchFilterLabel ? (
             <div
               data-testid="review-batch-filter-rail"
-              className="flex items-center justify-between gap-2 rounded-control border border-teal-200 bg-teal-50 px-2.5 py-1.5 text-[13px] font-semibold text-teal-800"
+              className="flex items-center justify-between gap-2 rounded-control border border-accent bg-interaction-selected px-2.5 py-1.5 text-[13px] font-semibold text-accent"
             >
               <span className="font-mono">{batchFilterLabel}</span>
               <button
                 type="button"
                 onClick={onClearBatchFilter}
-                title="Show all batches"
-                className="text-teal-700 hover:text-teal-900"
+                title={t('review:showAllBatches')}
+                aria-label={t('review:showAllBatches')}
+                className="text-accent hover:text-accent-strong"
               >
                 ✕
               </button>
             </div>
           ) : (
             <div
-              title="Click a row's batch chip in the table to filter to that batch"
-              className="flex items-center rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-500"
+              title={t('review:batchFilterHint')}
+              className="flex items-center rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] text-text-muted"
             >
-              All batches — click a batch chip
+              {t('review:allBatches')}
             </div>
           )}
         </div>
 
-        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-gray-500">
-          Data quality
+        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-text-muted">
+          {t('review:dataQuality')}
           <select
             data-testid="review-quality-filter"
             value={qualityFilter ?? ''}
             onChange={(event) =>
               onQualityChange((event.target.value || null) as Quality | null)
             }
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] font-normal text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] font-normal text-text-primary"
           >
-            <option value="">All qualities</option>
-            <option value="good">Good</option>
-            <option value="needs_review">Needs review</option>
-            <option value="not_usable">Not usable</option>
+            <option value="">{t('review:allQualities')}</option>
+            <option value="good">{t('common:status.good')}</option>
+            <option value="needs_review">{t('common:status.needsReview')}</option>
+            <option value="not_usable">{t('common:status.notUsable')}</option>
           </select>
         </label>
 
-        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-gray-500">
-          Task result
+        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-text-muted">
+          {t('datasets:taskResult')}
           <select
             data-testid="review-result-filter"
             value={resultFilter ?? ''}
             onChange={(event) =>
               onResultChange((event.target.value || null) as TaskResult | null)
             }
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] font-normal text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] font-normal text-text-primary"
           >
-            <option value="">All results</option>
-            <option value="success">Success</option>
-            <option value="failure">Failure</option>
+            <option value="">{t('review:allResults')}</option>
+            <option value="success">{t('common:status.success')}</option>
+            <option value="failure">{t('common:status.failure')}</option>
           </select>
         </label>
 
-        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-gray-500">
-          Condition
+        <label className="flex flex-col gap-1.5 text-[11.5px] font-semibold text-text-muted">
+          {t('datasets:condition')}
           <select
             data-testid="review-condition-filter"
             value={conditionFilter}
             onChange={(event) => onConditionChange(event.target.value)}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] font-normal text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] font-normal text-text-primary"
           >
-            <option value="">All conditions</option>
+            <option value="">{t('review:allConditions')}</option>
             {conditionOptions.map((condition) => (
               <option key={condition} value={condition}>
                 {condition}
@@ -249,20 +256,20 @@ export const FiltersRail = forwardRef<
         </label>
 
         <div className="flex flex-col gap-1.5">
-          <span className="text-[11.5px] font-semibold text-gray-500">
-            UTC date range
+          <span className="text-[11.5px] font-semibold text-text-muted">
+            {t('review:utcDateRange')}
           </span>
           <input
             type="date"
-            aria-label="From UTC date"
+            aria-label={t('review:fromUtcDate')}
             data-testid="review-started-from-filter"
             value={startedFrom?.slice(0, 10) ?? ''}
             onChange={(event) => onStartedFromChange(event.target.value || null)}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] text-text-primary"
           />
           <input
             type="date"
-            aria-label="To UTC date"
+            aria-label={t('review:toUtcDate')}
             data-testid="review-started-to-filter"
             value={
               startedTo
@@ -270,16 +277,16 @@ export const FiltersRail = forwardRef<
                 : ''
             }
             onChange={(event) => onStartedToChange(event.target.value || null)}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[13px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[13px] text-text-primary"
           />
         </div>
 
         <button
           type="button"
           onClick={onClearFilters}
-          className="rounded-control border border-gray-200 bg-white px-2 py-1.5 text-[12.5px] font-semibold text-gray-500 transition-colors hover:bg-gray-50"
+          className="rounded-control border border-border bg-surface px-2 py-1.5 text-[12.5px] font-semibold text-text-muted transition-colors hover:bg-surface-muted"
         >
-          Clear filters
+          {t('review:clearFilters')}
         </button>
       </Card>
     </div>

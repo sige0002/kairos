@@ -3,55 +3,57 @@
 // Batch stats: the running tally for the set in progress.
 
 import { Card, cn } from '../../../components/ui';
+import { useTranslation } from 'react-i18next';
 import type { BatchMachine } from '../useBatchMachine';
 import { SIDE_PAD } from '../compact';
 
 export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
+  const { t } = useTranslation('collect');
   // Quality (good/review) and task result (task failed) are independent axes
   // — a task-failed episode can still count toward "good" quality, since the
   // recording itself is fine and stays usable/labeled data.
   const { nRecorded, nGood, nReview, nTaskFailed } = machine.stats;
   return (
     <Card className={cn('flex shrink-0 flex-col gap-1.5', SIDE_PAD)}>
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-        Batch stats
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+        {t('batchStats')}
       </h2>
       <div className="flex gap-3.5">
         <div className="flex flex-col">
           <span
             data-testid="stat-recorded"
-            className="font-mono text-lg font-semibold text-gray-900"
+            className="font-mono text-lg font-semibold text-text-primary"
           >
             {nRecorded}
           </span>
-          <span className="text-[11px] text-gray-500">recorded</span>
+          <span className="text-[11px] text-text-muted">{t('recorded')}</span>
         </div>
         <div className="flex flex-col">
           <span
             data-testid="stat-good"
-            className="font-mono text-lg font-semibold text-green-700"
+            className="font-mono text-lg font-semibold text-status-success-text"
           >
             {nGood}
           </span>
-          <span className="text-[11px] text-gray-500">good quality</span>
+          <span className="text-[11px] text-text-muted">{t('goodQuality')}</span>
         </div>
         <div className="flex flex-col">
           <span
             data-testid="stat-review"
-            className="font-mono text-lg font-semibold text-amber-700"
+            className="font-mono text-lg font-semibold text-status-warning-text"
           >
             {nReview}
           </span>
-          <span className="text-[11px] text-gray-500">needs review</span>
+          <span className="text-[11px] text-text-muted">{t('needsReview')}</span>
         </div>
         <div className="flex flex-col">
           <span
             data-testid="stat-task-failed"
-            className="font-mono text-lg font-semibold text-red-600"
+            className="font-mono text-lg font-semibold text-status-danger-text"
           >
             {nTaskFailed}
           </span>
-          <span className="text-[11px] text-gray-500">task failed</span>
+          <span className="text-[11px] text-text-muted">{t('taskFailed')}</span>
         </div>
       </div>
       {/* After a Review delete the monotone "recorded" count outruns the quality
@@ -60,10 +62,9 @@ export function BatchStatsCard({ machine }: { machine: BatchMachine }) {
       {nRecorded > nGood + nReview && (
         <p
           data-testid="stats-footnote"
-          className="text-[11px] leading-snug text-gray-500"
+          className="text-[11px] leading-snug text-text-muted"
         >
-          recorded counts every take this batch; quality tallies reflect recordings
-          still on disk
+          {t('batchStatsFootnote')}
         </p>
       )}
     </Card>

@@ -4,7 +4,8 @@
 // answering" face of this card here — same card, but it stops asserting that a
 // recording is still happening.
 
-import { Card, cn } from '../../../components/ui';
+import { Card, Notice, cn } from '../../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { formatBytes } from '../../review/format';
 import { CARD_PAD } from '../compact';
 import type { BatchMachine } from '../useBatchMachine';
@@ -18,6 +19,7 @@ export function RecordingCard({
   machine: BatchMachine;
   stopRef: React.Ref<HTMLButtonElement>;
 }) {
+  const { t } = useTranslation('collect');
   const { stats } = machine;
   const elapsedText = formatElapsed(machine.elapsedMs);
   // B1: the recorder has stopped answering. We do NOT know that the recording
@@ -27,17 +29,17 @@ export function RecordingCard({
   const unreachable = machine.recorderUnreachable;
   const staleText =
     machine.recorderStaleMs != null
-      ? `${Math.round(machine.recorderStaleMs / 1000)}s ago`
-      : 'unknown';
+      ? t('secondsAgo', { seconds: String(Math.round(machine.recorderStaleMs / 1000)) })
+      : t('unknown');
   // Real bytes written for this run (from /record/status), not elapsed×rate.
   const writtenText =
     machine.recordingBytes != null
-      ? `${formatBytes(machine.recordingBytes)} written`
+      ? t('bytesWritten', { bytes: formatBytes(machine.recordingBytes) })
       : '—';
   return (
     <Card
       className={cn(
-        'flex shrink-0 flex-col gap-2.5 border-2 border-red-200',
+        'flex shrink-0 flex-col gap-2.5 border-2 border-status-danger-border',
         CARD_GAP_COMPACT,
         CARD_PAD,
       )}
@@ -46,46 +48,55 @@ export function RecordingCard({
         <span
           className={cn(
             'h-[9px] w-[9px] rounded-sm',
-            unreachable ? 'bg-amber-500' : 'animate-recpulse bg-red-600',
+            unreachable
+              ? 'bg-status-warning-accent'
+              : 'animate-recpulse bg-status-danger-accent',
           )}
         />
         <h2
           data-testid="phase-title"
           className={cn(
             'text-[17px] font-bold',
-            unreachable ? 'text-amber-700' : 'text-red-700',
+            unreachable ? 'text-status-warning-text' : 'text-status-danger-text',
           )}
         >
-          {unreachable ? 'RECORDER UNREACHABLE' : 'RECORDING'}
+          {unreachable ? t('recorderUnreachable') : t('recording')}
         </h2>
         <div className="flex-1" />
-        <span className="font-mono text-xs text-gray-500">
-          Ep {stats.epNext} / {machine.targetEpisodes}
+        <span className="font-mono text-xs text-text-muted">
+          {t('episodeProgress', {
+            current: String(stats.epNext),
+            target: String(machine.targetEpisodes),
+          })}
         </span>
       </div>
       {unreachable && (
-        <p
+        <Notice
+          tone="warning"
+          live="assertive"
           data-testid="recorder-unreachable-note"
-          className="rounded-control border border-amber-300 bg-amber-50 px-3 py-2 text-[12.5px] leading-relaxed text-amber-900"
+          className="text-[12.5px]"
         >
-          The recorder is not answering. Last known:{' '}
-          <span className="font-semibold">recording</span>, {staleText}. Whether
-          it is still running cannot be confirmed from here — the figures below
-          are the last ones it reported, not current.
-        </p>
+          <p>{t('recorderUnreachableRecordingHelp')}</p>
+          <p className="mt-1 text-[11.5px] text-status-warning-text" aria-live="off">
+            {t('lastKnownBefore')}{' '}
+            <span className="font-semibold">{t('recording').toLowerCase()}</span>,{' '}
+            {staleText}. {t('lastKnownAfter')}
+          </p>
+        </Notice>
       )}
       <div className="flex items-baseline gap-2.5">
         <span
           data-testid="elapsed"
           className={cn(
             'font-mono text-[34px] font-semibold',
-            unreachable ? 'text-gray-500' : 'text-gray-900',
+            unreachable ? 'text-text-muted' : 'text-text-primary',
           )}
-          title={unreachable ? `Frozen at the last confirmed reading (${staleText})` : undefined}
+          title={unreachable ? t('frozenLastConfirmed', { age: staleText }) : undefined}
         >
           {elapsedText}
         </span>
-        <span className="font-mono text-xs text-gray-500">{writtenText}</span>
+        <span className="font-mono text-xs text-text-muted">{writtenText}</span>
       </div>
       {/* Stop occupies the position Start just vacated, so the second half
           of a double-click lands here. Refused for the first moment of a
@@ -96,21 +107,16 @@ export function RecordingCard({
         data-testid="stop-recording"
         onClick={machine.stopRecording}
         disabled={!machine.canStop}
-        title={
-          machine.stopBlockedReason === 'floor'
-            ? 'Just started — Stop is available a moment from now, so a ' +
-              'double-click on Start cannot end the take it just began.'
-            : undefined
-        }
+        title={machine.stopBlockedReason === 'floor' ? t('stopFloorHelp') : undefined}
         className={cn(
           'flex h-[52px] items-center justify-center gap-2 rounded-control text-[15px] font-bold shadow-btn-red [@media(max-height:860px)]:h-[44px]',
           machine.canStop
-            ? 'bg-red-600 text-white hover:bg-red-700'
-            : 'cursor-not-allowed bg-red-300 text-white/80',
+            ? 'bg-status-danger-accent text-status-danger-contrast hover:bg-status-danger-text'
+            : 'cursor-not-allowed bg-status-danger-accent text-status-danger-contrast/80',
         )}
       >
-        <span className="h-[11px] w-[11px] rounded-sm bg-white" />
-        Stop recording
+        <span className="h-[11px] w-[11px] rounded-sm bg-surface" />
+        {t('stopRecording')}
         <span className="text-[11px] font-medium opacity-70">· S</span>
       </button>
       {machine.arming && <ArmingNote arming={machine.arming} />}

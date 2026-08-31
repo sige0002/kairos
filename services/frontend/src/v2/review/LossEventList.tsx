@@ -12,6 +12,7 @@
 // Honest empty state when no losses were detected.
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   type LossRow,
   type SignalReportExt,
@@ -23,8 +24,8 @@ import {
 } from './signalReport';
 
 const SEVERITY_CLASS: Record<'major' | 'minor', string> = {
-  major: 'text-red-600',
-  minor: 'text-amber-700',
+  major: 'text-status-danger-text',
+  minor: 'text-status-warning-text',
 };
 
 // Events shown before the fold: enough to read every major on a typical run
@@ -46,6 +47,7 @@ export function LossEventList({
   report: SignalReportExt;
   onSeekGlobal: (globalNs: number) => void;
 }) {
+  const { t } = useTranslation('review');
   const [showAll, setShowAll] = useState(false);
   const allRows = rankLossRows(collectLossRows(report));
   const rows = showAll ? allRows : allRows.slice(0, ROWS_SHOWN);
@@ -56,20 +58,20 @@ export function LossEventList({
   return (
     <div className="flex flex-col gap-1" data-testid="review-loss-events">
       {rows.length === 0 && (
-        <p className="text-[11px] text-gray-500" data-testid="review-loss-empty">
-          No losses detected — threshold 1.5× median interval.
+        <p className="text-[11px] text-text-muted" data-testid="review-loss-empty">
+          {t('lossNone')}
         </p>
       )}
 
       {(rows.length > 0 || edges.length > 0) && (
         <table className="w-full border-collapse text-[11px]">
           <thead>
-            <tr className="text-left text-[10px] uppercase tracking-[0.03em] text-gray-500">
-              <th className="py-0.5 pr-2 font-medium">Topic</th>
-              <th className="py-0.5 pr-2 font-medium">Time</th>
-              <th className="py-0.5 pr-2 font-medium">Duration</th>
-              <th className="py-0.5 pr-2 font-medium">Est. lost</th>
-              <th className="py-0.5 font-medium">Severity</th>
+            <tr className="text-left text-[10px] uppercase tracking-[0.03em] text-text-muted">
+              <th className="py-0.5 pr-2 font-medium">{t('lossTopic')}</th>
+              <th className="py-0.5 pr-2 font-medium">{t('lossTime')}</th>
+              <th className="py-0.5 pr-2 font-medium">{t('lossDuration')}</th>
+              <th className="py-0.5 pr-2 font-medium">{t('lossEstimated')}</th>
+              <th className="py-0.5 font-medium">{t('lossSeverity')}</th>
             </tr>
           </thead>
           <tbody>
@@ -78,16 +80,18 @@ export function LossEventList({
                 key={`loss-${i}`}
                 data-testid="review-loss-row"
                 onClick={() => onSeekGlobal(r.start_ns)}
-                className="cursor-pointer border-t border-gray-100 hover:bg-gray-50"
+                className="cursor-pointer border-t border-border hover:bg-surface-muted"
               >
-                <td className="py-0.5 pr-2 font-mono text-gray-600">{r.topic}</td>
-                <td className="py-0.5 pr-2 font-mono text-gray-500">
+                <td className="py-0.5 pr-2 font-mono text-text-secondary">{r.topic}</td>
+                <td className="py-0.5 pr-2 font-mono text-text-muted">
                   {formatSecondsShort(r.start_ns)}
                 </td>
-                <td className="py-0.5 pr-2 font-mono text-gray-500">
+                <td className="py-0.5 pr-2 font-mono text-text-muted">
                   {formatNsShort(r.duration_ns)}
                 </td>
-                <td className="py-0.5 pr-2 font-mono text-gray-500">{r.estimated_lost}</td>
+                <td className="py-0.5 pr-2 font-mono text-text-muted">
+                  {r.estimated_lost}
+                </td>
                 <td className={`py-0.5 font-semibold ${SEVERITY_CLASS[r.severity]}`}>
                   {r.severity}
                 </td>
@@ -98,14 +102,18 @@ export function LossEventList({
                 key={`edge-${i}`}
                 data-testid="review-loss-edge"
                 onClick={() => onSeekGlobal(e.globalNs)}
-                className="cursor-pointer border-t border-gray-100 text-gray-500 hover:bg-gray-50"
+                className="cursor-pointer border-t border-border text-text-muted hover:bg-surface-muted"
               >
                 <td className="py-0.5 pr-2 font-mono">{e.topic}</td>
-                <td className="py-0.5 pr-2 font-mono">{formatSecondsShort(e.globalNs)}</td>
+                <td className="py-0.5 pr-2 font-mono">
+                  {formatSecondsShort(e.globalNs)}
+                </td>
                 <td className="py-0.5 pr-2 font-mono">{formatNsShort(e.durationNs)}</td>
                 <td className="py-0.5 pr-2">—</td>
                 <td className="py-0.5 italic">
-                  {e.kind === 'start_delay' ? 'started late' : 'ended early'}
+                  {e.kind === 'start_delay'
+                    ? t('lossStartedLate')
+                    : t('lossEndedEarly')}
                 </td>
               </tr>
             ))}
@@ -119,15 +127,23 @@ export function LossEventList({
           data-testid="review-loss-show-all"
           aria-expanded={showAll}
           onClick={() => setShowAll((v) => !v)}
-          className="self-start text-[11px] text-gray-500 underline decoration-dotted transition-colors hover:text-gray-600"
+          className="self-start text-[11px] text-text-muted underline decoration-dotted transition-colors hover:text-text-secondary"
         >
-          {showAll ? 'Show fewer events' : `Show all ${allRows.length} events (${folded} folded)`}
+          {showAll
+            ? t('lossShowFewer')
+            : t('lossShowAll', {
+                total: String(allRows.length),
+                folded: String(folded),
+              })}
         </button>
       )}
 
       {truncated > 0 && (
-        <p className="text-[10.5px] text-gray-500" data-testid="review-loss-truncated">
-          {truncated} more event{truncated === 1 ? '' : 's'} not shown (largest kept).
+        <p
+          className="text-[10.5px] text-text-muted"
+          data-testid="review-loss-truncated"
+        >
+          {t('lossTruncated', { count: truncated })}
         </p>
       )}
     </div>

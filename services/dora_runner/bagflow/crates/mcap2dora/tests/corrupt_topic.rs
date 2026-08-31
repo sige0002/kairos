@@ -124,7 +124,10 @@ fn strict_read_stops_at_the_corrupt_message() {
         }
     }
     let err = err.expect("strict mode must surface the decode failure");
-    assert!(err.contains("/broken"), "error should name the topic: {err}");
+    assert!(
+        err.contains("/broken"),
+        "error should name the topic: {err}"
+    );
 }
 
 #[test]
@@ -139,5 +142,8 @@ fn topic_allowlist_skips_the_broken_topic_entirely() {
         rows += tb.batch.num_rows();
     }
     assert_eq!(rows, 5);
-    assert!(reader.stats().filtered > 0, "the other topic must be counted as filtered");
+    assert!(
+        reader.stats().filtered > 0,
+        "the other topic must be counted as filtered"
+    );
 }

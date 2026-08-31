@@ -1,5 +1,22 @@
 # Vendored: bagflow + mcap2dora
 
+## License status — redistribution blocked
+
+The two referenced upstream revisions do not contain a `LICENSE`, `COPYING`, or
+equivalent permission grant, and the additional uncommitted changes have no
+separate provenance record. Therefore this directory is **not covered by the
+repository's Apache-2.0 license** and must not be redistributed, nor used to
+publish derived images or binaries, until all copyright holders provide an
+explicit license. A release gate deliberately refuses to publish while the two
+upstream license files are absent. Do not infer permission from repository
+visibility or from dependency licenses.
+
+To clear the block, obtain the license/provenance for both sources, store each
+verbatim license and required copyright notice in this directory, identify the
+authors and permission for the uncommitted deltas, and update `NOTICE` after a
+review. If permission cannot be obtained, remove or replace this code before a
+public release.
+
 This directory is a **vendored copy** of two upstream repositories, built into the
 `dora_runner` image and used by the `fast_validation` / `full_validation`
 pipelines — every validation kairos performs runs on this code. They are vendored

@@ -10,6 +10,7 @@ import type {
 import {
   ANY_OPERATOR,
   aggregate,
+  addBlockedReasons,
   buildDatasetRow,
   buildDatasetRows,
   captureFacts,
@@ -83,6 +84,20 @@ function row(displayIndex: number, c: CaptureListItem | null): MemberRow {
     capture: c,
   };
 }
+
+describe('addBlockedReasons', () => {
+  test('returns stable eligibility codes without manufacturing display prose', () => {
+    expect(addBlockedReasons(capture())).toEqual(['bytes_not_local', 'not_adopted']);
+    expect(
+      addBlockedReasons(
+        withReplica(
+          capture({ review_status: 'adopted' }),
+          'present_verified',
+        ),
+      ),
+    ).toEqual([]);
+  });
+});
 
 describe('joinMembers', () => {
   test('joins by capture_id and orders by display_index', () => {

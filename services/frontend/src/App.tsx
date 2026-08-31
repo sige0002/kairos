@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useTranslation } from 'react-i18next';
 import { setApiBase } from './api/client';
 import { fetchRuntimeConfig, type RuntimeConfig } from './config';
 import { queryKeys } from './api/queryKeys';
@@ -12,13 +13,14 @@ import { DatasetsScreen } from './v2/datasets/DatasetsScreen';
 import { ValidationScreen } from './v2/validation/ValidationScreen';
 import { MonitorScreen } from './v2/monitor/MonitorScreen';
 import { SettingsScreen } from './v2/settings/SettingsScreen';
-import { resolveTabId, tabLabel, V2_TABS, type V2TabId } from './v2/tabs';
+import { resolveTabId, V2_TABS, type V2TabId } from './v2/tabs';
 import { useOnPopState } from './v2/shared/useOnPopState';
 import { HIT_AREA_CHIP, HIT_AREA_TAB } from './v2/shared/hitArea';
 import { PanelBoundary } from './components/ErrorBoundary';
 import { Hexagon, StatusDot, cn } from './components/ui';
 import { OPERATOR_STORAGE_KEY, type SseStatus } from './store/uiStore';
 import { StoreHealthBanner } from './v2/store/StoreHealthBanner';
+import { useLocale } from './i18n';
 
 // ---- per-tab pages (deep link + pop-out) ------------------------------------
 // Each tab is addressable by URL (`?tab=<id>`); `?tab=<id>&solo=1` renders ONLY
@@ -44,6 +46,7 @@ function openTabWindow(id: string): void {
 
 /** Render the screen for a given v2 tab id. */
 function TabContent({ tabId }: { tabId: V2TabId }) {
+  const { t } = useTranslation('common');
   switch (tabId) {
     case 'collect':
       return <CollectScreen />;
@@ -58,7 +61,11 @@ function TabContent({ tabId }: { tabId: V2TabId }) {
     case 'settings':
       return <SettingsScreen />;
     default:
-      return <p className="text-sm text-gray-500">Unknown tab: {tabId}</p>;
+      return (
+        <p className="text-sm text-text-muted">
+          {t('shell.unknownTab', { tab: tabId })}
+        </p>
+      );
   }
 }
 
@@ -109,16 +116,17 @@ function useActiveTab(): V2TabId {
  *  Settings). Fixed client-side — see `./v2/tabs.ts` for why this no longer
  *  reads the backend's tab registry. */
 function TabNav({ active }: { active: V2TabId }) {
+  const { t } = useTranslation('common');
   const setActiveTab = useUiStore((s) => s.setActiveTab);
   return (
     <nav
       role="tablist"
-      aria-label="kairos tabs"
+      aria-label={t('shell.tabsLabel')}
       // gap-y-2 only: the tabs' hit areas reach 4px above and below each tab
       // (HIT_AREA_TAB), so a wrapped nav at narrow widths needs 8px between
       // ROWS or the two rows' targets would overlap. The 3px column gap is
       // untouched — nothing expands sideways.
-      className="flex flex-wrap gap-x-[3px] gap-y-2 rounded-[12px] border border-gray-200 bg-gray-100 p-1"
+      className="flex flex-wrap gap-x-[3px] gap-y-2 rounded-[12px] border border-border bg-surface-muted p-1"
     >
       {V2_TABS.map((tab) => {
         const on = tab.id === active;
@@ -134,11 +142,11 @@ function TabNav({ active }: { active: V2TabId }) {
               'rounded-[9px] px-[18px] py-2 text-[13.5px] transition-colors',
               HIT_AREA_TAB,
               on
-                ? 'bg-teal-700 font-semibold text-white shadow-sm'
-                : 'font-medium text-gray-600 hover:text-gray-800',
+                ? 'bg-accent font-semibold text-text-inverse shadow-sm'
+                : 'font-medium text-text-secondary hover:text-text-primary',
             )}
           >
-            {tab.label}
+            {t(`tabs.${tab.id}`)}
           </button>
         );
       })}
@@ -150,17 +158,19 @@ function TabNav({ active }: { active: V2TabId }) {
  *  tablist) so assistive tech sees only tabs in the nav; the pop-out is still
  *  reachable and every tab remains directly addressable by its deep-link URL. */
 function TabPanel({ active }: { active: V2TabId }) {
+  const { t } = useTranslation('common');
+  const label = t(`tabs.${active}`);
   return (
     <div className="flex flex-col gap-2 lg:min-h-0 lg:flex-1">
       <div className="flex justify-end lg:shrink-0">
         <button
           type="button"
-          aria-label={`open ${tabLabel(active)} in a new window`}
-          title="Open the current tab in its own window"
+          aria-label={t('actions.openTabInNewWindow', { tab: label })}
+          title={t('actions.openInNewWindow')}
           onClick={() => openTabWindow(active)}
-          className="inline-flex items-center gap-1 rounded-control border border-gray-200 px-2.5 py-1.5 text-[12.5px] text-gray-500 transition-colors hover:bg-white hover:text-teal-700"
+          className="inline-flex items-center gap-1 rounded-control border border-border px-2.5 py-1.5 text-[12.5px] text-text-muted transition-colors hover:bg-surface hover:text-accent"
         >
-          ↗<span className="hidden sm:inline">Open in new window</span>
+          ↗<span className="hidden sm:inline">{t('actions.openInNewWindow')}</span>
         </button>
       </div>
       <section
@@ -188,6 +198,7 @@ function TabPanel({ active }: { active: V2TabId }) {
  * cross-host split. A green "DDS connected" therefore requires BOTH; an open
  * pipe with the bridge down reads "robot offline" instead of a false green. */
 function ConnectionBadge() {
+  const { t } = useTranslation('common');
   const status = useUiStore((s) => s.sseStatus);
   const bridge = useUiStore((s) => s.monitorBridge);
   const tone: Record<SseStatus, 'green' | 'amber' | 'gray'> = {
@@ -197,10 +208,10 @@ function ConnectionBadge() {
     closed: 'gray',
   };
   const label: Record<SseStatus, string> = {
-    open: 'DDS connected',
-    connecting: 'connecting',
-    reconnecting: 'DDS reconnecting…',
-    closed: 'disconnected',
+    open: t('shell.connection.connected'),
+    connecting: t('shell.connection.connecting'),
+    reconnecting: t('shell.connection.reconnecting'),
+    closed: t('shell.connection.disconnected'),
   };
   const robotOffline = status === 'open' && bridge === 'down';
   const checkingRobot = status === 'open' && bridge === null;
@@ -210,18 +221,18 @@ function ConnectionBadge() {
       data-testid="connection-status"
       title={
         robotOffline
-          ? 'The orchestrator is up, but the monitor (robot-edge) is unreachable — check the robot / ROBOT_IP.'
+          ? t('shell.connection.robotOfflineHelp')
           : checkingRobot
-            ? 'The orchestrator is connected. Waiting for its robot-monitor status.'
+            ? t('shell.connection.checkingRobotHelp')
             : undefined
       }
       className={cn(
         'inline-flex items-center gap-2 rounded-control border px-3 py-2',
         live
-          ? 'border-teal-200 bg-teal-100'
+          ? 'border-status-live-border bg-status-live-bg'
           : robotOffline || checkingRobot
-            ? 'border-amber-200 bg-amber-50'
-            : 'border-gray-200 bg-white',
+            ? 'border-status-warning-border bg-status-warning-bg'
+            : 'border-border bg-surface',
       )}
     >
       <StatusDot
@@ -232,16 +243,16 @@ function ConnectionBadge() {
         className={cn(
           'font-mono text-[12.5px] font-semibold',
           live
-            ? 'text-teal-700'
+            ? 'text-status-live-text'
             : robotOffline || checkingRobot
-              ? 'text-amber-700'
-              : 'text-gray-600',
+              ? 'text-status-warning-text'
+              : 'text-text-secondary',
         )}
       >
         {robotOffline
-          ? 'robot offline'
+          ? t('shell.connection.robotOffline')
           : checkingRobot
-            ? 'checking robot…'
+            ? t('shell.connection.checkingRobot')
             : label[status]}
       </span>
     </span>
@@ -253,14 +264,17 @@ function ConnectionBadge() {
  * badge (operator context). Hidden when the backend omits it.
  */
 function DomainChip({ domainId }: { domainId?: number }) {
+  const { t } = useTranslation('common');
   if (domainId === undefined) return null;
   return (
     <span
       data-testid="ros-domain"
-      title={`ROS 2 domain ${domainId} (ROS_DOMAIN_ID)`}
-      className="inline-flex items-center gap-1.5 rounded-control border border-gray-200 bg-white px-3 py-2 font-mono text-[12.5px] font-semibold text-gray-600"
+      title={t('shell.domainTitle', { domainId: String(domainId) })}
+      className="inline-flex items-center gap-1.5 rounded-control border border-border bg-surface px-3 py-2 font-mono text-[12.5px] font-semibold text-text-secondary"
     >
-      <span className="uppercase tracking-[0.04em] text-gray-500">DOMAIN</span>
+      <span className="uppercase tracking-[0.04em] text-text-muted">
+        {t('shell.domain')}
+      </span>
       {domainId}
     </span>
   );
@@ -305,6 +319,7 @@ function OperatorHydrationMount() {
  *  record-start flow reads (`recordOperator` → /record/start `operator`), plus
  *  localStorage so the name survives a reload — the store itself is in-memory. */
 function OperatorChip() {
+  const { t } = useTranslation('common');
   const operator = useUiStore((s) => s.recordOperator);
   const setOperator = useUiStore((s) => s.setRecordOperator);
   // Attribution roster (Settings > Operators). Non-empty → the popover is a
@@ -343,41 +358,52 @@ function OperatorChip() {
     <div className="relative">
       <button
         type="button"
-        aria-label="operator"
+        aria-label={
+          operator.trim()
+            ? t('shell.operator.namedLabel', { operator })
+            : t('shell.operator.setLabel')
+        }
         data-testid="operator-chip"
         title={
           operator.trim()
-            ? `Operator: ${operator} — saved into each recording`
-            : 'Set operator name — saved into each recording'
+            ? t('shell.operator.namedTitle', { operator })
+            : t('shell.operator.setTitle')
         }
         onClick={() => {
           setDraft(operator);
           setOpen((v) => !v);
         }}
         className={cn(
-          'flex h-8 w-8 items-center justify-center rounded-full border text-xs font-semibold',
+          'inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full border px-2 text-xs font-semibold',
           HIT_AREA_CHIP,
           operator.trim()
-            ? 'border-teal-200 bg-teal-50 text-teal-700 hover:border-teal-400'
-            : 'border-gray-200 bg-gray-100 text-gray-600 hover:border-gray-300',
+            ? 'border-status-adopted-border bg-status-adopted-bg text-status-adopted-text hover:border-status-adopted-accent'
+            : 'border-border bg-surface-muted text-text-secondary hover:border-border-strong',
         )}
       >
-        {initials}
+        <span
+          aria-hidden
+          className="flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-surface/70 px-1 font-mono text-[10px]"
+        >
+          {initials}
+        </span>
+        <span data-testid="operator-visible-name" className="max-w-[160px] truncate">
+          {operator.trim() || t('shell.operator.set')}
+        </span>
       </button>
       {open && (
-        <div className="absolute right-0 top-full z-40 mt-2 w-72 rounded-card border border-gray-200 bg-white p-3 shadow-float">
+        <div className="absolute right-0 top-full z-40 mt-2 w-72 rounded-card border border-border bg-surface-elevated p-3 shadow-float">
           <label
             htmlFor="operator-name"
-            className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-gray-500"
+            className="mb-1.5 block text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted"
           >
-            Operator — saved into each recording
+            {t('shell.operator.label')}
           </label>
           {roster.length > 0 ? (
             <div className="flex flex-col gap-1" data-testid="operator-roster">
               {operator.trim() && !roster.includes(operator.trim()) && (
-                <p className="mb-1 rounded-control border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
-                  “{operator.trim()}” is not on the roster — pick a name below (Settings
-                  &gt; Operators edits the list).
+                <p className="mb-1 rounded-control border border-status-warning-border bg-status-warning-bg px-2 py-1 text-[11px] text-status-warning-text">
+                  {t('shell.operator.notOnRoster', { operator: operator.trim() })}
                 </p>
               )}
               {roster.map((name) => (
@@ -397,8 +423,8 @@ function OperatorChip() {
                   className={cn(
                     'rounded-control border px-2.5 py-1.5 text-left text-sm',
                     name === operator.trim()
-                      ? 'border-teal-300 bg-teal-50 font-semibold text-teal-700'
-                      : 'border-gray-200 text-gray-700 hover:bg-gray-50',
+                      ? 'border-status-adopted-border bg-status-adopted-bg font-semibold text-status-adopted-text'
+                      : 'border-border text-text-secondary hover:bg-interaction-hover',
                   )}
                 >
                   {name}
@@ -444,17 +470,17 @@ function OperatorChip() {
                   }
                   if (e.key === 'Escape') setOpen(false);
                 }}
-                placeholder="e.g. sadasue"
+                placeholder={t('shell.operator.placeholder')}
                 autoFocus
                 data-testid="operator-input"
-                className="w-full rounded-control border border-gray-200 px-2 py-1.5 text-sm focus:border-teal-600 focus:outline-none"
+                className="w-full rounded-control border border-border bg-surface-control px-2 py-1.5 text-sm text-text-primary focus:border-accent focus:outline-none"
               />
               <button
                 type="button"
                 onClick={save}
-                className="rounded-control bg-teal-700 px-3 py-1.5 text-sm font-semibold text-white hover:bg-teal-800"
+                className="rounded-control bg-accent px-3 py-1.5 text-sm font-semibold text-text-inverse hover:bg-accent-strong"
               >
-                Save
+                {t('actions.save')}
               </button>
             </div>
           )}
@@ -468,16 +494,17 @@ function OperatorChip() {
  *  (design mock header). Always mounted — unlike the tab panel below it, it
  *  never unmounts on a tab switch. */
 function Header({ active, config }: { active: V2TabId; config: RuntimeConfig }) {
+  const { t } = useTranslation('common');
   return (
     <header className="mb-2.5 flex flex-wrap items-center gap-4 lg:shrink-0">
       <a
         href="/"
-        aria-label="kairos — recording console (home)"
-        title="kairos — recording console (home)"
-        className="flex items-center gap-[11px] rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+        aria-label={t('shell.home')}
+        title={t('shell.home')}
+        className="flex items-center gap-[11px] rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-focus"
       >
         <Hexagon size={30} />
-        <span className="text-[20px] font-bold tracking-[-0.02em] text-gray-900">
+        <span className="text-[20px] font-bold tracking-[-0.02em] text-text-primary">
           kairos
         </span>
       </a>
@@ -492,15 +519,16 @@ function Header({ active, config }: { active: V2TabId; config: RuntimeConfig }) 
 }
 
 function BatchRestoreNotice() {
+  const { t } = useTranslation('common');
   const batchRestoreIssue = useUiStore((s) => s.batchRestoreIssue);
   if (batchRestoreIssue !== 'ambiguous') return null;
   return (
     <span
       role="status"
       data-testid="batch-restore-issue"
-      className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] font-medium text-amber-800"
+      className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[12px] font-medium text-status-warning-text"
     >
-      More than one active batch matches this operator and robot. No batch was restored.
+      {t('shell.batchRestore')}
     </span>
   );
 }
@@ -526,6 +554,7 @@ function Shell({ config }: { config: RuntimeConfig }) {
  * console. `tabId` is always a resolved v2 id (see `resolveTabId`).
  */
 function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) {
+  const { t } = useTranslation('common');
   const activeTab = useUiStore((s) => s.activeTab);
   const setActiveTab = useUiStore((s) => s.setActiveTab);
   const [seeded, setSeeded] = useState(false);
@@ -533,7 +562,7 @@ function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) 
   // another tab from a previously-open console window; letting that win would
   // make a direct `?tab=review&solo=1` request open the wrong screen.
   const active = seeded && activeTab ? resolveTabId(activeTab) : tabId;
-  const label = tabLabel(active);
+  const label = t(`tabs.${active}`);
 
   useEffect(() => {
     if (!seeded) {
@@ -548,19 +577,19 @@ function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) 
   }, [active, tabId]);
 
   return (
-    <main className="flex h-screen flex-col bg-gray-50 px-[22px] pb-[22px] pt-2.5">
+    <main className="flex h-screen flex-col bg-app px-[22px] pb-[22px] pt-2.5">
       <EventStreamMount url={config.endpoints.events} />
       <header className="mb-2 flex flex-wrap items-center gap-3">
         <a
           href={tabUrl(active, false)}
-          title="Back to the kairos console"
-          className="flex items-center gap-2 rounded-control text-gray-600 hover:text-teal-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-teal-500"
+          title={t('actions.backToConsole')}
+          className="flex items-center gap-2 rounded-control text-text-secondary hover:text-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-focus"
         >
           <Hexagon size={20} />
-          <span className="text-[15px] font-bold tracking-[-0.02em] text-gray-900">
+          <span className="text-[15px] font-bold tracking-[-0.02em] text-text-primary">
             kairos
           </span>
-          <span className="text-gray-300">/</span>
+          <span className="text-border-strong">/</span>
           <span className="text-[14px] font-semibold">{label}</span>
         </a>
         <div className="flex-1" />
@@ -584,6 +613,12 @@ function SoloPage({ tabId, config }: { tabId: V2TabId; config: RuntimeConfig }) 
 }
 
 export function App() {
+  // This subscription deliberately sits at the application boundary. Legacy
+  // presentation helpers are pure functions, so changing language must also
+  // rerender already-mounted formatter consumers without remounting their
+  // stateful Collect/Review/Datasets screens.
+  const { locale } = useLocale();
+  const { t } = useTranslation('common');
   const operatorHydrated = useUiStore((s) => s.operatorHydrated);
   // Render gate: wait for the backend config before showing the UI. config.ts
   // provides a dev-only fallback so the SPA renders without a backend. Still
@@ -609,9 +644,9 @@ export function App() {
     return (
       <>
         {operatorHydration}
-        <main className="flex min-h-screen items-center gap-3 bg-gray-50 p-[22px] text-gray-500">
+        <main className="flex min-h-screen items-center gap-3 bg-app p-[22px] text-text-muted">
           <Hexagon size={22} />
-          Loading kairos…
+          {t('shell.loadingConsole')}
         </main>
       </>
     );
@@ -620,8 +655,8 @@ export function App() {
     return (
       <>
         {operatorHydration}
-        <main className="min-h-screen bg-gray-50 p-[22px] text-red-700">
-          Failed to load configuration: {String(error)}
+        <main className="min-h-screen bg-app p-[22px] text-status-danger-text">
+          {t('shell.configurationFailed', { error: String(error) })}
         </main>
       </>
     );
@@ -631,9 +666,9 @@ export function App() {
     return (
       <>
         {operatorHydration}
-        <main className="flex min-h-screen items-center gap-3 bg-gray-50 p-[22px] text-gray-500">
+        <main className="flex min-h-screen items-center gap-3 bg-app p-[22px] text-text-muted">
           <Hexagon size={22} />
-          Loading operator context…
+          {t('shell.loadingOperator')}
         </main>
       </>
     );
@@ -658,7 +693,10 @@ export function App() {
   return (
     <>
       {operatorHydration}
-      <main className="min-h-screen bg-gray-50 px-[22px] pb-[22px] pt-2.5 lg:flex lg:h-svh lg:min-h-0 lg:flex-col lg:overflow-hidden">
+      <main
+        data-locale={locale}
+        className="min-h-screen bg-app px-[22px] pb-[22px] pt-2.5 lg:flex lg:h-svh lg:min-h-0 lg:flex-col lg:overflow-hidden"
+      >
         <EventStreamMount url={config.endpoints.events} />
         <Shell config={config} />
       </main>

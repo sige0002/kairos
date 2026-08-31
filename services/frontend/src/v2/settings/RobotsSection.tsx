@@ -31,17 +31,12 @@ import { RECORDING_CONFIG_KEY } from '../../api/queryKeys';
 import { optionLabel, RecordingConfigEditor } from './RecordingConfigEditor';
 import { STREAM_CONFIG_PREFIX, StreamConfigEditor } from './StreamConfigEditor';
 import { SetupCheckPanel } from './SetupCheckPanel';
+import { useTranslation } from 'react-i18next';
 
 const TOPIC_CHIP_CLASS =
-  'inline-flex items-center gap-1.5 rounded-chip bg-teal-100 px-2.5 py-1 font-mono text-[11.5px] font-semibold text-teal-700';
+  'inline-flex items-center gap-1.5 rounded-chip bg-interaction-selected px-2.5 py-1 font-mono text-[11.5px] font-semibold text-accent';
 
 const ASPECTS: ConfigAspect[] = ['recording', 'stream', 'validation', 'validators'];
-const ASPECT_LABEL: Record<ConfigAspect, string> = {
-  recording: 'Recording',
-  stream: 'Stream',
-  validation: 'Validation',
-  validators: 'Validators',
-};
 // Aspects whose selection applies without a service restart.
 const IMMEDIATE: Record<ConfigAspect, boolean> = {
   recording: false,
@@ -51,6 +46,7 @@ const IMMEDIATE: Record<ConfigAspect, boolean> = {
 };
 
 export function RobotsSection({ config }: { config: RuntimeConfig | undefined }) {
+  const { t } = useTranslation('settings');
   const queryClient = useQueryClient();
   // Local "which row is being viewed" — distinct from the ACTIVE robot. Null
   // until a row is clicked, so the active robot is previewed by default.
@@ -144,17 +140,17 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
   return (
     <>
       <Card className="flex flex-col overflow-auto" data-testid="robots-list">
-        <div className="border-b border-gray-100 px-4 py-[13px]">
-          <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-            Robots
+        <div className="border-b border-border px-4 py-[13px]">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+            {t('robots.title')}
           </h2>
         </div>
         <div className="flex flex-col gap-1.5 p-3">
           {optionsQuery.isError ? (
             <ErrorMessage error={optionsQuery.error} />
           ) : !data ? (
-            <span className="px-1 py-2 text-[12.5px] text-gray-500">
-              Loading robots…
+            <span className="px-1 py-2 text-[12.5px] text-text-muted">
+              {t('common.loading')}
             </span>
           ) : (
             data.robots.map((r, i) => {
@@ -171,20 +167,20 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
                   className={cn(
                     'flex items-center gap-2 rounded-[11px] border px-[13px] py-[11px] text-left',
                     on
-                      ? 'border-teal-200 bg-teal-50'
-                      : 'border-gray-100 hover:bg-gray-50',
+                      ? 'border-accent bg-interaction-selected'
+                      : 'border-border hover:bg-surface-muted',
                   )}
                 >
-                  <span className="font-mono text-[13px] font-semibold text-gray-900">
+                  <span className="font-mono text-[13px] font-semibold text-text-primary">
                     {r.id}
                   </span>
                   <div className="flex-1" />
                   {active && (
                     <Badge tone="green" dot>
-                      active
+                      {t('robots.active')}
                     </Badge>
                   )}
-                  {r.local && <Badge tone="amber">local</Badge>}
+                  {r.local && <Badge tone="amber">{t('robots.local')}</Badge>}
                 </button>
               );
             })
@@ -194,33 +190,37 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
             data-testid="add-robot"
             onClick={() => setAddingRobot(true)}
             className={cn(
-              'rounded-control border border-dashed p-2.5 text-[12.5px] font-semibold text-teal-700 hover:bg-teal-50',
-              addingRobot ? 'border-teal-300 bg-teal-50' : 'border-gray-300 bg-white',
+              'rounded-control border border-dashed p-2.5 text-[12.5px] font-semibold text-accent hover:bg-interaction-selected',
+              addingRobot
+                ? 'border-accent bg-interaction-selected'
+                : 'border-border-strong bg-surface',
             )}
           >
-            + Add robot
+            {t('robots.add')}
           </button>
         </div>
       </Card>
 
       <Card className="flex min-w-0 flex-col overflow-auto" data-testid="robot-form">
-        <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-[13px]">
+        <div className="flex items-center gap-2.5 border-b border-border px-[18px] py-[13px]">
           {addingRobot ? (
-            <h2 className="text-[15px] font-bold text-gray-900">Add robot</h2>
+            <h2 className="text-[15px] font-bold text-text-primary">
+              {t('robots.addTitle')}
+            </h2>
           ) : (
             <>
               <h2
                 data-testid="robot-form-name"
-                className="font-mono text-[15px] font-bold text-gray-900"
+                className="font-mono text-[15px] font-bold text-text-primary"
               >
                 {selectedRobotId ?? '—'}
               </h2>
               {isActive ? (
                 <Badge tone="green" dot>
-                  active
+                  {t('robots.active')}
                 </Badge>
               ) : (
-                selectedRobot?.local && <Badge tone="amber">local</Badge>
+                selectedRobot?.local && <Badge tone="amber">{t('robots.local')}</Badge>
               )}
               <div className="flex-1" />
               <button
@@ -231,11 +231,15 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
                 className={cn(
                   'h-9 rounded-control px-[18px] text-[13px] font-bold transition-colors',
                   isActive
-                    ? 'cursor-default bg-gray-100 text-gray-400'
-                    : 'bg-teal-700 text-white shadow-btn hover:bg-teal-800 disabled:opacity-50',
+                    ? 'cursor-default bg-surface-muted text-text-muted'
+                    : 'bg-accent text-text-inverse shadow-btn hover:bg-accent-strong disabled:opacity-50',
                 )}
               >
-                {isActive ? 'Active' : switching ? 'Activating…' : 'Use this robot'}
+                {isActive
+                  ? t('robots.active')
+                  : switching
+                    ? t('robots.activating')
+                    : t('robots.useThis')}
               </button>
             </>
           )}
@@ -250,18 +254,16 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
         {addingRobot ? (
           <AddRobotExplainer />
         ) : !selectedRobotId ? (
-          <div className="p-[18px] text-sm text-gray-500">Select a robot.</div>
+          <div className="p-[18px] text-sm text-text-muted">{t('robots.select')}</div>
         ) : isActive ? (
           <div className="flex flex-col gap-4 p-[18px]">
             {switchedRobot && (
               <div
                 data-testid="robot-switch-note"
-                className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800"
+                className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[13px] text-status-warning-text"
               >
-                Robot switched. Recording topics and QoS follow the new selection from
-                the next start. The ROS services (monitor, streamer, probe) keep the
-                previous robot&apos;s startup config until they are restarted —{' '}
-                <span className="font-mono">make restart monitor streamer probe</span>.
+                {t('robots.restartNote')}{' '}
+                <span className="font-mono">{t('robotsRestartCommand')}</span>
               </div>
             )}
             <ActiveRobotDetail config={config} />
@@ -272,28 +274,23 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
               onSelect={(category, id) => selectMutation.mutate({ category, id })}
             />
             <div>
-              <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
-                Recording config
+              <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
+                {t('robots.recordingConfig')}
               </h3>
               {config ? (
                 <RecordingConfigEditor config={config} />
               ) : (
-                <p className="text-sm text-gray-500">
-                  Recording config is unavailable — the runtime config could not be
-                  loaded.
-                </p>
+                <p className="text-sm text-text-muted">{t('common.loading')}</p>
               )}
             </div>
             <div>
-              <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
-                Stream config
+              <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
+                {t('robots.streamConfig')}
               </h3>
               {config ? (
                 <StreamConfigEditor config={config} />
               ) : (
-                <p className="text-sm text-gray-500">
-                  Stream config is unavailable — the runtime config could not be loaded.
-                </p>
+                <p className="text-sm text-text-muted">{t('common.loading')}</p>
               )}
             </div>
           </div>
@@ -305,7 +302,7 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
       <Modal
         open={confirmActivate}
         onClose={() => setConfirmActivate(false)}
-        title="Switch robots?"
+        title={t('robots.switchTitle')}
         footer={
           <>
             <Button
@@ -313,21 +310,19 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
               onClick={() => setConfirmActivate(false)}
               disabled={switching}
             >
-              Cancel
+              {t('common.cancel')}
             </Button>
             <Button variant="danger" onClick={stopAndSwitch} disabled={switching}>
               {stopMutation.isPending
-                ? 'Stopping…'
+                ? t('robots.stopping')
                 : switching
-                  ? 'Switching…'
-                  : 'Stop & switch'}
+                  ? t('robots.switching')
+                  : t('robots.switchStop')}
             </Button>
           </>
         }
       >
-        {captureLive
-          ? 'A capture is live — recording, or armed and waiting for a start. Switching robots will stop it. Stop and switch?'
-          : 'The recorder did not report its live captures, so it cannot be confirmed that nothing is running. Switching robots stops whatever is. Stop and switch?'}
+        {captureLive ? t('robots.liveWarning') : t('robots.unknownLiveWarning')}
         {stopMutation.isError && (
           <div className="mt-2">
             <ErrorMessage error={stopMutation.error} />
@@ -340,14 +335,11 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
 
 /** Persistent explainer for "+ Add robot" (no in-console create API yet). */
 function AddRobotExplainer() {
+  const { t } = useTranslation('settings');
   return (
     <div className="flex flex-col gap-3 p-[18px]" data-testid="robot-add-explainer">
-      <p className="text-sm leading-relaxed text-gray-600">
-        Adding a robot means creating a{' '}
-        <span className="font-mono text-gray-800">config/&lt;robot&gt;/</span> folder on
-        the server (recording / stream / validation / validators YAML). There&apos;s no
-        in-console create yet. Meanwhile, select any robot below to inspect its config
-        as a template.
+      <p className="text-sm leading-relaxed text-text-secondary">
+        {t('robots.addDescription')}
       </p>
     </div>
   );
@@ -355,16 +347,19 @@ function AddRobotExplainer() {
 
 /** The active robot's real, read-only runtime values (GET /api/v1/config). */
 function ActiveRobotDetail({ config }: { config: RuntimeConfig | undefined }) {
+  const { t } = useTranslation('settings');
   const domain = config?.defaults.ros_domain_id;
   const topics = config?.defaults.default_topics ?? [];
   return (
     <div className="flex flex-col gap-3">
       <div className="grid grid-cols-2 gap-x-5 gap-y-3.5">
-        <Field label="ROS_DOMAIN_ID" mono>
+        <Field label={t('system.rosDomain')} mono>
           {domain !== undefined ? String(domain) : '—'}
         </Field>
-        <Field label="Config source">
-          <span className="text-gray-500">GET /api/v1/config · read-only</span>
+        <Field label={t('robots.configSource')}>
+          <span className="text-text-muted">
+            GET /api/v1/config · {t('common.readOnly')}
+          </span>
         </Field>
       </div>
       <TopicChips
@@ -378,6 +373,7 @@ function ActiveRobotDetail({ config }: { config: RuntimeConfig | undefined }) {
 
 /** A non-active robot's config, read-only, from GET /api/v1/config/robots/{robot}. */
 function ReadOnlyRobotDetail({ robot }: { robot: string }) {
+  const { t } = useTranslation('settings');
   const query = useQuery({
     queryKey: queryKeys.configRobot(robot),
     queryFn: ({ signal }) => getRobotConfig(robot, { signal }),
@@ -387,27 +383,28 @@ function ReadOnlyRobotDetail({ robot }: { robot: string }) {
     <div className="flex flex-col gap-4 p-[18px]">
       <div
         data-testid="robot-readonly-banner"
-        className="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800"
+        className="rounded-control border border-status-warning-border bg-status-warning-bg px-3 py-2 text-[13px] text-status-warning-text"
       >
-        Read-only — <span className="font-mono">{robot}</span> is not the active robot.
-        Activate it to edit.
+        {t('robots.readOnlyConfig', { robot })}
       </div>
 
       {query.isError ? (
         <ErrorMessage error={query.error} />
       ) : query.isPending ? (
-        <p className="text-sm text-gray-500">Loading {robot}’s config…</p>
+        <p className="text-sm text-text-muted">
+          {t('robots.loadingConfig', { robot })}
+        </p>
       ) : (
         <>
           <div className="grid grid-cols-2 gap-x-5 gap-y-3.5">
-            <Field label="ROS_DOMAIN_ID" mono>
+            <Field label={t('system.rosDomain')} mono>
               {query.data.summary.ros_domain_id != null
                 ? String(query.data.summary.ros_domain_id)
                 : '—'}
             </Field>
-            <Field label="Config source">
-              <span className="text-gray-500">
-                GET /api/v1/config/robots · read-only
+            <Field label={t('robots.configSource')}>
+              <span className="text-text-muted">
+                GET /api/v1/config/robots · {t('common.readOnly')}
               </span>
             </Field>
           </div>
@@ -417,11 +414,11 @@ function ReadOnlyRobotDetail({ robot }: { robot: string }) {
             chipsTestId="robot-readonly-topic-chips"
           />
           <div>
-            <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
-              Recording config
+            <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
+              {t('robots.recordingConfig')}
             </h3>
             <textarea
-              aria-label="recording config json (read-only)"
+              aria-label={t('robots.recordingReadOnlyAria')}
               data-testid="robot-readonly-config"
               readOnly
               disabled
@@ -431,30 +428,29 @@ function ReadOnlyRobotDetail({ robot }: { robot: string }) {
                 null,
                 2,
               )}
-              className="h-80 w-full rounded-control border border-gray-200 bg-gray-50 p-2 font-mono text-xs text-gray-600"
+              className="h-80 w-full rounded-control border border-border bg-surface-muted p-2 font-mono text-xs text-text-secondary"
             />
-            <p className="mt-1.5 text-xs text-gray-500">
-              Shown as a template. Activate {robot} to edit its recording config.
+            <p className="mt-1.5 text-xs text-text-muted">
+              {t('robots.templateConfig', { robot, aspect: t('recording.title') })}
             </p>
           </div>
           <div>
-            <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
-              Stream config
+            <h3 className="mb-2 text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
+              {t('robots.streamConfig')}
             </h3>
             {query.data.aspects.stream ? (
               <textarea
-                aria-label="stream config json (read-only)"
+                aria-label={t('robots.streamReadOnlyAria')}
                 data-testid="robot-readonly-stream-config"
                 readOnly
                 disabled
                 spellCheck={false}
                 value={JSON.stringify(query.data.aspects.stream.content ?? {}, null, 2)}
-                className="h-40 w-full rounded-control border border-gray-200 bg-gray-50 p-2 font-mono text-xs text-gray-600"
+                className="h-40 w-full rounded-control border border-border bg-surface-muted p-2 font-mono text-xs text-text-secondary"
               />
             ) : (
-              <p className="text-sm text-gray-500">
-                {robot} has no stream config (the Collect camera grid falls back to one
-                empty pane).
+              <p className="text-sm text-text-muted">
+                {t('robots.noStreamConfig', { robot })}
               </p>
             )}
           </div>
@@ -474,17 +470,20 @@ function TopicChips({
   summaryTestId: string;
   chipsTestId: string;
 }) {
+  const { t } = useTranslation('settings');
   return (
     <div className="flex flex-col gap-[7px]">
       <div className="flex items-center gap-2">
-        <span className="text-xs font-semibold text-gray-700">Recorded topics</span>
+        <span className="text-xs font-semibold text-text-primary">
+          {t('robots.recordedTopics')}
+        </span>
         <span
           data-testid={summaryTestId}
-          className="font-mono text-[11.5px] text-gray-500"
+          className="font-mono text-[11.5px] text-text-muted"
         >
           {topics.length
-            ? `${topics.length} recorded topic${topics.length === 1 ? '' : 's'}`
-            : 'none configured'}
+            ? t('robots.recordedTopicCount', { count: topics.length })
+            : t('robots.noTopicsConfigured')}
         </span>
       </div>
       {topics.length > 0 && (
@@ -510,10 +509,11 @@ function AspectPickers({
   selecting: boolean;
   onSelect: (category: ConfigAspect, id: string) => void;
 }) {
+  const { t } = useTranslation('settings');
   return (
     <div className="flex flex-col gap-2.5" data-testid="aspect-pickers">
-      <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
-        Config options
+      <h3 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
+        {t('robots.configOptions')}
       </h3>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         {ASPECTS.map((aspect) => {
@@ -522,21 +522,25 @@ function AspectPickers({
           return (
             <label key={aspect} className="flex flex-col gap-1.5 text-sm">
               <span className="flex flex-wrap items-center gap-2">
-                <span className="font-medium text-gray-700">
-                  {ASPECT_LABEL[aspect]}
+                <span className="font-medium text-text-primary">
+                  {t(`robots.aspects.${aspect}`)}
                 </span>
                 <Badge tone={IMMEDIATE[aspect] ? 'green' : 'gray'} dot>
-                  {IMMEDIATE[aspect] ? 'applies immediately' : 'applies on restart'}
+                  {IMMEDIATE[aspect]
+                    ? t('common.applyImmediately')
+                    : t('common.applyOnRestart')}
                 </Badge>
               </span>
               {options.length === 0 ? (
-                <span className="text-[12.5px] text-gray-500">
-                  No options for this robot.
+                <span className="text-[12.5px] text-text-muted">
+                  {t('common.noOptions')}
                 </span>
               ) : (
                 <select
-                  aria-label={`${aspect} option`}
-                  className="rounded-control border border-gray-200 px-2 py-1.5 font-mono text-[12.5px] focus:border-teal-600 focus:outline-none disabled:opacity-50"
+                  aria-label={t('robots.aspectOption', {
+                    aspect: t(`robots.aspects.${aspect}`),
+                  })}
+                  className="rounded-control border border-border px-2 py-1.5 font-mono text-[12.5px] focus:border-accent focus:outline-none disabled:opacity-50"
                   value={state.active}
                   disabled={selecting}
                   onChange={(e) => onSelect(aspect, e.target.value)}
@@ -544,7 +548,7 @@ function AspectPickers({
                   {options.map((o: AspectOption) => (
                     <option key={o.id} value={o.id}>
                       {optionLabel(aspect, o)}
-                      {o.local ? ' · local' : ''}
+                      {o.local ? ` · ${t('common.local')}` : ''}
                     </option>
                   ))}
                 </select>
@@ -568,10 +572,10 @@ function Field({
 }) {
   return (
     <div className="flex flex-col gap-[5px]">
-      <span className="text-xs font-semibold text-gray-700">{label}</span>
+      <span className="text-xs font-semibold text-text-primary">{label}</span>
       <div
         className={cn(
-          'rounded-[9px] border border-gray-200 bg-white px-[11px] py-2 text-[13px] text-gray-900',
+          'rounded-[9px] border border-border bg-surface px-[11px] py-2 text-[13px] text-text-primary',
           mono ? 'font-mono' : '',
         )}
       >

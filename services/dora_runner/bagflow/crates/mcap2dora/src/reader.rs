@@ -253,7 +253,8 @@ impl TopicState {
         // Arrow timestamps are i64 nanoseconds; a u64 past i64::MAX would wrap
         // into a negative time rather than fail
         self.ts_log.push(
-            i64::try_from(log_time).context("log_time is beyond the range of an Arrow timestamp")?,
+            i64::try_from(log_time)
+                .context("log_time is beyond the range of an Arrow timestamp")?,
         );
         self.ts_pub.push(
             i64::try_from(publish_time)
@@ -417,8 +418,7 @@ impl<'a> McapArrowReader<'a> {
             }
             if let Err(e) = st.push(&m.data, m.log_time, m.publish_time) {
                 if self.opts.strict {
-                    return Err(e)
-                        .with_context(|| format!("decoding topic `{}`", m.channel.topic));
+                    return Err(e).with_context(|| format!("decoding topic `{}`", m.channel.topic));
                 }
                 st.mark_failed();
                 self.stats

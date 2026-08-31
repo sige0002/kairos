@@ -19,36 +19,51 @@
 
 import { useUiStore, type MonitorBridge, type SseStatus } from '../../store/uiStore';
 import { Badge, type Tone } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 
 interface Chip {
   tone: Tone;
   label: string;
 }
 
-function orchestratorChip(s: SseStatus): Chip {
+function orchestratorChip(
+  s: SseStatus,
+  labels: Record<'reachable' | 'connecting' | 'reconnecting' | 'unreachable', string>,
+): Chip {
   switch (s) {
     case 'open':
-      return { tone: 'green', label: 'reachable' };
+      return { tone: 'green', label: labels.reachable };
     case 'connecting':
-      return { tone: 'amber', label: 'connecting…' };
+      return { tone: 'amber', label: labels.connecting };
     case 'reconnecting':
-      return { tone: 'amber', label: 'reconnecting…' };
+      return { tone: 'amber', label: labels.reconnecting };
     case 'closed':
     default:
-      return { tone: 'red', label: 'unreachable' };
+      return { tone: 'red', label: labels.unreachable };
   }
 }
 
-function monitorChip(b: MonitorBridge): Chip {
-  if (b === 'up') return { tone: 'green', label: 'reachable' };
-  if (b === 'down') return { tone: 'red', label: 'unreachable' };
-  return { tone: 'gray', label: 'not reported' };
+function monitorChip(
+  b: MonitorBridge,
+  labels: Record<'reachable' | 'unreachable' | 'notReported', string>,
+): Chip {
+  if (b === 'up') return { tone: 'green', label: labels.reachable };
+  if (b === 'down') return { tone: 'red', label: labels.unreachable };
+  return { tone: 'gray', label: labels.notReported };
 }
 
-function HealthRow({ label, chip, testId }: { label: string; chip: Chip; testId: string }) {
+function HealthRow({
+  label,
+  chip,
+  testId,
+}: {
+  label: string;
+  chip: Chip;
+  testId: string;
+}) {
   return (
     <div className="flex items-center gap-2 text-xs">
-      <span className="text-gray-600">{label}</span>
+      <span className="text-text-secondary">{label}</span>
       <div className="flex-1" />
       <span data-testid={testId}>
         <Badge tone={chip.tone} dot>
@@ -60,23 +75,33 @@ function HealthRow({ label, chip, testId }: { label: string; chip: Chip; testId:
 }
 
 export function ComponentHealth() {
+  const { t } = useTranslation('monitor');
   const sseStatus = useUiStore((s) => s.sseStatus);
   const bridge = useUiStore((s) => s.monitorBridge);
 
   return (
     <div className="flex flex-col gap-2.5" data-testid="component-health">
       <HealthRow
-        label="Orchestrator"
-        chip={orchestratorChip(sseStatus)}
+        label={t('health.orchestrator')}
+        chip={orchestratorChip(sseStatus, {
+          reachable: t('health.reachable'),
+          connecting: t('health.connecting'),
+          reconnecting: t('health.reconnecting'),
+          unreachable: t('health.unreachable'),
+        })}
         testId="health-orchestrator"
       />
-      <HealthRow label="Monitor" chip={monitorChip(bridge)} testId="health-monitor" />
-      <p className="text-[11.5px] leading-relaxed text-gray-500">
-        Orchestrator health is this browser&apos;s live event stream (SSE); monitor health is
-        the orchestrator&#8202;→&#8202;monitor bridge. Per-container recorder / streamer
-        readiness is checked server-side by the orchestrator&apos;s <code>/readyz</code>{' '}
-        (which feeds the Docker health checks and <code>docker compose ps</code>) and is not
-        exposed at the browser origin.
+      <HealthRow
+        label={t('health.monitor')}
+        chip={monitorChip(bridge, {
+          reachable: t('health.reachable'),
+          unreachable: t('health.unreachable'),
+          notReported: t('health.notReported'),
+        })}
+        testId="health-monitor"
+      />
+      <p className="text-[11.5px] leading-relaxed text-text-muted">
+        {t('health.explanation')}
       </p>
     </div>
   );

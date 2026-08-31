@@ -12,6 +12,7 @@
 // removed.
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiGet, apiPost } from '../../api/client';
 import { queryKeys } from '../../api/queryKeys';
@@ -36,6 +37,7 @@ function lossTopics(detail: CaptureDetail): LossTopic[] | null {
 }
 
 export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
+  const { t } = useTranslation('datasets');
   const queryClient = useQueryClient();
   const [lossJobId, setLossJobId] = useState<string | null>(null);
   const captureId = detail.capture_id;
@@ -60,7 +62,9 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
   useQuery({
     queryKey: queryKeys.job(lossJobId ?? ''),
     queryFn: ({ signal }) =>
-      apiGet<JobStatus>(`/jobs/${encodeURIComponent(lossJobId ?? '')}/status`, { signal }),
+      apiGet<JobStatus>(`/jobs/${encodeURIComponent(lossJobId ?? '')}/status`, {
+        signal,
+      }),
     enabled: !!lossJobId,
     refetchInterval: (q) => {
       const state = q.state.data?.state;
@@ -81,17 +85,20 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
       <section>
         <div className="mb-1.5 flex items-center justify-between gap-2">
           <span className="flex items-baseline gap-1.5">
-            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-              Loss report
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+              {t('lossReport')}
             </h3>
             {/* Dated for the same reason as Review's (#9): a table a failed
                 attempt calls "the last completed report" has to be datable, or
                 the operator cannot tell which run produced it. */}
             {topics && (
-              <span data-testid="dataset-loss-checked" className="text-[11px] text-gray-500">
+              <span
+                data-testid="dataset-loss-checked"
+                className="text-[11px] text-text-muted"
+              >
                 {lossCheckedAt
-                  ? `checked ${formatWhen(lossCheckedAt)}`
-                  : 'last completed report'}
+                  ? t('lossChecked', { when: formatWhen(lossCheckedAt) })
+                  : t('lossLastCompleted')}
               </span>
             )}
           </span>
@@ -100,14 +107,14 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
             data-testid="run-loss-report-btn"
             onClick={() => lossMutation.mutate()}
             disabled={!present || lossMutation.isPending || !!lossJobId}
-            title={
-              present
-                ? undefined
-                : 'The recording is not readable on this machine, so there is nothing to analyze here.'
-            }
-            className="rounded-[9px] border border-teal-200 px-2.5 py-1 text-xs font-bold text-teal-700 hover:bg-teal-50 disabled:opacity-50"
+            title={present ? undefined : t('lossNotLocal')}
+            className="rounded-[9px] border border-accent px-2.5 py-1 text-xs font-bold text-accent hover:bg-interaction-selected disabled:opacity-50"
           >
-            {lossJobId ? 'Analyzing…' : lossMutation.isPending ? 'Starting…' : 'Run loss report'}
+            {lossJobId
+              ? t('analyzing')
+              : lossMutation.isPending
+                ? t('starting')
+                : t('runLossReport')}
           </button>
         </div>
         {/* Same shape as Review's sections (#9): the note sits directly above a
@@ -118,20 +125,20 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
           testId="dataset-loss-error"
           staleNote={
             topics
-              ? `The table below is the last completed loss report` +
-                `${lossCheckedAt ? ` (${formatWhen(lossCheckedAt)})` : ''}, not this attempt.`
+              ? t('lossStale', {
+                  when: lossCheckedAt ? ` (${formatWhen(lossCheckedAt)})` : '',
+                })
               : undefined
           }
           onRetry={() => lossMutation.mutate()}
           retryDisabled={!present || lossMutation.isPending || !!lossJobId}
-          retryLabel="Retry loss report"
+          retryLabel={t('retryLossReport')}
         />
         {topics ? (
           <LossTable topics={topics} />
         ) : (
-          <p className="text-xs leading-relaxed text-gray-500">
-            Per-topic loss rate (gap-based estimate) computed straight from the MCAP.
-            Shortfalls are an observed estimate, not confirmed packet loss.
+          <p className="text-xs leading-relaxed text-text-muted">
+            {t('lossExplanation')}
           </p>
         )}
       </section>
@@ -140,26 +147,24 @@ export function DatasetInspection({ detail }: { detail: CaptureDetail }) {
         <VideoCheckSection topics={detail.topics ?? []} captureId={captureId} />
       ) : (
         <section>
-          <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-            Video check
+          <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+            {t('videoCheck')}
           </h3>
-          <p className="mt-1.5 text-xs leading-relaxed text-gray-500">
-            No readable copy of this recording on this machine, so there are no frames
-            to decode. The membership is unaffected — a dataset may cite a capture
-            whose bytes live elsewhere.
+          <p className="mt-1.5 text-xs leading-relaxed text-text-muted">
+            {t('noLocalVideo')}
           </p>
         </section>
       )}
 
       <section className="flex flex-col gap-2">
-        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Sidecars
+        <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+          {t('sidecars')}
         </h3>
-        <JsonBlock label="Object manifest" value={detail.manifest} />
-        <JsonBlock label="Record (review)" value={detail.record} />
-        <JsonBlock label="Validation" value={detail.validation} />
+        <JsonBlock label={t('objectManifest')} value={detail.manifest} />
+        <JsonBlock label={t('recordReview')} value={detail.record} />
+        <JsonBlock label={t('validationSidecar')} value={detail.validation} />
         {!detail.manifest && !detail.record && !detail.validation && (
-          <p className="text-xs text-gray-500">No JSON sidecars present for this capture.</p>
+          <p className="text-xs text-text-muted">{t('noJsonSidecars')}</p>
         )}
       </section>
     </div>

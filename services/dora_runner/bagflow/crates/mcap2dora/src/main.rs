@@ -151,7 +151,15 @@ fn convert(mode: Mode, out: &Path, input: &Path) -> Result<()> {
         }
     }
     let wall = t0.elapsed().as_secs_f64();
-    print_stats(input, mode, "file", input_bytes, out_bytes, wall, reader.stats());
+    print_stats(
+        input,
+        mode,
+        "file",
+        input_bytes,
+        out_bytes,
+        wall,
+        reader.stats(),
+    );
     Ok(())
 }
 

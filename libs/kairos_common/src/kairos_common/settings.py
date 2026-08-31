@@ -173,6 +173,9 @@ class Settings(BaseSettings):
     # itself and the orchestrator's lazy status reconciliation finalizes the
     # run as completed within one poll.
     max_record_seconds: Annotated[int, Field(ge=0)] = 600
+    # Optional browser-feedback TTS. This never gates recording; the single
+    # Kokoro sidecar is discovered at startup and may be unavailable.
+    tts_kokoro_url: str = "http://127.0.0.1:8050"
     # Optional path to the topic_monitor alert-definition file.
     alert_config_path: str | None = None
 

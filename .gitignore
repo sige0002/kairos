@@ -147,6 +147,8 @@ log/
 # Image archives written by `make images-save` (multi-GB; carried by hand to an
 # offline machine, never committed).
 /kairos-images*.tar.gz
+/kairos-images*.tar.gz.sha256
+/kairos-images*.tar.gz.manifest.tsv
 
 # Work-process screenshots (UI checks, Playwright MCP shots, any dev imagery):
 # the ONE canonical scratch location is /dev_image (see the v2-screen-work

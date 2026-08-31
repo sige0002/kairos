@@ -1,7 +1,7 @@
 # =============================================================================
 # kairos — root docker compose entry point.
-# Brings up all 7 services (recorder / monitor / streamer / probe / orchestrator
-# / dora_runner / frontend). Wires env, ports, volumes, DDS networking, and a
+# Brings up 8 services (recorder / monitor / streamer / probe / orchestrator /
+# dora_runner / frontend / Kokoro). Wires env, ports, volumes, DDS networking, and a
 # per-service healthcheck.
 #
 #   cp .env.example .env   # then edit
@@ -62,17 +62,19 @@ x-no-proxy: &no-proxy
   NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
   no_proxy: ${NO_PROXY:-localhost,127.0.0.1}
 
-# Build-time proxy passthrough for the images whose builder stage fetches from
-# the internet: the 4 ROS ones run `uv pip install` against PyPI, and
-# dora_runner additionally builds the vendored bagflow crates (crates.io) and
-# downloads the dora CLI release. They need the same corporate proxy the host
-# uses (empty defaults are a no-op off-proxy). Paired with `build: network: host`
-# below so DNS resolution uses the host's resolver instead of Docker's isolated
-# build-bridge network.
+# Build-time proxy passthrough for every image. Dependency installers differ in
+# which casing they honor, so either host casing populates both forms. Empty
+# defaults are a no-op off-proxy. Paired with `build: network: host` below so a
+# builder can reach host/corporate proxy and DNS infrastructure instead of being
+# isolated behind Docker's build-bridge network. This does not change runtime
+# networking.
 x-build-proxy-args: &build-proxy-args
-  HTTP_PROXY: ${HTTP_PROXY:-}
-  HTTPS_PROXY: ${HTTPS_PROXY:-}
-  NO_PROXY: ${NO_PROXY:-}
+  HTTP_PROXY: ${HTTP_PROXY:-${http_proxy:-}}
+  HTTPS_PROXY: ${HTTPS_PROXY:-${https_proxy:-}}
+  NO_PROXY: ${NO_PROXY:-${no_proxy:-}}
+  http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
+  https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
+  no_proxy: ${no_proxy:-${NO_PROXY:-}}
   # Build identity, baked into every image (make derives it; '-dirty' when the
   # worktree has uncommitted changes). The recorder stamps it into capture
   # sidecars and the console compares both hosts' values — a robot still
@@ -104,7 +106,8 @@ services:
       args:
         <<: *build-proxy-args
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
-    image: kairos-rosbag2-recorder:${ROS_DISTRO:-jazzy}
+        ROS_BASE_IMAGE: ${ROS_BASE_IMAGE:-ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9}
+    image: kairos-rosbag2-recorder:${KAIROS_VERSION:-dev}-${ROS_DISTRO:-jazzy}
     env_file:
       - path: ${KAIROS_ENV_FILE:-.env}
         required: false
@@ -141,7 +144,8 @@ services:
       args:
         <<: *build-proxy-args
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
-    image: kairos-topic-monitor:${ROS_DISTRO:-jazzy}
+        ROS_BASE_IMAGE: ${ROS_BASE_IMAGE:-ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9}
+    image: kairos-topic-monitor:${KAIROS_VERSION:-dev}-${ROS_DISTRO:-jazzy}
     env_file:
       - path: ${KAIROS_ENV_FILE:-.env}
         required: false
@@ -184,7 +188,8 @@ services:
       args:
         <<: *build-proxy-args
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
-    image: kairos-webrtc-streamer:${ROS_DISTRO:-jazzy}
+        ROS_BASE_IMAGE: ${ROS_BASE_IMAGE:-ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9}
+    image: kairos-webrtc-streamer:${KAIROS_VERSION:-dev}-${ROS_DISTRO:-jazzy}
     env_file:
       - path: ${KAIROS_ENV_FILE:-.env}
         required: false
@@ -219,7 +224,8 @@ services:
       args:
         <<: *build-proxy-args
         ROS_DISTRO: ${ROS_DISTRO:-jazzy}
-    image: kairos-topic-probe:${ROS_DISTRO:-jazzy}
+        ROS_BASE_IMAGE: ${ROS_BASE_IMAGE:-ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9}
+    image: kairos-topic-probe:${KAIROS_VERSION:-dev}-${ROS_DISTRO:-jazzy}
     env_file:
       - path: ${KAIROS_ENV_FILE:-.env}
         required: false
@@ -244,10 +250,39 @@ services:
     restart: unless-stopped
 
   # ---- Pure-Python services (no rclpy) -------------------------------------
+  kokoro:
+    profiles: [audio]
+    build:
+      context: .
+      dockerfile: services/kokoro/Dockerfile
+      network: host
+      args:
+        <<: *build-proxy-args
+    image: kairos-kokoro:${KAIROS_VERSION:-dev}
+    environment:
+      <<: *no-proxy
+      KOKORO_BIND: 127.0.0.1
+      KOKORO_PORT: ${KOKORO_PORT:-8050}
+      KOKORO_THREADS: ${KOKORO_THREADS:-2}
+    network_mode: host
+    cpus: ${KOKORO_CPUS:-2}
+    cpu_shares: 128
+    mem_limit: ${KOKORO_MEMORY_LIMIT:-2g}
+    healthcheck:
+      <<: *healthcheck
+      start_period: 45s
+      test:
+        - CMD
+        - python3
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${KOKORO_PORT:-8050}/healthz', timeout=2)"
+    restart: unless-stopped
+
   orchestrator:
     build:
       context: .
       dockerfile: services/api_orchestrator/Dockerfile
+      network: host
       args:
         <<: *build-proxy-args
     # Release-versioned tag: KAIROS_VERSION comes from the root VERSION file (the
@@ -283,6 +318,7 @@ services:
       WEBRTC_HOST: ${WEBRTC_HOST:-localhost}
       TOPIC_PROBE_HOST: ${TOPIC_PROBE_HOST:-localhost}
       DORA_RUNNER_HOST: ${DORA_RUNNER_HOST:-localhost}
+      TTS_KOKORO_URL: ${TTS_KOKORO_URL:-http://127.0.0.1:8050}
     # Health = LIVENESS (/healthz), deliberately NOT readiness. The orchestrator's
     # /readyz aggregates downstream services (recorder/monitor/etc.), so wiring the
     # container healthcheck to it would flip the orchestrator to "unhealthy"
@@ -369,6 +405,9 @@ services:
     build:
       context: .
       dockerfile: services/frontend/Dockerfile
+      network: host
+      args:
+        <<: *build-proxy-args
     image: kairos-frontend:${KAIROS_VERSION:-dev}
     env_file:
       - path: ${KAIROS_ENV_FILE:-.env}

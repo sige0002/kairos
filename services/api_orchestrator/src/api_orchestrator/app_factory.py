@@ -32,7 +32,7 @@ from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response, status
 from kairos_common import (
     ApiError,
     Settings,
@@ -48,6 +48,7 @@ from kairos_common.stream_config import StreamConfig
 
 from api_orchestrator import bag_import
 from api_orchestrator import views as views_mod
+from api_orchestrator.audio_feedback import AudioFeedbackService, discover_provider
 from api_orchestrator.batch_service import BatchService
 from api_orchestrator.bootstrap import StoreStartupError, bootstrap_store, prepare_store
 from api_orchestrator.capture_archive import CaptureArchiveRuns
@@ -67,6 +68,7 @@ from api_orchestrator.reconciler import Reconciler
 from api_orchestrator.record_service import RecordService
 from api_orchestrator.recorder_client import RecorderClient
 from api_orchestrator.report_storage import ReportStorageService
+from api_orchestrator.routers import audio as audio_router
 from api_orchestrator.routers import batches as batches_router
 from api_orchestrator.routers import captures as captures_router
 from api_orchestrator.routers import config as config_router
@@ -134,7 +136,7 @@ def _readyz_probe(
     recorder: RecorderClient,
     monitor: MonitorClient,
     streamer: StreamerClient,
-) -> Callable[[], Awaitable[dict[str, object]]]:
+) -> Callable[[Response], Awaitable[dict[str, object]]]:
     """Build the ``/readyz`` probe that checks the downstreams.
 
     The recorder gates readiness; monitor and streamer outages are degraded
@@ -145,14 +147,19 @@ def _readyz_probe(
     lives instead.
     """
 
-    async def readyz() -> dict[str, object]:
-        recorder_ok = await recorder.healthz()
-        monitor_ok = await monitor.healthz()
-        streamer_ok = await streamer.healthz()
-        any_unreachable = not (recorder_ok and monitor_ok and streamer_ok)
-        status = "ready" if recorder_ok and not any_unreachable else "degraded"
+    async def readyz(response: Response) -> dict[str, object]:
+        recorder_ok, monitor_ok, streamer_ok = await asyncio.gather(
+            recorder.healthz(), monitor.healthz(), streamer.healthz()
+        )
+        if not recorder_ok:
+            response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            readiness = "unavailable"
+        elif not (monitor_ok and streamer_ok):
+            readiness = "degraded"
+        else:
+            readiness = "ready"
         return {
-            "status": status,
+            "status": readiness,
             "components": {
                 "recorder": _component_state(recorder_ok),
                 "monitor": _component_state(monitor_ok),
@@ -339,9 +346,11 @@ def create_orchestrator_app(
                 # have to know the catalog is reconstructed in two passes.
                 # Batches first: they are plain rows with no cross-references,
                 # and a dataset warning should not be lost to a batch failure.
+                batch_report = batch_service.restore_from_ledger()
+                dataset_report = dataset_service.restore_from_ledger()
                 health.add_rebuild_warnings(
-                    batch_service.restore_from_ledger().warnings
-                    + dataset_service.restore_from_ledger().warnings
+                    batch_report.warnings + dataset_report.warnings,
+                    dismissible=batch_report.dismissible_warnings,
                 )
             except ledger_v2.LedgerUnreadableError as exc:
                 # The same refusal bootstrap_store makes, for the same reason
@@ -389,6 +398,14 @@ def create_orchestrator_app(
         membership_resume_task.cancel()
         with suppress(asyncio.CancelledError):
             await membership_resume_task
+        # A POST /imports request returns before its copy and catalog write
+        # complete.  The task owns this app's store and data directory, so it
+        # must reach its terminal state before either can be torn down.  In
+        # particular, cancelling an ``asyncio.to_thread`` awaiter would leave
+        # its file copy running after shutdown, with an in-memory record stuck
+        # at ``running`` and a worker still able to touch a replaced catalog.
+        while import_tasks := app.state.import_tasks:
+            await asyncio.gather(*list(import_tasks), return_exceptions=True)
         await reconciler.stop()
         await validation_supervisor.stop()
         validation_run_store.close()
@@ -417,6 +434,15 @@ def create_orchestrator_app(
     app.state.views_refresher = views_refresh
     app.state.store_health = health
     app.state.data_layout = layout
+    app.state.audio_feedback = AudioFeedbackService(
+        layout.catalog / "audio",
+        provider=discover_provider(settings.tts_kokoro_url),
+        auto_discover=False,
+        rediscover=lambda: discover_provider(settings.tts_kokoro_url),
+    )
+    # Audio requests may queue behind each other, but recorder Prepare/Start
+    # never acquires this lock and instead preempts generation in the service.
+    app.state.audio_request_lock = asyncio.Lock()
     app.state.report_storage_service = ReportStorageService(layout, capture_store)
     app.state.instance_id = instance_id
     app.state.recorder_client = recorder
@@ -460,6 +486,7 @@ def create_orchestrator_app(
     app.state.stream_config_path = resolve_config_path(settings.stream_config)
 
     app.include_router(config_router.router)
+    app.include_router(audio_router.router)
     app.include_router(record_router.router)
     app.include_router(captures_router.router)
     app.include_router(captures_router.selection_router)

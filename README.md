@@ -7,8 +7,8 @@ A system that **records, monitors, validates, and converts** ROS 2 robot data. T
 recording format is **MCAP**, and live video, live metrics, and post-hoc validation are all
 organized around this "source of truth."
 
-> **Status:** All 7 services (frontend included) plus the UI-driven acceptance suite
-> (`make test-e2e`) are implemented. The architecture below is based on the `fig_const/` diagrams.
+> **Status:** All 8 core services (frontend and Kokoro TTS included), the optional LeRobot exporter, and the
+> UI-driven acceptance suite (`make test-e2e`) are implemented. The architecture below is based on the `fig_const/` diagrams.
 
 ## Architecture
 
@@ -32,6 +32,7 @@ flowchart TB
   end
 
   FE["frontend<br/>Vite + React + TS"]
+  TTS["kokoro<br/>local English/Japanese TTS<br/>outside recording path"]
 
   subgraph store["capture store (/data)"]
     MCAP[("objects/&lt;capture_id&gt;/<br/>*.mcap + object_manifest.json<br/>+ record.json = the source of truth")]
@@ -45,6 +46,7 @@ flowchart TB
   REC --> MCAP
   MCAP --> DR --> OUT
   FE <-->|"REST / SSE / WebRTC"| ORC
+  ORC <-->|"prepare voice assets"| TTS
   ORC <--> REC & MON & PROBE & WEB
   ORC <-->|"POST /jobs"| DR
   ORC -->|"indexes, deletes, regenerates views"| DB
@@ -78,6 +80,7 @@ flowchart LR
 | [api_orchestrator](docs/specs/en/api_orchestrator.md) | The single API hub. Handles job lifecycle, state, configuration, and result aggregation. |
 | [dora_runner](docs/specs/en/dora_runner.md) | Post-recording **validation & conversion** pipeline. Validation runs as a bundled **bagflow flow on real dora**. Enabled: `fast_validation` / `full_validation` / `loss_report` / `video_check` / `signal_report`. |
 | [frontend](docs/specs/en/frontend.md) | A backend-driven Web UI (UI labels in English). Role tabs (Console v2): Collect / Review / Datasets / Validation / Monitor / Settings. |
+| kokoro | Offline CPU English/Japanese TTS sidecar using Kokoro 82M. Settings prepares audio in advance; it never gates the recording path. |
 
 ## Specification docs
 
@@ -89,7 +92,61 @@ For the detailed spec of each service, see [docs/specs/en/](docs/specs/en/README
 
 - **Docker** / **Docker Compose** (to start all services together).
 - Place sample rosbags (**MCAP**) under `data/` for local verification (e.g. `data/airoa-moma-mcap/<episode>/`). `data/` and `*.mcap` are gitignored (not committed).
-- Only when running unit tests directly: **uv** (Python) and **Node.js + npm** (frontend).
+- For downloading and converting the public sample bag, or for running unit tests directly: **uv** (Python). Frontend unit tests also require **Node.js + npm**.
+
+### Supported environment
+
+| Item | Support range |
+|---|---|
+| Host | Linux x86_64 (CI uses an Ubuntu runner). Docker Desktop on macOS / Windows and arm64 are unverified. |
+| ROS 2 | **Jazzy**. To change `ROS_DISTRO`, also provide a digest-pinned `ROS_BASE_IMAGE` containing that distribution. A mismatched default Jazzy image stops the build explicitly. |
+| RMW | `rmw_fastrtps_cpp` is covered by the acceptance gate. `rmw_cyclonedds_cpp` is bundled, but the robot, replay, and every service must switch together and release CI does not cover it. |
+| Docker | Docker Engine 24 or later and Docker Compose 2.24 or later (`env_file.required` is used). |
+| Development tools | Python 3.12 or later, uv 0.10.0, and Node.js 22. Normal operation uses the versions bundled in containers. |
+| Browser | The Chromium bundled with Playwright is covered by acceptance tests. Other browsers are unverified. |
+
+Resource needs vary with topic count, image bandwidth, and recording duration, so no fixed minimum is
+guaranteed. Start with 4 CPUs, 8 GiB RAM, and 2 GiB shared memory for dora; reserve at least twice the
+planned recording volume on the data filesystem. Re-measure with `make smoke-record` and a long representative
+bag run before deployment.
+
+### Prepare the public sample bag (~10 seconds)
+
+Use episode `235210` from the
+[AIRoA Raw Rosbag Dataset](https://huggingface.co/datasets/airoa-org/airoa-moma-raw)
+as the smallest sample (~10.1 seconds, ~63 MB download). The dataset is public, but you must accept
+its access conditions. Log in to Hugging Face and select **Agree and access repository** on the
+dataset page. Follow the source dataset's **CC BY-NC-SA 4.0** license.
+
+The distributed file is a ROS 1 `data.bag`, so convert it once to the ROS 2 MCAP format replayed by
+kairos. Run the following from the repository root:
+
+```bash
+# Browser authentication; skip if you have already run hf auth login
+uvx --from huggingface_hub hf auth login
+
+# Download only the ~10-second episode 235210, not all 7 episodes
+uvx --from huggingface_hub hf download \
+  airoa-org/airoa-moma-raw 235210/data.bag \
+  --repo-type dataset \
+  --local-dir data/airoa-moma-raw
+
+# ROS 1 bag -> ROS 2 MCAP (output: metadata.yaml + 235210.mcap)
+uvx --from rosbags==0.11.3 rosbags-convert \
+  --src data/airoa-moma-raw/235210/data.bag \
+  --dst data/airoa-moma-mcap/235210 \
+  --dst-storage mcap
+```
+
+`data/` is already gitignored. If `data/airoa-moma-mcap/235210/` already exists, no reconversion is
+needed. After starting the stack, replay the default short bag on a loop from another terminal:
+
+```bash
+make rosbag-loop    # Stop with Ctrl+C
+```
+
+Run `make table` in another terminal to inspect every topic's Hz / bandwidth / count, or run
+`make smoke` for an end-to-end health → topic discovery → live metrics check.
 
 ### Start all services (Docker)
 
@@ -102,6 +159,10 @@ cp .env.example .env          # edit as needed
 docker compose --project-directory . -f compose/compose.yaml build
 docker compose --project-directory . -f compose/compose.yaml up
 ```
+
+On a PC that also uses Settings Voice/TTS, enable `COMPOSE_PROFILES=audio` in `.env`
+before running the same `make build` and `make up`. Kokoro is off by default because it
+uses about 1.5 GiB of memory.
 
 > **`make up` does not build** (it only starts). Building needs the network even when nothing changed,
 > so an `up` that always built could not bring the stack up **in the field with no network**. To apply
@@ -211,13 +272,18 @@ rsync -av \
   --exclude='/deploy/msgs_overlay/*/log/' \
   --exclude='/backups/' --exclude='*.tar.gz' \
   ~/kairos/ <user>@<host>:~/kairos/
-scp kairos-images.tar.gz <user>@<host>:~/
+scp kairos-images.tar.gz kairos-images.tar.gz.sha256 kairos-images.tar.gz.manifest.tsv <user>@<host>:~/
 
 # 3. on that machine
 make images-load IMAGES_FILE=~/kairos-images.tar.gz
 make up                             # or make robot-up
 make smoke                          # check it works (the harness travelled too)
 ```
+
+Rollback requires retaining the previous version's three artifacts: archive, checksum, and manifest. Stop an
+active recording and let its sidecar finalize, load the previous archive with `make images-load`, return to the
+previous checkout, run `make up`, and finish with `make smoke-record`. The DB is rebuildable, but do not roll back
+across a configuration or sidecar incompatibility called out in the Release notes.
 
 Why each exclusion, with measured sizes (from this setup — yours will differ):
 
@@ -341,8 +407,8 @@ Collect / Review / Datasets / Validation / Monitor / Settings).
 - **Unit tests**: `make test` (= each Python service `uv run --extra test pytest` + frontend `npm run build && npm test && npm run lint`).
 - **Acceptance tests (from the UI, against a real stack)**: `make test-e2e`. It brings up a real stack on
   dedicated ports and a dedicated data dir and drives the frontend in a real browser (Playwright) against a
-  real bag on loop playback. 5 scenarios = record → digest completes / Review save and conflict rejection /
-  Discard and the ledger tombstone / deleting `kairos.db` and recovering / `rm -rf` → SUSPECT → Repair.
+  real bag on loop playback. It currently has 10 specs / 15 tests covering recording, Review, Discard,
+  DB rebuild, missing-data Repair, recorder failure, archive, Validation, Monitor, and Settings.
   It **coexists** with a developer's `make up` (different ports, different data dir).
   **`make test-e2e` does not build images** (the same rule as `make up`). After changing code, run `make build`
   first — forget it and you get a green run against the **stale code** inside the containers.
@@ -356,27 +422,31 @@ For detailed commands and verified recipes, see "ビルド / テスト / 実行�
 ## Releases
 
 Versioning follows [SemVer](https://semver.org/). The current version is the root
-[`VERSION`](VERSION) file (single source of truth); the history is in
-[`CHANGELOG.md`](CHANGELOG.md).
+[`VERSION`](VERSION) file (single source of truth). CHANGELOG is local-only and is not tracked by Git;
+public changes are recorded in the GitHub Release notes associated with each tag.
 
 - **CI** (`.github/workflows/`) gates every push / PR to `develop` and `main`:
-  Python unit tests (shared lib + all six Python services), the frontend
-  build/test/lint, Ruff lint + format, and `docker compose config` validation.
+  Python unit tests (shared lib + all seven Python services), the frontend
+  build/test/lint, Ruff lint + format, bagflow fmt/clippy/test/release build, and `docker compose config` validation.
   The recorder's real `ros2 bag record` round-trip runs in the separate
   **ROS integration** workflow (it needs the ROS 2 toolchain).
 - **Reproducible images**: each service installs its dependencies from the
   committed `uv.lock` (`uv sync --frozen`, no `>=` re-resolution), and base images
-  are pinned by patch tag + digest. `make build` / `make up` tag the images
-  `kairos-*:$(cat VERSION)` (via the exported `KAIROS_VERSION`); a bare
-  `docker compose build` falls back to `:dev`.
+  are pinned by patch tag + digest. `make build` / `make up` tag non-ROS images as
+  `kairos-*:$(cat VERSION)` and ROS images as `kairos-*:<version>-<ros-distro>`.
+  `make images-save` also writes a checksum and a manifest containing image IDs, platforms, and the git SHA;
+  `make images-load` verifies the checksum when present. A bare `docker compose build` falls back to `:dev`.
+  The tag/manual Release gate clean-builds every core image, the importer, and the replay harness, then runs
+  real-stack E2E against a generated small MCAP fixture. Release remains blocked until the upstream licenses
+  for the vendored bagflow sources are present.
 
 To cut a release:
 
 1. Bump [`VERSION`](VERSION) (e.g. `0.1.0` → `0.2.0`).
-2. In [`CHANGELOG.md`](CHANGELOG.md), move the **Unreleased** entries under a new
-   `## [x.y.z] - <date>` heading and start a fresh empty Unreleased section.
-3. Commit, then tag and push: `git tag -a vX.Y.Z -m "kairos vX.Y.Z" && git push --tags`.
-4. `make build` then produces the `kairos-*:X.Y.Z` images for that tag.
+2. Draft the public changes, compatibility notes, and known limitations in GitHub Release notes.
+3. Confirm that the Release gate, including the vendored-source license gate, is green.
+4. Commit, then tag and push: `git tag -a vX.Y.Z -m "kairos vX.Y.Z" && git push --tags`.
+5. Create the GitHub Release for that tag and attach the Release gate's image manifest.
 
 ## Documentation language rule
 
@@ -391,3 +461,5 @@ they are **Japanese only** and have no English mirror.
 - Write code, comments, and commit messages in English.
 - For working conventions and rules, see [AGENTS.md](AGENTS.md) (Japanese) — the canonical rules shared by
   coding agents and humans. Claude Code loads it from [CLAUDE.md](CLAUDE.md) via `@AGENTS.md`.
+- See [CONTRIBUTING.md](CONTRIBUTING.md) for external changes, [SUPPORT.md](SUPPORT.md) for issue diagnostics
+  and support scope, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community conduct.

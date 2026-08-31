@@ -23,13 +23,18 @@ export function useCollectOverlays({
   const [resetModalOpen, setResetModalOpen] = useState(false);
   const [targetModalOpen, setTargetModalOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [soundMenuOpen, setSoundMenuOpen] = useState(false);
 
-  const toggleBatchMenu = useCallback(() => setBatchMenuOpen((v) => !v), []);
+  const toggleBatchMenu = useCallback(() => {
+    setBatchMenuOpen((v) => !v);
+    setSoundMenuOpen(false);
+  }, []);
   const openProjPicker = useCallback(() => {
     if (!ctxEditable) return;
     setProjPickerOpen((v) => !v);
     setTaskPickerOpen(false);
     setBatchMenuOpen(false);
+    setSoundMenuOpen(false);
   }, [ctxEditable]);
   const toggleRobotPicker = useCallback(() => {
     if (!ctxEditable) return;
@@ -37,12 +42,14 @@ export function useCollectOverlays({
     setProjPickerOpen(false);
     setTaskPickerOpen(false);
     setBatchMenuOpen(false);
+    setSoundMenuOpen(false);
   }, [ctxEditable]);
   const openTaskPicker = useCallback(() => {
     if (!ctxEditable) return;
     setTaskPickerOpen((v) => !v);
     setProjPickerOpen(false);
     setBatchMenuOpen(false);
+    setSoundMenuOpen(false);
   }, [ctxEditable]);
   // The guards above only stop a picker being OPENED. Nothing dismissed one
   // already on screen, so a list opened before Start stayed live over a running
@@ -75,6 +82,13 @@ export function useCollectOverlays({
     setBatchMenuOpen(false);
   }, []);
   const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
+  const toggleSoundMenu = useCallback(() => {
+    setSoundMenuOpen((v) => !v);
+    setBatchMenuOpen(false);
+    setProjPickerOpen(false);
+    setTaskPickerOpen(false);
+    setRobotPickerOpen(false);
+  }, []);
 
   return {
     batchMenuOpen,
@@ -86,6 +100,7 @@ export function useCollectOverlays({
     resetModalOpen,
     targetModalOpen,
     shortcutsOpen,
+    soundMenuOpen,
     toggleBatchMenu,
     openProjPicker,
     toggleRobotPicker,
@@ -95,6 +110,7 @@ export function useCollectOverlays({
     openResetModal,
     openTargetModal,
     openShortcuts,
+    toggleSoundMenu,
     // Raw setters for the flows that close or open overlays from business
     // logic (batch menu actions, context rollover, shortcuts, closeModals).
     setBatchMenuOpen,
@@ -105,5 +121,6 @@ export function useCollectOverlays({
     setResetModalOpen,
     setTargetModalOpen,
     setShortcutsOpen,
+    setSoundMenuOpen,
   };
 }

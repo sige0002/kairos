@@ -5,6 +5,7 @@
 # low-latency WebRTC camera preview, so it is built FROM the ROS base image.
 # rclpy is lazy-imported, so the FastAPI health endpoints serve without ROS.
 ARG ROS_DISTRO=jazzy
+ARG ROS_BASE_IMAGE=ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9
 
 # ---- builder ----------------------------------------------------------------
 # Uses uv rather than apt's python3-pip/python3-venv: the ros:*-ros-base images
@@ -13,7 +14,9 @@ ARG ROS_DISTRO=jazzy
 # only-system + a bare "python3" interpreter name keep uv from trying to
 # download a standalone Python build (also DNS-blocked on the same networks).
 # uv is pinned by version + digest for reproducible builds (see README Releases).
-FROM ros:${ROS_DISTRO}-ros-base AS builder
+FROM ${ROS_BASE_IMAGE} AS builder
+ARG ROS_DISTRO
+RUN test -d "/opt/ros/${ROS_DISTRO}" || { echo "ROS_BASE_IMAGE does not provide ROS_DISTRO=${ROS_DISTRO}" >&2; exit 1; }
 COPY --from=ghcr.io/astral-sh/uv:0.10.0@sha256:78a7ff97cd27b7124a5f3c2aefe146170793c56a1e03321dd31a289f6d82a04f /uv /usr/local/bin/uv
 
 # --system-site-packages so the ROS-provided rclpy stays importable; the venv
@@ -39,8 +42,9 @@ RUN cd /app/services/webrtc_streamer \
     && uv sync --frozen --no-editable --no-dev
 
 # ---- runtime ----------------------------------------------------------------
-FROM ros:${ROS_DISTRO}-ros-base AS runtime
+FROM ${ROS_BASE_IMAGE} AS runtime
 ARG ROS_DISTRO
+RUN test -d "/opt/ros/${ROS_DISTRO}" || { echo "ROS_BASE_IMAGE does not provide ROS_DISTRO=${ROS_DISTRO}" >&2; exit 1; }
 ENV VENV=/opt/venv
 ENV PATH="$VENV/bin:$PATH"
 COPY --from=builder /opt/venv /opt/venv

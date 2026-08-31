@@ -28,6 +28,7 @@
 | `ROS_DOMAIN_ID` | `0` | 全サービス共通の ROS 2 ドメイン |
 | `TZ` | (make がホストから導出。空=UTC) | コンテナのタイムゾーン。recorder が刻む `run_YYYYMMDD_HHMMSS` の表示名がこの時計で決まる — 未設定だとコンテナは UTC で走り、壁時計と 9 時間（JST）ズレた run 名になる（2026-08-05 是正）。`make` 経由なら自動、素の compose では `.env` に `TZ=Asia/Tokyo` 等を書く |
 | `ROS_DISTRO` | `jazzy` | ベースイメージの ROS 2 ディストロ。`.env` の値が Makefile 組み込み既定に勝つ（`make` が `.env` を読んで export する） |
+| `ROS_BASE_IMAGE` | digest 固定の Jazzy ros-base | ROS image の build source。`ROS_DISTRO` を変更する場合は同じ distro を含む digest 固定 image を必ず併記する。不一致は Dockerfile が明示的に拒否する |
 | `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | DDS 実装。Fast DDS と Cyclone DDS の両 RMW をイメージに同梱しており、本キーで切替可能。Cyclone DDS のロボットには `rmw_cyclonedds_cpp` を指定する（後述） |
 | `DATA_DIR` | `./data` | ホスト側データ root（→ コンテナ `/data`） |
 | `ROBOT` | `airoa_hsr` | アクティブな機体。`config/<robot>/`（committed）または `config/local/<robot>/`（gitignored）を選ぶ。recording / stream / validation / validators / monitoring の各パスはこれから派生する（Makefile が committed/local を解決し、`docker compose` もネスト補間で尊重。さらに各サービスは**起動時**に、与えられた committed 形のパスが実在しなければ `config/local/` 側へ解決し直す — `kairos_common.resolve_config_path` — ため、素の `docker compose` でも local 機体が解決される）。Settings タブで機体 → aspect → option を選択・編集できる |
@@ -50,6 +51,11 @@
 | `WEBRTC_PACKET_MAX` | `1150` | RTP ペイロード上限（B）。既定 `1150` は MTU 1280 のトンネル（Tailscale/WireGuard）で断片化しないよう aiortc の 1300B 固定を縮小したもの。MTU 1500 の同一 LAN のみ `1300` に戻して overhead を減らせる |
 | `WEBRTC_KEEP_IPV6` | （未設定） | `1` で answer SDP の IPv6 ICE 候補除外を無効化。既定（未設定）では v6 候補を落とす（断片化 IPv6 が WireGuard/Tailscale でブラックホール化しプレビューが黒くなるのを防ぐ）。v6 でしか到達できない網でだけ `1` にする |
 | `LOG_LEVEL` | `INFO` | ログレベル |
+| `KOKORO_PORT` | `8050` | Kokoro sidecar が host network の `127.0.0.1` で待ち受ける port。変更時は `TTS_KOKORO_URL` の port も同じ値へ変更する |
+| `TTS_KOKORO_URL` | `http://127.0.0.1:8050` | orchestrator から見た単一の Kokoro 82M sidecar API。既定は host network の loopback にだけ bind し、browser はこの port に直接アクセスしない。切替対象の TTS engine は持たない |
+| `KOKORO_THREADS` | `2` | Kokoro CPU inference の thread 数 |
+| `KOKORO_CPUS` | `2` | Kokoro container の CPU 上限。録画開始時は inference worker 自体を終了する |
+| `KOKORO_MEMORY_LIMIT` | `2g` | opt-in Kokoro container のメモリ上限 |
 | `RETENTION_DAYS` | `0` | `0`=無効。`>0` で古い capture を保持期間で削除候補に（助言のみ） |
 | `KAIROS_ARCHIVE_ROOTS` | (任意・既定は空=無効) | capture / dataset の archive 先として許可するルート（`:` 区切り、**コンテナから見た絶対パス**）。空なら archive 機能自体を提供しない（必ず失敗するボタンを置かない）。destination はここに対して検証され、`data_dir` と重なるものは拒否される（[capture_store](capture_store.md) §6/§6.1）。**必ず volume マウントと対で設定する** — `.env`（split は `.env.split`）に `ARCHIVE_DIR=<host パス>` を足せば、**`make up` / `make recording-up` が `-f compose/archive.yaml` を自動で付ける**（`compose/archive.yaml` が `${ARCHIVE_DIR}` を `/archive` にマウントする。旧 `COMPOSE_FILE` 配線は廃止 — 明示の `-f` に常に負けるため）。マウント無しの root を許可すると、エクスポートは**コンテナ層に書かれて再作成で消える**（move ならその時点で源も削除済み）。素の `docker compose` を使う場合はコマンドラインに `-f compose/archive.yaml` を足す |
 | `KAIROS_REBUILD` | (未設定) | 立てると次回起動時に `kairos.db` をサイドカーから rebuild する。「`kairos.db` を消して再起動」の運用版（動いているコンテナからファイルを消させない） |
@@ -58,7 +64,8 @@
 | `DATA_DIR` 直下の**予約名** | — | `objects` / `views` / `.trash` / `.incoming` / `report` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db`（[capture_store](capture_store.md) §2）。これらと衝突する名前は **`POST /api/v1/datasets` の `name` / `operator` / `task`** に対してのみ `400 reserved_name` で拒否する（その 3 つだけが `views/` のパス構成要素になる）。**録画時の operator / task はパスにならないので対象外。** `objects` / `.trash` / `.incoming` は**同一ファイルシステム**上に無ければならない（起動時に検査し、違反していれば削除系 API が要求ごとに `503` を返す） |
 | `ALERT_CONFIG_PATH` | (任意・既定は空=無効) | `topic_monitor` のアラート定義ファイル（**コンテナ絶対**、規約は `/config/<robot>/monitoring/alerts.yaml`。`config/local/<robot>/...` の override が優先）。空＝アラート無効。`make` は `ROBOT` から自動導出、素の `docker compose` では手で設定 |
 | `CYCLONEDDS_URI` | (任意) | Cyclone DDS の設定ファイル URI（例 `file:///config/cyclonedds.xml`）。クロスホストで multicast discovery が通らない場合に unicast peer を明示するなどに使う。`env_file` 経由でコンテナに渡る（ROS サービスは `/config` を read-only マウント済み） |
-| `NO_PROXY` | `localhost,127.0.0.1` | コンテナ内 HTTP のプロキシ除外（`no_proxy` にも同値を配布）。corporate proxy 配下のホストでは Docker が `HTTP(S)_PROXY` を全コンテナへ注入するため、これが無いとヘルスチェックやサービス間 LAN 呼び出しがプロキシへ吸われて失敗する。クロスホスト分割ではロボット IP を追加する（`.env.split.example` 参照）。orchestrator の内部 httpx クライアントはそもそも `trust_env=False` |
+| `HTTP_PROXY` / `HTTPS_PROXY`（および小文字形） | (未設定) | **イメージ build 時**の corporate proxy。設定されていれば全 build サービスへ build arg として渡す。各 build は `network: host` を使うため、ホストから到達できる Zscaler 等の proxy/DNS に BuildKit からも到達できる。これは runtime の `network_mode` を変える設定ではない。ベースイメージの pull は Docker daemon が行うため、必要なら daemon 側にも別途 proxy を設定する。Make は proxy URL を通常出力へ表示しない |
+| `NO_PROXY` / `no_proxy` | `localhost,127.0.0.1` | build arg とコンテナ内 HTTP の両方のプロキシ除外。corporate proxy 配下のホストでは Docker が `HTTP(S)_PROXY` を全コンテナへ注入するため、これが無いとヘルスチェックやサービス間 LAN 呼び出しがプロキシへ吸われて失敗する。クロスホスト分割ではロボット IP を追加する（`.env.split.example` 参照）。orchestrator の内部 httpx クライアントはそもそも `trust_env=False` |
 | `KAIROS_DORA_MAX_CONCURRENCY` | `2` | `dora_runner` が同時実行するジョブ数の上限 |
 | `KAIROS_DORA_JOB_TIMEOUT_S` | `900` | `dora_runner` の 1 ジョブあたりの wall-clock 上限（秒） |
 
@@ -69,7 +76,7 @@
 | `RECORDER_HOST` / `TOPIC_MONITOR_HOST` / `WEBRTC_HOST` / `TOPIC_PROBE_HOST` / `DORA_RUNNER_HOST` | `localhost` | `api_orchestrator` が下流サービスに向ける接続先。録画 PC 側では recorder/monitor/streamer/probe をロボットの LAN IP に向ける（dora はローカル同居のまま） |
 | `API_HOST` / `WEBRTC_HOST` / `PROBE_HOST` | `127.0.0.1` | frontend の nginx リバースプロキシのアップストリーム先（`default.conf.template`）。録画 PC では `WEBRTC_HOST` / `PROBE_HOST` をロボット IP に |
 
-**サンプルbag再生ハーネス用**（`deploy/test/compose.yaml`。`make rosbag` / `make rosbag-loop` が読む。本体の 7 サービスには渡らない）:
+**サンプルbag再生ハーネス用**（`deploy/test/compose.yaml`。`make rosbag` / `make rosbag-loop` が読む。本体の 8 サービスには渡らない）:
 
 | キー | 既定 | 説明 |
 |---|---|---|
@@ -78,7 +85,7 @@
 
 - サービス間は信頼 LAN 内で通信する（既定は host networking で `localhost:<port>`。内部ポートも上表のとおり）。マルチテナント host ではブリッジ網 + DDS unicast に切替（`compose/compose.yaml` のネットワーク注記参照）。
 - 共通の設定スキーマは `libs/kairos_common`（pydantic-settings）に置き、各サービスが env を型付きで読む。
-- compose は全 7 サービスに `GET /healthz`（frontend は nginx root）ベースの healthcheck を持ち、frontend は `depends_on: orchestrator (service_healthy)` で orchestrator の healthy を待って起動する。
+- compose の通常起動は 7 サービスに `GET /healthz`（frontend は nginx root）ベースの healthcheck を持ち、frontend は `depends_on: orchestrator (service_healthy)` で orchestrator の healthy を待って起動する。約 1.5 GiB の常駐メモリを使う Kokoro 82M sidecar は `audio` profile の opt-in で、`COMPOSE_PROFILES=audio make up` のときだけ 8 番目のサービスとして起動する。録画を gate する依存起動条件にはせず、停止時も Voice だけを graceful に無効化する。録画開始時は inference worker を終了して CPU と model memory を解放し、次の Prepare で再ロードする。model config・weight・英日 voice subset は revision と SHA-256 を固定して image build 時に取得し、runtime download を禁止する。audio profile を含めて `make images-save` / `images-load` する設置では、オンライン環境で一度 build した後は録画 PC をオフライン運用できる。Kokoro の upstream code と model は Apache-2.0 で、image に license/NOTICE を同梱する（製品全体の法務判断を代替するものではなく、配布時は依存ライセンスも監査する）。
 
 ### DDS 実装の切替（Fast DDS ↔ Cyclone DDS）
 

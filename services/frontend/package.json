@@ -9,15 +9,17 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host --port 8080",
-    "lint": "eslint .",
+    "lint": "eslint . && node scripts/check-semantic-colors.mjs && node scripts/check-i18n-copy.mjs --self-test && node scripts/check-i18n-copy.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.51.0",
+    "i18next": "^25.10.10",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-i18next": "^15.7.4",
     "uplot": "^1.6.32",
     "zustand": "^4.5.4"
   },

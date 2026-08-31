@@ -22,8 +22,14 @@ import { EventsCard } from './EventsCard';
 import { SystemCard } from './SystemCard';
 import { useNowClock } from './useNowClock';
 import { useRecMarkers } from './useRecMarkers';
-import { MONITOR_WINDOWS, type MonitorWindowId, toggleTopic, windowMs } from './chartSeries';
+import {
+  MONITOR_WINDOWS,
+  type MonitorWindowId,
+  toggleTopic,
+  windowMs,
+} from './chartSeries';
 import { configSeedKey } from '../seedKey';
+import { useTranslation } from 'react-i18next';
 import {
   MAX_PANELS,
   addPanel,
@@ -34,13 +40,8 @@ import {
   usePanels,
 } from './panelStore';
 
-/** Coarse "time since Monitor opened" for the honesty note (e.g. `2m`, `45s`). */
-function formatElapsed(ms: number): string {
-  const secs = Math.floor(ms / 1000);
-  return secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m`;
-}
-
 export function TopicsView({ config }: { config: RuntimeConfig }) {
+  const { t } = useTranslation('monitor');
   const { rows, isDiscovering, malformedDropped, metricsStale } =
     useMonitorRows(config);
 
@@ -97,14 +98,21 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
     [now, openedAtMono],
   );
   const windowNotFull = elapsedMs < windowMs(windowId);
+  const elapsed =
+    elapsedMs < 60_000
+      ? t('topics.elapsedSeconds', { value: String(Math.floor(elapsedMs / 1000)) })
+      : t('topics.elapsedMinutes', { value: String(Math.floor(elapsedMs / 60_000)) });
 
   // --- panels ---------------------------------------------------------------
   const panels = usePanels();
   const availableNames = useMemo(() => rows.map((r) => r.name), [rows]);
 
   // Layout: one column for a single panel, two columns beyond that; panels share
-  // the left column's height (auto-rows-fr) and the chart height shrinks with the
-  // row count so the whole thing fits without page scroll.
+  // the chart area's height (auto-rows-fr) and the chart height shrinks with the
+  // row count so the whole thing fits without page scroll. On desktop the chart
+  // area and the topic table split the available desktop height evenly. This
+  // keeps the table useful without letting either surface dominate a tall
+  // monitor.
   const cols = panels.length >= 2 ? 2 : 1;
   const rowCount = Math.ceil(panels.length / cols);
   // Shrink the chart as rows stack so the panels + table fit without page scroll;
@@ -133,15 +141,22 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
 
         <div className="flex shrink-0 flex-wrap items-center gap-2.5">
           <span
-            className="font-mono text-[11.5px] text-gray-500"
-            title="History accumulates from when Monitor opened."
+            className="font-mono text-[11.5px] text-text-muted"
+            title={t('topics.historyTitle')}
           >
-            {rows.length} topics · {panels.length} chart{panels.length === 1 ? '' : 's'} · {windowId}{' '}
-            window{windowNotFull ? ` (${formatElapsed(elapsedMs)} so far)` : ''}
+            {t('topics.toolbar', {
+              topics: String(rows.length),
+              charts: String(panels.length),
+              window: windowId,
+              elapsed: windowNotFull ? t('topics.toolbarElapsed', { elapsed }) : '',
+            })}
           </span>
           {paused && (
-            <span data-testid="freeze-note" className="font-mono text-[11px] text-amber-700">
-              Charts frozen · table still live.
+            <span
+              data-testid="freeze-note"
+              className="font-mono text-[11px] text-status-warning-text"
+            >
+              {t('topics.frozen')}
             </span>
           )}
           {/* S3-6: with the SSE stream (or the monitor bridge) down, the
@@ -151,9 +166,9 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
           {metricsStale && (
             <span
               data-testid="metrics-stale-note"
-              className="font-mono text-[11px] text-amber-700"
+              className="font-mono text-[11px] text-status-warning-text"
             >
-              Live metrics unavailable — measured columns withheld.
+              {t('topics.stale')}
             </span>
           )}
           {/* The SSE ingest drops readings it cannot identify rather than
@@ -165,15 +180,14 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
           {malformedDropped > 0 && (
             <span
               data-testid="malformed-note"
-              title="These readings arrived in a shape this screen could not read — no usable topic name — so they were left out rather than shown under an invented one."
-              className="font-mono text-[11px] text-amber-700"
+              title={t('topics.malformedTitle')}
+              className="font-mono text-[11px] text-status-warning-text"
             >
-              {malformedDropped} reading{malformedDropped === 1 ? '' : 's'} ignored
-              (unreadable)
+              {t('topics.malformed', { count: malformedDropped })}
             </span>
           )}
           <div className="flex-1" />
-          <div className="flex gap-[3px] rounded-control border border-gray-200 bg-gray-100 p-1">
+          <div className="flex gap-[3px] rounded-control border border-border bg-surface-muted p-1">
             {MONITOR_WINDOWS.map((w) => (
               <button
                 key={w.id}
@@ -184,8 +198,8 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
                 className={cn(
                   'rounded-chip px-2.5 py-0.5 text-[11px] font-medium transition-colors',
                   w.id === windowId
-                    ? 'bg-white text-teal-700 shadow-sm'
-                    : 'text-gray-600 hover:text-gray-700',
+                    ? 'bg-surface text-accent shadow-sm'
+                    : 'text-text-secondary hover:text-text-primary',
                 )}
               >
                 {w.label}
@@ -196,32 +210,32 @@ export function TopicsView({ config }: { config: RuntimeConfig }) {
             type="button"
             data-testid="freq-pause"
             aria-pressed={paused}
-            title="Freezes the charts only — the topics table keeps updating live."
+            title={t('topics.freezeTitle')}
             onClick={() => setPaused((p) => !p)}
             className={cn(
               'rounded-control border px-3 py-1 text-[11px] font-medium transition-colors',
               paused
-                ? 'border-amber-200 bg-amber-50 text-amber-700'
-                : 'border-gray-200 bg-white text-gray-600 hover:bg-gray-50',
+                ? 'border-status-warning-border bg-status-warning-bg text-status-warning-text'
+                : 'border-border bg-surface text-text-secondary hover:bg-surface-muted',
             )}
           >
-            {paused ? 'Live' : 'Freeze charts'}
+            {paused ? t('topics.live') : t('topics.freeze')}
           </button>
           <button
             type="button"
             data-testid="add-chart"
             onClick={() => addPanel(availableNames[0])}
             disabled={panels.length >= MAX_PANELS}
-            className="rounded-control bg-teal-700 px-3 py-1 text-[11px] font-semibold text-white shadow-card transition-colors hover:bg-teal-800 disabled:bg-gray-300"
+            className="rounded-control bg-accent px-3 py-1 text-[11px] font-semibold text-text-inverse shadow-card transition-colors hover:bg-accent-strong disabled:bg-surface-muted"
           >
-            + Add chart
+            {t('topics.addChart')}
           </button>
         </div>
 
         <div
           data-testid="chart-panels"
           className={cn(
-            'grid min-h-0 flex-1 auto-rows-fr gap-2.5 overflow-hidden',
+            'grid min-h-0 flex-1 auto-rows-fr gap-2.5 overflow-hidden lg:flex-[1_1_0%]',
             cols === 2 ? 'grid-cols-2' : 'grid-cols-1',
           )}
         >

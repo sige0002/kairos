@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-import { expect, test } from 'vitest';
+import { afterEach, expect, test } from 'vitest';
+import { i18n } from '../../i18n';
 import { mapCapturesToEpisodes } from './mapCaptures';
 import type { CaptureListItem, CaptureState } from '../../api/types';
 
@@ -48,9 +49,9 @@ test('a capture that did not finish cleanly is Not usable whatever its review sa
       review_status: 'adopted',
     }),
   ]);
-  expect(rows[0]!.quality).toBe('Not usable');
+  expect(rows[0]!.quality).toBe('not_usable');
   expect(rows[0]!.task).toBeNull();
-  expect(rows[0]!.issues).toBe('Recording did not complete cleanly');
+  expect(rows[0]!.issue).toBe('recording_incomplete');
 });
 
 test('review fields come straight off the capture', () => {
@@ -65,8 +66,8 @@ test('review fields come straight off the capture', () => {
     }),
   ]);
   expect(rows[0]).toMatchObject({
-    quality: 'Needs review',
-    task: 'Failure',
+    quality: 'needs_review',
+    task: 'failure',
     failReason: 'gripper slipped',
     reviewStatus: 'excluded',
     reviewRevision: 4,
@@ -150,7 +151,11 @@ test('captures without a started_at order by capture_id, which is time-ordered',
   ]);
 });
 
-test('the batch label needs a loaded batch; without one it says "—"', () => {
+afterEach(async () => {
+  await i18n.changeLanguage('en');
+});
+
+test('the batch label follows the selected locale; without a loaded batch it says "—"', async () => {
   const rows = mapCapturesToEpisodes([
     capture({ capture_id: 'c1', batch_id: 'batch_1' }),
   ]);
@@ -161,7 +166,7 @@ test('the batch label needs a loaded batch; without one it says "—"', () => {
     [capture({ capture_id: 'c1', batch_id: 'batch_1' })],
     () => ({ seq: 3, createdAt: '2026-07-13T09:00:00Z' }),
   );
-  expect(labelled[0]!.batch).toBe('07/13 · #3');
+  expect(labelled[0]!.batch).toBe('13/07 · #3');
   expect(labelled[0]!.condition).toBeNull();
 
   const withCondition = mapCapturesToEpisodes(
@@ -173,6 +178,13 @@ test('the batch label needs a loaded batch; without one it says "—"', () => {
     }),
   );
   expect(withCondition[0]!.condition).toBe('Object: left bin');
+
+  await i18n.changeLanguage('ja');
+  const japanese = mapCapturesToEpisodes(
+    [capture({ capture_id: 'c1', batch_id: 'batch_1' })],
+    () => ({ seq: 3, createdAt: '2026-07-13T09:00:00Z' }),
+  );
+  expect(japanese[0]!.batch).toBe('07/13 · #3');
 });
 
 test('the recorded snapshot condition wins over a current Batch relabel', () => {
@@ -253,7 +265,7 @@ test('a capture with no local replica still maps, and says its copy is awaited',
   ]);
   expect(rows).toHaveLength(1);
   expect(rows[0]!.transfer).toBe('awaiting');
-  expect(rows[0]!.quality).toBe('Good');
+  expect(rows[0]!.quality).toBe('good');
 });
 
 test('duration is derived from the real timestamps, and stays unset when it cannot be', () => {

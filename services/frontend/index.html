@@ -4,6 +4,26 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>kairos</title>
+    <script>
+      // Apply the saved presentation preference before CSS or React paints.
+      // Keep this dependency-free copy aligned with src/theme.tsx.
+      (() => {
+        const key = 'kairos.appearance';
+        let appearance = 'system';
+        try {
+          const saved = window.localStorage.getItem(key);
+          if (saved === 'system' || saved === 'light' || saved === 'dark') appearance = saved;
+        } catch {
+          // Storage can be unavailable; System remains a safe presentation default.
+        }
+        const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches;
+        const theme = appearance === 'dark' || (appearance === 'system' && systemDark)
+          ? 'dark'
+          : 'light';
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+      })();
+    </script>
     <!-- Design tokens (handoff: Neutral Teal): UI = Inter Tight, numerics = IBM Plex Mono. -->
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />

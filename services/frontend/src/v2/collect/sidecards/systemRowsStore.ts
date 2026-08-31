@@ -43,12 +43,14 @@ interface SystemRowsState {
  * moment SysRow grows a key this object does not list.
  */
 const SYS_ROW_FIELDS = {
+  id: true,
   title: true,
   label: true,
   value: true,
   chip: true,
   tone: true,
   cause: true,
+  status: true,
 } satisfies Record<keyof SysRow, true>;
 
 /** The same rows, field for field? Every SysRow field is a primitive, so this

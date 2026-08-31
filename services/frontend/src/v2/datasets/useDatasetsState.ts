@@ -26,6 +26,7 @@
 // pointed at a row that is no longer on screen.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { i18n } from '../../i18n';
 import {
   keepPreviousData,
   useMutation,
@@ -88,7 +89,7 @@ import { useLeRobotExport, type LeRobotExportState } from './useLeRobotExport';
 import {
   ANY_OPERATOR,
   MEMBER_PAGE_SIZE,
-  addBlockedReason,
+  addBlockedReasons,
   aggregate,
   buildDatasetRows,
   candidateMatchesConditions,
@@ -1030,7 +1031,7 @@ export function useDatasetsState(): DatasetsState {
       setNewTask('');
       setSelectedDatasetId(dataset.dataset_id);
       setSelectedMembershipId(null);
-      showToast(`Created “${dataset.name}” — nothing was written under objects/`);
+      showToast(i18n.t('datasets:toastCreatedDataset', { name: dataset.name }));
     },
   });
 
@@ -1044,7 +1045,7 @@ export function useDatasetsState(): DatasetsState {
       setConfirmingDatasetDelete(false);
       clearDataset();
       await invalidateDatasets();
-      showToast('Dataset deleted — every recording it listed is untouched');
+      showToast(i18n.t('datasets:toastDeletedDataset'));
     },
     // A refused delete is a statement about the store, not just about this
     // click: 404 means someone else already deleted it, 409 that it archived
@@ -1058,7 +1059,9 @@ export function useDatasetsState(): DatasetsState {
       addDatasetMember(selectedDatasetId ?? '', capture.capture_id),
     onSuccess: async (member) => {
       await invalidateDatasets(member.dataset_id);
-      showToast(`Added as #${member.display_index} — the recording did not move`);
+      showToast(
+        i18n.t('datasets:toastAddedMember', { index: String(member.display_index) }),
+      );
     },
     onError: reportFailure,
   });
@@ -1070,8 +1073,7 @@ export function useDatasetsState(): DatasetsState {
       await invalidateDatasets(row.datasetId);
       if (selectedMembershipId === row.membershipId) setSelectedMembershipId(null);
       showToast(
-        `Removed #${row.displayIndex} — the recording is untouched and the ` +
-          'number is not reused',
+        i18n.t('datasets:toastRemovedMember', { index: String(row.displayIndex) }),
       );
     },
     // The row we aimed at may already be gone (another operator, a curl). Left
@@ -1581,7 +1583,7 @@ export function useDatasetsState(): DatasetsState {
   // flow, so the rail leads with what can actually join — but the blocked
   // count is always stated and one click reveals the rows with their reasons.
   const addableCandidates = useMemo(
-    () => matchedCandidates.filter((c) => addBlockedReason(c) === null),
+    () => matchedCandidates.filter((c) => addBlockedReasons(c).length === 0),
     [matchedCandidates],
   );
   const visibleCandidates = showBlockedCandidates

@@ -639,6 +639,7 @@ def settings(data_dir: Path) -> Settings:
         data_dir=str(data_dir),
         recording_config="/nonexistent/recording.yaml",
         stream_config="/nonexistent/stream.yaml",
+        tts_kokoro_url="http://127.0.0.1:9",
     )
 
 

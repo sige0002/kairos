@@ -13,23 +13,22 @@ export interface PendingBatchCompletion {
   batchId: string;
   index: number;
   quality: Quality;
+  taskResult: 'ok' | 'fail';
+  failureReason: string;
 }
 
 export function useBatchCompletionConfirmation() {
   const [pendingCompletion, setPendingCompletion] =
     useState<PendingBatchCompletion | null>(null);
 
-  const confirm = useCallback(
-    async (completion: PendingBatchCompletion) => {
-      try {
-        await patchBatch(completion.batchId, { status: 'completed' });
-      } catch (error) {
-        setPendingCompletion(completion);
-        throw error;
-      }
-    },
-    [],
-  );
+  const confirm = useCallback(async (completion: PendingBatchCompletion) => {
+    try {
+      await patchBatch(completion.batchId, { status: 'completed' });
+    } catch (error) {
+      setPendingCompletion(completion);
+      throw error;
+    }
+  }, []);
 
   const retry = useCallback(
     async (onConfirmed: (completion: PendingBatchCompletion) => void) => {

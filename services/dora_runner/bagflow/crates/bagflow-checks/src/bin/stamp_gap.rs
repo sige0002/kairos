@@ -36,7 +36,10 @@ fn main() -> Result<()> {
         stamps.extend_from_slice(ts.values());
     }
 
-    let mut deltas_ms: Vec<f64> = stamps.windows(2).map(|w| (w[1] - w[0]) as f64 / 1e6).collect();
+    let mut deltas_ms: Vec<f64> = stamps
+        .windows(2)
+        .map(|w| (w[1] - w[0]) as f64 / 1e6)
+        .collect();
     if deltas_ms.is_empty() {
         node.report(serde_json::json!({
             "check": "stamp_gap",

@@ -4,6 +4,7 @@ import { fireEvent, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import type { StoreHealth } from '../../api/types';
+import { i18n, LOCALE_STORAGE_KEY } from '../../i18n';
 import { useUiStore } from '../../store/uiStore';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
 import { StoreHealthBanner } from './StoreHealthBanner';
@@ -16,6 +17,13 @@ const OK: StoreHealth = {
   warnings: [],
 };
 
+const INFORMATIONAL: StoreHealth = {
+  ...OK,
+  rebuilt_at: '2026-08-26T08:00:00Z',
+  warnings: ['Batch counters were rebuilt as lower bounds.'],
+  dismissible_warnings: ['Batch counters were rebuilt as lower bounds.'],
+};
+
 function mockHealth(answer: () => Promise<Response>) {
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     if (String(input).includes('/store/health')) return answer();
@@ -24,14 +32,17 @@ function mockHealth(answer: () => Promise<Response>) {
 }
 
 beforeEach(() => {
+  localStorage.clear();
   setApiBase('/api/v1');
   useUiStore.setState({ activeTab: 'collect' });
   window.history.replaceState(null, '', '/?tab=collect');
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
+  localStorage.clear();
   window.history.replaceState(null, '', '/');
+  await i18n.changeLanguage('en');
 });
 
 test('hides the global notice only after an explicit healthy response', async () => {
@@ -45,15 +56,43 @@ test('shows Checking while the health request is unresolved', () => {
   mockHealth(() => new Promise<Response>(() => undefined));
   renderWithClient(<StoreHealthBanner />);
 
-  expect(screen.getByTestId('store-health-banner')).toHaveAttribute('data-state', 'loading');
+  expect(screen.getByTestId('store-health-banner')).toHaveAttribute(
+    'data-state',
+    'loading',
+  );
   expect(screen.getByText('Checking store health…')).toBeInTheDocument();
+});
+
+test('localizes banner guidance while preserving a raw server reason', async () => {
+  localStorage.setItem(LOCALE_STORAGE_KEY, 'ja');
+  await i18n.changeLanguage('ja');
+  mockHealth(() =>
+    Promise.resolve(
+      jsonResponse({
+        ...OK,
+        state: 'suspect',
+        suspect_reason: 'Too many replicas disappeared.',
+      }),
+    ),
+  );
+  renderWithClient(<StoreHealthBanner />);
+
+  const banner = await screen.findByTestId('store-health-banner');
+  await waitFor(() => expect(banner).toHaveAttribute('data-state', 'suspect'));
+  expect(banner).toHaveTextContent('自動クリーンアップを停止しています');
+  expect(banner).toHaveTextContent('Too many replicas disappeared.');
+  expect(screen.getByRole('button', { name: 'Monitor を開く' })).toBeInTheDocument();
 });
 
 test('states that an error is unavailable and permits an explicit retry', async () => {
   let attempts = 0;
   const fetchSpy = mockHealth(() => {
     attempts += 1;
-    return Promise.resolve(attempts === 1 ? jsonResponse({ error: { message: 'offline' } }, 503) : jsonResponse(OK));
+    return Promise.resolve(
+      attempts === 1
+        ? jsonResponse({ error: { message: 'offline' } }, 503)
+        : jsonResponse(OK),
+    );
   });
   renderWithClient(<StoreHealthBanner />);
 
@@ -62,7 +101,9 @@ test('states that an error is unavailable and permits an explicit retry', async 
   expect(banner).toHaveTextContent('this is not an all-clear');
   fireEvent.click(screen.getByTestId('store-health-banner-retry'));
   await waitFor(() => expect(screen.queryByTestId('store-health-banner')).toBeNull());
-  expect(fetchSpy.mock.calls.filter(([input]) => String(input).includes('/store/health'))).toHaveLength(2);
+  expect(
+    fetchSpy.mock.calls.filter(([input]) => String(input).includes('/store/health')),
+  ).toHaveLength(2);
 });
 
 test('makes suspect cleanup halt visible and links the main window to Monitor Store', async () => {
@@ -108,4 +149,180 @@ test('shows corrupt or warning evidence and directs a solo window to Monitor Sto
   expect(window.location.search).toContain('tab=monitor');
   expect(window.location.search).toContain('solo=1');
   expect(window.location.search).toContain('view=store');
+});
+
+test('dismisses an informational rebuild notice without another API request', async () => {
+  const fetchSpy = mockHealth(() => Promise.resolve(jsonResponse(INFORMATIONAL)));
+  renderWithClient(<StoreHealthBanner />);
+
+  const banner = await screen.findByTestId('store-health-banner');
+  await waitFor(() => expect(banner).toHaveAttribute('data-state', 'warning'));
+  expect(screen.getByTestId('store-health-banner-monitor')).toBeInTheDocument();
+  fireEvent.click(screen.getByTestId('store-health-banner-dismiss'));
+
+  await waitFor(() => expect(screen.queryByTestId('store-health-banner')).toBeNull());
+  expect(
+    fetchSpy.mock.calls.filter(([input]) => String(input).includes('/store/health')),
+  ).toHaveLength(1);
+});
+
+test('keeps the same informational notice dismissed after remount', async () => {
+  const fetchSpy = mockHealth(() => Promise.resolve(jsonResponse(INFORMATIONAL)));
+  const first = renderWithClient(<StoreHealthBanner />);
+
+  await screen.findByTestId('store-health-banner-dismiss');
+  fireEvent.click(screen.getByTestId('store-health-banner-dismiss'));
+  await waitFor(() => expect(screen.queryByTestId('store-health-banner')).toBeNull());
+  first.unmount();
+
+  renderWithClient(<StoreHealthBanner />);
+  await waitFor(() => expect(screen.queryByTestId('store-health-banner')).toBeNull());
+  expect(
+    fetchSpy.mock.calls.filter(([input]) => String(input).includes('/store/health')),
+  ).toHaveLength(2);
+});
+
+test('shows a later rebuild notice after the earlier one was dismissed', async () => {
+  let health = INFORMATIONAL;
+  mockHealth(() => Promise.resolve(jsonResponse(health)));
+  const first = renderWithClient(<StoreHealthBanner />);
+
+  await screen.findByTestId('store-health-banner-dismiss');
+  fireEvent.click(screen.getByTestId('store-health-banner-dismiss'));
+  await waitFor(() => expect(screen.queryByTestId('store-health-banner')).toBeNull());
+  first.unmount();
+
+  health = {
+    ...INFORMATIONAL,
+    rebuilt_at: '2026-08-26T09:00:00Z',
+    warnings: ['A later rebuild produced a new lower-bound notice.'],
+    dismissible_warnings: ['A later rebuild produced a new lower-bound notice.'],
+  };
+  renderWithClient(<StoreHealthBanner />);
+
+  const laterBanner = await screen.findByTestId('store-health-banner');
+  await waitFor(() =>
+    expect(laterBanner).toHaveTextContent(
+      'A later rebuild produced a new lower-bound notice.',
+    ),
+  );
+  expect(screen.getByTestId('store-health-banner-dismiss')).toBeInTheDocument();
+});
+
+test('does not offer dismissal without a trustworthy rebuild identity', async () => {
+  mockHealth(() =>
+    Promise.resolve(
+      jsonResponse({
+        ...INFORMATIONAL,
+        rebuilt_at: null,
+      }),
+    ),
+  );
+  renderWithClient(<StoreHealthBanner />);
+
+  expect(await screen.findByTestId('store-health-banner')).toBeInTheDocument();
+  expect(screen.queryByTestId('store-health-banner-dismiss')).toBeNull();
+});
+
+test('does not offer dismissal for an unclassified rebuild warning', async () => {
+  mockHealth(() =>
+    Promise.resolve(
+      jsonResponse({
+        ...INFORMATIONAL,
+        warnings: ['Two datasets claim the same archive destination.'],
+        dismissible_warnings: [],
+      }),
+    ),
+  );
+  renderWithClient(<StoreHealthBanner />);
+
+  const banner = await screen.findByTestId('store-health-banner');
+  await waitFor(() =>
+    expect(banner).toHaveTextContent(
+      'Two datasets claim the same archive destination.',
+    ),
+  );
+  expect(screen.queryByTestId('store-health-banner-dismiss')).toBeNull();
+});
+
+test('does not offer dismissal when active and informational warnings are mixed', async () => {
+  mockHealth(() =>
+    Promise.resolve(
+      jsonResponse({
+        ...INFORMATIONAL,
+        warnings: [
+          ...INFORMATIONAL.warnings,
+          'Two batches disagree about their restored identity.',
+        ],
+      }),
+    ),
+  );
+  renderWithClient(<StoreHealthBanner />);
+
+  const banner = await screen.findByTestId('store-health-banner');
+  await waitFor(() =>
+    expect(banner).toHaveTextContent(
+      'Two batches disagree about their restored identity.',
+    ),
+  );
+  expect(screen.queryByTestId('store-health-banner-dismiss')).toBeNull();
+});
+
+test('keeps the notice visible when acknowledgement cannot be stored', async () => {
+  vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+    throw new Error('storage unavailable');
+  });
+  mockHealth(() => Promise.resolve(jsonResponse(INFORMATIONAL)));
+  renderWithClient(<StoreHealthBanner />);
+
+  await screen.findByTestId('store-health-banner-dismiss');
+  fireEvent.click(screen.getByTestId('store-health-banner-dismiss'));
+
+  expect(screen.getByTestId('store-health-banner')).toBeInTheDocument();
+});
+
+test('keeps the notice visible when acknowledgement cannot be read', async () => {
+  vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+    throw new Error('storage unavailable');
+  });
+  mockHealth(() => Promise.resolve(jsonResponse(INFORMATIONAL)));
+  renderWithClient(<StoreHealthBanner />);
+
+  expect(await screen.findByTestId('store-health-banner-dismiss')).toBeInTheDocument();
+});
+
+test.each<[string, StoreHealth, string]>([
+  [
+    'SUSPECT',
+    {
+      ...INFORMATIONAL,
+      state: 'suspect',
+      suspect_reason: 'Too many replicas disappeared.',
+    },
+    'automatic cleanup is halted',
+  ],
+  [
+    'current corruption',
+    {
+      ...INFORMATIONAL,
+      corrupt: [{ path: 'objects/bad/record.json', reason: 'invalid json' }],
+    },
+    'corrupt sidecar',
+  ],
+  [
+    'delete unavailable',
+    {
+      ...INFORMATIONAL,
+      delete_available: false,
+      delete_unavailable_reason: 'Store directories are on different filesystems.',
+    },
+    'Store directories are on different filesystems.',
+  ],
+])('does not dismiss the active %s condition', async (_name, health, evidence) => {
+  mockHealth(() => Promise.resolve(jsonResponse(health)));
+  renderWithClient(<StoreHealthBanner />);
+
+  const banner = await screen.findByTestId('store-health-banner');
+  await waitFor(() => expect(banner).toHaveTextContent(evidence));
+  expect(screen.queryByTestId('store-health-banner-dismiss')).toBeNull();
 });

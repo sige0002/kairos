@@ -29,6 +29,7 @@ from dora_runner.models import (
     ValidationTemplate,
     ValidationTemplateListResponse,
 )
+from dora_runner.params_validation import validate_pipeline_params
 from dora_runner.plugin_loader import dora_cli_available, effective_executor
 from dora_runner.registry import DEFAULT_REGISTRY, RegisteredPipeline
 from dora_runner.store import JobRecord, RunnerStore
@@ -174,7 +175,8 @@ def create_dora_app(
         "/jobs", response_model=JobCreateResponse, status_code=status.HTTP_201_CREATED
     )
     async def create_job(body: JobCreateRequest) -> JobCreateResponse:
-        if not DEFAULT_REGISTRY.runnable(body.pipeline):
+        pipeline = DEFAULT_REGISTRY.get(body.pipeline)
+        if pipeline is None or pipeline.runner is None:
             raise ApiError(
                 status_code=400,
                 code="pipeline_unavailable",
@@ -190,11 +192,14 @@ def create_dora_app(
                 message=f"capture_id must be a UUIDv7: {body.capture_id}",
                 details={"capture_id": body.capture_id},
             )
+        params = validate_pipeline_params(
+            pipeline.id, pipeline.params_schema, body.params
+        )
         job = JobRecord(
             job_id=f"job_{uuid.uuid4().hex}",
             capture_id=body.capture_id,
             pipeline=body.pipeline,
-            params=body.params,
+            params=params,
             idempotency_key=body.idempotency_key,
         )
         async with store.lock:
@@ -204,8 +209,23 @@ def create_dora_app(
                     if (
                         existing.capture_id != body.capture_id
                         or existing.pipeline != body.pipeline
-                        or existing.params != body.params
                     ):
+                        raise ApiError(
+                            status_code=409,
+                            code="idempotency_conflict",
+                            message=(
+                                "idempotency_key already used with different "
+                                "parameters."
+                            ),
+                        )
+                    # Rows written before a schema gained defaults retain the
+                    # originally submitted shape. Compare both requests under
+                    # the current schema so an omitted field and its materialized
+                    # default remain the same durable idempotent operation.
+                    existing_params = validate_pipeline_params(
+                        pipeline.id, pipeline.params_schema, existing.params
+                    )
+                    if existing_params != params:
                         raise ApiError(
                             status_code=409,
                             code="idempotency_conflict",

@@ -4,12 +4,10 @@
 // Collect / Review / Datasets / Validation / Monitor / Settings), lifted from
 // the design mock (kairos-console-v2.dc.html).
 //
-// These mirror Tailwind's DEFAULT palette 1:1 — teal-600 is #0d9488, gray-50
-// is #f9fafb, etc., exactly as the mock specifies (see tailwind.config.js,
-// which already documents this for the v1 "Neutral Teal" handoff). Screens
-// should reach for Tailwind utility classes (`bg-teal-600`, `text-amber-700`,
-// â€¦) first; this module exists only for the few contexts that need a raw JS
-// hex value — inline SVG strokes, canvas/uplot series colors, and the like.
+// The values remain for contexts that cannot consume CSS variables directly —
+// inline SVG strokes, canvas/uPlot series colors, and the like. DOM components
+// use the semantic Tailwind utilities from tailwind.config.js instead; direct
+// raw palette use in a screen is not a light/dark theming mechanism.
 
 export const teal = {
   50: '#f0fdfa',
@@ -52,4 +50,3 @@ export const green = {
   600: '#16a34a',
   700: '#15803d',
 } as const;
-

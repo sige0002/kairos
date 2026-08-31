@@ -9,6 +9,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { TERMINAL_RECORD_STATES, type RecordState } from '../../../api/types';
+import { i18n } from '../../../i18n';
 import {
   QUICKCHECK_FALLBACK_MS,
   type Phase,
@@ -33,6 +34,7 @@ export function useTakeClock({
   liveCaptures,
   integrity,
   showToast,
+  onRecordingInterrupted,
 }: {
   phase: Phase;
   currentCaptureId: string | null;
@@ -47,6 +49,7 @@ export function useTakeClock({
   /** Recorder integrity gated to the current capture, or null. */
   integrity: string | null;
   showToast: (msg: string) => void;
+  onRecordingInterrupted?: (captureId: string | null) => void;
 }): {
   stopBlockedReason: StopBlockedReason;
   canStop: boolean;
@@ -156,8 +159,7 @@ export function useTakeClock({
   // measured from this.
   const lastGoodMonoRef = useRef<number | null>(null);
   useEffect(() => {
-    lastGoodMonoRef.current =
-      lastGoodAt == null ? null : performance.now();
+    lastGoodMonoRef.current = lastGoodAt == null ? null : performance.now();
   }, [lastGoodAt]);
 
   useEffect(() => {
@@ -195,12 +197,17 @@ export function useTakeClock({
     if (phase !== 'recording') return;
     const captureId = currentCaptureId;
     if (captureId && live.includes(captureId)) return; // genuinely still running
+    onRecordingInterrupted?.(captureId);
     dispatch({ type: 'RECORDING_INTERRUPTED' });
-    showToast(
-      'The recording ended while the recorder was unreachable — the take is ' +
-        'listed below for labelling or discarding.',
-    );
-  }, [recorderReachable, live, phase, currentCaptureId, showToast]);
+    showToast(i18n.t('collect:recordingEndedWhileUnreachable'));
+  }, [
+    recorderReachable,
+    live,
+    phase,
+    currentCaptureId,
+    showToast,
+    onRecordingInterrupted,
+  ]);
 
   // A take that ends while we are watching and HEALTHY. The recovery above only
   // runs after an outage, so the two ways a recording ends without this screen
@@ -252,11 +259,9 @@ export function useTakeClock({
     // closure still reads `recording`. The reducer would ignore the second
     // dispatch, but the toast would not.
     if (getStoreSnapshot().phase !== 'recording') return;
+    onRecordingInterrupted?.(captureId);
     dispatch({ type: 'RECORDING_INTERRUPTED' });
-    showToast(
-      'The recording ended on the recorder — the take is listed below for ' +
-        'labelling or discarding.',
-    );
+    showToast(i18n.t('collect:recordingEndedOnRecorder'));
   }, [
     phase,
     currentCaptureId,
@@ -265,6 +270,7 @@ export function useTakeClock({
     statusState,
     live,
     showToast,
+    onRecordingInterrupted,
   ]);
 
   // SAVING advances on the REAL stop event (stopMutation.onSuccess dispatches
@@ -282,17 +288,10 @@ export function useTakeClock({
     // state field says, and advancing past it is the same mistake the stop
     // confirmation exists to prevent — reached by a different route.
     const stillLive =
-      currentCaptureId != null &&
-      liveCaptures?.includes(currentCaptureId) === true;
+      currentCaptureId != null && liveCaptures?.includes(currentCaptureId) === true;
     if (statusState === 'completed' && forThisCapture && !stillLive)
       dispatch({ type: 'SAVED' });
-  }, [
-    phase,
-    currentCaptureId,
-    statusState,
-    statusCaptureId,
-    liveCaptures,
-  ]);
+  }, [phase, currentCaptureId, statusState, statusCaptureId, liveCaptures]);
 
   // QUICK CHECK reads the recorder's real integrity (already on /record/status);
   // advance as soon as it lands for this run, with a fallback so an older backend

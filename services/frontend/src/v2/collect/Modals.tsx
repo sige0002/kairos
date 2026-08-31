@@ -10,9 +10,10 @@
 // where §12's wording obligations live.
 
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button, Modal, cn } from '../../components/ui';
 import { END_REASONS, type BatchMachine } from './useBatchMachine';
-import { findTask, usePlans } from '../plans';
+import { usePlans } from '../plans';
 import { Toast } from '../shared/Toast';
 import { formatBytes } from '../review/format';
 
@@ -32,8 +33,8 @@ function ReasonChip({
       className={cn(
         'rounded-chip border px-3 py-1.5 text-xs font-semibold',
         active
-          ? 'border-teal-600 bg-teal-50 text-teal-700'
-          : 'border-gray-200 bg-white font-medium text-gray-500',
+          ? 'border-accent bg-interaction-selected text-accent'
+          : 'border-border bg-surface font-medium text-text-muted',
       )}
     >
       {children}
@@ -41,7 +42,28 @@ function ReasonChip({
   );
 }
 
+function endReasonLabel(
+  reason: string,
+  t: (
+    key:
+      | 'endReasonWorkTime'
+      | 'endReasonEquipment'
+      | 'endReasonCondition'
+      | 'endReasonSafety'
+      | 'endReasonPlan'
+      | 'endReasonOther',
+  ) => string,
+) {
+  if (reason === 'Work time over') return t('endReasonWorkTime');
+  if (reason === 'Equipment / system problem') return t('endReasonEquipment');
+  if (reason === 'Condition change') return t('endReasonCondition');
+  if (reason === 'Safety') return t('endReasonSafety');
+  if (reason === 'Plan change') return t('endReasonPlan');
+  return t('endReasonOther');
+}
+
 function EndBatchModal({ machine }: { machine: BatchMachine }) {
+  const { t } = useTranslation(['collect', 'common']);
   const { stats } = machine;
   const canConfirm = !!machine.endReason;
   return (
@@ -50,51 +72,52 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
       onClose={machine.closeModals}
       title={
         machine.batchSeq != null
-          ? `End batch ${machine.batchSeq} early?`
-          : 'End batch early?'
+          ? t('collect:endBatchEarlyNumber', { number: String(machine.batchSeq) })
+          : t('collect:endBatchEarly')
       }
       footer={
         <>
           <Button variant="ghost" onClick={machine.closeModals}>
-            Cancel
+            {t('common:actions.cancel')}
           </Button>
           <Button
             variant="danger"
             onClick={machine.confirmEndBatch}
             disabled={!canConfirm}
           >
-            End batch
+            {t('collect:endBatch')}
           </Button>
         </>
       }
     >
       <div className="grid grid-cols-3 gap-2">
-        <div className="rounded-control border border-gray-100 px-3 py-2.5">
-          <div className="font-mono text-lg font-semibold text-gray-900">
+        <div className="rounded-control border border-border px-3 py-2.5">
+          <div className="font-mono text-lg font-semibold text-text-primary">
             {stats.nRecorded}
           </div>
-          <div className="text-[11px] text-gray-500">recorded</div>
+          <div className="text-[11px] text-text-muted">{t('collect:recorded')}</div>
         </div>
-        <div className="rounded-control border border-gray-100 px-3 py-2.5">
-          <div className="font-mono text-lg font-semibold text-gray-500">
+        <div className="rounded-control border border-border px-3 py-2.5">
+          <div className="font-mono text-lg font-semibold text-text-muted">
             {stats.nRemaining}
           </div>
-          <div className="text-[11px] text-gray-500">not recorded</div>
+          <div className="text-[11px] text-text-muted">{t('collect:notRecorded')}</div>
         </div>
-        <div className="rounded-control border border-gray-100 px-3 py-2.5">
-          <div className="font-mono text-lg font-semibold text-amber-700">
+        <div className="rounded-control border border-border px-3 py-2.5">
+          <div className="font-mono text-lg font-semibold text-status-warning-text">
             {stats.nReview}
           </div>
-          <div className="text-[11px] text-gray-500">needs review</div>
+          <div className="text-[11px] text-text-muted">{t('collect:needsReview')}</div>
         </div>
       </div>
-      <p className="mt-3 text-[12.5px] leading-relaxed text-gray-500">
-        Recorded episodes are kept and stay visible in Review. This set will be marked{' '}
-        <strong className="text-gray-700">Incomplete</strong>.
+      <p className="mt-3 text-[12.5px] leading-relaxed text-text-muted">
+        {t('collect:endBatchKeepsRecordingsBefore')}{' '}
+        <strong className="text-text-primary">{t('collect:incomplete')}</strong>
+        {t('collect:endBatchKeepsRecordingsAfter')}
       </p>
       <div className="mt-3 flex flex-col gap-1.5">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Reason (required)
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+          {t('collect:reasonRequired')}
         </span>
         <div className="flex flex-wrap gap-1.5">
           {END_REASONS.map((reason) => (
@@ -103,7 +126,7 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
               active={reason === machine.endReason}
               onClick={() => machine.pickEndReason(reason)}
             >
-              {reason}
+              {endReasonLabel(reason, t)}
             </ReasonChip>
           ))}
         </div>
@@ -113,6 +136,7 @@ function EndBatchModal({ machine }: { machine: BatchMachine }) {
 }
 
 function ResetBatchModal({ machine }: { machine: BatchMachine }) {
+  const { t } = useTranslation(['collect', 'common']);
   // An empty set (nothing recorded) has no server row and no number — resetting
   // it is a pure local no-op that neither closes nor allocates any set number.
   const empty = machine.stats.nRecorded === 0;
@@ -121,39 +145,42 @@ function ResetBatchModal({ machine }: { machine: BatchMachine }) {
     <Modal
       open={machine.resetModalOpen}
       onClose={machine.closeModals}
-      title={empty ? 'Reset batch?' : `Reset batch${seq}?`}
+      title={
+        empty
+          ? t('collect:resetBatchQuestion')
+          : t('collect:resetBatchNumber', { number: seq })
+      }
       footer={
         <>
           <Button variant="ghost" onClick={machine.closeModals}>
-            Cancel
+            {t('common:actions.cancel')}
           </Button>
           <Button data-testid="reset-batch-confirm" onClick={machine.resetBatch}>
-            Reset batch
+            {t('collect:resetBatch')}
           </Button>
         </>
       }
     >
       {empty ? (
-        <p className="text-[12.5px] leading-relaxed text-gray-600">
-          Nothing has been recorded in this batch yet, so this just clears local state —
-          no batch is created or closed, and the batch number is unchanged.
+        <p className="text-[12.5px] leading-relaxed text-text-secondary">
+          {t('collect:resetEmptyHelp')}
         </p>
       ) : (
         <>
-          <p className="text-[12.5px] leading-relaxed text-gray-600">
-            This closes the current set. The counter returns to{' '}
-            <span className="font-mono text-gray-800">
+          <p className="text-[12.5px] leading-relaxed text-text-secondary">
+            {t('collect:resetBatchHelpBefore')}{' '}
+            <span className="font-mono text-text-primary">
               0 / {machine.targetEpisodes}
             </span>
-            ; the next set number is assigned when you start your next recording.
+            {t('collect:resetBatchHelpAfter')}
           </p>
-          <p className="mt-2 text-[12.5px] leading-relaxed text-gray-600">
-            The{' '}
-            <strong className="text-gray-700">
-              {machine.stats.nRecorded} recording(s)
+          <p className="mt-2 text-[12.5px] leading-relaxed text-text-secondary">
+            <strong className="text-text-primary">
+              {t('collect:resetRecordedCount', { count: machine.stats.nRecorded })}
             </strong>{' '}
-            already taken are <strong className="text-gray-700">not deleted</strong> —
-            they stay in Review.
+            {t('collect:resetRecordedMiddle')}{' '}
+            <strong className="text-text-primary">{t('collect:notDeleted')}</strong>
+            {t('collect:resetRecordedAfter')}
           </p>
         </>
       )}
@@ -162,8 +189,13 @@ function ResetBatchModal({ machine }: { machine: BatchMachine }) {
 }
 
 function ConditionModal({ machine }: { machine: BatchMachine }) {
+  const { t } = useTranslation(['collect', 'common']);
   const plans = usePlans();
-  const task = findTask(plans, machine.project ?? '', machine.task ?? '');
+  // A catalog condition is a task-owned value. Display labels are mutable, so
+  // a stale/deleted selection must not borrow another task's first conditions.
+  const task = plans
+    .find((project) => project.project_id === machine.projectId)
+    ?.tasks.find((candidate) => candidate.task_id === machine.taskId);
   // Free-text condition input (mirrors the custom-task pattern: trim, ignore
   // empty). A typed condition is just a string on the batch — never added to the
   // plan catalog.
@@ -179,34 +211,40 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
     <Modal
       open={machine.condModalOpen}
       onClose={machine.closeModals}
-      title="Change condition"
+      title={t('collect:changeCondition')}
       footer={
         <Button variant="ghost" onClick={machine.closeModals}>
-          Cancel
+          {t('common:actions.cancel')}
         </Button>
       }
     >
       <p className="mb-3">
         {hasRecordings
-          ? 'This set already has recordings — changing the condition closes it and starts a new set, so earlier episodes keep their condition.'
-          : 'Applies to this batch. No episodes are recorded yet.'}
+          ? t('collect:conditionChangeRolloverHelp')
+          : t('collect:conditionChangeEmptyHelp')}
       </p>
       <div className="flex flex-col gap-1.5">
-        {task.conditions.map((c) => (
-          <button
-            key={c.condition_id}
-            type="button"
-            onClick={() => machine.pickCondition(c.name)}
-            className={cn(
-              'rounded-control border px-3.5 py-2.5 text-left text-sm',
-              c.name === machine.condition
-                ? 'border-teal-600 bg-teal-50 font-semibold text-teal-700'
-                : 'border-gray-200 bg-white font-medium text-gray-700',
-            )}
-          >
-            {c.name}
-          </button>
-        ))}
+        {task ? (
+          task.conditions.map((c) => (
+            <button
+              key={c.condition_id}
+              type="button"
+              onClick={() => machine.pickCondition(c.name)}
+              className={cn(
+                'rounded-control border px-3.5 py-2.5 text-left text-sm',
+                c.name === machine.condition
+                  ? 'border-accent bg-interaction-selected font-semibold text-accent'
+                  : 'border-border bg-surface font-medium text-text-primary',
+              )}
+            >
+              {c.name}
+            </button>
+          ))
+        ) : (
+          <p className="rounded-control border border-border bg-surface-muted px-3.5 py-2.5 text-sm text-text-muted">
+            {t('collect:missingPlanTaskHelp')}
+          </p>
+        )}
       </div>
       <div className="mt-3 flex gap-2">
         <input
@@ -219,16 +257,16 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
               submitCustom();
             }
           }}
-          placeholder="Custom condition…"
+          placeholder={t('collect:customCondition')}
           data-testid="custom-condition-input"
-          className="min-w-0 flex-1 rounded-control border border-gray-200 px-3 py-2.5 text-sm text-gray-700 focus:border-teal-600 focus:outline-none"
+          className="min-w-0 flex-1 rounded-control border border-border px-3 py-2.5 text-sm text-text-primary focus:border-accent focus:outline-none"
         />
         <Button
           data-testid="custom-condition-add"
           disabled={!custom.trim()}
           onClick={submitCustom}
         >
-          Add
+          {t('common:actions.add')}
         </Button>
       </div>
     </Modal>
@@ -236,6 +274,7 @@ function ConditionModal({ machine }: { machine: BatchMachine }) {
 }
 
 function TargetModal({ machine }: { machine: BatchMachine }) {
+  const { t } = useTranslation(['collect', 'common']);
   const [value, setValue] = useState<string>('');
   const parsed = Number.parseInt(value, 10);
   const valid = Number.isFinite(parsed) && parsed >= 1 && parsed <= 500;
@@ -246,28 +285,28 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
     <Modal
       open={machine.targetModalOpen}
       onClose={machine.closeModals}
-      title="Change set target"
+      title={t('collect:changeSetTarget')}
       footer={
         <>
           <Button variant="ghost" onClick={machine.closeModals}>
-            Cancel
+            {t('common:actions.cancel')}
           </Button>
           <Button
             data-testid="target-confirm"
             disabled={!valid}
             onClick={() => valid && machine.changeTarget(parsed)}
           >
-            Set target
+            {t('collect:setTarget')}
           </Button>
         </>
       }
     >
-      <p className="mb-3 text-[12.5px] leading-relaxed text-gray-600">
-        Planned episodes for this batch (currently{' '}
-        <span className="font-mono text-gray-800">{machine.targetEpisodes}</span>,
-        recorded{' '}
-        <span className="font-mono text-gray-800">{machine.stats.nRecorded}</span>).
-        Applies to the current set and is inherited by the next one.
+      <p className="mb-3 text-[12.5px] leading-relaxed text-text-secondary">
+        {t('collect:targetHelpBefore')}{' '}
+        <span className="font-mono text-text-primary">{machine.targetEpisodes}</span>,
+        {t('collect:targetHelpRecorded')}{' '}
+        <span className="font-mono text-text-primary">{machine.stats.nRecorded}</span>).
+        {t('collect:targetHelpAfter')}
       </p>
       <input
         type="number"
@@ -278,12 +317,11 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
         placeholder={String(machine.targetEpisodes)}
         data-testid="target-input"
         autoFocus
-        className="w-full rounded-control border border-gray-200 px-3 py-2.5 font-mono text-sm text-gray-700 focus:border-teal-600 focus:outline-none"
+        className="w-full rounded-control border border-border px-3 py-2.5 font-mono text-sm text-text-primary focus:border-accent focus:outline-none"
       />
       {completesNow && (
-        <p className="mt-2 text-[12px] leading-relaxed text-amber-700">
-          {machine.stats.nRecorded} episode(s) are already recorded, so this target
-          marks the batch complete immediately.
+        <p className="mt-2 text-[12px] leading-relaxed text-status-warning-text">
+          {t('collect:targetCompletesNow', { count: machine.stats.nRecorded })}
         </p>
       )}
     </Modal>
@@ -304,13 +342,14 @@ function formatElapsedClock(startedAt: string | null): string {
 // knocking over another operator's take by mistake; the two body variants match
 // whether it's a resumed-own recording or another session's.
 function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
+  const { t: tr } = useTranslation('collect');
   const t = machine.takeover;
   const size = formatBytes(t?.bytes);
   return (
     <Modal
       open={machine.takeoverStopModalOpen}
       onClose={machine.closeModals}
-      title="Stop this recording?"
+      title={tr('stopThisRecording')}
       footer={
         <>
           <Button
@@ -318,32 +357,30 @@ function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
             onClick={machine.closeModals}
             disabled={machine.isTakeoverStopping}
           >
-            Keep recording
+            {tr('keepRecording')}
           </Button>
           <Button
             variant="danger"
             onClick={machine.confirmTakeoverStop}
             disabled={machine.isTakeoverStopping}
           >
-            {machine.isTakeoverStopping ? 'Stopping…' : 'Stop & save'}
+            {machine.isTakeoverStopping ? tr('stopping') : tr('stopAndSave')}
           </Button>
         </>
       }
     >
       {machine.takeoverResumedOwn ? (
-        <p className="text-[12.5px] leading-relaxed text-gray-600">
-          Stop the recording that&apos;s still running? {size} captured so far will be
-          saved to Review.
+        <p className="text-[12.5px] leading-relaxed text-text-secondary">
+          {tr('stopResumedRecordingHelp', { size })}
         </p>
       ) : (
-        <p className="text-[12.5px] leading-relaxed text-gray-600">
-          This recording was started from another session (operator{' '}
-          <strong className="text-gray-700">{t?.operator || '—'}</strong> · running{' '}
-          <span className="font-mono text-gray-800">
+        <p className="text-[12.5px] leading-relaxed text-text-secondary">
+          {tr('takeoverStartedElsewhereBefore')}{' '}
+          <strong className="text-text-primary">{t?.operator || '—'}</strong> · running{' '}
+          <span className="font-mono text-text-primary">
             {formatElapsedClock(t?.startedAt ?? null)}
           </span>{' '}
-          · {size}). Stopping it saves what&apos;s captured so far — it will appear in
-          Review.
+          · {size}). {tr('takeoverStartedElsewhereAfter')}
         </p>
       )}
     </Modal>
@@ -352,33 +389,91 @@ function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
 
 // Keyboard-shortcuts help sheet (opened with `?`). Collect-local — the shared
 // header is out of scope for this screen (deviation noted in the change report).
+// The three external operator actions are documented here too (#36/#37): the
+// exact chords, their state-dependent meanings, and the hardware story (any
+// programmable three-switch pedal maps onto the chords — Kairos assumes no
+// specific product, driver or SDK).
 function ShortcutsSheet({ machine }: { machine: BatchMachine }) {
+  const { t } = useTranslation(['collect', 'common']);
   const rows: [string, string][] = [
-    ['R', 'Start recording (when ready)'],
-    ['S / Space', 'Stop recording'],
-    ['Esc', 'Cancel arming · close a dialog'],
-    ['?', 'Show this shortcuts sheet'],
+    ['R', t('collect:shortcutStart')],
+    ['S / Space', t('collect:shortcutStop')],
+    ['Esc', t('collect:shortcutEscape')],
+    ['Ctrl+Alt+1', t('collect:shortcutLeft')],
+    ['Ctrl+Alt+2', t('collect:shortcutCenter')],
+    ['Ctrl+Alt+3', t('collect:shortcutRight')],
+    ['?', t('collect:shortcutHelp')],
+  ];
+  const stateRows: [string, string, string, string][] = [
+    [
+      t('collect:shortcutState'),
+      t('collect:shortcutLeftHeader'),
+      t('collect:shortcutCenterHeader'),
+      t('collect:shortcutRightHeader'),
+    ],
+    [t('collect:shortcutReady'), '—', t('collect:externalStart'), '—'],
+    [t('collect:shortcutRecording'), '—', t('collect:externalStop'), '—'],
+    [t('collect:shortcutSavingQuickCheck'), '—', '—', '—'],
+    [
+      t('collect:shortcutResultBeforeFailure'),
+      t('collect:shortcutSelectFailure'),
+      t('collect:shortcutRetakeRecord'),
+      t('collect:shortcutSuccessSave'),
+    ],
+    [
+      t('collect:shortcutResultFailureSelected'),
+      t('collect:shortcutReasonSave', { number: '1' }),
+      t('collect:shortcutReasonSave', { number: '2' }),
+      t('collect:shortcutReasonSave', { number: '3' }),
+    ],
   ];
   return (
     <Modal
       open={machine.shortcutsOpen}
       onClose={machine.closeModals}
-      title="Keyboard shortcuts"
+      title={t('collect:keyboardShortcuts')}
       footer={
         <Button variant="ghost" onClick={machine.closeModals}>
-          Close
+          {t('common:actions.close')}
         </Button>
       }
     >
       <div className="flex flex-col gap-1.5">
         {rows.map(([key, desc]) => (
           <div key={key} className="flex items-center gap-3">
-            <kbd className="rounded-control border border-gray-200 bg-gray-50 px-2 py-0.5 font-mono text-[12px] text-gray-700">
+            <kbd className="rounded-control border border-border bg-surface-muted px-2 py-0.5 font-mono text-[12px] text-text-primary">
               {key}
             </kbd>
-            <span className="text-[12.5px] text-gray-600">{desc}</span>
+            <span className="text-[12.5px] text-text-secondary">{desc}</span>
           </div>
         ))}
+      </div>
+      <div className="mt-3 border-t border-border pt-3">
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+          {t('collect:externalActionsHelpTitle')}
+        </span>
+        <div className="mt-2 overflow-hidden rounded-control border border-border">
+          {stateRows.map((row, i) => (
+            <div
+              key={row[0]}
+              className={cn(
+                'grid grid-cols-[1.3fr_1fr_1fr_1fr] gap-2 px-3 py-1.5 text-[11.5px]',
+                i === 0
+                  ? 'bg-surface-muted font-semibold text-text-muted'
+                  : 'border-t border-border text-text-primary',
+              )}
+            >
+              {row.map((cell, cellIndex) => (
+                <span key={`${row[0]}-${cellIndex}`} className="truncate">
+                  {cell}
+                </span>
+              ))}
+            </div>
+          ))}
+        </div>
+        <p className="mt-2 text-[11.5px] leading-[1.6] text-text-muted">
+          {t('collect:externalActionsHelp')}
+        </p>
       </div>
     </Modal>
   );

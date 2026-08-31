@@ -5,6 +5,7 @@
 // stream) and the add-camera tile. Container logic stays in Cameras.tsx.
 
 import { useEffect, useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { cn } from '../../components/ui';
 import {
   useWebRtcStream,
@@ -66,22 +67,19 @@ export function StatsBadge({
    *  contradicts it, and never as evidence that the picture is current. */
   sourceLiveness?: TopicLiveness;
 }) {
+  const { t } = useTranslation('collect');
   if (sourceLiveness === 'silent') {
     return (
       <span
         data-testid="camera-stats"
         data-topic-silent="true"
-        title={
-          'The monitor reports this topic has stopped publishing. The stream is ' +
-          'still delivering frames, but they are re-encodings of the last one ' +
-          'that arrived — the picture is not current.'
-        }
+        title={t('cameraTopicSilentHelp')}
         className={cn(
-          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-gray-900',
+          'inline-flex items-center gap-1.5 rounded-chip bg-status-warning-accent/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-gray-900',
           className,
         )}
       >
-        topic silent — showing the last frame
+        {t('cameraTopicSilent')}
       </span>
     );
   }
@@ -95,25 +93,27 @@ export function StatsBadge({
       <span
         data-testid="camera-stats"
         data-topic-unmonitored="true"
-        title={
-          'This topic is outside the monitored set, so nothing measures whether ' +
-          'it is still publishing. The preview keeps delivering frames either ' +
-          'way — including re-encodings of a frozen last frame — so no rate is ' +
-          'shown here. The picture may or may not be current.'
-        }
+        title={t('cameraUnmonitoredHelp')}
         className={cn(
           'inline-flex items-center gap-1.5 rounded-chip bg-gray-900/75 px-2.5 py-1 font-mono text-[11px] text-gray-300',
           className,
         )}
       >
-        not monitored — no rate available
+        {t('cameraUnmonitored')}
       </span>
     );
   }
   return <StreamStatsBadge stats={stats} className={className} />;
 }
 
-function StreamStatsBadge({ stats, className }: { stats: StreamStats; className?: string }) {
+function StreamStatsBadge({
+  stats,
+  className,
+}: {
+  stats: StreamStats;
+  className?: string;
+}) {
+  const { t } = useTranslation('collect');
   // Frames have stopped advancing. The connection is still up and getStats will
   // happily keep reporting its last framesPerSecond, but no picture is arriving
   // — so the chip reports what it can actually measure (how long since the last
@@ -124,17 +124,15 @@ function StreamStatsBadge({ stats, className }: { stats: StreamStats; className?
       <span
         data-testid="camera-stats"
         data-stale="true"
-        title={
-          'No new frames have decoded since this counter started. The stream is ' +
-          'still connected, so this is usually the source topic losing its ' +
-          'publisher rather than a network problem.'
-        }
+        title={t('cameraFramesStaleHelp')}
         className={cn(
-          'inline-flex items-center gap-1.5 rounded-chip bg-amber-500/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-gray-900',
+          'inline-flex items-center gap-1.5 rounded-chip bg-status-warning-accent/90 px-2.5 py-1 font-mono text-[11px] font-semibold text-gray-900',
           className,
         )}
       >
-        no frames for {Math.round((stats.framesStaleMs ?? 0) / 1000)}s
+        {t('cameraNoFramesFor', {
+          seconds: String(Math.round((stats.framesStaleMs ?? 0) / 1000)),
+        })}
       </span>
     );
   }
@@ -152,7 +150,9 @@ function StreamStatsBadge({ stats, className }: { stats: StreamStats; className?
           {stats.latencyMs}ms
         </span>
       )}
-      {stats.latencyMs != null && stats.fps != null && <span className="text-gray-500">·</span>}
+      {stats.latencyMs != null && stats.fps != null && (
+        <span className="text-gray-300">·</span>
+      )}
       {stats.fps != null && <span className="text-gray-300">{stats.fps}fps</span>}
     </span>
   );
@@ -178,11 +178,12 @@ export function CameraPlaceholder({
   name: string;
   className?: string;
 }) {
+  const { t } = useTranslation('collect');
   const failed = phase === 'failed';
   return (
     <div
       className={cn(
-        'flex flex-col items-center justify-center gap-1.5 border border-gray-200 px-3 text-center',
+        'flex flex-col items-center justify-center gap-1.5 border border-border px-3 text-center',
         className,
       )}
       style={{
@@ -192,19 +193,21 @@ export function CameraPlaceholder({
     >
       {failed ? (
         <>
-          <span aria-hidden className="text-lg leading-none text-amber-400">
+          <span aria-hidden className="text-lg leading-none text-status-warning-text">
             ⚠
           </span>
           <span className="font-sans text-xs font-semibold text-gray-200">
-            Camera preview unavailable
+            {t('cameraPreviewUnavailable')}
           </span>
           <span
-            className="max-w-full truncate font-mono text-[11px] text-gray-500"
+            className="max-w-full truncate font-mono text-[11px] text-gray-300"
             title={error ?? undefined}
           >
-            {error ?? "the WebRTC stream couldn't connect"}
+            {error ?? t('cameraStreamCouldNotConnect')}
           </span>
-          <span className="max-w-full truncate font-mono text-[10.5px] text-gray-500">{name}</span>
+          <span className="max-w-full truncate font-mono text-[10.5px] text-gray-300">
+            {name}
+          </span>
           <button
             type="button"
             data-testid="camera-retry"
@@ -214,7 +217,7 @@ export function CameraPlaceholder({
             }}
             className="mt-0.5 rounded-control border border-gray-500 bg-gray-900/70 px-3 py-1 text-[11.5px] font-semibold text-teal-200 hover:bg-gray-800"
           >
-            Retry
+            {t('retry')}
           </button>
         </>
       ) : (
@@ -225,16 +228,24 @@ export function CameraPlaceholder({
             className="h-6 w-6 animate-spin rounded-full border-2 border-gray-600 border-t-teal-400"
           />
           <span className="font-sans text-xs font-semibold text-gray-300">
-            Connecting to camera…
+            {t('connectingCamera')}
           </span>
-          <span className="max-w-full truncate font-mono text-[10.5px] text-gray-500">{name}</span>
+          <span className="max-w-full truncate font-mono text-[10.5px] text-gray-300">
+            {name}
+          </span>
         </>
       )}
     </div>
   );
 }
 
-export function OverlayBadge({ className, children }: { className: string; children: React.ReactNode }) {
+export function OverlayBadge({
+  className,
+  children,
+}: {
+  className: string;
+  children: React.ReactNode;
+}) {
   return (
     <span
       className={cn(
@@ -261,6 +272,7 @@ function SubResToggle({
    *  called the same thing and no way to tell which stream they were changing. */
   cameraLabel: string;
 }) {
+  const { t } = useTranslation('collect');
   // One tab stop per tile, not two (#17) — with three tiles on screen those
   // chips were six of the nine stops between Start and anything else. Arrows
   // move focus and Space/Enter commits: each commit renegotiates this tile's
@@ -270,7 +282,7 @@ function SubResToggle({
     <div
       ref={res.groupRef}
       role="radiogroup"
-      aria-label={`${cameraLabel} camera resolution`}
+      aria-label={t('cameraResolution', { camera: cameraLabel })}
       onKeyDown={res.onKeyDown}
       className="flex items-center gap-0.5 rounded-chip bg-gray-900/80 p-[2px]"
     >
@@ -283,11 +295,11 @@ function SubResToggle({
           tabIndex={res.itemTabIndex(label)}
           {...{ [ROVING_ITEM_ATTR]: '' }}
           onClick={() => res.commit(label)}
-          title={`Sub preview resolution — subs stay low-res by design (§3-2)`}
+          title={t('subCameraResolutionHelp')}
           className={cn(
             'rounded-chip px-1.5 py-0.5 font-mono text-[9.5px] font-bold',
             HIT_AREA_RES_SUB,
-            label === value ? 'bg-teal-300 text-gray-900' : 'text-gray-300',
+            label === value ? 'bg-accent-soft text-text-primary' : 'text-gray-300',
           )}
         >
           {label}
@@ -323,6 +335,7 @@ export function SubCameraTile({
     waitingSince: number | null,
   ) => void;
 }) {
+  const { t } = useTranslation('collect');
   const { w, h } = resBounds(pane.subResLabel);
   const { phase, stream, stats, error, failure, retry } = useWebRtcStream({
     webrtcBase: config.endpoints.webrtc,
@@ -358,9 +371,9 @@ export function SubCameraTile({
     // without invalid button-in-button semantics.
     <div
       onClick={onSelect}
-      title={`${pane.topic} — click to make this the main camera`}
+      title={t('makeMainCamera', { topic: pane.topic })}
       data-testid="sub-camera-tile"
-      className="relative cursor-pointer overflow-hidden rounded-card border border-gray-200 bg-[#1f2937] hover:border-teal-500"
+      className="relative cursor-pointer overflow-hidden rounded-card border border-border bg-[#1f2937] hover:border-accent"
       style={style}
     >
       {/* Always mounted, like the main tile — see the comment there. */}
@@ -405,13 +418,13 @@ export function SubCameraTile({
       {onRemove && (
         <button
           type="button"
-          aria-label={`remove ${label} camera`}
-          title="Remove this camera preview"
+          aria-label={t('removeCamera', { camera: label })}
+          title={t('removeCameraPreview')}
           onClick={(e) => {
             e.stopPropagation();
             onRemove();
           }}
-          className="absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-chip bg-gray-900/80 text-[13px] font-bold leading-none text-gray-300 hover:bg-red-500 hover:text-white"
+          className="absolute left-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-chip bg-gray-900/80 text-[13px] font-bold leading-none text-gray-300 hover:bg-status-danger-accent hover:text-white"
         >
           ×
         </button>
@@ -432,31 +445,34 @@ export function AddCameraTile({
   options: CameraOption[];
   style: React.CSSProperties;
 }) {
+  const { t } = useTranslation('collect');
   return (
     <div
       data-testid="add-camera-tile"
-      className="flex min-w-0 flex-col items-center justify-center gap-2 overflow-hidden rounded-card border border-dashed border-gray-300 bg-gray-50 p-3"
+      className="flex min-w-0 flex-col items-center justify-center gap-2 overflow-hidden rounded-card border border-dashed border-border-strong bg-surface-muted p-3"
       style={style}
     >
-      <span className="text-xl font-semibold text-gray-500">+</span>
-      <span className="text-[11px] font-semibold text-gray-500">Add camera</span>
+      <span className="text-xl font-semibold text-text-muted">+</span>
+      <span className="text-[11px] font-semibold text-text-muted">
+        {t('addCamera')}
+      </span>
       <select
-        aria-label="add camera topic"
+        aria-label={t('addCameraTopic')}
         data-testid="add-camera-select"
         value=""
         onChange={(e) => {
           if (e.target.value) addCameraPane(e.target.value);
           // Value stays "" (it's an action trigger, not a persistent selection).
         }}
-        className="w-full max-w-[92%] rounded-control border border-gray-200 bg-white px-2 py-1 font-mono text-[11px] text-gray-700 focus:border-teal-600 focus:outline-none"
+        className="w-full max-w-[92%] rounded-control border border-border bg-surface px-2 py-1 font-mono text-[11px] text-text-primary focus:border-accent focus:outline-none"
       >
         <option value="" disabled>
-          {options.length === 0 ? 'No image topics found' : 'Choose a camera…'}
+          {options.length === 0 ? t('noImageTopics') : t('chooseCamera')}
         </option>
         {options.map((o) => (
           <option key={o.name} value={o.name}>
             {shortCameraLabel(o.name)}
-            {o.live ? '' : ' (offline)'}
+            {o.live ? '' : ` (${t('offline')})`}
           </option>
         ))}
       </select>

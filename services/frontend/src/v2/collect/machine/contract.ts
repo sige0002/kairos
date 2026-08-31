@@ -10,6 +10,8 @@ import type {
   RecordState,
 } from '../../../api/types';
 import type { CaptureDeletionState } from '../../captures/useCaptureDeletion';
+import type { RecordingCueSettings } from '../hooks/useRecordingCues';
+import type { ExternalActionMeanings } from './externalActions';
 import type {
   EpisodeRecord,
   MachineError,
@@ -193,7 +195,11 @@ export interface BatchMachine {
   /** `null` when there is no plan catalog to name one from — the header renders
    *  that state instead of a placeholder, and it never reaches the wire. */
   project: string | null;
+  /** Stable catalog identity; null means the visible label is not safely mapped. */
+  projectId: string | null;
   task: string | null;
+  /** Stable catalog identity; null for custom, legacy, or stale task contexts. */
+  taskId: string | null;
   condition: string;
   /** Planned episodes for the current batch (server target_episodes). */
   targetEpisodes: number;
@@ -213,6 +219,8 @@ export interface BatchMachine {
   targetModalOpen: boolean;
   /** Keyboard-shortcuts help sheet (opened with `?`). */
   shortcutsOpen: boolean;
+  /** Browser-local recording cue settings popover. */
+  soundMenuOpen: boolean;
   toggleBatchMenu: () => void;
   openProjPicker: () => void;
   openTaskPicker: () => void;
@@ -224,6 +232,7 @@ export interface BatchMachine {
   openEndModal: () => void;
   openResetModal: () => void;
   openShortcuts: () => void;
+  toggleSoundMenu: () => void;
   closeModals: () => void;
 
   // Discard this take (§7): a DISCARD, not a delete — the data was never worth
@@ -246,6 +255,10 @@ export interface BatchMachine {
 
   // toast
   toast: string;
+
+  /** Browser-local opt-in cues. Audio is supplemental: playback failure never
+   *  changes recorder state or hides the persistent visual/ARIA feedback. */
+  recordingCueSettings: RecordingCueSettings;
 
   // actions
   startRecording: () => void;
@@ -280,6 +293,14 @@ export interface BatchMachine {
    *  the server accepted it — the strip chip and the receipt never claim a save
    *  that did not happen (§12). */
   confirmEpisode: () => void;
+  /** External action RIGHT on RESULT (before Failure): Success + Save as ONE
+   *  compound step (#36) — the same save flow as confirmEpisode, so a render
+   *  can never interleave between the pick and the save. */
+  saveSuccess: () => void;
+  /** External action LEFT/CENTER/RIGHT on RESULT after Failure: save THAT
+   *  exact reason (unassigned slots never reach here; no "Other" fallback).
+   *  No-op unless Failure is already selected in the result state. */
+  saveFailureWithReason: (reason: string) => void;
   /** True while that save is in flight. */
   isSavingReview: boolean;
   /** The rejected save, kept until the operator acts on it. A 409 means someone
@@ -301,8 +322,8 @@ export interface BatchMachine {
   startNextBatch: () => void;
   /** Reset the batch (counts → 0/30, recordings kept in Review). */
   resetBatch: () => void;
-  pickProject: (name: string) => void;
-  pickTask: (name: string) => void;
+  pickProject: (projectId: string) => void;
+  pickTask: (projectId: string, taskId: string) => void;
   /** Set a free-text task the operator typed (v1 parity — recording accepted any
    *  task string). Not added to the plans store; flows into the next
    *  /record/start and /batches as-is. */
@@ -315,4 +336,11 @@ export interface BatchMachine {
   pickCustomCondition: (condition: string) => void;
   /** Jump to the Monitor tab (Warnings card's "Open in Monitor →"). */
   goMonitor: () => void;
+
+  // External operator actions (#36/#37): the CURRENT meaning of each logical
+  // slot (derived, see machine/externalActions.ts) — the HUD renders these and
+  // the shortcut handler dispatches on the same value.
+  externalActionMeanings: ExternalActionMeanings;
+  /** The task the failure-reason slots resolve against (null: no catalog). */
+  externalActionTaskName: string | null;
 }

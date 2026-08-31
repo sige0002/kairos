@@ -4,7 +4,17 @@
 // These are presentation-only: no data, no app state. Feature tabs compose
 // them so cards, chips, status dots and toggles stay pixel-consistent.
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import {
+  cloneElement,
+  useEffect,
+  useRef,
+  type ButtonHTMLAttributes,
+  type InputHTMLAttributes,
+  type ReactElement,
+  type ReactNode,
+  type SelectHTMLAttributes,
+  type TextareaHTMLAttributes,
+} from 'react';
 
 /** Tiny class-name joiner (no dependency on clsx). */
 export function cn(...parts: Array<string | false | null | undefined>): string {
@@ -16,16 +26,15 @@ export function Hexagon({ size = 32 }: { size?: number }) {
   return (
     <span
       aria-hidden
-      className="flex items-center justify-center bg-gradient-to-br from-teal-600 to-teal-700 shadow-[0_4px_14px_rgba(13,148,136,.3)]"
+      className="flex items-center justify-center bg-gradient-to-br from-accent to-accent-strong shadow-btn"
       style={{
         width: size,
         height: size,
-        clipPath:
-          'polygon(25% 6.7%,75% 6.7%,100% 50%,75% 93.3%,25% 93.3%,0% 50%)',
+        clipPath: 'polygon(25% 6.7%,75% 6.7%,100% 50%,75% 93.3%,25% 93.3%,0% 50%)',
       }}
     >
       <span
-        className="rounded-full bg-white"
+        className="rounded-full bg-surface"
         style={{ width: size * 0.28, height: size * 0.28 }}
       />
     </span>
@@ -41,7 +50,7 @@ export function Card({
   return (
     <div
       className={cn(
-        'rounded-card border border-gray-200 bg-white shadow-card',
+        'rounded-card border border-border bg-surface shadow-card',
         className,
       )}
       {...rest}
@@ -52,15 +61,9 @@ export function Card({
 }
 
 /** Card header row: uppercase section label on the left, actions on the right. */
-export function CardHeader({
-  title,
-  right,
-}: {
-  title: ReactNode;
-  right?: ReactNode;
-}) {
+export function CardHeader({ title, right }: { title: ReactNode; right?: ReactNode }) {
   return (
-    <div className="flex items-center gap-2.5 border-b border-gray-100 px-[18px] py-4">
+    <div className="flex items-center gap-2.5 border-b border-border px-[18px] py-4">
       {typeof title === 'string' ? <SectionLabel>{title}</SectionLabel> : title}
       <div className="flex-1" />
       {right}
@@ -77,7 +80,7 @@ export function CardHeader({
  *  classes below remain the whole appearance. */
 export function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <h2 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-gray-500">
+    <h2 className="text-[13px] font-semibold uppercase tracking-[0.04em] text-text-muted">
       {children}
     </h2>
   );
@@ -86,12 +89,12 @@ export function SectionLabel({ children }: { children: ReactNode }) {
 export type Tone = 'teal' | 'green' | 'amber' | 'red' | 'gray' | 'info';
 
 const DOT_BG: Record<Tone, string> = {
-  teal: 'bg-teal-600',
-  green: 'bg-green-600',
-  amber: 'bg-amber-600',
-  red: 'bg-red-600',
-  gray: 'bg-gray-300',
-  info: 'bg-cyan-600',
+  teal: 'bg-status-live-accent',
+  green: 'bg-status-success-accent',
+  amber: 'bg-status-warning-accent',
+  red: 'bg-status-danger-accent',
+  gray: 'bg-text-disabled',
+  info: 'bg-status-info-accent',
 };
 
 /** Status indicator — a rounded 2px SQUARE (brand cue), not a circle. */
@@ -118,12 +121,12 @@ export function StatusDot({
 }
 
 const BADGE_TONE: Record<Tone, string> = {
-  teal: 'bg-teal-100 text-teal-700',
-  green: 'bg-green-100 text-green-700',
-  amber: 'bg-amber-100 text-amber-700',
-  red: 'bg-red-50 text-red-700 border border-red-200',
-  gray: 'bg-gray-100 text-gray-600',
-  info: 'bg-cyan-100 text-cyan-700',
+  teal: 'bg-status-adopted-bg text-status-adopted-text',
+  green: 'bg-status-success-bg text-status-success-text',
+  amber: 'bg-status-warning-bg text-status-warning-text',
+  red: 'border border-status-danger-border bg-status-danger-bg text-status-danger-text',
+  gray: 'bg-surface-muted text-text-secondary',
+  info: 'bg-status-info-bg text-status-info-text',
 };
 
 /** Small status chip. `mono` for IDs/measurements. */
@@ -160,21 +163,78 @@ export function Badge({
 /** Teal pill primary button. */
 export function Button({
   variant = 'primary',
+  size = 'md',
   className,
   children,
+  type,
   ...rest
 }: {
   variant?: 'primary' | 'danger' | 'ghost';
-} & React.ButtonHTMLAttributes<HTMLButtonElement>) {
-  const styles: Record<string, string> = {
-    primary: 'bg-teal-700 text-white shadow-btn hover:bg-teal-800',
-    danger: 'bg-red-600 text-white shadow-btn-red hover:bg-red-700',
-    ghost: 'border border-gray-200 bg-white text-gray-700 hover:bg-gray-50',
-  };
+  size?: 'sm' | 'md' | 'lg';
+} & ButtonHTMLAttributes<HTMLButtonElement>) {
+  const styles = {
+    primary: 'bg-accent text-text-inverse shadow-btn hover:bg-accent-strong',
+    danger:
+      'bg-status-danger-accent text-status-danger-contrast shadow-btn-red hover:bg-status-danger-text',
+    ghost:
+      'border border-border bg-surface text-text-secondary hover:bg-interaction-hover',
+  } satisfies Record<'primary' | 'danger' | 'ghost', string>;
+  const sizes = {
+    sm: 'min-h-8 px-3 py-1 text-xs',
+    md: 'min-h-11 px-4 py-2 text-sm',
+    lg: 'min-h-11 px-5 py-2.5 text-sm',
+  } satisfies Record<'sm' | 'md' | 'lg', string>;
   return (
     <button
+      type={type ?? 'button'}
       className={cn(
-        'inline-flex items-center justify-center gap-2 rounded-control px-4 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50',
+        'inline-flex min-w-0 cursor-pointer items-center justify-center gap-2 rounded-control font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-app disabled:cursor-not-allowed disabled:opacity-50',
+        styles[variant],
+        sizes[size],
+        className,
+      )}
+      {...rest}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** An icon-only action with a mandatory accessible name and a 44px target by
+ * default. Use `size="sm"` only where the surrounding compact control already
+ * provides the documented operational density. */
+export function IconButton({
+  label,
+  size = 'md',
+  variant = 'ghost',
+  className,
+  children,
+  type,
+  ...rest
+}: {
+  /** Localized action name announced to assistive technology. */
+  label: string;
+  size?: 'sm' | 'md';
+  variant?: 'ghost' | 'danger';
+} & Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'aria-label' | 'children'> & {
+    children: ReactNode;
+  }) {
+  const sizes = {
+    sm: 'min-h-8 min-w-8 p-1.5',
+    md: 'min-h-11 min-w-11 p-2.5',
+  } satisfies Record<'sm' | 'md', string>;
+  const styles = {
+    ghost: 'text-text-muted hover:bg-interaction-hover hover:text-text-primary',
+    danger:
+      'text-status-danger-text hover:bg-status-danger-bg hover:text-status-danger-text',
+  } satisfies Record<'ghost' | 'danger', string>;
+  return (
+    <button
+      type={type ?? 'button'}
+      aria-label={label}
+      className={cn(
+        'inline-flex cursor-pointer items-center justify-center rounded-control transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus focus-visible:ring-offset-2 focus-visible:ring-offset-app disabled:cursor-not-allowed disabled:opacity-50',
+        sizes[size],
         styles[variant],
         className,
       )}
@@ -182,6 +242,226 @@ export function Button({
     >
       {children}
     </button>
+  );
+}
+
+export type NoticeTone = 'info' | 'success' | 'warning' | 'danger';
+
+const NOTICE_TONE = {
+  info: 'border-border bg-surface-muted text-text-secondary',
+  success: 'border-accent bg-interaction-selected text-accent',
+  warning: 'border-status-warning-border bg-status-warning-bg text-status-warning-text',
+  danger: 'border-status-danger-border bg-status-danger-bg text-status-danger-text',
+} satisfies Record<NoticeTone, string>;
+
+/** A persistent explanatory panel, not a transient toast. Content remains a
+ * ReactNode so a feature can supply localized copy, links, and recovery
+ * controls without the primitive inventing operator-facing language. */
+export function Notice({
+  tone = 'info',
+  live,
+  className,
+  children,
+  ...rest
+}: {
+  tone?: NoticeTone;
+  /** Announce a newly mounted, time-sensitive notice. Omit for static context. */
+  live?: 'polite' | 'assertive';
+  className?: string;
+  children: ReactNode;
+} & Omit<React.HTMLAttributes<HTMLDivElement>, 'aria-live' | 'children' | 'role'>) {
+  return (
+    <div
+      role={live === 'assertive' ? 'alert' : live === 'polite' ? 'status' : undefined}
+      className={cn(
+        'min-w-0 rounded-control border px-3 py-2 text-sm leading-relaxed',
+        NOTICE_TONE[tone],
+        className,
+      )}
+      {...rest}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** A labelled single native control. `Field` supplies the programmatic name
+ * and wires help/error text to that exact control; groups use `FieldGroup`.
+ * The feature still owns validation and its domain-specific input. */
+export function Field({
+  id,
+  label,
+  help,
+  error,
+  className,
+  children,
+}: {
+  id: string;
+  label: ReactNode;
+  help?: ReactNode;
+  error?: ReactNode;
+  className?: string;
+  children: ReactElement<{
+    id?: string;
+    'aria-describedby'?: string;
+    'aria-errormessage'?: string;
+    'aria-invalid'?: boolean | 'true' | 'false';
+  }>;
+}) {
+  const helpId = `${id}-help`;
+  const errorId = `${id}-error`;
+  const describedBy = [
+    children.props['aria-describedby'],
+    help ? helpId : null,
+    error ? errorId : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
+  return (
+    <div className={cn('flex min-w-0 flex-col gap-1.5', className)}>
+      <label htmlFor={id} className="text-sm font-medium text-text-primary">
+        {label}
+      </label>
+      {cloneElement(children, {
+        id,
+        'aria-describedby': describedBy || undefined,
+        'aria-errormessage': error ? errorId : undefined,
+        'aria-invalid': error ? true : children.props['aria-invalid'],
+      })}
+      {help && (
+        <p id={helpId} className="text-xs leading-relaxed text-text-muted">
+          {help}
+        </p>
+      )}
+      {error && (
+        <p
+          id={errorId}
+          role="alert"
+          className="text-xs leading-relaxed text-status-danger-text"
+        >
+          {error}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** A labelled group of related controls. Unlike `Field`, it intentionally
+ * names the group rather than pretending to label every child control. */
+export function FieldGroup({
+  id,
+  label,
+  help,
+  error,
+  className,
+  children,
+}: {
+  /** Stable DOM prefix that links group-level help and error text. */
+  id: string;
+  label: ReactNode;
+  help?: ReactNode;
+  error?: ReactNode;
+  className?: string;
+  children: ReactNode;
+}) {
+  const helpId = `${id}-help`;
+  const errorId = `${id}-error`;
+  const describedBy = [help ? helpId : null, error ? errorId : null]
+    .filter(Boolean)
+    .join(' ');
+
+  return (
+    <fieldset
+      aria-describedby={describedBy || undefined}
+      aria-errormessage={error ? errorId : undefined}
+      aria-invalid={error ? true : undefined}
+      className={cn('flex min-w-0 flex-col gap-1.5', className)}
+    >
+      <legend className="text-sm font-medium text-text-primary">{label}</legend>
+      {children}
+      {help && (
+        <p id={helpId} className="text-xs leading-relaxed text-text-muted">
+          {help}
+        </p>
+      )}
+      {error && (
+        <p
+          id={errorId}
+          role="alert"
+          className="text-xs leading-relaxed text-status-danger-text"
+        >
+          {error}
+        </p>
+      )}
+    </fieldset>
+  );
+}
+
+const CONTROL_CLASS =
+  'min-w-0 rounded-control border border-border bg-surface-control px-2.5 py-1.5 text-sm text-text-primary transition-colors placeholder:text-text-muted focus-visible:border-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus/40 disabled:cursor-not-allowed disabled:border-border-disabled disabled:bg-interaction-disabled disabled:text-text-disabled disabled:opacity-100';
+
+/** Native controls keep their native semantics while centralising theme,
+ * focus, disabled, and content-driven sizing behaviour. */
+export function TextInput({
+  className,
+  ...rest
+}: InputHTMLAttributes<HTMLInputElement>) {
+  return <input className={cn(CONTROL_CLASS, className)} {...rest} />;
+}
+
+export function Select({
+  className,
+  children,
+  ...rest
+}: SelectHTMLAttributes<HTMLSelectElement>) {
+  return (
+    <select className={cn(CONTROL_CLASS, className)} {...rest}>
+      {children}
+    </select>
+  );
+}
+
+export function Textarea({
+  className,
+  ...rest
+}: TextareaHTMLAttributes<HTMLTextAreaElement>) {
+  return <textarea className={cn(CONTROL_CLASS, className)} {...rest} />;
+}
+
+/** A thin Settings card composition. It standardises only the repeated section
+ * heading/help/action structure; its children retain the section's domain
+ * workflow and layout. */
+export function SettingsSection({
+  title,
+  description,
+  actions,
+  className,
+  children,
+  ...rest
+}: {
+  title: ReactNode;
+  description?: ReactNode;
+  actions?: ReactNode;
+  className?: string;
+  children: ReactNode;
+} & Omit<React.HTMLAttributes<HTMLDivElement>, 'title'>) {
+  return (
+    <Card className={cn('flex min-w-0 flex-col overflow-auto', className)} {...rest}>
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-1 border-b border-border px-4 py-[13px]">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+            {title}
+          </h2>
+          {description && (
+            <div className="mt-1 text-[12px] leading-relaxed text-text-muted">
+              {description}
+            </div>
+          )}
+        </div>
+        {actions && <div className="shrink-0">{actions}</div>}
+      </div>
+      {children}
+    </Card>
   );
 }
 
@@ -228,7 +508,9 @@ function tabStopsWithin(root: HTMLElement): HTMLElement[] {
   const nodes = root.querySelectorAll<HTMLElement>(
     'a[href], button, input, textarea, select, [tabindex]',
   );
-  return Array.from(nodes).filter((el) => !el.hasAttribute('disabled') && el.tabIndex >= 0);
+  return Array.from(nodes).filter(
+    (el) => !el.hasAttribute('disabled') && el.tabIndex >= 0,
+  );
 }
 
 /**
@@ -348,19 +630,20 @@ export function Modal({
   if (!open) return null;
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div aria-hidden className="absolute inset-0 bg-gray-900/30" onClick={onClose} />
+      <div aria-hidden className="absolute inset-0 bg-scrim" onClick={onClose} />
       <div
         ref={dialogRef}
         tabIndex={-1}
         role="dialog"
         aria-modal="true"
-        className="relative z-10 w-full max-w-md rounded-card border border-gray-200 bg-white p-5 shadow-float focus:outline-none"
+        className="relative z-10 w-full max-w-md rounded-card border border-border bg-surface-elevated p-5 shadow-float focus:outline-none"
       >
-        {title && <h2 className="mb-2 text-[15px] font-semibold text-gray-900">{title}</h2>}
-        {children && <div className="text-sm text-gray-600">{children}</div>}
+        {title && (
+          <h2 className="mb-2 text-[15px] font-semibold text-text-primary">{title}</h2>
+        )}
+        {children && <div className="text-sm text-text-secondary">{children}</div>}
         {footer && <div className="mt-5 flex justify-end gap-2">{footer}</div>}
       </div>
     </div>
   );
 }
-

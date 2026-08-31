@@ -130,10 +130,12 @@ test('Recorder honesty: a dead recorder stops the RECORDING claim, and a returni
 
     // ---- PRIMARY: the screen stops claiming a recording it cannot see -------
     await expect(phaseTitle(page), 'the UI kept claiming RECORDING after the recorder died')
-      .toHaveText('RECORDER UNREACHABLE', { timeout: 90_000 });
+      .toHaveText('Recorder unreachable', { timeout: 90_000 });
     const note = page.getByTestId('recorder-unreachable-note');
     await expect(note).toBeVisible();
-    await expect(note).toContainText('The recorder is not answering');
+    await expect(note).toContainText(
+      'The recorder is not answering. Whether this take is still running cannot be confirmed from here. Check the recorder connection; after it reconnects, confirm whether this take is still live before continuing.',
+    );
 
     // PRIMARY: and the clock stops. Two readings, one poll cycle apart.
     // The reading is checked for being a real, running clock first: two absent

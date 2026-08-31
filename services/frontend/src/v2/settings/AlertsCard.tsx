@@ -28,6 +28,7 @@ import { getConfigOptions } from '../../api/config';
 import { queryKeys } from '../../api/queryKeys';
 import { Badge, Button, cn } from '../../components/ui';
 import { ErrorMessage } from '../../components/ErrorMessage';
+import { useTranslation } from 'react-i18next';
 import {
   alertsConfigKey,
   KNOWN_METRICS,
@@ -83,9 +84,10 @@ function toConfig(
 }
 
 const CELL =
-  'rounded-control border border-gray-200 px-1.5 py-1 text-[12px] focus:border-teal-600 focus:outline-none';
+  'rounded-control border border-border px-1.5 py-1 text-[12px] focus:border-accent focus:outline-none';
 
 export function AlertsCard() {
+  const { t } = useTranslation('settings');
   const queryClient = useQueryClient();
   // alerts.yaml is the ACTIVE robot's file, so the cache entry is keyed by robot
   // (see alertsConfigKey). Until the active robot is known there is no rules
@@ -201,11 +203,11 @@ export function AlertsCard() {
   return (
     <div className="flex flex-col gap-3" data-testid="settings-alerts">
       <div className="flex flex-wrap items-center gap-2.5">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Alert rules
+        <h2 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+          {t('alerts.title')}
         </h2>
         <Badge tone="amber" dot>
-          applies on monitor restart
+          {t('alerts.restart')}
         </Badge>
       </div>
 
@@ -214,43 +216,59 @@ export function AlertsCard() {
       ) : query.isError ? (
         <ErrorMessage error={query.error} />
       ) : query.isPending || !activeRobot ? (
-        <p className="text-sm text-gray-500">Loading alert rules…</p>
+        <p className="text-sm text-text-muted">{t('alerts.loading')}</p>
       ) : (
         <>
-          <p className="text-[11.5px] leading-relaxed text-gray-500">
-            Explicit per-topic threshold rules (a rule fires when <code>metric op threshold</code>
-            holds, with clear/cooldown hysteresis). Topics without an explicit rule are still
-            covered on their Hz by the monitor&apos;s auto-derived rules and default incident
-            synthesizer — these rules override that coverage for the topics they name.
+          <p className="text-[11.5px] leading-relaxed text-text-muted">
+            {t('alerts.intro')}
           </p>
 
-          <div className="overflow-x-auto rounded-control border border-gray-200" data-testid="alerts-rules">
+          <div
+            className="overflow-x-auto rounded-control border border-border"
+            data-testid="alerts-rules"
+          >
             <table className="w-full min-w-[720px] border-collapse text-[12px]">
               <thead>
-                <tr className="border-b border-gray-100 bg-gray-50 text-[10.5px] font-semibold uppercase tracking-[0.04em] text-gray-500">
-                  <th className="px-2 py-1.5 text-left">Topic</th>
-                  <th className="px-2 py-1.5 text-left">Metric</th>
-                  <th className="px-2 py-1.5 text-left">Op</th>
-                  <th className="px-2 py-1.5 text-left">Threshold</th>
-                  <th className="px-2 py-1.5 text-left">clear_after_s</th>
-                  <th className="px-2 py-1.5 text-left">cooldown_s</th>
-                  <th className="px-2 py-1.5 text-left">Severity</th>
+                <tr className="border-b border-border bg-surface-muted text-[10.5px] font-semibold uppercase tracking-[0.04em] text-text-muted">
+                  <th className="px-2 py-1.5 text-left">{t('alerts.columns.topic')}</th>
+                  <th className="px-2 py-1.5 text-left">
+                    {t('alerts.columns.metric')}
+                  </th>
+                  <th className="px-2 py-1.5 text-left">{t('alerts.columns.op')}</th>
+                  <th className="px-2 py-1.5 text-left">
+                    {t('alerts.columns.threshold')}
+                  </th>
+                  <th className="px-2 py-1.5 text-left">
+                    {t('alerts.columns.clearAfter')}
+                  </th>
+                  <th className="px-2 py-1.5 text-left">
+                    {t('alerts.columns.cooldown')}
+                  </th>
+                  <th className="px-2 py-1.5 text-left">
+                    {t('alerts.columns.severity')}
+                  </th>
                   <th className="px-2 py-1.5" />
                 </tr>
               </thead>
               <tbody>
                 {rules.length === 0 ? (
                   <tr>
-                    <td colSpan={8} className="px-2 py-3 text-center text-[12px] text-gray-500">
-                      No explicit rules — derived coverage applies. Add a rule to override a topic.
+                    <td
+                      colSpan={8}
+                      className="px-2 py-3 text-center text-[12px] text-text-muted"
+                    >
+                      {t('alerts.empty')}
                     </td>
                   </tr>
                 ) : (
                   rules.map((r, i) => (
-                    <tr key={i} className="border-b border-gray-50 last:border-b-0 align-top">
+                    <tr
+                      key={i}
+                      className="border-b border-border last:border-b-0 align-top"
+                    >
                       <td className="px-2 py-1.5">
                         <input
-                          aria-label={`rule topic ${i}`}
+                          aria-label={t('alerts.aria.topic', { index: String(i) })}
                           className={cn(CELL, 'font-mono w-full min-w-[180px]')}
                           value={r.topic}
                           placeholder="/hsrb/joint_states"
@@ -259,16 +277,20 @@ export function AlertsCard() {
                         {r.metric === 'loss' && (
                           <p
                             data-testid={`alerts-loss-warn-${i}`}
-                            className="mt-1 text-[10.5px] text-amber-700"
+                            className="mt-1 text-[10.5px] text-status-warning-text"
                           >
-                            metric “loss” can never fire (loss_rate is null) — use hz or gap.
+                            {t('alerts.lossWarning')}
                           </p>
                         )}
                       </td>
                       <td className="px-2 py-1.5">
                         <select
-                          aria-label={`rule metric ${i}`}
-                          className={cn(CELL, r.metric === 'loss' && 'border-amber-300 bg-amber-50')}
+                          aria-label={t('alerts.aria.metric', { index: String(i) })}
+                          className={cn(
+                            CELL,
+                            r.metric === 'loss' &&
+                              'border-status-warning-border bg-status-warning-bg',
+                          )}
                           value={r.metric}
                           onChange={(e) => setRule(i, { metric: e.target.value })}
                         >
@@ -281,7 +303,7 @@ export function AlertsCard() {
                       </td>
                       <td className="px-2 py-1.5">
                         <select
-                          aria-label={`rule op ${i}`}
+                          aria-label={t('alerts.aria.op', { index: String(i) })}
                           className={CELL}
                           value={r.op}
                           onChange={(e) => setRule(i, { op: e.target.value })}
@@ -295,7 +317,7 @@ export function AlertsCard() {
                       </td>
                       <td className="px-2 py-1.5">
                         <input
-                          aria-label={`rule threshold ${i}`}
+                          aria-label={t('alerts.aria.threshold', { index: String(i) })}
                           type="number"
                           className={cn(CELL, 'font-mono w-20')}
                           value={r.threshold}
@@ -304,7 +326,7 @@ export function AlertsCard() {
                       </td>
                       <td className="px-2 py-1.5">
                         <input
-                          aria-label={`rule clear_after_s ${i}`}
+                          aria-label={t('alerts.aria.clearAfter', { index: String(i) })}
                           type="number"
                           min={0}
                           className={cn(CELL, 'font-mono w-20')}
@@ -314,7 +336,7 @@ export function AlertsCard() {
                       </td>
                       <td className="px-2 py-1.5">
                         <input
-                          aria-label={`rule cooldown_s ${i}`}
+                          aria-label={t('alerts.aria.cooldown', { index: String(i) })}
                           type="number"
                           min={0}
                           className={cn(CELL, 'font-mono w-20')}
@@ -324,20 +346,22 @@ export function AlertsCard() {
                       </td>
                       <td className="px-2 py-1.5">
                         <select
-                          aria-label={`rule severity ${i}`}
+                          aria-label={t('alerts.aria.severity', { index: String(i) })}
                           className={CELL}
                           value={r.severity}
                           onChange={(e) => setRule(i, { severity: e.target.value })}
                         >
-                          <option value="warning">warning</option>
-                          <option value="danger">danger</option>
+                          <option value="warning">
+                            {t('alerts.severity.warning')}
+                          </option>
+                          <option value="danger">{t('alerts.severity.danger')}</option>
                         </select>
                       </td>
                       <td className="px-2 py-1.5">
                         <button
                           type="button"
-                          aria-label={`remove rule ${i}`}
-                          className="rounded-control px-2 py-1 text-[12px] text-gray-500 hover:bg-gray-50 hover:text-red-600"
+                          aria-label={t('alerts.aria.remove', { index: String(i) })}
+                          className="rounded-control px-2 py-1 text-[12px] text-text-muted hover:bg-surface-muted hover:text-status-danger-text"
                           onClick={() => setRules((rs) => rs.filter((_, j) => j !== i))}
                         >
                           ×
@@ -353,30 +377,44 @@ export function AlertsCard() {
           <button
             type="button"
             data-testid="alerts-add-rule"
-            className="self-start rounded-control border border-gray-200 px-2 py-1 text-[11.5px] text-gray-600 hover:bg-gray-50"
+            className="self-start rounded-control border border-border px-2 py-1 text-[11.5px] text-text-secondary hover:bg-surface-muted"
             onClick={() =>
               setRules((rs) => [
                 ...rs,
-                { topic: '', metric: 'hz', op: 'lt', threshold: '15', clearAfter: '3', cooldown: '10', severity: 'warning' },
+                {
+                  topic: '',
+                  metric: 'hz',
+                  op: 'lt',
+                  threshold: '15',
+                  clearAfter: '3',
+                  cooldown: '10',
+                  severity: 'warning',
+                },
               ])
             }
           >
-            + Add rule
+            {t('alerts.add')}
           </button>
 
           {derived && (
-            <div className="rounded-control border border-gray-200 bg-gray-50 p-2.5" data-testid="alerts-derived">
-              <p className="mb-1 text-[10.5px] font-semibold uppercase tracking-[0.04em] text-gray-500">
-                derived_rules (auto-derived hz coverage — edit via Advanced)
+            <div
+              className="rounded-control border border-border bg-surface-muted p-2.5"
+              data-testid="alerts-derived"
+            >
+              <p className="mb-1 text-[10.5px] font-semibold uppercase tracking-[0.04em] text-text-muted">
+                {t('alerts.derived')}
               </p>
-              <pre className="overflow-x-auto font-mono text-[11px] text-gray-600">
+              <pre className="overflow-x-auto font-mono text-[11px] text-text-secondary">
                 {JSON.stringify(derived, null, 2)}
               </pre>
             </div>
           )}
 
           {warnings.length > 0 && (
-            <ul className="list-disc rounded-control border border-amber-200 bg-amber-50 pl-6 pr-3 py-2 text-[11.5px] text-amber-800" data-testid="alerts-warnings">
+            <ul
+              className="list-disc rounded-control border border-status-warning-border bg-status-warning-bg pl-6 pr-3 py-2 text-[11.5px] text-status-warning-text"
+              data-testid="alerts-warnings"
+            >
               {warnings.map((w, i) => (
                 <li key={i}>{w}</li>
               ))}
@@ -386,14 +424,9 @@ export function AlertsCard() {
           {pendingServer && (
             <div
               data-testid="alerts-server-changed"
-              className="flex flex-col gap-2 rounded-control border border-amber-300 bg-amber-50 p-2.5 text-[11.5px] text-amber-800"
+              className="flex flex-col gap-2 rounded-control border border-status-warning-border bg-status-warning-bg p-2.5 text-[11.5px] text-status-warning-text"
             >
-              <p>
-                <span className="font-semibold">alerts.yaml changed on the server</span> while you
-                were editing — another terminal saved it, or the active robot changed. Your unsaved
-                edits are kept and nothing here was overwritten, but saving now writes over that
-                newer file.
-              </p>
+              <p>{t('alerts.serverChanged')}</p>
               <button
                 type="button"
                 data-testid="alerts-load-server"
@@ -402,9 +435,9 @@ export function AlertsCard() {
                   setPendingServer(null);
                   setSaved(false);
                 }}
-                className="self-start rounded-control border border-amber-300 bg-white px-2.5 py-1 font-semibold text-amber-800 hover:bg-amber-100"
+                className="self-start rounded-control border border-status-warning-border bg-surface px-2.5 py-1 font-semibold text-status-warning-text hover:bg-status-warning-bg"
               >
-                Load the server copy (discards my edits)
+                {t('alerts.loadServer')}
               </button>
             </div>
           )}
@@ -413,7 +446,10 @@ export function AlertsCard() {
             <div>
               <ErrorMessage error={mutation.error} />
               {details.length > 0 && (
-                <ul className="mt-1 list-disc pl-5 text-xs text-red-700" data-testid="alerts-errors">
+                <ul
+                  className="mt-1 list-disc pl-5 text-xs text-status-danger-text"
+                  data-testid="alerts-errors"
+                >
                   {details.map((d, i) => (
                     <li key={i} className="font-mono">
                       {d}
@@ -424,11 +460,13 @@ export function AlertsCard() {
             </div>
           )}
           {saved && !mutation.isPending && (
-            <p data-testid="alerts-saved" className="text-[12.5px] font-medium text-teal-700">
-              Saved — applies on the next topic_monitor restart.
-              <span className="ml-1 font-normal text-gray-500">
-                The file is rewritten in canonical form, so comments, key order and YAML
-                anchors are not kept; the editor above now shows the file as written.
+            <p
+              data-testid="alerts-saved"
+              className="text-[12.5px] font-medium text-accent"
+            >
+              {t('alerts.saved')}
+              <span className="ml-1 font-normal text-text-muted">
+                {t('alertsNormalised')}
               </span>
             </p>
           )}
@@ -441,50 +479,62 @@ export function AlertsCard() {
               disabled={mutation.isPending || rawDirty}
               className="px-4 py-1.5 text-sm disabled:opacity-50"
             >
-              {mutation.isPending ? 'Saving…' : 'Save'}
+              {mutation.isPending ? t('common.saving') : t('alerts.saveForm')}
             </Button>
             {rawDirty ? (
               <span
                 data-testid="alerts-form-save-blocked"
-                className="text-[11px] text-amber-700"
+                className="text-[11px] text-status-warning-text"
               >
-                The Advanced YAML below has unsaved edits — this Save would
-                silently drop them. Use “Save YAML”, or reopen Data quality to
-                discard them.
+                {t('alerts.rawDirty')}
               </span>
             ) : (
-              <span className="text-[11px] text-gray-500">The server validates on save.</span>
+              <span className="text-[11px] text-text-muted">
+                {t('recording.schemaNote')}
+              </span>
             )}
           </div>
 
           {/* Advanced: raw YAML (edits derived_rules and anything the table omits). */}
-          <div className="rounded-control border border-gray-200">
+          <div className="rounded-control border border-border">
             <button
               type="button"
               data-testid="alerts-advanced-toggle"
               aria-expanded={advancedOpen}
               onClick={() => setAdvancedOpen((o) => !o)}
-              className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[12.5px] font-semibold text-gray-700 hover:bg-gray-50"
+              className="flex w-full items-center gap-2 px-3.5 py-2.5 text-left text-[12.5px] font-semibold text-text-primary hover:bg-surface-muted"
             >
-              <span className={cn('text-gray-500 transition-transform', advancedOpen && 'rotate-90')}>
+              <span
+                className={cn(
+                  'text-text-muted transition-transform',
+                  advancedOpen && 'rotate-90',
+                )}
+              >
                 ▸
               </span>
-              Advanced — edit raw YAML
+              {t('alerts.rawTitle')}
               {rawDirty && (
                 <span
                   data-testid="alerts-raw-dirty"
-                  className="rounded-chip bg-amber-100 px-1.5 text-[10px] font-semibold text-amber-700"
+                  className="rounded-chip bg-status-warning-bg px-1.5 text-[10px] font-semibold text-status-warning-text"
                 >
-                  unsaved
+                  {t('alerts.rawDirty')}
                 </span>
               )}
-              {path && <span className="font-mono text-[11px] font-normal text-gray-500">{path}</span>}
+              {path && (
+                <span className="font-mono text-[11px] font-normal text-text-muted">
+                  {path}
+                </span>
+              )}
             </button>
             {advancedOpen && (
-              <div className="flex flex-col gap-2 border-t border-gray-100 p-3.5" data-testid="alerts-advanced">
+              <div
+                className="flex flex-col gap-2 border-t border-border p-3.5"
+                data-testid="alerts-advanced"
+              >
                 <textarea
-                  aria-label="alerts config yaml"
-                  className="h-56 w-full rounded-control border border-gray-200 p-2 font-mono text-xs focus:border-teal-600 focus:outline-none"
+                  aria-label={t('alerts.aria.raw')}
+                  className="h-56 w-full rounded-control border border-border p-2 font-mono text-xs focus:border-accent focus:outline-none"
                   spellCheck={false}
                   value={rawText}
                   placeholder="rules: []"
@@ -498,15 +548,14 @@ export function AlertsCard() {
                     disabled={mutation.isPending}
                     className="px-4 py-1.5 text-sm disabled:opacity-50"
                   >
-                    {mutation.isPending ? 'Saving…' : 'Save YAML'}
+                    {mutation.isPending ? t('common.saving') : t('alerts.saveYaml')}
                   </Button>
                   {formDirty && (
                     <span
                       data-testid="alerts-raw-discard-warn"
-                      className="text-[11px] text-amber-700"
+                      className="text-[11px] text-status-warning-text"
                     >
-                      The rules table above has unsaved edits — Save YAML writes
-                      the file from this text and discards them.
+                      {t('alerts.discardForm')}
                     </span>
                   )}
                 </div>

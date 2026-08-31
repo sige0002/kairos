@@ -6,6 +6,7 @@
 // the Batch menu), not a fixed 30.
 
 import { Card, cn } from '../../components/ui';
+import { i18n } from '../../i18n';
 import type { BatchMachine, EpisodeRecord } from './useBatchMachine';
 
 // The chip's marker is driven by task outcome first (operators think in task
@@ -22,10 +23,13 @@ function bucketOf(e: EpisodeRecord): Bucket {
 function tooltipOf(e: EpisodeRecord, n: number): string {
   const task =
     e.taskResult === 'fail'
-      ? `Task: Failed${e.failReason ? ` (${e.failReason})` : ''}`
-      : 'Task: Success';
-  const quality = e.quality === 'review' ? 'Quality: Needs review' : 'Quality: Good';
-  return `Episode ${n} — ${task} · ${quality}`;
+      ? i18n.t('collect:taskFailedTooltip', { reason: e.failReason ?? '' })
+      : i18n.t('collect:taskSuccessTooltip');
+  const quality =
+    e.quality === 'review'
+      ? i18n.t('collect:qualityNeedsReview')
+      : i18n.t('collect:qualityGood');
+  return i18n.t('collect:episodeTooltip', { number: String(n), task, quality });
 }
 
 export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
@@ -52,16 +56,19 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
   // save toast says so once; the strip has to keep saying it, and has to say
   // WHICH: a bare count leaves the operator unable to tell two such takes
   // apart, and the whole point is knowing what will be missing afterwards.
-  const unsynced = episodes.filter((e) => !e.captureId).map((e) => e.index).sort((a, b) => a - b);
+  const unsynced = episodes
+    .filter((e) => !e.captureId)
+    .map((e) => e.index)
+    .sort((a, b) => a - b);
 
   const nodes = Array.from({ length: targetEpisodes }, (_, i) => {
     const n = i + 1;
     const recorded = byIndex.get(n);
     if (recorded) {
       const styles: Record<Bucket, string> = {
-        good: 'bg-green-100 text-green-700',
-        review: 'bg-amber-100 text-amber-700',
-        taskFailed: 'bg-red-50 text-red-700',
+        good: 'bg-status-success-bg text-status-success-text',
+        review: 'bg-status-warning-bg text-status-warning-text',
+        taskFailed: 'bg-status-danger-bg text-status-danger-text',
       };
       const glyphs: Record<Bucket, string> = {
         good: '✓',
@@ -78,17 +85,19 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
           data-testid={notSaved ? `episode-chip-unsaved-${n}` : undefined}
           title={
             notSaved
-              ? `${tooltipOf(recorded, n)} — labeled on screen only; the recorder ` +
-                'named no capture, so this take will not survive a reload'
+              ? i18n.t('collect:unsavedEpisodeTooltip', {
+                  episode: tooltipOf(recorded, n),
+                })
               : tooltipOf(recorded, n)
           }
           className={cn(
             'flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-xs font-bold',
             styles[bucket],
-            justSaved && 'ring-2 ring-teal-500 ring-offset-1',
+            justSaved && 'ring-2 ring-focus ring-offset-1',
             // Dashed outline: this chip describes something the server has no
             // record of, and it must be tellable apart at a glance.
-            notSaved && 'outline outline-2 outline-dashed outline-amber-500',
+            notSaved &&
+              'outline outline-2 outline-dashed outline-status-warning-accent',
           )}
         >
           {glyphs[bucket]}
@@ -99,12 +108,17 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
       return (
         <span
           key={n}
-          title={`Episode ${n} — ${recording ? 'recording' : 'next'}`}
+          title={i18n.t('collect:episodeStateTooltip', {
+            number: String(n),
+            state: recording
+              ? i18n.t('collect:recording').toLowerCase()
+              : i18n.t('collect:nextEpisode'),
+          })}
           className={cn(
             'flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border-2 font-mono text-[11px]',
             recording
-              ? 'border-red-600 bg-red-50 text-red-700'
-              : 'border-teal-600 bg-white text-teal-700',
+              ? 'border-status-danger-border bg-status-danger-bg text-status-danger-text'
+              : 'border-accent bg-surface text-accent',
           )}
         >
           {n}
@@ -117,8 +131,10 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
       return (
         <span
           key={n}
-          title={`Episode ${n} — recorded earlier; no longer listed (exported or deleted in Review)`}
-          className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border border-dashed border-gray-300 bg-white font-mono text-[10.5px] text-gray-500"
+          title={i18n.t('collect:episodePreviouslyRecordedTooltip', {
+            number: String(n),
+          })}
+          className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full border border-dashed border-border-strong bg-surface font-mono text-[10.5px] text-text-muted"
         >
           {n}
         </span>
@@ -127,8 +143,8 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
     return (
       <span
         key={n}
-        title={`Episode ${n} — not recorded`}
-        className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-gray-100 font-mono text-[10.5px] text-gray-600"
+        title={i18n.t('collect:episodeNotRecordedTooltip', { number: String(n) })}
+        className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full bg-surface-muted font-mono text-[10.5px] text-text-secondary"
       >
         {n}
       </span>
@@ -139,7 +155,7 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
     <Card className="flex shrink-0 items-center gap-2.5 overflow-x-auto px-4 py-2.5 [@media(max-height:860px)]:py-1.5">
       <span
         data-testid="episode-strip-count"
-        className="font-mono text-[13px] font-semibold text-gray-900"
+        className="font-mono text-[13px] font-semibold text-text-primary"
       >
         {stats.nRecorded} / {targetEpisodes}
       </span>
@@ -149,29 +165,24 @@ export function EpisodeStrip({ machine }: { machine: BatchMachine }) {
       {unsynced.length > 0 && (
         <span
           data-testid="episode-strip-unsynced"
-          title={
-            'Labeled on screen only — the recorder never named a capture for ' +
-            'these takes, so there is nothing on the server to review and they ' +
-            'will not survive a reload.'
-          }
-          className="shrink-0 rounded-chip bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700"
+          title={i18n.t('collect:unsavedEpisodesHelp')}
+          className="shrink-0 rounded-chip bg-status-warning-bg px-2 py-0.5 text-[11px] font-semibold text-status-warning-text"
         >
-          {unsynced.map((n) => `#${n}`).join(' ')} not saved
+          {i18n.t('collect:unsavedEpisodes', {
+            episodes: unsynced.map((n) => `#${n}`).join(' '),
+          })}
         </span>
       )}
       {unplaced.length > 0 && (
         <span
           data-testid="episode-strip-unplaced"
-          title={
-            'These captures carry no position within the batch, so they cannot ' +
-            'be shown on the strip. They exist and are listed in Review.'
-          }
-          className="shrink-0 rounded-chip bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-700"
+          title={i18n.t('collect:unplacedEpisodesHelp')}
+          className="shrink-0 rounded-chip bg-status-warning-bg px-2 py-0.5 text-[11px] font-semibold text-status-warning-text"
         >
-          +{unplaced.length} unplaced
+          {i18n.t('collect:unplacedEpisodes', { count: unplaced.length })}
         </span>
       )}
-      <span className="shrink-0 text-[11px] text-gray-500">
+      <span className="shrink-0 text-[11px] text-text-muted">
         ✓ {stats.nGood} · ! {stats.nReview} · ✕ {stats.nTaskFailed}
       </span>
     </Card>

@@ -7,22 +7,23 @@
 import { cn } from '../../../components/ui';
 import type { RecordArming } from '../../../api/types';
 import { isTransportCode, readCaptureError } from '../../captures/errors';
+import { formatNumber } from '../../../i18n/format';
+import { i18n } from '../../../i18n';
 import type { MachineError } from '../useBatchMachine';
 
 // Operator-facing copy for known recorder error codes (D-8-1). Unknown codes
 // fall through to the raw server message; the code is always shown muted below.
 const ERROR_COPY: Record<string, string> = {
-  already_recording:
-    'A recording is already in progress — stop it before starting a new one.',
-  not_recording: 'No recording is in progress.',
-  recorder_unreachable: "Can't reach the recorder — check the robot connection.",
+  already_recording: i18n.t('collect:alreadyRecordingHelp'),
+  not_recording: i18n.t('collect:noRecordingInProgress'),
+  recorder_unreachable: i18n.t('collect:recorderUnreachableHelp'),
 };
 
 function ErrorBanner({ children }: { children: React.ReactNode }) {
   return (
     <div
       role="alert"
-      className="rounded-control border border-red-200 bg-red-50/70 px-3 py-2 text-[12px] text-red-800"
+      className="rounded-control border border-status-danger-border bg-status-danger-bg/70 px-3 py-2 text-[12px] text-status-danger-text"
     >
       {children}
     </div>
@@ -77,18 +78,22 @@ export function ArmingNote({ arming }: { arming: RecordArming }) {
       className={cn(
         'flex flex-wrap items-center gap-x-2.5 gap-y-1 rounded-control border px-3 py-2 text-[12px]',
         ok
-          ? 'border-teal-200 bg-teal-50/60 text-teal-800'
-          : 'border-amber-200 bg-amber-50/70 text-amber-800',
+          ? 'border-accent bg-interaction-selected/60 text-accent'
+          : 'border-status-warning-border bg-status-warning-bg/70 text-status-warning-text',
       )}
     >
       <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
-        Armed
+        {i18n.t('collect:armed')}
       </span>
-      <span className="font-mono">{matched.length} matched</span>
+      <span className="font-mono">
+        {i18n.t('collect:matchedTopicCount', { count: matched.length })}
+      </span>
       {missing.length > 0 && (
         <>
           <span className="opacity-40">·</span>
-          <span className="font-mono font-semibold">{missing.length} missing</span>
+          <span className="font-mono font-semibold">
+            {i18n.t('collect:missingTopicCount', { count: missing.length })}
+          </span>
           <span
             className="truncate font-mono text-[11px] opacity-80"
             title={missing.join('\n')}
@@ -121,27 +126,29 @@ export function IntegrityBanner({
       className={cn(
         'flex flex-col gap-0.5 rounded-control border-2 px-3 py-2.5',
         failed
-          ? 'border-red-300 bg-red-50 text-red-800'
-          : 'border-amber-300 bg-amber-50 text-amber-900',
+          ? 'border-status-danger-border bg-status-danger-bg text-status-danger-text'
+          : 'border-status-warning-border bg-status-warning-bg text-status-warning-text',
       )}
     >
       <div className="flex items-center gap-2">
         <span
           className={cn(
             'h-2 w-2 shrink-0 rounded-sm',
-            failed ? 'bg-red-600' : 'bg-amber-600',
+            failed ? 'bg-status-danger-accent' : 'bg-status-warning-accent',
           )}
         />
         <span className="text-[13px] font-bold">
           {failed
-            ? 'Recording failed — bag unreadable'
-            : `Data dropped — ${dropped != null ? dropped.toLocaleString() : '?'} messages lost`}
+            ? i18n.t('collect:recordingFailedBagUnreadable')
+            : i18n.t('collect:dataDropped', {
+                lost: dropped != null ? formatNumber(dropped) : '?',
+              })}
         </span>
       </div>
       <span className="pl-4 text-xs">
         {failed
-          ? 'The bag could not be verified or read back.'
-          : 'Recorder cache overflowed — raise max_cache_size_mb.'}
+          ? i18n.t('collect:bagCouldNotBeVerified')
+          : i18n.t('collect:recorderCacheOverflow')}
       </span>
     </div>
   );
@@ -155,10 +162,10 @@ export function QuickCheckReasons({ reasons }: { reasons: string[] }) {
   return (
     <div
       data-testid="quickcheck-reasons"
-      className="flex flex-col gap-1 rounded-control border border-amber-200 bg-amber-50/60 px-3 py-2 text-amber-800"
+      className="flex flex-col gap-1 rounded-control border border-status-warning-border bg-status-warning-bg/60 px-3 py-2 text-status-warning-text"
     >
       <span className="text-[10.5px] font-semibold uppercase tracking-[0.08em]">
-        Quick check flagged
+        {i18n.t('collect:quickCheckFlagged')}
       </span>
       <ul className="flex flex-col gap-0.5">
         {reasons.map((reason, i) => (
@@ -200,12 +207,16 @@ export function SaveErrorBanner({
       className={cn(
         'flex flex-col gap-1 rounded-control px-3 py-2.5 text-[12px]',
         destructive
-          ? 'border-2 border-red-400 bg-red-50 text-red-900'
-          : 'border border-amber-300 bg-amber-50 text-amber-900',
+          ? 'border-2 border-status-danger-border bg-status-danger-bg text-status-danger-text'
+          : 'border border-status-warning-border bg-status-warning-bg text-status-warning-text',
       )}
     >
       <span className="text-[10.5px] font-semibold uppercase tracking-[0.09em]">
-        {destructive ? 'Not saved' : unanswered ? 'Save not confirmed' : 'Save refused'}
+        {destructive
+          ? i18n.t('collect:notSaved')
+          : unanswered
+            ? i18n.t('collect:saveNotConfirmed')
+            : i18n.t('collect:saveRefused')}
       </span>
       <span className="font-semibold">{reading.message}</span>
       {reading.guidance && <span>{reading.guidance}</span>}
@@ -215,7 +226,7 @@ export function SaveErrorBanner({
         data-testid="save-error-dismiss"
         className="self-start text-[11.5px] font-semibold underline"
       >
-        Dismiss
+        {i18n.t('common:actions.dismiss')}
       </button>
     </div>
   );

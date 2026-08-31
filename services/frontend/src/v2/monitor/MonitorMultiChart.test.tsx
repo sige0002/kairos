@@ -65,6 +65,21 @@ beforeEach(() => {
 });
 afterEach(() => vi.restoreAllMocks());
 
+test('Topics splits desktop height evenly between charts and the table', async () => {
+  mockFetch();
+  renderWithClient(<MonitorScreen />);
+  fireEvent.click(await screen.findByTestId('mon-nav-Topics'));
+  await waitFor(() => expect(screen.getByTestId('topics-table')).toBeInTheDocument());
+
+  const charts = screen.getByTestId('chart-panels');
+  const table = screen.getByTestId('topics-table');
+  expect(charts.className).toContain('lg:flex-[1_1_0%]');
+  expect(charts.className).not.toContain('lg:max-h-[420px]');
+  expect(table.className).toContain('lg:flex-[1_1_0%]');
+  expect(table.className).toContain('lg:min-h-[270px]');
+  expect(table.className).toContain('lg:max-h-none');
+});
+
 test('+ Add chart adds a second panel defaulting to a distinct metric (Hz → Bandwidth)', async () => {
   mockFetch();
   renderWithClient(<MonitorScreen />);

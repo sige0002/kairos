@@ -20,10 +20,11 @@ from silently overwriting an edit it did not read.
 from __future__ import annotations
 
 import unicodedata
+from typing import Any, Literal
 
 from fastapi import APIRouter, Request
 from kairos_common import ApiError, utc_now_iso8601
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from api_orchestrator.store import CaptureStore, PlanCatalogConflictError
 
@@ -63,6 +64,76 @@ class PlanCondition(BaseModel):
     _normalize_name = field_validator("name")(_label)
 
 
+class FailureShortcuts(BaseModel):
+    """Per-task fast paths for the three logical external operator actions.
+
+    ``left`` / ``center`` / ``right`` are vendor-neutral names for the logical
+    actions a foot pedal (or a keyboard) can trigger during collection; each
+    slot references one label from the shared ``failure_reasons`` vocabulary,
+    or ``None`` when unassigned. The full vocabulary stays available in the
+    Collect UI — these three slots are shortcuts, not a replacement for it.
+    """
+
+    left: str | None = None
+    center: str | None = None
+    right: str | None = None
+
+
+class _ExternalControlStateMap(BaseModel):
+    """Three logical channels with no duplicate non-None action."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _unique_actions(self) -> _ExternalControlStateMap:
+        assigned = [
+            action
+            for action in (self.left, self.center, self.right)
+            if action != "none"
+        ]
+        if len(assigned) != len(set(assigned)):
+            raise ValueError(
+                "an external-control action cannot be assigned to two channels"
+            )
+        return self
+
+
+class ExternalControlReady(_ExternalControlStateMap):
+    left: Literal["none", "start"]
+    center: Literal["none", "start"]
+    right: Literal["none", "start"]
+
+
+class ExternalControlRecording(_ExternalControlStateMap):
+    left: Literal["none", "stop"]
+    center: Literal["none", "stop"]
+    right: Literal["none", "stop"]
+
+
+class ExternalControlResult(_ExternalControlStateMap):
+    left: Literal["none", "success_save", "failure", "retake"]
+    center: Literal["none", "success_save", "failure", "retake"]
+    right: Literal["none", "success_save", "failure", "retake"]
+
+
+class ExternalControlFailureReason(_ExternalControlStateMap):
+    left: Literal["none", "reason_slot_1", "reason_slot_2", "reason_slot_3"]
+    center: Literal["none", "reason_slot_1", "reason_slot_2", "reason_slot_3"]
+    right: Literal["none", "reason_slot_1", "reason_slot_2", "reason_slot_3"]
+
+
+class ExternalControlsConfig(BaseModel):
+    """Installation-wide state-safe mapping for logical external channels."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal[1]
+    ready: ExternalControlReady
+    recording: ExternalControlRecording
+    result: ExternalControlResult
+    failure_reason: ExternalControlFailureReason
+
+
 class PlanTask(BaseModel):
     """One task and the fixed conditions it may be recorded under."""
 
@@ -71,6 +142,7 @@ class PlanTask(BaseModel):
     )
     name: str = Field(max_length=200)
     conditions: list[PlanCondition] = Field(default_factory=list)
+    failure_shortcuts: FailureShortcuts = Field(default_factory=FailureShortcuts)
 
     _normalize_id = field_validator("task_id")(_entity_id)
     _normalize_name = field_validator("name")(_label)
@@ -78,6 +150,23 @@ class PlanTask(BaseModel):
     @model_validator(mode="after")
     def _unique_conditions(self) -> PlanTask:
         _reject_duplicates(self.conditions, "condition")
+        return self
+
+    @model_validator(mode="after")
+    def _unique_failure_shortcuts(self) -> PlanTask:
+        assigned = [
+            reason
+            for reason in (
+                self.failure_shortcuts.left,
+                self.failure_shortcuts.center,
+                self.failure_shortcuts.right,
+            )
+            if reason is not None
+        ]
+        if len(assigned) != len(set(assigned)):
+            raise ValueError(
+                "failure shortcuts must not assign the same reason to two slots"
+            )
         return self
 
 
@@ -122,6 +211,9 @@ class PlanCatalogPut(BaseModel):
     # Operator roster (attribution, NOT auth): the names Collect's OP picker
     # offers. Same omitted-means-keep semantics as failure_reasons.
     operators: list[str] | None = None
+    # Installation-global logical channel mapping. Omitted means keep the
+    # stored value so older clients cannot erase a layout they do not know.
+    external_controls: ExternalControlsConfig | None = None
 
     @field_validator("failure_reasons", "operators")
     @classmethod
@@ -168,28 +260,135 @@ async def get_plans(request: Request) -> dict:
             "projects": None,
             "failure_reasons": None,
             "operators": None,
+            "external_controls": None,
             "updated_at": None,
             "revision": 0,
         }
-    projects, failure_reasons, operators, updated_at, revision = stored
+    (
+        projects,
+        failure_reasons,
+        operators,
+        external_controls,
+        updated_at,
+        revision,
+    ) = stored
     return {
         "projects": projects,
         "failure_reasons": failure_reasons,
         "operators": operators,
+        "external_controls": external_controls,
         "updated_at": updated_at,
         "revision": revision,
     }
+
+
+def _validate_failure_shortcuts(
+    projects: list[PlanProject], vocabulary: list[str]
+) -> None:
+    """Every assigned shortcut must name a reason in the EFFECTIVE vocabulary.
+
+    The effective one is the list this PUT submits when it carries one, else
+    the stored list (omitted means "keep"). Checked here — not in the model —
+    because it is the only place that knows both halves.
+    """
+    allowed = set(vocabulary)
+    for project in projects:
+        for task in project.tasks:
+            for slot, reason in (
+                ("left", task.failure_shortcuts.left),
+                ("center", task.failure_shortcuts.center),
+                ("right", task.failure_shortcuts.right),
+            ):
+                if reason is not None and reason not in allowed:
+                    raise ApiError(
+                        status_code=422,
+                        code="failure_shortcut_unknown_reason",
+                        message=(
+                            f"Task {task.task_id!r} assigns {slot} shortcut to "
+                            f"“{reason}”, which is not in the shared failure "
+                            "reason vocabulary."
+                        ),
+                        details={
+                            "task_id": task.task_id,
+                            "slot": slot,
+                            "reason": reason,
+                        },
+                    )
+
+
+def _merge_failure_shortcuts(
+    projects: list[PlanProject],
+    stored: tuple[
+        list[Any],
+        list[str] | None,
+        list[str] | None,
+        dict[str, Any] | None,
+        str,
+        int,
+    ]
+    | None,
+) -> list[PlanProject]:
+    """Restore stored shortcut slots for tasks a legacy PUT omits the field on.
+
+    A client that predates ``failure_shortcuts`` sends tasks without the key;
+    Pydantic would default it to empty slots and silently wipe every configured
+    mapping. When the field was absent in the payload, the mapping stored under
+    the same ``task_id`` wins; an explicit object (including all-null) stays
+    authoritative; a task new to the catalog starts with unassigned slots.
+    """
+    if stored is None:
+        return projects
+    stored_by_task: dict[str, dict[str, str | None]] = {}
+    for project in stored[0]:
+        for task in project.get("tasks", []):
+            task_id = task.get("task_id")
+            shortcuts = task.get("failure_shortcuts")
+            if not isinstance(task_id, str) or not task_id:
+                continue
+            if not isinstance(shortcuts, dict):
+                continue
+            stored_by_task[task_id] = {
+                slot: shortcuts.get(slot) for slot in ("left", "center", "right")
+            }
+    merged: list[PlanProject] = []
+    for project in projects:
+        tasks = list(project.tasks)
+        changed = False
+        for index, task in enumerate(tasks):
+            if "failure_shortcuts" in task.model_fields_set:
+                continue
+            shortcuts = stored_by_task.get(task.task_id)
+            if shortcuts is None:
+                continue
+            tasks[index] = task.model_copy(
+                update={"failure_shortcuts": FailureShortcuts(**shortcuts)}
+            )
+            changed = True
+        merged.append(
+            project.model_copy(update={"tasks": tasks}) if changed else project
+        )
+    return merged
 
 
 @router.put("")
 async def put_plans(request: Request, body: PlanCatalogPut) -> dict:
     """Replace the shared catalog (validated shape, stamped server-side)."""
     store = _store(request)
+    stored = store.get_plan_catalog()
+    if "failure_reasons" in body.model_fields_set:
+        effective_vocabulary = body.failure_reasons or []
+    else:
+        effective_vocabulary = (stored[1] if stored is not None else None) or []
+    # A legacy PUT omits failure_shortcuts per task; merge the stored mapping
+    # back BEFORE validation so the vocabulary check sees the effective
+    # catalog that will actually be persisted (not Pydantic's empty defaults).
+    projects = _merge_failure_shortcuts(body.projects, stored)
+    _validate_failure_shortcuts(projects, effective_vocabulary)
     now = utc_now_iso8601()
-    projects = [p.model_dump() for p in body.projects]
+    projects_payload = [p.model_dump() for p in projects]
     try:
         stored = store.replace_plan_catalog(
-            projects,
+            projects_payload,
             base_revision=body.base_revision,
             updated_at=now,
             failure_reasons=(
@@ -198,8 +397,14 @@ async def put_plans(request: Request, body: PlanCatalogPut) -> dict:
                 else None
             ),
             operators=body.operators if "operators" in body.model_fields_set else None,
+            external_controls=(
+                body.external_controls.model_dump()
+                if body.external_controls is not None
+                else None
+            ),
             keep_failure_reasons="failure_reasons" not in body.model_fields_set,
             keep_operators="operators" not in body.model_fields_set,
+            keep_external_controls="external_controls" not in body.model_fields_set,
         )
     except PlanCatalogConflictError as exc:
         raise ApiError(
@@ -214,11 +419,19 @@ async def put_plans(request: Request, body: PlanCatalogPut) -> dict:
                 "base_revision": body.base_revision,
             },
         ) from exc
-    _, effective_reasons, effective_operators, _, revision = stored
+    (
+        _,
+        effective_reasons,
+        effective_operators,
+        effective_external_controls,
+        _,
+        revision,
+    ) = stored
     return {
-        "projects": projects,
+        "projects": projects_payload,
         "failure_reasons": effective_reasons,
         "operators": effective_operators,
+        "external_controls": effective_external_controls,
         "updated_at": now,
         "revision": revision,
     }

@@ -14,7 +14,7 @@ from __future__ import annotations
 # The capture-store v2 subsystem is exported as MODULES, never as loose names.
 # ``rebuild`` is both a module and its main function, and a top-level re-export
 # would make ``kairos_common.rebuild`` mean one thing here and the other in
-# ``from kairos_common.rebuild import rebuild``. One style for all six keeps the
+# ``from kairos_common.rebuild import rebuild``. One module style keeps the
 # call sites unambiguous: ``ids.uuid7()``, ``rebuild.rebuild(...)``, or an
 # explicit ``from kairos_common.capture_sidecars import ObjectManifestV2``.
 from kairos_common import (

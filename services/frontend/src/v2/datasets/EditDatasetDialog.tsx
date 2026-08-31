@@ -19,11 +19,13 @@
 // one the screen can state as fact from the list, so `gone` stands Save down.
 
 import { Button, Modal } from '../../components/ui';
+import { useTranslation } from 'react-i18next';
 import { ErrorMessage } from '../../components/ErrorMessage';
 import { DatasetGoneNote } from './SelectionGone';
 import type { DatasetsState } from './useDatasetsState';
 
 export function EditDatasetDialog({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation(['datasets', 'common', 'collect']);
   // Deleted underneath the form. This dialog is not destructive, but it is the
   // fourth door onto the same row and it now outlives that row's disappearance
   // like the other three (DatasetCenter.tsx), so it owes the same answer: say
@@ -33,7 +35,7 @@ export function EditDatasetDialog({ state }: { state: DatasetsState }) {
     <Modal
       open={state.editOpen}
       onClose={state.cancelEdit}
-      title="Edit dataset labels"
+      title={t('datasets:editDatasetLabels')}
       footer={
         <>
           <Button
@@ -42,7 +44,7 @@ export function EditDatasetDialog({ state }: { state: DatasetsState }) {
             disabled={state.editing}
             data-testid="edit-dataset-cancel"
           >
-            {gone ? 'Close' : 'Cancel'}
+            {gone ? t('common:actions.close') : t('common:actions.cancel')}
           </Button>
           <Button
             variant="primary"
@@ -50,16 +52,19 @@ export function EditDatasetDialog({ state }: { state: DatasetsState }) {
             disabled={state.editing || gone || state.editName.trim() === ''}
             data-testid="edit-dataset-submit"
           >
-            {state.editing ? 'Saving…' : 'Save labels'}
+            {state.editing ? t('collect:saving') : t('datasets:saveLabels')}
           </Button>
         </>
       }
     >
       {gone ? (
         <div data-testid="edit-dataset-dialog" className="flex flex-col gap-3">
-          <DatasetGoneNote testId="edit-dataset-gone" datasetId={state.selectedDatasetId} />
-          <p className="text-[12px] leading-relaxed text-gray-500">
-            Nothing was renamed. The labels you typed are not saved anywhere.
+          <DatasetGoneNote
+            testId="edit-dataset-gone"
+            datasetId={state.selectedDatasetId}
+          />
+          <p className="text-[12px] leading-relaxed text-text-muted">
+            {t('datasets:editNotSaved')}
           </p>
           {state.editError != null && <ErrorMessage error={state.editError} />}
         </div>
@@ -71,11 +76,12 @@ export function EditDatasetDialog({ state }: { state: DatasetsState }) {
 }
 
 function EditForm({ state }: { state: DatasetsState }) {
+  const { t } = useTranslation('datasets');
   return (
     <div data-testid="edit-dataset-dialog" className="flex flex-col gap-3">
       <label className="flex flex-col gap-1">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-          Name
+        <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+          {t('datasetName')}
         </span>
         <input
           data-testid="edit-dataset-name"
@@ -83,40 +89,35 @@ function EditForm({ state }: { state: DatasetsState }) {
           onChange={(e) => state.setEditName(e.target.value)}
           maxLength={200}
           autoFocus
-          className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12.5px] text-gray-700"
+          className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12.5px] text-text-primary"
         />
       </label>
       <div className="flex gap-1.5">
         <label className="flex min-w-0 flex-1 flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-            Operator{' '}
-            <span className="font-normal normal-case text-gray-500">(optional)</span>
+          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+            {t('operatorOptional')}
           </span>
           <input
             data-testid="edit-dataset-operator"
             value={state.editOperator}
             onChange={(e) => state.setEditOperator(e.target.value)}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12px] text-text-primary"
           />
         </label>
         <label className="flex min-w-0 flex-1 flex-col gap-1">
-          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-gray-500">
-            Task{' '}
-            <span className="font-normal normal-case text-gray-500">(optional)</span>
+          <span className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+            {t('taskOptional')}
           </span>
           <input
             data-testid="edit-dataset-task"
             value={state.editTask}
             onChange={(e) => state.setEditTask(e.target.value)}
-            className="rounded-control border border-gray-200 bg-white px-2.5 py-1.5 text-[12px] text-gray-700"
+            className="rounded-control border border-border bg-surface px-2.5 py-1.5 text-[12px] text-text-primary"
           />
         </label>
       </div>
-      <p className="text-[11px] leading-relaxed text-gray-500">
-        Labels only: the members and their numbers do not change, and no
-        recording moves. Leave operator empty when several people recorded the
-        members — each recording keeps its own operator either way, and the
-        browsable views/ tree follows the new labels on its own.
+      <p className="text-[11px] leading-relaxed text-text-muted">
+        {t('editDatasetLabelsHelp')}
       </p>
       {state.editError != null && <ErrorMessage error={state.editError} />}
     </div>

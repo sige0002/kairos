@@ -39,7 +39,10 @@ fn main() -> Result<()> {
         let gray = to_gray(&f);
         let (gray, w, h) = match resize {
             Some((rw, rh)) if (f.width, f.height) != (rw, rh) => {
-                if !resizer.as_ref().is_some_and(|r| r.matches(f.width, f.height, 1)) {
+                if !resizer
+                    .as_ref()
+                    .is_some_and(|r| r.matches(f.width, f.height, 1))
+                {
                     let r = AreaResize::new(f.width, f.height, rw, rh, 1);
                     scaled = vec![0u8; r.output_len()];
                     resizer = Some(r);

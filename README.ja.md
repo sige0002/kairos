@@ -5,8 +5,8 @@
 ROS 2 のロボットデータを **収録・監視・検証・変換** するシステムです。収録の正本フォーマットは
 **MCAP** であり、ライブ映像・ライブメトリクス・事後検証はすべてこの「正本」を中心に構成されます。
 
-> **ステータス:** 全 7 サービス（frontend 含む）＋ UI 駆動の受け入れテスト（`make test-e2e`）
-> を実装済み。以下のアーキテクチャは `fig_const/` の図に基づきます。
+> **ステータス:** 全 8 コアサービス（frontend・Kokoro TTS 含む）＋任意の LeRobot exporter＋UI 駆動の
+> 受け入れテスト（`make test-e2e`）を実装済み。以下のアーキテクチャは `fig_const/` の図に基づきます。
 
 ## アーキテクチャ
 
@@ -30,6 +30,7 @@ flowchart TB
   end
 
   FE["frontend<br/>Vite + React + TS"]
+  TTS["kokoro<br/>local 英日 TTS<br/>録画経路外"]
 
   subgraph store["capture store（/data）"]
     MCAP[("objects/&lt;capture_id&gt;/<br/>*.mcap + object_manifest.json<br/>+ record.json ＝ 正本")]
@@ -43,6 +44,7 @@ flowchart TB
   REC --> MCAP
   MCAP --> DR --> OUT
   FE <-->|"REST / SSE / WebRTC"| ORC
+  ORC <-->|"事前音声生成"| TTS
   ORC <--> REC & MON & PROBE & WEB
   ORC <-->|"POST /jobs"| DR
   ORC -->|"索引・削除・views 再生成"| DB
@@ -75,6 +77,7 @@ flowchart LR
 | [api_orchestrator](docs/specs/ja/api_orchestrator.md) | 単一の API ハブ。ジョブのライフサイクル・状態・設定・結果集約を担う。 |
 | [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン。検証は**実 dora 上の bagflow フロー**（同梱）。有効: `fast_validation` / `full_validation` / `loss_report` / `video_check` / `signal_report`。 |
 | [frontend](docs/specs/ja/frontend.md) | backend-driven な Web UI（UI 表記は英語）。役割タブ構成（Console v2）: Collect / Review / Datasets / Validation / Monitor / Settings。 |
+| kokoro | Kokoro 82M による offline CPU 英日 TTS sidecar。Settings で音声を事前生成し、録画経路は gate しない。 |
 
 ## 仕様ドキュメント
 
@@ -86,7 +89,60 @@ flowchart LR
 
 - **Docker** / **Docker Compose**（全サービスをまとめて起動する場合）。
 - ローカル検証用のサンプル rosbag（**MCAP**）を `data/` 配下に配置（例: `data/airoa-moma-mcap/<episode>/`）。`data/` と `*.mcap` は gitignore（コミットしない）。
-- 単体テストを直接走らせる場合のみ: **uv**（Python）と **Node.js + npm**（frontend）。
+- 公開サンプル bag の取得・変換、または単体テストを直接走らせる場合: **uv**（Python）。frontend の単体テストには **Node.js + npm** も必要。
+
+### 対応環境
+
+| 項目 | サポート範囲 |
+|---|---|
+| Host | Linux x86_64（CI は Ubuntu runner）。macOS / Windows の Docker Desktop と arm64 は未検証。 |
+| ROS 2 | **Jazzy**。`ROS_DISTRO` を変える場合は、その distro を含む digest 固定の `ROS_BASE_IMAGE` も指定する。既定 Jazzy image のまま別 distro を指定すると build は明示的に停止する。 |
+| RMW | `rmw_fastrtps_cpp` を acceptance gate で検証。`rmw_cyclonedds_cpp` は同梱するが、機体・再生・全サービスを同時に切り替える必要があり、release CI の対象外。 |
+| Docker | Docker Engine 24 以降、Docker Compose 2.24 以降（`env_file.required` を使用）。 |
+| 開発ツール | Python 3.12 以降、uv 0.10.0、Node.js 22。通常運用はコンテナ内に同梱。 |
+| Browser | Playwright 同梱 Chromium で受け入れ検証。その他の browser は未検証。 |
+
+資源量は topic 数・画像帯域・録画時間で変わるため固定の最小値は保証しません。導入時の開始点は
+4 CPU / 8 GiB RAM / dora 用 2 GiB shared memory とし、データ領域には予定収録量の 2 倍以上の空きを
+確保してください。実機投入前に `make smoke-record` と代表 bag の長時間試験で再計測します。
+
+### 公開サンプル bag を準備する（約 10 秒）
+
+[AIRoA Raw Rosbag Dataset](https://huggingface.co/datasets/airoa-org/airoa-moma-raw) の
+`235210` を最小サンプルとして使います（約 10.1 秒、ダウンロード約 63 MB）。この dataset は
+公開されていますがアクセス条件への同意が必要です。Hugging Face にログインし、dataset ページで
+**Agree and access repository** を済ませてください。ライセンスは配布元に記載された
+**CC BY-NC-SA 4.0** に従います。
+
+配布物は ROS 1 の `data.bag` なので、kairos が再生する ROS 2 MCAP へ一度だけ変換します。
+リポジトリルートで次を実行してください。
+
+```bash
+# ブラウザ認証。すでに hf auth login 済みなら不要
+uvx --from huggingface_hub hf auth login
+
+# 7 episode 全体ではなく、約 10 秒の 235210 だけを取得
+uvx --from huggingface_hub hf download \
+  airoa-org/airoa-moma-raw 235210/data.bag \
+  --repo-type dataset \
+  --local-dir data/airoa-moma-raw
+
+# ROS 1 bag -> ROS 2 MCAP（出力: metadata.yaml + 235210.mcap）
+uvx --from rosbags==0.11.3 rosbags-convert \
+  --src data/airoa-moma-raw/235210/data.bag \
+  --dst data/airoa-moma-mcap/235210 \
+  --dst-storage mcap
+```
+
+`data/` は gitignore 済みです。`data/airoa-moma-mcap/235210/` がすでにあれば再変換は不要です。
+スタックを起動した後、別ターミナルから既定の短い bag をループ再生できます。
+
+```bash
+make rosbag-loop    # Ctrl+C で停止
+```
+
+さらに別ターミナルで `make table` を実行すると全 topic の Hz / 帯域 / 件数を確認でき、
+`make smoke` では health → topic discovery → live metrics の通し確認ができます。
 
 ### 全サービスの起動（Docker）
 
@@ -99,6 +155,9 @@ cp .env.example .env          # 必要に応じて編集
 docker compose --project-directory . -f compose/compose.yaml build
 docker compose --project-directory . -f compose/compose.yaml up
 ```
+
+Settings の Voice/TTS も使う PC では `.env` の `COMPOSE_PROFILES=audio` を有効にしてから、
+同じ `make build` と `make up` を実行します。Kokoro は約 1.5 GiB のメモリを使うため既定では起動しません。
 
 > **`make up` はビルドしません**（起動するだけ）。ビルドは変更が無くてもネットワークを必要とする
 > ため、`up` が毎回ビルドしていると**ネットの無い現場でスタックを起動できない**からです。コード変更を
@@ -207,13 +266,18 @@ rsync -av \
   --exclude='/deploy/msgs_overlay/*/log/' \
   --exclude='/backups/' --exclude='*.tar.gz' \
   ~/kairos/ <user>@<host>:~/kairos/
-scp kairos-images.tar.gz <user>@<host>:~/
+scp kairos-images.tar.gz kairos-images.tar.gz.sha256 kairos-images.tar.gz.manifest.tsv <user>@<host>:~/
 
 # ③ 持ち込んだマシンで
 make images-load IMAGES_FILE=~/kairos-images.tar.gz
 make up                             # あるいは make robot-up
 make smoke                          # 動作確認（ハーネスも同梱されているので通る）
 ```
+
+更新前の archive 3 点（本体・checksum・manifest）を版名付きで残すことが rollback 条件です。rollback は
+稼働中の収録を停止して sidecar を確定し、旧 archive を `make images-load`、旧 checkout へ戻して
+`make up`、最後に `make smoke-record` を実行します。DB schema は rebuild 前提ですが、設定や sidecar の
+後方互換が Release notes で否定されている版には戻さないでください。
 
 除外の理由と実測値（この構成での測定値。環境で変わります）:
 
@@ -332,8 +396,8 @@ backend 駆動で描画します（タブは Console v2 の役割 6 タブ = Col
 
 - **単体テスト**: `make test`（= Python 各サービス `uv run --extra test pytest` + frontend `npm run build && npm test && npm run lint`）。
 - **受け入れテスト（UI から・実スタック）**: `make test-e2e`。専用ポート・専用 data dir の実スタックを立て、
-  ループ再生した実 bag を相手に、実ブラウザ（Playwright）で frontend を駆動します。5 シナリオ = 録画→digest 完了 /
-  Review 保存と競合拒否 / Discard と ledger の墓標 / `kairos.db` を消しての復元 / `rm -rf` → SUSPECT → Repair。
+  ループ再生した実 bag を相手に、実ブラウザ（Playwright）で frontend を駆動します。現在は 10 spec / 15 test で、
+  録画・Review・Discard・DB 再構築・欠損 Repair・recorder 障害・archive・Validation・Monitor・Settings を検証します。
   開発者の `make up` とは**併存**します（ポートも data dir も別）。
   **`make test-e2e` はイメージをビルドしません**（`make up` と同じ規則）。コードを変えたら先に `make build` を
   実行してください — 忘れると、コンテナの中の**古いコード**に対して green が出ます。
@@ -347,24 +411,29 @@ backend 駆動で描画します（タブは Console v2 の役割 6 タブ = Col
 ## リリース
 
 バージョニングは [SemVer](https://semver.org/) に従います。現在のバージョンはルートの
-[`VERSION`](VERSION) ファイル（正本）で、履歴は [`CHANGELOG.md`](CHANGELOG.md) にあります。
+[`VERSION`](VERSION) ファイル（正本）です。CHANGELOG はローカル管理で Git 追跡せず、公開する
+変更点は tag に対応する GitHub Release notes に記載します。
 
 - **CI**（`.github/workflows/`）が `develop`・`main` への push / PR ごとに検証します:
-  Python 単体テスト（共有ライブラリ + Python 6 サービス）・frontend の build/test/lint・
-  Ruff lint + format・`docker compose config` 検証。recorder の実 `ros2 bag record`
+  Python 単体テスト（共有ライブラリ + Python 7 サービス）・frontend の build/test/lint・
+  Ruff lint + format・bagflow の fmt/clippy/test/release build・`docker compose config` 検証。recorder の実 `ros2 bag record`
   往復テストは（ROS 2 ツールチェーンが必要なため）別の **ROS integration** ワークフローで実行します。
 - **再現可能なイメージ**: 各サービスは依存を committed な `uv.lock` から導入し
   （`uv sync --frozen`、`>=` の再解決なし）、ベースイメージは patch タグ + digest で固定します。
-  `make build` / `make up` はイメージを `kairos-*:$(cat VERSION)` でタグ付けします
-  （エクスポートされた `KAIROS_VERSION` 経由）。素の `docker compose build` は `:dev` にフォールバックします。
+  `make build` / `make up` は非 ROS image を `kairos-*:$(cat VERSION)`、ROS image を
+  `kairos-*:<version>-<ros-distro>` でタグ付けします。`make images-save` は checksum と image ID / platform /
+  git SHA の manifest も生成し、`make images-load` は checksum があれば検証します。
+  素の `docker compose build` は `:dev` にフォールバックします。
+  tag / 手動起動の Release gate は全 core image と importer / replay harness を clean build し、生成した小型
+  MCAP を使う実 stack E2E を実行します。ただし vendored bagflow の upstream license が揃うまで release は拒否します。
 
 リリースの切り方:
 
 1. [`VERSION`](VERSION) を更新（例: `0.1.0` → `0.2.0`）。
-2. [`CHANGELOG.md`](CHANGELOG.md) の **Unreleased** の内容を新しい `## [x.y.z] - <日付>`
-   見出しへ移し、空の Unreleased セクションを新設。
-3. コミットしてタグを push: `git tag -a vX.Y.Z -m "kairos vX.Y.Z" && git push --tags`。
-4. `make build` でそのタグの `kairos-*:X.Y.Z` イメージが生成される。
+2. 公開する変更点・互換性注意・既知の制約を GitHub Release notes の下書きにまとめる。
+3. vendored source の license gate を含む Release gate が green であることを確認する。
+4. コミットしてタグを push: `git tag -a vX.Y.Z -m "kairos vX.Y.Z" && git push --tags`。
+5. tag に対応する GitHub Release を作成し、Release gate の image manifest を添付する。
 
 ## ドキュメントの言語ルール
 
@@ -378,3 +447,4 @@ backend 駆動で描画します（タブは Console v2 の役割 6 タブ = Col
 
 - コード・コメント・コミットメッセージは英語で記述します。
 - 作業上の取り決め・規約は [AGENTS.md](AGENTS.md) を参照してください（コーディングエージェント・人間の共通ルールの正本。Claude Code は [CLAUDE.md](CLAUDE.md) から `@AGENTS.md` で読み込みます）。
+- 外部からの変更提案は [CONTRIBUTING.ja.md](CONTRIBUTING.ja.md)、障害報告と対応範囲は [SUPPORT.ja.md](SUPPORT.ja.md)、行動規範は [CODE_OF_CONDUCT.ja.md](CODE_OF_CONDUCT.ja.md) を参照してください。
