@@ -2,19 +2,15 @@
 
 ## License status — redistribution blocked
 
-The two referenced upstream revisions do not contain a `LICENSE`, `COPYING`, or
-equivalent permission grant, and the additional uncommitted changes have no
-separate provenance record. Therefore this directory is **not covered by the
-repository's Apache-2.0 license** and must not be redistributed, nor used to
-publish derived images or binaries, until all copyright holders provide an
-explicit license. A release gate deliberately refuses to publish while the two
-upstream license files are absent. Do not infer permission from repository
-visibility or from dependency licenses.
+The vendored mcap2dora source is authored by Sadasue Yuki and is released under
+the Apache License 2.0. The verbatim license text is in `LICENSE.mcap2dora`.
+The bagflow source remains blocked pending an explicit license from its
+copyright holders; `LICENSE.bagflow` is intentionally still absent.
 
-To clear the block, obtain the license/provenance for both sources, store each
+To clear the remaining bagflow block, obtain its license/provenance, store the
 verbatim license and required copyright notice in this directory, identify the
 authors and permission for the uncommitted deltas, and update `NOTICE` after a
-review. If permission cannot be obtained, remove or replace this code before a
+review. If permission cannot be obtained, remove or replace that code before a
 public release.
 
 This directory is a **vendored copy** of two upstream repositories, built into the
@@ -26,7 +22,7 @@ runnable image with no extra fetch step (user ruling, 2026-07-26).
 | Source | Upstream | Vendored from |
 |---|---|---|
 | `Cargo.toml`, `crates/bagflow-*`, `python/` | https://github.com/sige0002/bagflow | commit `9c0ef75` **plus the uncommitted working tree** at `~/bagflow` on 2026-07-26 |
-| `crates/mcap2dora/` | https://github.com/sige0002/mcap2dora | commit `1249b6d` **plus the uncommitted working tree** at `~/mcap2dora` on 2026-07-26 |
+| `crates/mcap2dora/` | https://github.com/sige0002/mcap2dora | commit `1249b6d` **plus the uncommitted working tree** at `~/mcap2dora` on 2026-07-26; Sadasue Yuki, Apache-2.0 (`LICENSE.mcap2dora`) |
 
 Both upstreams are research/experiment repos; kairos is now the place where this
 code ships. Upstream `README.md` (Japanese) is kept next to this file as the
