@@ -15,6 +15,7 @@ makes deletion unsafe.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -28,7 +29,6 @@ from kairos_common.ids import new_capture_id
 from kairos_common.rebuild import ReplicaState
 
 OLD = "2026-01-01T00:00:00.000Z"
-RECENT = "2026-08-01T00:00:00.000Z"
 
 
 def _retention_client(
@@ -95,7 +95,11 @@ class TestRetention:
         self, data_dir: Path, fake_recorder: FakeRecorder
     ) -> None:
         with _retention_client(data_dir, fake_recorder, days=30) as client:
-            _capture(client, client.app.state.data_layout, started_at=RECENT)
+            _capture(
+                client,
+                client.app.state.data_layout,
+                started_at=datetime.now(UTC).isoformat(),
+            )
             body = client.get("/api/v1/retention").json()
         assert body["candidates"] == []
 
