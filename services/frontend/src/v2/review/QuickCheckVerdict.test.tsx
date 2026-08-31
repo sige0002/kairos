@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
-import { render, screen } from '@testing-library/react';
-import { expect, test } from 'vitest';
+import { fireEvent, render, screen } from '@testing-library/react';
+import { expect, test, vi } from 'vitest';
 import type { QuickCheck } from '../../api/types';
 import '../../i18n';
-import { QuickCheckVerdict } from './QuickCheckVerdict';
+import { QuickCheckVerdict, topicForQuickCheckReason } from './QuickCheckVerdict';
 
 test('renders nothing when the run has no quick_check (old runs)', () => {
   const { container } = render(<QuickCheckVerdict quickCheck={null} />);
@@ -44,6 +44,29 @@ test('good verdict with no reasons says so plainly', () => {
   expect(screen.getByTestId('review-quick-check')).toHaveTextContent('GOOD');
   expect(screen.getByTestId('review-quick-check')).toHaveTextContent(
     'No issues found.',
+  );
+  expect(screen.getByTestId('review-quick-check-next-step')).toHaveTextContent(
+    /No additional inspection is required/i,
+  );
+});
+
+test('a reason opens its structured topic details without treating the reason copy as data', () => {
+  const onInspectGaps = vi.fn();
+  const qc: QuickCheck = {
+    verdict: {
+      quality: 'needs_review',
+      reasons: ['/camera/image avg 8Hz < expected 30Hz'],
+    },
+    layer0: { available: true, topics: { '/camera': {}, '/camera/image': {} } },
+    layer1: { available: true, summary_available: true },
+  };
+  render(<QuickCheckVerdict quickCheck={qc} onInspectGaps={onInspectGaps} />);
+
+  expect(topicForQuickCheckReason(qc.verdict!.reasons[0]!, qc)).toBe('/camera/image');
+  fireEvent.click(screen.getByTestId('review-quick-check-inspect-0'));
+  expect(onInspectGaps).toHaveBeenCalledWith('/camera/image');
+  expect(screen.getByTestId('review-quick-check-next-step')).toHaveTextContent(
+    /recommended before deciding/i,
   );
 });
 

@@ -313,6 +313,12 @@ export function CaptureInspection({
     'fast_validation',
     reportSignature(detailQuery.data?.validation),
   );
+  // The quick-check card lives at the top of this panel.  A reason can focus
+  // the already-manual loss-report area below, but must never submit a heavy
+  // report merely because the card mounted or because a reason was clicked.
+  const lossSectionRef = useRef<HTMLElement>(null);
+  const lossRunButtonRef = useRef<HTMLButtonElement>(null);
+  const [focusedLossTopic, setFocusedLossTopic] = useState<string | null>(null);
 
   if (detailQuery.isPending)
     return <p className="text-[12.5px] text-text-muted">{t('loadingCapture')}</p>;
@@ -376,6 +382,40 @@ export function CaptureInspection({
           when: lossCheckedAt ? ` (${formatWhen(lossCheckedAt)})` : '',
         });
 
+  const focusedLossHasStoredEvidence =
+    !!focusedLossTopic &&
+    !!(
+      capture.loss?.topics?.some((topic) => topic.name === focusedLossTopic) ||
+      capture.loss?.events?.some((event) => event.topic === focusedLossTopic)
+    );
+  const visibleLossTopics =
+    focusedLossTopic && focusedLossHasStoredEvidence
+      ? capture.loss?.topics?.filter((topic) => topic.name === focusedLossTopic)
+      : capture.loss?.topics;
+  const visibleLossEvents =
+    focusedLossTopic && focusedLossHasStoredEvidence
+      ? capture.loss?.events?.filter((event) => event.topic === focusedLossTopic)
+      : capture.loss?.events;
+
+  const focusLossDetails = (topic: string | null) => {
+    setFocusedLossTopic(topic);
+    // The state update renders the topic filter. Focus the existing manual
+    // action when there is no stored report yet; this is navigation, not an
+    // implicit loss_report submission.
+    window.setTimeout(() => {
+      lossSectionRef.current?.scrollIntoView?.({ behavior: 'smooth', block: 'start' });
+      const hasStoredEvidence =
+        !!topic &&
+        !!(
+          capture.loss?.topics?.some((item) => item.name === topic) ||
+          capture.loss?.events?.some((item) => item.topic === topic)
+        );
+      (hasStoredEvidence ? lossSectionRef.current : lossRunButtonRef.current)?.focus({
+        preventScroll: true,
+      });
+    }, 0);
+  };
+
   return (
     <div data-testid="review-inspection" className="flex flex-col gap-3">
       {tombstoned && (
@@ -420,6 +460,14 @@ export function CaptureInspection({
         // put a take that stopped where it was told into the red box.
         <CaptureNote error={capture.error} />
       )}
+
+      {/* Stop-time Quick Check is the review task's first answer: can this take
+          be accepted at face value, and why?  It stays above raw metadata and
+          the optional, manual deep inspections below. */}
+      <QuickCheckVerdict
+        quickCheck={capture.quick_check}
+        onInspectGaps={completed ? focusLossDetails : undefined}
+      />
 
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5">
         <Row label={t('status')}>{capture.state}</Row>
@@ -509,8 +557,6 @@ export function CaptureInspection({
 
       <ValidationVerdict capture={capture} />
 
-      <QuickCheckVerdict quickCheck={capture.quick_check} />
-
       {completed ? (
         <VideoCheckSection
           topics={topics}
@@ -554,7 +600,7 @@ export function CaptureInspection({
       </section>
 
       {completed && (
-        <section>
+        <section ref={lossSectionRef} tabIndex={-1} data-testid="review-loss-section">
           <div className="mb-1.5 flex items-center justify-between gap-2">
             <span className="flex items-baseline gap-1.5">
               <h3 className="text-[12.5px] font-medium text-text-primary">
@@ -577,6 +623,7 @@ export function CaptureInspection({
             <button
               type="button"
               data-testid="review-run-loss"
+              ref={lossRunButtonRef}
               onClick={() => loss.run({})}
               disabled={loss.running || !!leaseReason}
               title={leaseReason ?? undefined}
@@ -597,11 +644,41 @@ export function CaptureInspection({
           />
           {capture.loss?.topics ? (
             <div className="flex flex-col gap-2">
-              <LossTable topics={capture.loss.topics} />
-              {capture.loss.events && <LossEventTable events={capture.loss.events} />}
+              {focusedLossTopic && (
+                <div
+                  data-testid="review-loss-focus"
+                  className="flex flex-wrap items-center gap-2 rounded-control border border-accent/30 bg-interaction-selected px-2.5 py-2 text-[11.5px] text-text-secondary"
+                >
+                  <span>
+                    {focusedLossHasStoredEvidence
+                      ? t('quickCheckFocusedTopic', { topic: focusedLossTopic })
+                      : t('quickCheckFocusedNoData', { topic: focusedLossTopic })}
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="review-loss-focus-clear"
+                    onClick={() => setFocusedLossTopic(null)}
+                    className="font-semibold text-accent hover:underline"
+                  >
+                    {t('quickCheckClearFocus')}
+                  </button>
+                </div>
+              )}
+              <LossTable topics={visibleLossTopics ?? capture.loss.topics} />
+              {visibleLossEvents && <LossEventTable events={visibleLossEvents} />}
             </div>
           ) : (
-            <p className="text-[11.5px] text-text-muted">{t('lossReportHelp')}</p>
+            <div className="flex flex-col gap-1.5">
+              {focusedLossTopic && (
+                <p
+                  data-testid="review-loss-focus"
+                  className="text-[11.5px] text-text-secondary"
+                >
+                  {t('quickCheckFocusedNoData', { topic: focusedLossTopic })}
+                </p>
+              )}
+              <p className="text-[11.5px] text-text-muted">{t('lossReportHelp')}</p>
+            </div>
           )}
         </section>
       )}

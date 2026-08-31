@@ -1004,6 +1004,16 @@ export const en = {
     quickCheckMonitorUnavailable: 'Monitor data unavailable at stop.',
     quickCheckBagSummaryMissing:
       'Bag summary missing — recording may have ended uncleanly.',
+    quickCheckInspectionRecommended:
+      'Additional inspection is recommended before deciding. A loss report runs only when you start it.',
+    quickCheckInspectionOptional:
+      'No additional inspection is required for this verdict. Open a loss report only if you need recorded-message gap timing.',
+    quickCheckInspectTopic: 'Inspect {{topic}} gaps',
+    quickCheckInspectGaps: 'Open loss details',
+    quickCheckFocusedTopic: 'Showing saved loss details for {{topic}}.',
+    quickCheckFocusedNoData:
+      'No saved gap details for {{topic}}. Run a loss report to inspect recorded-message gaps; it does not run automatically.',
+    quickCheckClearFocus: 'Show all loss details',
     integrityReport: 'Integrity report',
     manifestSidecar: 'Manifest',
     recordSidecar: 'Record',

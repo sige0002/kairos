@@ -1017,6 +1017,16 @@ export const ja = {
     quickCheckMonitorUnavailable: '停止時点で Monitor データを利用できませんでした。',
     quickCheckBagSummaryMissing:
       'bag の要約がありません。収録が正常に終了していない可能性があります。',
+    quickCheckInspectionRecommended:
+      '最終判断の前に追加の確認を推奨します。損失レポートは開始した場合だけ実行します。',
+    quickCheckInspectionOptional:
+      'この判定に追加の確認は不要です。記録メッセージのギャップ時刻が必要な場合だけ損失レポートを開いてください。',
+    quickCheckInspectTopic: '{{topic}} のギャップを確認',
+    quickCheckInspectGaps: '損失の詳細を開く',
+    quickCheckFocusedTopic: '{{topic}} の保存済み損失詳細を表示しています。',
+    quickCheckFocusedNoData:
+      '{{topic}} の保存済みギャップ詳細はありません。記録メッセージのギャップを確認するには損失レポートを実行してください。自動実行はしません。',
+    quickCheckClearFocus: 'すべての損失詳細を表示',
     integrityReport: '完全性レポート',
     manifestSidecar: 'manifest',
     recordSidecar: 'record',
