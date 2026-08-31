@@ -11,9 +11,8 @@ This product includes vendored mcap2dora source, Copyright 2026 Sadasue Yuki,
 licensed under the Apache License, Version 2.0. The corresponding verbatim
 license text is in services/dora_runner/bagflow/LICENSE.mcap2dora.
 
-IMPORTANT: services/dora_runner/bagflow also contains source copied from the
-bagflow repository. Its license and permission to redistribute the copied
-revisions remain unresolved. Do not redistribute that source, or images/binaries
-derived from it, until the copyright holders provide an explicit license and the
-corresponding license and notices are included. See
-services/dora_runner/bagflow/VENDOR.md.
+This product also includes vendored bagflow source, Copyright 2026 Sadasue
+Yuki, licensed under the Apache License, Version 2.0. The corresponding
+verbatim license text is in services/dora_runner/bagflow/LICENSE.bagflow.
+
+See services/dora_runner/bagflow/VENDOR.md for vendored source provenance.
