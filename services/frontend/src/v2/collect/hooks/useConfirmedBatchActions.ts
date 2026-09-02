@@ -14,6 +14,7 @@ type Dispatch = (action: Action) => void;
 
 export function useConfirmedBatchActions({
   phase,
+  currentCaptureId,
   batchId,
   targetEpisodes,
   endReason,
@@ -32,6 +33,7 @@ export function useConfirmedBatchActions({
   ensureBatch,
 }: {
   phase: Phase;
+  currentCaptureId: string | null;
   batchId: string | null;
   targetEpisodes: number;
   endReason: string;
@@ -40,7 +42,7 @@ export function useConfirmedBatchActions({
   terminalStartCancellationRef: MutableRefObject<boolean>;
   discardTerminalArmingTakeRef: MutableRefObject<boolean>;
   terminalArmingCleanupRef: MutableRefObject<Promise<void> | null>;
-  stopAndConfirm: () => Promise<unknown>;
+  stopAndConfirm: (captureId: string) => Promise<unknown>;
   dispatch: Dispatch;
   toMachineError: (error: unknown) => MachineError;
   showToast: (message: string) => void;
@@ -66,8 +68,8 @@ export function useConfirmedBatchActions({
           const started = await pendingStart;
           // A start response is the proof that this screen owns the recorder
           // session. A rejected/unnamed start may still be another driver's
-          // live take, so terminal actions must never follow it with a blind
-          // POST /record/stop.
+          // live take, so terminal actions must never follow it with a stop
+          // request using an unverified capture identity.
           knownStart =
             !!started &&
             typeof started === 'object' &&
@@ -96,7 +98,8 @@ export function useConfirmedBatchActions({
         phase === 'quickcheck'
       ) {
         try {
-          await stopAndConfirm();
+          if (!currentCaptureId) throw new Error('No owned recording to stop.');
+          await stopAndConfirm(currentCaptureId);
         } catch (error) {
           if (wasRecording) {
             dispatch({ type: 'STOP_FAILED', error: toMachineError(error) });
@@ -111,6 +114,7 @@ export function useConfirmedBatchActions({
       discardTerminalArmingTakeRef,
       dispatch,
       phase,
+      currentCaptureId,
       startPromiseRef,
       stopAndConfirm,
       terminalArmingCleanupRef,

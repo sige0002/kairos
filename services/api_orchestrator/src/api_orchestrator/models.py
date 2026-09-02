@@ -86,6 +86,7 @@ __all__ = [
     "QuickCheckLayer1",
     "QuickCheckVerdict",
     "RecordPrepareResponse",
+    "RecordStopRequest",
     "RecordStartRequest",
     "Replica",
     "ReplicaState",
@@ -1059,6 +1060,12 @@ class RecordStartRequest(BaseModel):
     operator: str | None = None
     task: str | None = None
     collection_context: CollectionContextSnapshot | None = None
+
+
+class RecordStopRequest(BaseModel):
+    """A stop target, required so a stale control cannot stop a newer take."""
+
+    capture_id: str = Field(min_length=1)
 
 
 class RecordPrepareResponse(BaseModel):

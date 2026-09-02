@@ -26,7 +26,7 @@ from pathlib import Path
 
 import httpx
 from api_orchestrator.app_factory import create_orchestrator_app
-from conftest import FakeRecorder, reconcile
+from conftest import FakeRecorder, reconcile, stop_owned
 from fastapi.testclient import TestClient
 from kairos_common import Settings
 
@@ -74,7 +74,7 @@ class TestStopAfterTheIndexWasDeletedMidRecording:
         code path into a confident wrong answer.
         """
         _start(client)
-        earlier = client.post("/api/v1/record/stop").json()["capture_id"]
+        earlier = stop_owned(client).json()["capture_id"]
         _await_settlement(client)
 
         live = _start(client)["capture_id"]
@@ -88,7 +88,9 @@ class TestStopAfterTheIndexWasDeletedMidRecording:
             assert reopened.get(f"/api/v1/captures/{live}").status_code == 404
             assert fake_recorder.state == "recording"
 
-            stopped = reopened.post("/api/v1/record/stop")
+            stopped = reopened.post(
+                "/api/v1/record/force-stop", json={"capture_id": live}
+            )
             assert stopped.status_code == 200, stopped.text
             body = stopped.json()
             assert body["capture_id"] != earlier, (
@@ -117,7 +119,7 @@ class TestStopAfterTheIndexWasDeletedMidRecording:
         (data_dir / "kairos.db").unlink()
 
         with _reopen(settings, fake_recorder) as reopened:
-            reopened.post("/api/v1/record/stop")
+            reopened.post("/api/v1/record/force-stop", json={"capture_id": live})
 
             detail = reopened.get(f"/api/v1/captures/{live}")
             assert detail.status_code == 200, detail.text
@@ -148,7 +150,7 @@ class TestStopAfterTheIndexWasDeletedMidRecording:
         (data_dir / "kairos.db").unlink()
 
         with _reopen(settings, fake_recorder) as reopened:
-            reopened.post("/api/v1/record/stop")
+            reopened.post("/api/v1/record/force-stop", json={"capture_id": live})
             _await_settlement(reopened)
             detail = reopened.get(f"/api/v1/captures/{live}").json()
             assert detail["quick_check"] is not None
@@ -171,7 +173,9 @@ class TestStopAfterTheIndexWasDeletedMidRecording:
         (data_dir / "kairos.db").unlink()
 
         with _reopen(settings, fake_recorder) as reopened:
-            stopped = reopened.post("/api/v1/record/stop")
+            stopped = reopened.post(
+                "/api/v1/record/force-stop", json={"capture_id": live}
+            )
             assert stopped.status_code == 200, stopped.text
             assert stopped.json()["capture_id"] == live
 
@@ -194,7 +198,7 @@ class TestStopAfterTheIndexWasDeletedMidRecording:
         (data_dir / "kairos.db").unlink()
 
         with _reopen(settings, fake_recorder) as reopened:
-            reopened.post("/api/v1/record/stop")
+            reopened.post("/api/v1/record/force-stop", json={"capture_id": live})
             before = reopened.get("/api/v1/captures").json()["items"]
             reconcile(reopened)
             after = reopened.get("/api/v1/captures").json()["items"]
@@ -227,7 +231,9 @@ class TestWhenTheCaptureCannotBeAdopted:
         shutil.rmtree(data_dir / "objects" / live)
 
         with _reopen(settings, fake_recorder) as reopened:
-            stopped = reopened.post("/api/v1/record/stop")
+            stopped = reopened.post(
+                "/api/v1/record/force-stop", json={"capture_id": live}
+            )
             assert stopped.status_code == 409, stopped.text
             error = stopped.json()["error"]
             assert error["code"] == "stop_capture_unfiled"

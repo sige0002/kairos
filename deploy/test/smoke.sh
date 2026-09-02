@@ -117,10 +117,12 @@ if [ "${RECORD:-0}" = "1" ]; then
   # The orchestrator assigns the run_id; accept any 'created'/'recording' state.
   state="$(printf '%s' "$start" | jq_py 'import sys,json;print(json.load(sys.stdin).get("state",""))' 2>/dev/null)"
   run_id="$(printf '%s' "$start" | jq_py 'import sys,json;print(json.load(sys.stdin).get("run_id",""))' 2>/dev/null)"
+  capture_id="$(printf '%s' "$start" | jq_py 'import sys,json;print(json.load(sys.stdin).get("capture_id", ""))' 2>/dev/null)"
   if [ "$state" = "recording" ] || [ "$state" = "created" ]; then
     ok "POST /record/start -> ${run_id} (${state})"
     sleep 4
-    curl -fsS --max-time 5 -X POST "$ORCH/api/v1/record/stop" -d '{}' >/dev/null 2>&1
+    curl -fsS --max-time 5 -X POST "$ORCH/api/v1/record/force-stop" \
+      -H 'content-type: application/json' -d "{\"capture_id\":\"$capture_id\"}" >/dev/null 2>&1
     msgs="$(curl -fsS --max-time 5 "$ORCH/api/v1/record/status" 2>/dev/null \
       | jq_py 'import sys,json;print(json.load(sys.stdin).get("message_count") or 0)' 2>/dev/null || echo 0)"
     if [ "${msgs:-0}" -gt 0 ]; then ok "recorded ${msgs} messages"; else bad "recorded 0 messages"; fi

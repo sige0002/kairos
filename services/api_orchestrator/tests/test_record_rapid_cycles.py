@@ -27,7 +27,7 @@ from __future__ import annotations
 import time
 
 from api_orchestrator.store import CaptureStore
-from conftest import FakeRecorder, reconcile, run_digests
+from conftest import FakeRecorder, reconcile, run_digests, stop_owned
 from fastapi.testclient import TestClient
 
 CYCLES = 40
@@ -59,7 +59,7 @@ def test_forty_cycles_never_reuse_a_display_name_or_an_identity(
         assert started.status_code == 200, started.text
         run_ids.append(started.json()["run_id"])
         capture_ids.append(started.json()["capture_id"])
-        assert client.post("/api/v1/record/stop").status_code == 200
+        assert stop_owned(client).status_code == 200
 
     # This loop runs many cycles inside one tick of the second-resolution clock
     # the base name comes from, so the collision search is doing real work here
@@ -113,7 +113,7 @@ def test_forty_cycles_of_re_arming_all_start_from_the_armed_session(
         assert started.json()["capture_id"] == armed_capture_id
         armed_run_ids.append(started.json()["run_id"])
 
-        assert client.post("/api/v1/record/stop").status_code == 200
+        assert stop_owned(client).status_code == 200
 
     assert armed_run_ids == [f"run_armed_{i}" for i in range(CYCLES)]
     # Two prepares per cycle, and the recorder armed once: the keep-alive
@@ -135,7 +135,7 @@ def test_forty_cycles_leave_no_per_recording_state_behind(
             client.post("/api/v1/record/start", json={"topics": TOPICS}).status_code
             == 200
         )
-        assert client.post("/api/v1/record/stop").status_code == 200
+        assert stop_owned(client).status_code == 200
     _await_settlement(client)
 
     # The armed entry is consumed by the start that matched it. A leak here
@@ -170,7 +170,7 @@ def test_forty_cycles_in_one_batch_number_the_episodes_one_to_forty(
         started = client.post("/api/v1/record/start", json={"topics": TOPICS})
         assert started.status_code == 200, started.text
         capture_id = started.json()["capture_id"]
-        assert client.post("/api/v1/record/stop").status_code == 200
+        assert stop_owned(client).status_code == 200
         saved = client.patch(
             f"/api/v1/captures/{capture_id}/review",
             json={
@@ -224,7 +224,7 @@ def test_forty_cycles_do_not_accumulate_open_file_descriptors(
     # connection pool, the bag reader's buffers) and would otherwise read as a
     # leak with no way to tell the difference.
     client.post("/api/v1/record/start", json={"topics": TOPICS})
-    client.post("/api/v1/record/stop")
+    stop_owned(client)
     _await_settlement(client)
     run_digests(client)
     reconcile(client)
@@ -237,7 +237,7 @@ def test_forty_cycles_do_not_accumulate_open_file_descriptors(
             client.post("/api/v1/record/start", json={"topics": TOPICS}).status_code
             == 200
         )
-        assert client.post("/api/v1/record/stop").status_code == 200
+        assert stop_owned(client).status_code == 200
     _await_settlement(client)
     run_digests(client)
     reconcile(client)

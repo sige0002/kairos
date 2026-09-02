@@ -19,7 +19,7 @@
 import { useState, type ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getConfigOptions, getRobotConfig, selectConfig } from '../../api/config';
-import { stopRecord } from '../../api/record';
+import { forceStopRecord, getRecordStatus } from '../../api/record';
 import { confirmRecorderStopped } from '../captures/stopConfirm';
 import { queryKeys } from '../../api/queryKeys';
 import type { AspectOption, ConfigAspect, ConfigOptions } from '../../api/types';
@@ -91,12 +91,14 @@ export function RobotsSection({ config }: { config: RuntimeConfig | undefined })
 
   const stopMutation = useMutation({
     mutationFn: async () => {
-      const capture = await stopRecord();
-      // A 200 from /record/stop is not proof the recorder stopped (it answers
-      // with the last capture when nothing is active). Confirm through the
-      // same polling loop Collect's SAVING gate uses — switching configs while
-      // the recorder is still flushing would hot-swap the recording's config
-      // out from under it mid-write.
+      const status = await getRecordStatus();
+      const captureId = status.capture_id;
+      if (!captureId) throw new Error('No active recording to stop.');
+      const capture = await forceStopRecord(captureId);
+      // A successful force-stop response is not enough to hot-swap config.
+      // Confirm through the same polling loop Collect's SAVING gate uses so a
+      // recorder that is still flushing cannot have its config changed out
+      // from under it mid-write.
       await confirmRecorderStopped(capture?.capture_id ?? null);
     },
     onSuccess: () => {

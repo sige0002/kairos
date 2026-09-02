@@ -207,6 +207,12 @@ export interface RecordStatus {
   git_sha?: string | null;
   /** The console (orchestrator) build, added by the status proxy. */
   console_git_sha?: string | null;
+  /** Browser-control lease for the active capture. Omitted by older servers. */
+  control?: {
+    capture_id: string | null;
+    controlled_by_this_client: boolean;
+    lease_known: boolean;
+  };
 }
 
 /**

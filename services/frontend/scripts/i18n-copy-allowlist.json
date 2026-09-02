@@ -12,7 +12,6 @@
     "src/v2/collect/ContextBar.tsx|jsx-text|&ge;": 1,
     "src/v2/collect/ExternalActionHud.tsx|jsx-text|Ctrl+Alt+1/2/3": 1,
     "src/v2/collect/Modals.tsx|jsx-text|0 /": 1,
-    "src/v2/collect/Modals.tsx|jsx-text|· running": 1,
     "src/v2/collect/control/ReadyCard.tsx|jsx-text|· R": 1,
     "src/v2/collect/control/RecordingCard.tsx|jsx-text|· S": 1,
     "src/v2/collect/sidecards/WarningsCard.tsx|jsx-text|0": 1,

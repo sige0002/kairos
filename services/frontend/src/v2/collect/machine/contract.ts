@@ -135,10 +135,15 @@ export interface BatchMachine {
   } | null;
   /** True when the takeover capture is one this browser started (resumed own). */
   takeoverResumedOwn: boolean;
+  /** True only when the current browser holds the server-issued control lease. */
+  takeoverOwned: boolean;
   takeoverStopModalOpen: boolean;
   openTakeoverStopModal: () => void;
   confirmTakeoverStop: () => void;
+  forceTakeoverStop: () => void;
+  stopOwnedTakeover: () => void;
   isTakeoverStopping: boolean;
+  takeoverOperation: 'takeover' | 'stop' | 'force-stop' | null;
 
   // Unsaved take recovery (D-3): a finished capture with review_revision 0 —
   // never reviewed — offered for recovery after a reload between Stop and Save.

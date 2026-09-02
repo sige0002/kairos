@@ -50,6 +50,16 @@ test('focus moves into the dialog and back to a surviving trigger', () => {
   expect(document.activeElement).toBe(trigger);
 });
 
+test('the visible title programmatically names the dialog', () => {
+  render(
+    <Modal open onClose={() => {}} title="Recording control">
+      Recovery actions
+    </Modal>,
+  );
+
+  expect(screen.getByRole('dialog', { name: 'Recording control' })).toBeInTheDocument();
+});
+
 test('a trigger that unmounted with the dialog falls back to <main>', () => {
   render(<Page unmountTrigger />);
   const trigger = screen.getByTestId('trigger');

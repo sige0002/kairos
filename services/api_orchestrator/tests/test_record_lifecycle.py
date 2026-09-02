@@ -19,7 +19,7 @@ from pathlib import Path
 import pytest
 from api_orchestrator.models import CaptureState
 from api_orchestrator.store import CaptureStore
-from conftest import FakeRecorder
+from conftest import FakeRecorder, stop_owned
 from fastapi.testclient import TestClient
 from kairos_common.ids import is_uuid7
 from kairos_common.rebuild import ReplicaState
@@ -205,7 +205,7 @@ class TestStop:
         self, client: TestClient
     ) -> None:
         started = _start(client)
-        stopped = client.post("/api/v1/record/stop").json()
+        stopped = stop_owned(client).json()
         assert stopped["capture_id"] == started["capture_id"]
         assert stopped["state"] == "completed"
         assert stopped["message_count"] == 1234
@@ -219,7 +219,7 @@ class TestStop:
         _start(client)
         # A stop must never assume completion: a recording that failed and one
         # that finished are indistinguishable from the orchestrator's side.
-        assert client.post("/api/v1/record/stop").json()["state"] == final_state
+        assert stop_owned(client).json()["state"] == final_state
 
     @pytest.mark.parametrize("final_state", ["completed", "failed"])
     def test_a_flush_that_outlives_the_stop_response_settles_honestly(
@@ -236,7 +236,7 @@ class TestStop:
         fake_recorder.final_state = final_state
         fake_recorder.settle_after_status_polls = 2
         _start(client)
-        assert client.post("/api/v1/record/stop").json()["state"] == final_state
+        assert stop_owned(client).json()["state"] == final_state
 
     def test_a_recorder_still_writing_at_the_budget_is_never_completed(
         self, client: TestClient, fake_recorder: FakeRecorder
@@ -250,7 +250,7 @@ class TestStop:
         service._final_state_poll_budget_s = 0.05
         fake_recorder.settle_after_status_polls = 10**9
         _start(client)
-        stopped = client.post("/api/v1/record/stop").json()
+        stopped = stop_owned(client).json()
         assert stopped["state"] == "interrupted"
         assert stopped["error"]["code"] == "stop_not_confirmed"
 
@@ -260,7 +260,7 @@ class TestStop:
         fake_recorder.final_state = "failed"
         fake_recorder.final_error = "disk full"
         _start(client)
-        error = client.post("/api/v1/record/stop").json()["error"]
+        error = stop_owned(client).json()["error"]
         # §3 keeps manifest.error a plain string; without this the capture would
         # surface as failed with no reason at all.
         assert error["code"] == "recorder_failed"
@@ -270,15 +270,15 @@ class TestStop:
         self, client: TestClient
     ) -> None:
         started = _start(client)
-        client.post("/api/v1/record/stop")
-        again = client.post("/api/v1/record/stop")
+        stop_owned(client)
+        again = stop_owned(client, started["capture_id"])
         assert again.status_code == 200
         assert again.json()["capture_id"] == started["capture_id"]
 
     def test_stop_on_an_empty_store_is_a_404(self, client: TestClient) -> None:
-        response = client.post("/api/v1/record/stop")
-        assert response.status_code == 404
-        assert response.json()["error"]["code"] == "no_captures"
+        response = client.post("/api/v1/record/stop", json={"capture_id": "none"})
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "record_control_recovery_required"
 
     def test_stop_stops_a_recorder_session_the_catalog_never_saw(
         self, client: TestClient, fake_recorder: FakeRecorder
@@ -294,7 +294,9 @@ class TestStop:
         fake_recorder.state = "recording"
         fake_recorder.run_id = "run_orphan"
         fake_recorder.capture_id = "01920000-0000-7000-8000-0000000000bb"
-        response = client.post("/api/v1/record/stop")
+        response = client.post(
+            "/api/v1/record/force-stop", json={"capture_id": fake_recorder.capture_id}
+        )
         # Was a 404 whose code (`no_captures`) came from the empty-store
         # fallback rather than from any decision about this capture — the same
         # fallback that, with one earlier take in the store, answered 200 and
@@ -410,8 +412,12 @@ class TestPrepare:
     def test_stop_disarms_a_prepare_that_never_started(
         self, client: TestClient, fake_recorder: FakeRecorder
     ) -> None:
-        client.post("/api/v1/record/prepare", json={"topics": ["/joint_states"]})
-        client.post("/api/v1/record/stop")
+        prepared = client.post(
+            "/api/v1/record/prepare", json={"topics": ["/joint_states"]}
+        ).json()
+        client.post(
+            "/api/v1/record/force-stop", json={"capture_id": prepared["capture_id"]}
+        )
         # The recorder holds a live armed session — subscriptions established,
         # the same DDS load as recording — which must not leak until its own
         # auto-disarm timeout.
@@ -520,7 +526,7 @@ class TestRecordStatusEvents:
 
         hub.publish = capture_publish
         started = _start(client)
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
 
         events = [data for name, data in published if name == "record_status"]
         assert len(events) >= 2
@@ -537,7 +543,7 @@ class TestQuickCheckSettlement:
         self, client: TestClient
     ) -> None:
         started = _start(client)
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
         _await_settlement(client)
 
         capture = _store(client).get_capture(started["capture_id"])
@@ -550,7 +556,7 @@ class TestQuickCheckSettlement:
     ) -> None:
         started = _start(client)
         capture_id = started["capture_id"]
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
         _await_settlement(client)
 
         # The operator's Save sends no quality unless they overrode it, so the
@@ -576,7 +582,7 @@ class TestQuickCheckSettlement:
     ) -> None:
         started = _start(client)
         capture_id = started["capture_id"]
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
         _await_settlement(client)
         client.patch(
             f"/api/v1/captures/{capture_id}/review",
@@ -622,7 +628,7 @@ class TestQuickCheckSettlement:
         fake_recorder.bag_duration_s = 0.09
         fake_recorder.bag_messages = 25
         started = _start(client)
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
         _await_settlement(client)
 
         capture = _store(client).get_capture(started["capture_id"])
@@ -670,7 +676,7 @@ class TestQuickCheckSettlement:
         )
         with TestClient(app) as client:
             started = _start(client)
-            client.post("/api/v1/record/stop")
+            stop_owned(client)
             _await_settlement(client)
             capture = app.state.capture_store.get_capture(started["capture_id"])
 
@@ -699,7 +705,7 @@ class TestQuickCheckSettlement:
 
         started = _start(client)
         capture_id = started["capture_id"]
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
 
         saved = client.patch(
             f"/api/v1/captures/{capture_id}/review",
@@ -751,7 +757,7 @@ class TestQuickCheckSettlement:
 
         started = _start(client)
         capture_id = started["capture_id"]
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
 
         # The verdict has landed; only the re-derivation behind it is held.
         capture = _await_verdict(client, capture_id)
@@ -798,7 +804,7 @@ class TestQuickCheckSettlement:
 
         started = _start(client)
         capture_id = started["capture_id"]
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
         client.patch(
             f"/api/v1/captures/{capture_id}/review",
             json={"base_revision": 0, "review_status": "adopted"},
@@ -833,7 +839,7 @@ class TestQuickCheckSettlement:
 
         started = _start(client)
         capture_id = started["capture_id"]
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
         saved = client.patch(
             f"/api/v1/captures/{capture_id}/review",
             json={
@@ -859,7 +865,7 @@ class TestQuickCheckSettlement:
     ) -> None:
         started = _start(client)
         capture_id = started["capture_id"]
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
         client.patch(
             f"/api/v1/captures/{capture_id}/review",
             json={

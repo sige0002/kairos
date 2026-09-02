@@ -948,7 +948,7 @@ test('Batch menu → Reset batch on an empty batch is a no-op (honest wording)',
 
 const CAP_EXT = '0192f0aa-2222-7000-8000-00000000ffff';
 
-test('a server recording surfaces the takeover card instead of READY, and Stop confirms first', async () => {
+test('a server recording surfaces Take control instead of READY or ordinary Stop', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
     if (url.includes('/config')) return Promise.resolve(jsonResponse(CONFIG));
@@ -989,9 +989,12 @@ test('a server recording surfaces the takeover card instead of READY, and Stop c
   await waitFor(() =>
     expect(screen.getByText('run_20260802_090000')).toBeInTheDocument(),
   );
-  // The primary action opens a confirmation (use-error guard), not an instant stop.
-  fireEvent.click(screen.getByRole('button', { name: /Stop recording/ }));
-  expect(await screen.findByText('Stop this recording?')).toBeInTheDocument();
+  // The foreign recording offers explicit recovery, never the ordinary Stop.
+  expect(screen.queryByRole('button', { name: /Stop recording/ })).toBeNull();
+  fireEvent.click(screen.getByRole('button', { name: 'Take control' }));
+  const dialog = await screen.findByRole('dialog');
+  expect(within(dialog).getByText('Recording control')).toBeInTheDocument();
+  expect(within(dialog).getByRole('button', { name: 'Take control' })).toBeEnabled();
 });
 
 // §10 rev.2.4: a status with NO `live_capture_ids` means the recorder could not

@@ -14,7 +14,7 @@ import asyncio
 
 from api_orchestrator.layout import DataLayout
 from api_orchestrator.models import Capture, CaptureState
-from conftest import FakeRecorder, run_digests
+from conftest import FakeRecorder, run_digests, stop_owned
 from fastapi.testclient import TestClient
 from kairos_common.capture_sidecars import (
     ObjectManifestV2,
@@ -284,7 +284,7 @@ class TestStopSchedulesDigest:
     ) -> None:
         client.post("/api/v1/record/start", json={"topics": ["/joint_states"]})
         capture_id = fake_recorder.capture_id
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
         run_digests(client)
 
         body = client.get(f"/api/v1/captures/{capture_id}").json()

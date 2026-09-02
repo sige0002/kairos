@@ -188,7 +188,8 @@ export const api = {
   recordStart: (body: Record<string, unknown>): Promise<Capture> =>
     call('POST', '/record/start', body),
 
-  recordStop: (): Promise<Capture> => call('POST', '/record/stop', {}),
+  recordForceStop: (captureId: string): Promise<Capture> =>
+    call('POST', '/record/force-stop', { capture_id: captureId }),
 
   recordStatus: (): Promise<Record<string, unknown>> => call('GET', '/record/status'),
 
@@ -274,9 +275,12 @@ export async function recordCaptureViaApi(opts: {
     task: opts.task ?? 'bulk',
   });
   await new Promise((r) => setTimeout(r, (opts.seconds ?? 3) * 1000));
-  const stopped = await api.recordStop();
+  if (!started.capture_id) throw new Error('record/start returned no capture_id');
+  // Node's fetch has no cookie jar. This helper is setup-only, so it uses the
+  // explicit recovery route rather than pretending to be the browser owner.
+  const stopped = await api.recordForceStop(started.capture_id);
   const id = stopped.capture_id || started.capture_id;
-  if (!id) throw new Error('record/stop returned no capture_id');
+  if (!id) throw new Error('record/force-stop returned no capture_id');
   return id;
 }
 

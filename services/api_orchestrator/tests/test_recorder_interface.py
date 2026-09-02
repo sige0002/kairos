@@ -22,7 +22,7 @@ import httpx
 from api_orchestrator.app_factory import create_orchestrator_app
 from api_orchestrator.layout import DataLayout
 from api_orchestrator.recorder_client import LIVE_CAPTURE_IDS_FIELD, live_capture_ids
-from conftest import FakeRecorder, run_digests
+from conftest import FakeRecorder, run_digests, stop_owned
 from fastapi.testclient import TestClient
 from kairos_common.capture_sidecars import (
     ObjectManifestV2,
@@ -129,7 +129,7 @@ class TestDigestGating:
     ) -> None:
         client.post("/api/v1/record/start", json={"topics": ["/joint_states"]})
         capture_id = fake_recorder.capture_id
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
 
         # The recorder is idle and its live array is empty, but `capture_id`
         # still names this capture — which is exactly the state the old scalar
@@ -264,7 +264,7 @@ class TestOtherPinnedShapes:
         started = client.post(
             "/api/v1/record/start", json={"topics": ["/joint_states"]}
         ).json()
-        stopped = client.post("/api/v1/record/stop").json()
+        stopped = stop_owned(client).json()
         # The singular field's persistence past terminal is what makes this
         # correlation possible — it is a feature, used here and nowhere else.
         assert stopped["capture_id"] == started["capture_id"]
@@ -291,7 +291,7 @@ class TestOtherPinnedShapes:
         # The recorder recorded with something else (a live robot switch
         # between our request and its start).
         fake_recorder.robot = "other_robot"
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
 
         body = client.get(f"/api/v1/captures/{started['capture_id']}").json()
         assert body["robot"] == "other_robot"
@@ -308,7 +308,7 @@ class TestOtherPinnedShapes:
         # would be modelling the sibling test's case, not this one.
         fake_recorder.manifest_corrupt = True
         fake_recorder.sidecar_corrupt = True
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
         capture_id = started["capture_id"]
 
         body = client.get(f"/api/v1/captures/{capture_id}").json()
@@ -350,7 +350,7 @@ class TestOtherPinnedShapes:
             "/api/v1/record/start", json={"topics": ["/joint_states"]}
         ).json()
         fake_recorder.manifest_corrupt = True
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
         capture_id = started["capture_id"]
         assert (
             client.get(f"/api/v1/captures/{capture_id}").json()["error"]["code"]
@@ -393,7 +393,7 @@ class TestOtherPinnedShapes:
         ).json()
         fake_recorder.manifest_corrupt = True
         fake_recorder.sidecar_corrupt = True
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
         capture_id = started["capture_id"]
         # The stop path filed the fault, so there is now something to lose.
         assert (
@@ -414,7 +414,7 @@ class TestOtherPinnedShapes:
     ) -> None:
         client.post("/api/v1/record/start", json={"topics": ["/joint_states"]})
         capture_id = fake_recorder.capture_id
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
         run_digests(client)
 
         manifest = read_object_manifest(layout.capture_dir(capture_id)).manifest
@@ -458,7 +458,7 @@ class TestRecorderKilledBetweenStopAndConfirmation:
         client.post("/api/v1/record/start", json={"topics": ["/joint_states"]})
         capture_id = fake_recorder.capture_id
         fake_recorder.die_after_stop = True  # sealed first, then killed
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
 
         body = client.get(f"/api/v1/captures/{capture_id}").json()
         # The bag is finalised and the manifest says so. Calling this
@@ -472,7 +472,7 @@ class TestRecorderKilledBetweenStopAndConfirmation:
         capture_id = fake_recorder.capture_id
         fake_recorder.seal_on_stop = False  # killed before finalising
         fake_recorder.die_after_stop = True
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
 
         body = client.get(f"/api/v1/captures/{capture_id}").json()
         # Nothing finalised this bag: the manifest on disk still says

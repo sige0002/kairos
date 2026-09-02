@@ -15,7 +15,6 @@ import { Button, Modal, cn } from '../../components/ui';
 import { END_REASONS, type BatchMachine } from './useBatchMachine';
 import { usePlans } from '../plans';
 import { Toast } from '../shared/Toast';
-import { formatBytes } from '../review/format';
 
 function ReasonChip({
   active,
@@ -328,28 +327,17 @@ function TargetModal({ machine }: { machine: BatchMachine }) {
   );
 }
 
-function formatElapsedClock(startedAt: string | null): string {
-  if (!startedAt) return '—';
-  const t = Date.parse(startedAt);
-  if (Number.isNaN(t)) return '—';
-  const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
-  const mm = String(Math.floor(s / 60)).padStart(2, '0');
-  const ss = String(s % 60).padStart(2, '0');
-  return `${mm}:${ss}`;
-}
-
-// Confirm stopping a recording this screen isn't driving (D-1). Guards against
-// knocking over another operator's take by mistake; the two body variants match
-// whether it's a resumed-own recording or another session's.
-function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
+// Confirm recording-control recovery (D-1).  Take control is non-destructive;
+// Emergency stop is explicitly separate because it ends another terminal's take.
+export function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
   const { t: tr } = useTranslation('collect');
-  const t = machine.takeover;
-  const size = formatBytes(t?.bytes);
   return (
     <Modal
       open={machine.takeoverStopModalOpen}
-      onClose={machine.closeModals}
-      title={tr('stopThisRecording')}
+      onClose={() => {
+        if (!machine.isTakeoverStopping) machine.closeModals();
+      }}
+      title={tr('recordingControl')}
       footer={
         <>
           <Button
@@ -360,29 +348,29 @@ function TakeoverStopModal({ machine }: { machine: BatchMachine }) {
             {tr('keepRecording')}
           </Button>
           <Button
-            variant="danger"
+            variant="primary"
             onClick={machine.confirmTakeoverStop}
             disabled={machine.isTakeoverStopping}
           >
-            {machine.isTakeoverStopping ? tr('stopping') : tr('stopAndSave')}
+            {machine.takeoverOperation === 'takeover'
+              ? tr('takingControl')
+              : tr('takeControl')}
+          </Button>
+          <Button
+            variant="danger"
+            onClick={machine.forceTakeoverStop}
+            disabled={machine.isTakeoverStopping}
+          >
+            {machine.takeoverOperation === 'force-stop'
+              ? tr('stopping')
+              : tr('emergencyStop')}
           </Button>
         </>
       }
     >
-      {machine.takeoverResumedOwn ? (
-        <p className="text-[12.5px] leading-relaxed text-text-secondary">
-          {tr('stopResumedRecordingHelp', { size })}
-        </p>
-      ) : (
-        <p className="text-[12.5px] leading-relaxed text-text-secondary">
-          {tr('takeoverStartedElsewhereBefore')}{' '}
-          <strong className="text-text-primary">{t?.operator || '—'}</strong> · running{' '}
-          <span className="font-mono text-text-primary">
-            {formatElapsedClock(t?.startedAt ?? null)}
-          </span>{' '}
-          · {size}). {tr('takeoverStartedElsewhereAfter')}
-        </p>
-      )}
+      <p className="text-[12.5px] leading-relaxed text-text-secondary">
+        {tr('takeoverControlHelp')}
+      </p>
     </Modal>
   );
 }

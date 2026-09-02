@@ -117,6 +117,14 @@ export const en = {
     recording: 'RECORDING',
     startRecording: 'Start recording',
     stopAndSave: 'Stop & save',
+    takeControl: 'Take control',
+    takingControl: 'Taking control…',
+    emergencyStop: 'Emergency stop',
+    recordingControl: 'Recording control',
+    takeoverControlHelp:
+      'Take control transfers normal Stop to this browser and keeps recording. Use Emergency stop only when the original terminal is unavailable.',
+    recordingControlMoved:
+      'Recording control moved to another browser. Use the displayed Take control action.',
     keepRecording: 'Keep recording',
     retake: 'Retake',
     discardAndRetake: 'Discard & re-record',

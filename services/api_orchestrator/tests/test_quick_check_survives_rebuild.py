@@ -27,7 +27,7 @@ from pathlib import Path
 import httpx
 from api_orchestrator.app_factory import create_orchestrator_app
 from api_orchestrator.layout import DataLayout
-from conftest import FakeRecorder, reconcile, run_digests
+from conftest import FakeRecorder, reconcile, run_digests, stop_owned
 from fastapi.testclient import TestClient
 from kairos_common import Settings
 
@@ -60,7 +60,7 @@ def _reopen(settings: Settings, fake_recorder: FakeRecorder) -> TestClient:
 
 def _record_and_settle(client: TestClient) -> str:
     _start(client)
-    capture_id = client.post("/api/v1/record/stop").json()["capture_id"]
+    capture_id = stop_owned(client).json()["capture_id"]
     _await_settlement(client)
     run_digests(client)
     return capture_id
@@ -236,7 +236,7 @@ class TestWhenTheSidecarCannotBeWritten:
         monkeypatch.setattr(record_service_mod, "write_quick_check", boom)
         try:
             _start(client)
-            capture_id = client.post("/api/v1/record/stop").json()["capture_id"]
+            capture_id = stop_owned(client).json()["capture_id"]
             _await_settlement(client)
         finally:
             logging.getLogger("kairos").removeHandler(collector)

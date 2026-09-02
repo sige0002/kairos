@@ -15,12 +15,12 @@
 // that sequence are load-bearing, and each is a bug that was found in review
 // rather than a precaution:
 //
-//   1. THE STOP MUST NOT BE FIRED BLIND. `POST /record/stop` names no capture —
-//      the orchestrator stops the newest non-terminal row — so a cancel whose
-//      cleanup lands after another driver has started their own take would stop
-//      THEIRS. A recording this screen is not driving is a modelled state (the
-//      takeover card, D-1), not a hypothetical. The recorder is asked first,
-//      and the stop is skipped when the live take is provably somebody else's.
+//   1. THE STOP MUST NOT BE FIRED BLIND. The request is capture-bound, but a
+//      cancel whose cleanup lands after control moved to another browser must
+//      still avoid interfering with that operator. A recording this screen is
+//      not driving is a modelled state (the takeover card, D-1), not a
+//      hypothetical. The recorder is asked first, and the stop is skipped when
+//      the live take is provably somebody else's.
 //
 //   2. THE DISCARD MUST OUTLAST THE DIGEST LEASE. `/record/stop` itself queues
 //      the digest (record_service.py, `self._digest.schedule(capture_id)`),
@@ -179,7 +179,7 @@ export function useCancelledStartCleanup({
         stopFailed = false;
       } else {
         try {
-          await stopRecord();
+          if (captureId) await stopRecord(captureId);
         } catch {
           // A failed stop does not mean the capture is unremovable, so the
           // discard below still runs; if it IS still being written, the refusal

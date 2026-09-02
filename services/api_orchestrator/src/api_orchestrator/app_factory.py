@@ -65,6 +65,7 @@ from api_orchestrator.lerobot_exporter_client import LerobotExporterClient
 from api_orchestrator.models import Capture
 from api_orchestrator.monitor_client import MonitorClient
 from api_orchestrator.reconciler import Reconciler
+from api_orchestrator.record_control import RecordControlService
 from api_orchestrator.record_service import RecordService
 from api_orchestrator.recorder_client import RecorderClient
 from api_orchestrator.report_storage import ReportStorageService
@@ -290,6 +291,7 @@ def create_orchestrator_app(
         # and the NEXT recording must carry the new one into its manifest.
         active_robot=config_catalog.active_robot,
     )
+    record_control = RecordControlService()
     # Views regeneration runs off the request path: it walks every membership
     # and rebuilds a symlink tree, which a dataset mutation should not wait on.
     # A single-slot flag rather than a task per change — ten rapid edits need
@@ -426,6 +428,7 @@ def create_orchestrator_app(
     app.state.capture_store = capture_store
     app.state.capture_service = capture_service
     app.state.record_service = record_service
+    app.state.record_control = record_control
     app.state.dataset_service = dataset_service
     app.state.batch_service = batch_service
     app.state.dataset_archiver = dataset_archiver

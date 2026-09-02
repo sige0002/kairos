@@ -782,3 +782,17 @@ def reconcile(client: TestClient) -> object:
     import asyncio
 
     return asyncio.run(client.app.state.reconciler.run_once())
+
+
+def stop_owned(client: TestClient, capture_id: str | None = None):
+    """Issue the public normal Stop with the live capture identity.
+
+    Tests that model a browser-owned take use the same mandatory target body
+    as production callers.  Recovery/orphan tests deliberately use force-stop
+    or RecordService's system boundary instead.
+    """
+    if capture_id is None:
+        status = client.get("/api/v1/record/status").json()
+        capture_id = status.get("capture_id")
+    assert isinstance(capture_id, str) and capture_id
+    return client.post("/api/v1/record/stop", json={"capture_id": capture_id})

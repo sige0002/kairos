@@ -122,6 +122,14 @@ export const ja = {
     recording: '録画中',
     startRecording: '録画を開始',
     stopAndSave: '停止して保存',
+    takeControl: '操作権を引き継ぐ',
+    takingControl: '操作権を引継ぎ中…',
+    emergencyStop: '緊急停止',
+    recordingControl: '録画の操作権',
+    takeoverControlHelp:
+      '引継ぎはこのブラウザへ停止操作権を移します。録画は継続します。緊急停止は、元の端末に連絡できない場合だけ使用してください。',
+    recordingControlMoved:
+      '録画の操作権が別のブラウザへ移りました。表示された引継ぎ操作を選択してください。',
     keepRecording: '録画を続ける',
     retake: '撮り直し',
     discardAndRetake: '破棄して撮り直す',

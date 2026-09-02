@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
 // Post-stop confirmation, shared by every caller of POST /record/stop that
-// must not walk on until the recorder has actually let go. `/record/stop` is
-// idempotent and answers with the LAST capture when it finds nothing active
-// (contract §3), so a 200 alone never proves the recorder stopped — Collect's
-// SAVING gate and Settings' stop-and-switch both confirm through here.
+// must not walk on until the recorder has actually let go. Even a successful,
+// capture-bound stop response can arrive before every status surface observes
+// the terminal state, so Collect's SAVING gate and Settings' stop-and-switch
+// both confirm through here.
 //
 // The confirmation POLLS: a flush takes seconds (rosbag2 drains its cache to
 // disk), and inside the recorder's own escalation budget a still-active status
@@ -55,9 +55,7 @@ export function getStopConfirmPollMs(defaultMs: number): number {
  * flushing — the very moment this confirmation exists to wait out. Transient
  * errors keep polling; only the deadline surfaces one.
  */
-export async function confirmRecorderStopped(
-  captureId: string | null,
-): Promise<void> {
+export async function confirmRecorderStopped(captureId: string | null): Promise<void> {
   const deadline = performance.now() + getStopConfirmMaxMs(STOP_CONFIRM_MAX_MS);
   let lastState: RecordState | null = null;
   for (;;) {
@@ -69,10 +67,17 @@ export async function confirmRecorderStopped(
     }
     if (status) {
       lastState = status.state;
+      const liveIds = liveCaptureIds(status);
       const live =
-        ACTIVE_RECORD_STATES.has(status.state) ||
-        (captureId != null &&
-          liveCaptureIds(status)?.includes(captureId) === true);
+        captureId == null
+          ? ACTIVE_RECORD_STATES.has(status.state)
+          : liveIds != null
+            ? liveIds.includes(captureId)
+            : status.capture_id === captureId
+              ? ACTIVE_RECORD_STATES.has(status.state)
+              : typeof status.capture_id === 'string'
+                ? false
+                : ACTIVE_RECORD_STATES.has(status.state);
       if (!live) return;
     }
     if (performance.now() >= deadline) {

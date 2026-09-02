@@ -9,7 +9,7 @@ from pathlib import Path
 import httpx
 from api_orchestrator.app_factory import create_orchestrator_app
 from api_orchestrator.models import Capture, CaptureState, CollectionContextSnapshot
-from conftest import FakeRecorder
+from conftest import FakeRecorder, stop_owned
 from fastapi.testclient import TestClient
 from kairos_common import Settings
 from kairos_common.capture_sidecars import RecordV2, write_record
@@ -241,7 +241,7 @@ def test_unbatched_context_can_join_a_later_matching_batch(
     )
     assert saved.status_code == 200, saved.text
     assert saved.json()["batch_id"] == batch["batch_id"]
-    assert client.post("/api/v1/record/stop").status_code == 200
+    assert stop_owned(client).status_code == 200
     client.close()
     (data_dir / "kairos.db").unlink()
 
@@ -311,7 +311,7 @@ def test_rebuild_restores_manifest_context_and_start_batch(
 ) -> None:
     batch = _batch(client)
     capture = _start_with_context(client, batch)
-    assert client.post("/api/v1/record/stop").status_code == 200
+    assert stop_owned(client).status_code == 200
     client.close()
     (data_dir / "kairos.db").unlink()
 
@@ -353,7 +353,9 @@ def test_mid_recording_db_loss_recovers_context_before_stop(
         ),
     )
     with TestClient(app) as reopened:
-        stopped = reopened.post("/api/v1/record/stop")
+        stopped = reopened.post(
+            "/api/v1/record/force-stop", json={"capture_id": capture["capture_id"]}
+        )
         assert stopped.status_code == 200, stopped.text
         recovered = reopened.get(f"/api/v1/captures/{capture['capture_id']}").json()
         assert recovered["batch_id"] == batch["batch_id"]
@@ -434,7 +436,7 @@ def test_rebuild_keeps_manifest_context_over_an_inconsistent_record_batch(
 ) -> None:
     batch = _batch(client)
     capture = _start_with_context(client, batch)
-    assert client.post("/api/v1/record/stop").status_code == 200
+    assert stop_owned(client).status_code == 200
     write_record(
         data_dir / "objects" / str(capture["capture_id"]),
         RecordV2(

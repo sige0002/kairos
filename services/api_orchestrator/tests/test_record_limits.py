@@ -29,7 +29,7 @@ import httpx
 import pytest
 from api_orchestrator.app_factory import create_orchestrator_app
 from api_orchestrator.store import CaptureStore
-from conftest import FakeRecorder, run_digests
+from conftest import FakeRecorder, run_digests, stop_owned
 from fastapi.testclient import TestClient
 
 SECONDS_NOTE = "auto-stopped: recording ran 600s, reaching MAX_RECORD_SECONDS=600"
@@ -68,7 +68,7 @@ def test_a_cap_stop_is_not_filed_as_a_recorder_failure(
     fake_recorder.final_state = "completed"
     fake_recorder.final_error = note
     _start(client)
-    stopped = client.post("/api/v1/record/stop").json()
+    stopped = stop_owned(client).json()
 
     assert stopped["state"] == "completed"
     error = stopped["error"]
@@ -90,7 +90,7 @@ def test_a_crash_is_still_a_recorder_failure(
     fake_recorder.final_state = "interrupted"
     fake_recorder.final_error = "recording ended abnormally (rc=-9)"
     _start(client)
-    stopped = client.post("/api/v1/record/stop").json()
+    stopped = stop_owned(client).json()
 
     assert stopped["state"] == "interrupted"
     assert stopped["error"]["code"] == "recorder_failed"
@@ -102,7 +102,7 @@ def test_an_operator_stop_carries_no_error_at_all(
     # The third ending, pinned beside the other two: silence is what "I stopped
     # it myself" looks like, so the cap note must not be silence too.
     _start(client)
-    stopped = client.post("/api/v1/record/stop").json()
+    stopped = stop_owned(client).json()
     assert stopped["state"] == "completed"
     assert stopped.get("error") is None
 
@@ -145,7 +145,7 @@ def test_the_digest_does_not_relabel_a_cap_stop_as_a_failure(
     fake_recorder.final_state = "completed"
     fake_recorder.final_error = SECONDS_NOTE
     _start(client)
-    stopped = client.post("/api/v1/record/stop").json()
+    stopped = stop_owned(client).json()
     capture_id = stopped["capture_id"]
     assert digests_stay_queued == [capture_id]
 
@@ -169,7 +169,7 @@ def test_a_rebuilt_catalog_still_knows_the_cap_was_not_a_failure(
     fake_recorder.final_state = "completed"
     fake_recorder.final_error = SECONDS_NOTE
     _start(client)
-    capture_id = client.post("/api/v1/record/stop").json()["capture_id"]
+    capture_id = stop_owned(client).json()["capture_id"]
     run_digests(client)
     client.close()
     (data_dir / "kairos.db").unlink()

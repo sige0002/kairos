@@ -21,7 +21,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError } from '../../api/client';
-import { startRecord } from '../../api/record';
+import { forceStopRecord, startRecord, takeOverRecord } from '../../api/record';
+import { confirmRecorderStopped } from '../captures/stopConfirm';
 import { getCapture, listCaptures, saveReview } from '../../api/captures';
 import { queryKeys } from '../../api/queryKeys';
 import { useUiStore } from '../../store/uiStore';
@@ -290,8 +291,23 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     state.phase === 'quickcheck';
   const recorderActive =
     recorderState != null && ACTIVE_RECORD_STATES.has(recorderState);
+  const controlLost =
+    status?.control !== undefined &&
+    status.control.capture_id === state.currentCaptureId &&
+    !status.control.controlled_by_this_client;
+  // `status.capture_id` is the recorder's current physical session. The DB
+  // live list can temporarily contain older interrupted/unreconciled rows, so
+  // its first item is only a compatibility fallback for older status payloads.
+  // A missing live list still means liveness is unknown and must not invent a
+  // takeover target from a partial status response.
+  const recorderCaptureId =
+    liveCaptures == null
+      ? null
+      : typeof status?.capture_id === 'string'
+        ? status.capture_id
+        : (liveCaptures[0] ?? null);
   const takeoverCaptureId =
-    recorderActive && !localActive ? (liveCaptures?.[0] ?? null) : null;
+    recorderActive && (!localActive || controlLost) ? recorderCaptureId : null;
   // The capture supplies the run_id, operator and topic count (RecordStatus
   // carries none of them); only fetched while a takeover is showing.
   const takeoverDetailQuery = useQuery({
@@ -310,6 +326,10 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       }
     : null;
   const takeoverResumedOwn = !!takeover && takeover.captureId === state.lastCaptureId;
+  const takeoverOwned =
+    !!takeover &&
+    (status?.control?.controlled_by_this_client === true ||
+      (status?.control === undefined && takeoverResumedOwn));
 
   // ---- pre-arm (two-phase start) -------------------------------------------
   // The engine lives in hooks/usePreArm.ts (config gate, visibility pause,
@@ -516,12 +536,11 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
   const stopMutation = useMutation({
     mutationFn: async () => {
-      const capture = await stopAndConfirm();
-      // A 200 does not on its own prove the recorder stopped. /record/stop is
-      // idempotent and answers with the last capture when it finds nothing
-      // active, so a recorder still holding the bag can look like success — and
-      // then this screen walks on to labelling a take that is still being
-      // written, with nothing to end it but the MAX_RECORD_SECONDS backstop.
+      if (!state.currentCaptureId) throw new Error('No owned recording to stop.');
+      const capture = await stopAndConfirm(state.currentCaptureId);
+      // A 200 does not on its own prove every recorder status surface observes
+      // the stop yet. Confirm the named capture is terminal before advancing;
+      // otherwise a bag still flushing could be treated as ready for review.
       // Confirm against the recorder before advancing; a still-running recorder
       // routes to onError -> STOP_FAILED, which keeps the operator on SAVING
       // with the Retry-stop button instead of pretending the take is done.
@@ -644,16 +663,37 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     showToast,
     onRecordingInterrupted: recordingCues.notifyInterrupted,
   });
+  // Once a current server status says another browser controls this capture,
+  // do not even send the ordinary stop request.  An absent control block is an
+  // older-server compatibility case; the new server always supplies it.
+  const canStopOwned =
+    canStop &&
+    (status?.control === undefined ||
+      (status.control.capture_id === state.currentCaptureId &&
+        status.control.controlled_by_this_client));
 
   const stopRecording = useCallback(() => {
     if (state.phase !== 'recording') return;
     // Guarded here as well as on the control, so the S / Space shortcuts cannot
     // walk around the button's disabled state.
-    if (!canStop) return;
+    if (!canStopOwned) {
+      if (status?.control && !status.control.controlled_by_this_client) {
+        showToast(t('recordingControlMoved'));
+      }
+      return;
+    }
     recordingCues.markStopRequested(state.currentCaptureId);
     dispatch({ type: 'STOP_REQUESTED' });
     stopMutation.mutate();
-  }, [state.phase, state.currentCaptureId, canStop, stopMutation, recordingCues]);
+  }, [
+    state.phase,
+    state.currentCaptureId,
+    canStopOwned,
+    status?.control,
+    stopMutation,
+    recordingCues,
+    showToast,
+  ]);
 
   // Honest progress for the confirmation wait above: seconds since Stop was
   // pressed, shown on the SAVING card while the recorder drains. Null outside
@@ -1083,14 +1123,21 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     }
   }, [retakeQueued, state.phase, startRecording]);
 
-  // ---- takeover stop (D-1) -------------------------------------------------
+  // ---- takeover / emergency stop (D-1) -------------------------------------
   // Stop a recording this screen isn't driving (another session, or a resumed
   // own). A confirmation modal guards against knocking over someone else's take;
   // the stop then joins the normal completion path (the stopped capture surfaces
   // as an unsaved take for labeling).
   const [takeoverStopModalOpen, setTakeoverStopModalOpen] = useState(false);
+  // `isPending` is only visible after React has rendered.  The ref closes the
+  // same-tick window between a first click and that render, so a double click
+  // cannot issue two recovery commands against the live recorder.
+  const takeoverOperationInFlightRef = useRef(false);
   const takeoverStopMutation = useMutation({
-    mutationFn: () => stopAndConfirm(),
+    mutationFn: async () => {
+      if (!takeoverCaptureId) throw new Error('No active recording to stop.');
+      await takeOverRecord(takeoverCaptureId);
+    },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
       void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
@@ -1099,12 +1146,72 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     onError: (err) => {
       showToast(t('stopTakeoverFailed', { error: toMachineError(err).message }));
     },
+    onSettled: () => {
+      takeoverOperationInFlightRef.current = false;
+    },
   });
   const openTakeoverStopModal = useCallback(() => setTakeoverStopModalOpen(true), []);
-  const confirmTakeoverStop = useCallback(
-    () => takeoverStopMutation.mutate(),
-    [takeoverStopMutation],
-  );
+  const confirmTakeoverStop = useCallback(() => {
+    if (takeoverOperationInFlightRef.current) return;
+    takeoverOperationInFlightRef.current = true;
+    takeoverStopMutation.mutate();
+  }, [takeoverStopMutation]);
+  const ownedTakeoverStopMutation = useMutation({
+    mutationFn: async () => {
+      if (!takeoverCaptureId) throw new Error('No active recording to stop.');
+      return stopAndConfirm(takeoverCaptureId);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
+    },
+    onError: (err) => {
+      showToast(t('stopTakeoverFailed', { error: toMachineError(err).message }));
+    },
+    onSettled: () => {
+      takeoverOperationInFlightRef.current = false;
+    },
+  });
+  const forceTakeoverStopMutation = useMutation({
+    mutationFn: async () => {
+      if (!takeoverCaptureId) throw new Error('No active recording to stop.');
+      const capture = await forceStopRecord(takeoverCaptureId);
+      await confirmRecorderStopped(capture.capture_id ?? null);
+      return capture;
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: queryKeys.recordStatus });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.captures });
+      setTakeoverStopModalOpen(false);
+    },
+    onError: (err) => {
+      showToast(t('stopTakeoverFailed', { error: toMachineError(err).message }));
+    },
+    onSettled: () => {
+      takeoverOperationInFlightRef.current = false;
+    },
+  });
+  const stopOwnedTakeover = useCallback(() => {
+    if (takeoverOperationInFlightRef.current) return;
+    takeoverOperationInFlightRef.current = true;
+    ownedTakeoverStopMutation.mutate();
+  }, [ownedTakeoverStopMutation]);
+  const forceTakeoverStop = useCallback(() => {
+    if (takeoverOperationInFlightRef.current) return;
+    takeoverOperationInFlightRef.current = true;
+    forceTakeoverStopMutation.mutate();
+  }, [forceTakeoverStopMutation]);
+  const takeoverOperationPending =
+    takeoverStopMutation.isPending ||
+    ownedTakeoverStopMutation.isPending ||
+    forceTakeoverStopMutation.isPending;
+  const takeoverOperation = takeoverStopMutation.isPending
+    ? 'takeover'
+    : ownedTakeoverStopMutation.isPending
+      ? 'stop'
+      : forceTakeoverStopMutation.isPending
+        ? 'force-stop'
+        : null;
 
   // ---- unsaved-take recovery (D-3) -----------------------------------------
   const labelUnsavedTake = useCallback(() => {
@@ -1194,6 +1301,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
   const { confirmEndBatch, resetBatch, startNextBatch, changeTarget } =
     useConfirmedBatchActions({
       phase: state.phase,
+      currentCaptureId: state.currentCaptureId,
       batchId: state.batchId,
       targetEpisodes: state.targetEpisodes,
       endReason: state.endReason,
@@ -1300,7 +1408,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
       !noSelection &&
       !operatorMissing &&
       !startMutation.isPending,
-    stopEnabled: state.phase === 'recording' && canStop,
+    stopEnabled: state.phase === 'recording' && canStopOwned,
     projectId: state.projectId,
     taskId: state.taskId,
   });
@@ -1366,10 +1474,14 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
 
     takeover,
     takeoverResumedOwn,
+    takeoverOwned,
     takeoverStopModalOpen,
     openTakeoverStopModal,
     confirmTakeoverStop,
-    isTakeoverStopping: takeoverStopMutation.isPending,
+    forceTakeoverStop,
+    stopOwnedTakeover,
+    isTakeoverStopping: takeoverOperationPending,
+    takeoverOperation,
 
     unsavedTake,
     labelUnsavedTake,
@@ -1435,7 +1547,7 @@ export function useBatchMachine({ defaultTopics }: UseBatchMachineArgs): BatchMa
     cancelArming,
     canCancelArming,
     stopRecording,
-    canStop,
+    canStop: canStopOwned,
     stopBlockedReason,
     recorderUnreachable: !recorderReachable,
     recorderStaleMs,

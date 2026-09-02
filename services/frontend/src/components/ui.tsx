@@ -7,6 +7,7 @@
 import {
   cloneElement,
   useEffect,
+  useId,
   useRef,
   type ButtonHTMLAttributes,
   type InputHTMLAttributes,
@@ -532,6 +533,7 @@ export function Modal({
   children?: ReactNode;
   footer?: ReactNode;
 }) {
+  const titleId = useId();
   const dialogRef = useRef<HTMLDivElement>(null);
   const restoreToRef = useRef<HTMLElement | null>(null);
 
@@ -636,10 +638,13 @@ export function Modal({
         tabIndex={-1}
         role="dialog"
         aria-modal="true"
+        aria-labelledby={title ? titleId : undefined}
         className="relative z-10 w-full max-w-md rounded-card border border-border bg-surface-elevated p-5 shadow-float focus:outline-none"
       >
         {title && (
-          <h2 className="mb-2 text-[15px] font-semibold text-text-primary">{title}</h2>
+          <h2 id={titleId} className="mb-2 text-[15px] font-semibold text-text-primary">
+            {title}
+          </h2>
         )}
         {children && <div className="text-sm text-text-secondary">{children}</div>}
         {footer && <div className="mt-5 flex justify-end gap-2">{footer}</div>}

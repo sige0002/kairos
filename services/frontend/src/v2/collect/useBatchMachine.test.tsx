@@ -964,10 +964,10 @@ test('stopRecording() optimistically moves to saving and calls /record/stop', as
   );
 });
 
-// Regression: /record/stop is idempotent and answers with the last run when it
-// finds nothing active, so a 200 alone does not prove the recorder stopped. If
-// it is still recording we must NOT advance to labelling a take that is still
-// being written — stay on SAVING with the Retry-stop button.
+// Regression: a successful stop response alone does not prove the recorder's
+// status has released our capture. If it is still recording we must NOT advance
+// to labelling a take that is still being written — stay on SAVING with the
+// Retry-stop button.
 test('a stop the recorder did not honour keeps the screen on saving', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     const url = String(input);
@@ -975,7 +975,7 @@ test('a stop the recorder did not honour keeps the screen on saving', async () =
       return Promise.resolve(jsonResponse(captureBody('cap_1')));
     }
     if (url.includes('/record/stop')) {
-      // 200 with the last capture — the idempotent no-op answer.
+      // A successful response while status still reports this capture live.
       return Promise.resolve(
         jsonResponse(captureBody('cap_1', { state: 'completed' })),
       );
@@ -4045,17 +4045,23 @@ test('a reload of our own recording is a resumed-own takeover (lastCaptureId mat
   expect(result.current.takeoverResumedOwn).toBe(true);
 });
 
-test('confirming a takeover stop POSTs /record/stop and closes the modal', async () => {
+test('confirming takeover transfers control without sending a normal stop', async () => {
+  let owner = false;
   const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
     if (
-      url.includes('/record/stop') &&
+      url.includes('/record/takeover') &&
       (init?.method ?? 'POST').toUpperCase() === 'POST'
     ) {
+      owner = true;
+      return Promise.resolve(
+        jsonResponse({ capture_id: 'cap_ext', controlled_by_this_client: true }),
+      );
+    }
+    if (url.includes('/record/stop'))
       return Promise.resolve(
         jsonResponse(captureBody('cap_ext', { state: 'completed' })),
       );
-    }
     if (url.includes('/captures/cap_ext')) {
       return Promise.resolve(
         jsonResponse(captureBody('cap_ext', { topics: [], operator: null })),
@@ -4071,6 +4077,17 @@ test('confirming a takeover stop POSTs /record/stop and closes the modal', async
           state: 'recording',
           live_capture_ids: ['cap_ext'],
           started_at: new Date().toISOString(),
+          control: owner
+            ? {
+                capture_id: 'cap_ext',
+                controlled_by_this_client: true,
+                lease_known: true,
+              }
+            : {
+                capture_id: 'cap_ext',
+                controlled_by_this_client: false,
+                lease_known: true,
+              },
         }),
       );
     }
@@ -4085,9 +4102,25 @@ test('confirming a takeover stop POSTs /record/stop and closes the modal', async
   expect(result.current.takeoverStopModalOpen).toBe(true);
   act(() => result.current.confirmTakeoverStop());
   await waitFor(() =>
-    expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/record/stop'))).toBe(
-      true,
-    ),
+    expect(
+      fetchMock.mock.calls.some(([u]) => String(u).includes('/record/takeover')),
+    ).toBe(true),
+  );
+  expect(fetchMock.mock.calls.some(([u]) => String(u).includes('/record/stop'))).toBe(
+    false,
+  );
+  await waitFor(() => expect(result.current.takeoverOwned).toBe(true));
+  act(() => result.current.stopOwnedTakeover());
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.filter(([u]) => String(u).includes('/record/stop')),
+    ).toHaveLength(1),
+  );
+  const stopCall = fetchMock.mock.calls.find(([u]) =>
+    String(u).includes('/record/stop'),
+  );
+  expect(stopCall?.[1]).toEqual(
+    expect.objectContaining({ body: JSON.stringify({ capture_id: 'cap_ext' }) }),
   );
 });
 

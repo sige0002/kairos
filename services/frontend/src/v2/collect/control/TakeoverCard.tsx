@@ -78,7 +78,11 @@ export function TakeoverCard({
         </h2>
       </div>
       <span className="text-[12.5px] leading-relaxed text-text-secondary">
-        {machine.takeoverResumedOwn ? t('takeoverResumed') : t('takeoverOther')}
+        {machine.takeoverOwned
+          ? t('takeoverResumed')
+          : machine.takeoverResumedOwn
+            ? t('takeoverResumed')
+            : t('takeoverOther')}
       </span>
       <div className="flex flex-col gap-1.5 rounded-control border border-border bg-surface-muted px-3 py-2.5">
         {/* The run_id is the name the operator recognises on disk; it is shown
@@ -114,11 +118,21 @@ export function TakeoverCard({
       <button
         ref={stopRef}
         type="button"
-        onClick={machine.openTakeoverStopModal}
-        className="flex h-[52px] items-center justify-center gap-2 rounded-control bg-status-danger-accent text-[15px] font-bold text-status-danger-contrast shadow-btn-red hover:bg-status-danger-text [@media(max-height:860px)]:h-[44px]"
+        onClick={
+          machine.takeoverOwned ? machine.stopOwnedTakeover : machine.openTakeoverStopModal
+        }
+        disabled={machine.isTakeoverStopping}
+        className={cn(
+          'flex h-[52px] items-center justify-center gap-2 rounded-control text-[15px] font-bold [@media(max-height:860px)]:h-[44px]',
+          machine.takeoverOwned
+            ? 'bg-status-danger-accent text-status-danger-contrast shadow-btn-red hover:bg-status-danger-text'
+            : 'bg-accent text-text-inverse shadow-btn hover:bg-accent-strong',
+        )}
       >
-        <span className="h-[11px] w-[11px] rounded-sm bg-surface" />
-        {t('stopRecording')}
+        {machine.takeoverOwned && (
+          <span className="h-[11px] w-[11px] rounded-sm bg-surface" />
+        )}
+        {machine.takeoverOwned ? t('stopRecording') : t('takeControl')}
       </button>
       <button
         type="button"

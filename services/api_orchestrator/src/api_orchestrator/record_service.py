@@ -733,6 +733,41 @@ class RecordService:
     # ---- stop --------------------------------------------------------------
 
     async def stop(self) -> Capture:
+        """System-only stop without a browser control lease.
+
+        Reconciliation and recorder recovery use this boundary.  Public HTTP
+        handlers must call :meth:`stop_capture` after validating their control
+        lease, so an unowned browser can never reach this path accidentally.
+        """
+        return await self._stop(expected_capture_id=None)
+
+    async def stop_capture(self, capture_id: str) -> Capture:
+        """Stop exactly ``capture_id`` or fail before touching the recorder."""
+        return await self._stop(expected_capture_id=capture_id)
+
+    async def ensure_active_capture(self, capture_id: str) -> None:
+        """Verify takeover targets the live recorder session, not stale UI."""
+        async with self._lifecycle_lock:
+            status = await self._recorder.status()
+            if not self._recorder_is_active(status):
+                raise ApiError(
+                    status_code=409,
+                    code="record_not_active",
+                    message="That recording is no longer active. Refresh its status.",
+                    details={"capture_id": capture_id},
+                )
+            actual = _capture_id_of(status)
+            if actual != capture_id:
+                raise ApiError(
+                    status_code=409,
+                    code="record_control_capture_mismatch",
+                    message=(
+                        "The active recording changed before control was transferred."
+                    ),
+                    details={"capture_id": capture_id, "active_capture_id": actual},
+                )
+
+    async def _stop(self, expected_capture_id: str | None) -> Capture:
         """Stop the active recording and finalise it from the recorder's state.
 
         Idempotent. The terminal state comes from the recorder's manifest — this
@@ -740,9 +775,63 @@ class RecordService:
         finished look identical from the orchestrator's side.
         """
         async with self._lifecycle_lock:
+            if expected_capture_id is not None:
+                # Check the recorder while holding the same lifecycle lock that
+                # serializes starts/stops.  A stale page must not turn a token
+                # for take A into a stop for take B.
+                status = await self._recorder.status()
+                if self._recorder_is_active(status):
+                    actual = _capture_id_of(status)
+                    if actual != expected_capture_id:
+                        raise ApiError(
+                            status_code=409,
+                            code="record_control_capture_mismatch",
+                            message=(
+                                "The requested recording is not the active recording; "
+                                "nothing was stopped."
+                            ),
+                            details={
+                                "capture_id": expected_capture_id,
+                                "active_capture_id": actual,
+                            },
+                        )
             active = self._active_capture()
+            if (
+                expected_capture_id is not None
+                and active is not None
+                and active.capture_id != expected_capture_id
+            ):
+                raise ApiError(
+                    status_code=409,
+                    code="record_control_capture_mismatch",
+                    message=(
+                        "The requested recording is not the catalog's active "
+                        "recording; "
+                        "nothing was stopped."
+                    ),
+                    details={
+                        "capture_id": expected_capture_id,
+                        "active_capture_id": active.capture_id,
+                    },
+                )
             if active is None:
                 if self._prepared is not None:
+                    if (
+                        expected_capture_id is not None
+                        and self._prepared.capture_id != expected_capture_id
+                    ):
+                        raise ApiError(
+                            status_code=409,
+                            code="record_control_capture_mismatch",
+                            message=(
+                                "The recorder is armed for a different capture; "
+                                "nothing was stopped."
+                            ),
+                            details={
+                                "capture_id": expected_capture_id,
+                                "active_capture_id": self._prepared.capture_id,
+                            },
+                        )
                     # An armed-but-never-started prepare has no row to finalize,
                     # but the recorder holds a live armed session (subscriptions
                     # established, same DDS load as recording) that must not leak
@@ -756,7 +845,24 @@ class RecordService:
                 # success would send the operator on while the bag grows.
                 active = await self._adopt_recorder_session()
             if active is None:
-                return self._last_capture_or_idle()
+                last = self._last_capture_or_idle()
+                if (
+                    expected_capture_id is not None
+                    and last.capture_id != expected_capture_id
+                ):
+                    raise ApiError(
+                        status_code=409,
+                        code="record_control_capture_mismatch",
+                        message=(
+                            "The requested recording is no longer active; "
+                            "nothing was stopped."
+                        ),
+                        details={
+                            "capture_id": expected_capture_id,
+                            "active_capture_id": last.capture_id,
+                        },
+                    )
+                return last
 
             capture_id = active.capture_id
             stopping = self._store.update_capture(

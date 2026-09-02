@@ -28,7 +28,7 @@ import pytest
 from api_orchestrator.app_factory import create_orchestrator_app
 from api_orchestrator.layout import MAX_LABEL_BYTES, DataLayout
 from api_orchestrator.models import Capture, CaptureState
-from conftest import FakeRecorder
+from conftest import FakeRecorder, stop_owned
 from fastapi.testclient import TestClient
 from kairos_common import Settings
 
@@ -298,7 +298,7 @@ class TestRecordingLabelsAreBounded:
             json={"topics": ["/joint_states"], "operator": "田中", "task": "掴む"},
         )
         assert started.status_code == 200, started.text
-        assert client.post("/api/v1/record/stop").status_code == 200
+        assert stop_owned(client).status_code == 200
 
 
 class TestEpisodesRecordedAfterARebuild:
@@ -312,7 +312,7 @@ class TestEpisodesRecordedAfterARebuild:
             started = client.post(
                 "/api/v1/record/start", json={"topics": ["/joint_states"]}
             ).json()
-            client.post("/api/v1/record/stop")
+            stop_owned(client)
             saved = client.patch(
                 f"/api/v1/captures/{started['capture_id']}/review",
                 json={

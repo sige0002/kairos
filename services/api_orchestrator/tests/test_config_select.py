@@ -17,6 +17,7 @@ from pathlib import Path
 import httpx
 from api_orchestrator.app_factory import create_orchestrator_app
 from api_orchestrator.models import Capture, CaptureState
+from conftest import stop_owned
 from fastapi.testclient import TestClient
 from kairos_common import Settings
 
@@ -421,7 +422,7 @@ def test_start_payload_carries_the_live_qos_patterns(
                 "depth": 5,
             }
         ]
-        c.post("/api/v1/record/stop")
+        assert stop_owned(c).status_code == 200
         # Switching back to the override-free option must ASSERT emptiness (an
         # empty list, not an absent field): "no overrides" has to supersede a
         # stale file on the recorder's side too.

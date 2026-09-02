@@ -272,9 +272,11 @@ function mockFetch() {
     if (url.includes('/config/robots/')) {
       return Promise.resolve(jsonResponse(ROBOT_CONFIG_TEMPLATE));
     }
-    if (url.includes('/record/stop')) {
+    if (url.includes('/record/force-stop')) {
       recordState = 'created';
-      return Promise.resolve(jsonResponse({ run_id: 'run_x', state: 'completed' }));
+      return Promise.resolve(
+        jsonResponse({ run_id: 'run_x', capture_id: 'cap_x', state: 'completed' }),
+      );
     }
     if (url.includes('/record/status')) {
       const live = recordState === 'created' ? [] : ['cap_x'];
@@ -608,11 +610,14 @@ test('activating a robot while recording confirms first, then stops and switches
   expect(dialog).toHaveTextContent('A capture is live');
   expect(dialog).toHaveTextContent('Switching robots will stop it');
   expect(selectPosts()).toHaveLength(0);
-  expect(postsTo('/record/stop')).toHaveLength(0);
+  expect(postsTo('/record/force-stop')).toHaveLength(0);
 
-  // Stop & switch: POST /record/stop, then POST /config/select {robot}.
+  // Stop & switch explicitly recovers the active capture, then selects robot.
   fireEvent.click(screen.getByRole('button', { name: 'Stop & switch' }));
-  await waitFor(() => expect(postsTo('/record/stop')).toHaveLength(1));
+  await waitFor(() => expect(postsTo('/record/force-stop')).toHaveLength(1));
+  expect(postsTo('/record/force-stop')[0]?.[1]).toEqual(
+    expect.objectContaining({ body: JSON.stringify({ capture_id: 'cap_x' }) }),
+  );
   await waitFor(() =>
     expect(selectPosts()).toContainEqual({ category: 'robot', id: 'template' }),
   );
@@ -643,7 +648,7 @@ test('stop & switch waits out a flushing recorder before selecting', async () =>
   let statusAfterStop = 0;
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
     const url = String(input);
-    if (url.includes('/record/stop')) {
+    if (url.includes('/record/force-stop')) {
       stopped = true;
       return Promise.resolve(
         jsonResponse({

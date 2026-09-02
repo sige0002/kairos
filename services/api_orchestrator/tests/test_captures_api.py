@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 from api_orchestrator.models import Batch, Capture, CaptureState
 from api_orchestrator.store import CaptureStore
-from conftest import FakeRecorder, run_digests
+from conftest import FakeRecorder, run_digests, stop_owned
 from fastapi.testclient import TestClient
 from kairos_common.capture_sidecars import read_record
 from kairos_common.ids import new_capture_id
@@ -90,7 +90,7 @@ class TestDetail:
     ) -> None:
         client.post("/api/v1/record/start", json={"topics": ["/joint_states"]})
         capture_id = fake_recorder.capture_id
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
         run_digests(client)
         client.patch(
             f"/api/v1/captures/{capture_id}/review",
@@ -110,7 +110,7 @@ class TestDetail:
     ) -> None:
         client.post("/api/v1/record/start", json={"topics": ["/joint_states"]})
         capture_id = fake_recorder.capture_id
-        client.post("/api/v1/record/stop")
+        stop_owned(client)
 
         body = client.get(f"/api/v1/captures/{capture_id}").json()
         # It pointed at the dataset_export pipeline, which §6 retired along with

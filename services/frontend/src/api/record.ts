@@ -39,8 +39,24 @@ export function prepareRecord(
   });
 }
 
-export function stopRecord(): Promise<Capture> {
-  return apiPost<Capture>('/record/stop', {}, { timeoutMs: STOP_TIMEOUT_MS });
+export function stopRecord(captureId: string): Promise<Capture> {
+  return apiPost<Capture>(
+    '/record/stop',
+    { capture_id: captureId },
+    { timeoutMs: STOP_TIMEOUT_MS },
+  );
+}
+
+export function takeOverRecord(captureId: string): Promise<void> {
+  return apiPost<void>('/record/takeover', { capture_id: captureId });
+}
+
+export function forceStopRecord(captureId: string): Promise<Capture> {
+  return apiPost<Capture>(
+    '/record/force-stop',
+    { capture_id: captureId },
+    { timeoutMs: STOP_TIMEOUT_MS },
+  );
 }
 
 export function getRecordStatus(opts: RequestOptions = {}): Promise<RecordStatus> {

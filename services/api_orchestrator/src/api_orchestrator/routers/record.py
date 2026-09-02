@@ -15,14 +15,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 
 from api_orchestrator.deps import get_record_service
 from api_orchestrator.models import (
     Capture,
     RecordPrepareResponse,
     RecordStartRequest,
+    RecordStopRequest,
 )
+from api_orchestrator.record_control import CONTROL_COOKIE, RecordControlService
 from api_orchestrator.record_service import RecordService
 
 router = APIRouter(prefix="/api/v1/record", tags=["record"])
@@ -54,6 +56,7 @@ async def record_prepare(
 async def record_start(
     body: RecordStartRequest,
     request: Request,
+    response: Response,
     service: RecordService = Depends(get_record_service),
 ) -> Capture:
     """Start recording and file the capture the recorder minted.
@@ -66,29 +69,107 @@ async def record_start(
     audio = request.app.state.audio_feedback
     audio.reserve_for_recording()
     try:
-        return await service.start(body)
+        control: RecordControlService = request.app.state.record_control
+        # Start and lease issuance form one operation.  Without this, a
+        # force-stop could run after the recorder starts but before this
+        # browser is issued its controller cookie.
+        async with control.operation_lock:
+            capture = await service.start(body)
+            if capture.capture_id and str(capture.state) == "recording":
+                token: str = control.issue_for_start(capture.capture_id)
+                # Session cookie: reloads retain control but closing the browser
+                # session does not create a durable credential.  It is HttpOnly
+                # so page scripts never need to read or persist the token.
+                response.set_cookie(
+                    CONTROL_COOKIE,
+                    token,
+                    httponly=True,
+                    samesite="lax",
+                    path="/api/v1/record",
+                )
+        return capture
     finally:
         audio.release_recording_reservation()
 
 
 @router.post("/stop", response_model=Capture)
 async def record_stop(
+    body: RecordStopRequest,
+    request: Request,
     service: RecordService = Depends(get_record_service),
 ) -> Capture:
-    """Stop the active recording and finalize the run as ``completed``.
+    """Normally stop the named recording owned by this browser session.
 
-    Also cancels a still-armed ``prepare`` (nothing started): the recorder is
-    told to disarm rather than sitting armed — and holding its DDS
-    subscriptions — until its own timeout. A cancelled prepare has no capture
-    row, so the response is the same as any other no-op stop: the most recent
-    capture, or ``404`` when nothing has ever been recorded.
+    A pre-armed session has no browser-owned capture yet and is deliberately
+    not a normal-stop target.  Recorder maintenance/reconciliation uses the
+    separate system-stop boundary to disarm it when necessary.
     """
-    return await service.stop()
+    control: RecordControlService = request.app.state.record_control
+    async with control.operation_lock:
+        control.require(body.capture_id, request.cookies.get(CONTROL_COOKIE))
+        # Retain this terminal capture's lease until the next start overwrites
+        # it. If the successful response is lost, the same browser can safely
+        # retry this capture-bound idempotent stop instead of receiving 409.
+        return await service.stop_capture(body.capture_id)
+
+
+@router.post("/takeover")
+async def record_takeover(
+    body: RecordStopRequest,
+    request: Request,
+    response: Response,
+    service: RecordService = Depends(get_record_service),
+) -> dict[str, object]:
+    """Explicitly transfer control of the live named capture to this browser."""
+    control: RecordControlService = request.app.state.record_control
+    async with control.operation_lock:
+        await service.ensure_active_capture(body.capture_id)
+        token = control.take_over(body.capture_id)
+    response.set_cookie(
+        CONTROL_COOKIE,
+        token,
+        httponly=True,
+        samesite="lax",
+        path="/api/v1/record",
+    )
+    return {
+        "capture_id": body.capture_id,
+        "controlled_by_this_client": True,
+        "lease_known": True,
+    }
+
+
+@router.post("/force-stop", response_model=Capture)
+async def record_force_stop(
+    body: RecordStopRequest,
+    request: Request,
+    service: RecordService = Depends(get_record_service),
+) -> Capture:
+    """Emergency recovery stop for a named live capture, bypassing a lease.
+
+    This remains a trusted-LAN operational escape hatch.  The UI requires a
+    separate confirmation and labels it as emergency recovery; it is not the
+    normal Stop action.
+    """
+    control: RecordControlService = request.app.state.record_control
+    async with control.operation_lock:
+        capture = await service.stop_capture(body.capture_id)
+        control.clear_if(capture.capture_id)
+        return capture
 
 
 @router.get("/status")
 async def record_status(
+    request: Request,
     service: RecordService = Depends(get_record_service),
 ) -> dict[str, Any]:
     """Proxy the recorder's ``GET /record/status``."""
-    return await service.status()
+    status = await service.status()
+    active_capture = status.get("capture_id")
+    if status.get("state") not in {"recording", "stopping"}:
+        active_capture = None
+    status["control"] = request.app.state.record_control.status(
+        active_capture if isinstance(active_capture, str) else None,
+        request.cookies.get(CONTROL_COOKIE),
+    )
+    return status

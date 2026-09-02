@@ -12,9 +12,9 @@ import { stopRecord } from '../../../api/record';
 import type { Capture } from '../../../api/types';
 import { confirmRecorderStopped } from '../../captures/stopConfirm';
 
-export function useStopAndConfirm(): () => Promise<Capture> {
-  return useCallback(async () => {
-    const capture = await stopRecord();
+export function useStopAndConfirm(): (captureId: string) => Promise<Capture> {
+  return useCallback(async (captureId: string) => {
+    const capture = await stopRecord(captureId);
     await confirmRecorderStopped(capture?.capture_id ?? null);
     return capture;
   }, []);
