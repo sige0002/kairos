@@ -73,6 +73,7 @@ from rosbag2_recorder.arming import RECORDER_NODE_NAME as RECORDER_NODE_NAME
 from rosbag2_recorder.models import (
     QosProfile,
     RecordArming,
+    RecordDisarmResponse,
     RecordPrepareResponse,
     RecordStartRequest,
     RecordStatusResponse,
@@ -1694,6 +1695,34 @@ class RecorderSession:
         # Join the watcher outside the lock (it self-skips if we are it).
         self._stop_size_watcher()
         return status
+
+    def disarm_if_armed(self, expected_capture_id: str) -> RecordDisarmResponse:
+        """Disarm only the current armed session with ``expected_capture_id``.
+
+        This compare-and-disarm command is deliberately separate from
+        :meth:`stop`: an intervening start may have promoted the same capture
+        to ``recording``.  State and id are checked while holding the session
+        lock, so a stale caller only receives current status and cannot signal
+        or otherwise mutate the later session.
+        """
+        with self._lock:
+            armed = self._armed
+            if (
+                self._state is not RunState.armed
+                or armed is None
+                or armed.capture_id != expected_capture_id
+            ):
+                return RecordDisarmResponse(
+                    disarmed=False, **self._status_locked().model_dump()
+                )
+
+            self._disarm_locked()
+            return RecordDisarmResponse(
+                disarmed=True,
+                **self._status_locked(
+                    disarmed_capture_id=expected_capture_id
+                ).model_dump(),
+            )
 
     def _start_reaper_locked(
         self, process: subprocess.Popen[bytes], ended_at: str

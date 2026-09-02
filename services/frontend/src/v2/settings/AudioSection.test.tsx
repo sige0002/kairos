@@ -9,6 +9,7 @@ import {
   getAudioSettings,
   setAudioSettings,
 } from '../audio/settings';
+import { assetKey, phraseFor } from '../audio/phrases';
 import { __resetPlansStore, getFailReasons, setFailReasons } from '../plans';
 import { AudioSection } from './AudioSection';
 
@@ -59,6 +60,7 @@ test('audio is off by default and global controls remain independent', async () 
 
 test('preparing Japanese assets includes configured failure reason text', async () => {
   let posted: {
+    release_prearm: boolean;
     phrases: { key: string; text: string; language: string; speed: number }[];
   } | null = null;
   vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
@@ -87,6 +89,7 @@ test('preparing Japanese assets includes configured failure reason text', async 
   fireEvent.click(prepare);
 
   await waitFor(() => expect(posted).not.toBeNull());
+  expect(posted!.release_prearm).toBe(true);
   expect(posted!.phrases.some((phrase) => phrase.text === 'Grasp missed')).toBe(true);
   expect(posted!.phrases.find((phrase) => phrase.key.startsWith('start:'))?.text).toBe(
     '録画開始',
@@ -96,6 +99,46 @@ test('preparing Japanese assets includes configured failure reason text', async 
   );
   expect(posted!.phrases.every((phrase) => phrase.language === 'ja')).toBe(true);
   expect(posted!.phrases.every((phrase) => phrase.speed === 1)).toBe(true);
+});
+
+test('partial preparation reports the exact ready count', async () => {
+  vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
+    if (String(input).includes('/audio/status'))
+      return Promise.resolve(
+        jsonResponse({
+          available: true,
+          engine: 'kokoro-82m',
+          model_revision: 'revision',
+          voices: { en: ['af_heart'], ja: ['jf_alpha'] },
+        }),
+      );
+    return Promise.resolve(
+      jsonResponse({
+        available: true,
+        engine: 'kokoro-82m',
+        model_revision: 'revision',
+        assets: [
+          {
+            key: assetKey('start', phraseFor('start', 'en')),
+            asset_id: 'start',
+            url: '/start.wav',
+          },
+        ],
+        errors: ['Voice generation was preempted because recording took priority'],
+        deferred: true,
+      }),
+    );
+  });
+  renderWithClient(<AudioSection />);
+
+  const prepare = screen.getByRole('button', { name: 'Prepare voice assets' });
+  await waitFor(() => expect(prepare).toBeEnabled());
+  fireEvent.click(prepare);
+
+  expect(await screen.findByTestId('audio-asset-readiness')).toHaveTextContent(
+    /1 of \d+ voice assets ready/i,
+  );
+  expect(screen.getByRole('status')).toHaveTextContent(/preparation was interrupted/i);
 });
 
 test('sound preview keeps its Web Audio player alive until Settings unmounts', async () => {
@@ -387,7 +430,7 @@ test('voice preview reports preparation in progress instead of not prepared', as
   ).toHaveTextContent('Wait…');
 });
 
-test('recording deferral names the reason and recovery instead of skipped phrases', async () => {
+test('recording deferral gives a stable retry path instead of leaking server text', async () => {
   vi.spyOn(globalThis, 'fetch').mockImplementation((input) => {
     if (String(input).includes('/audio/status'))
       return Promise.resolve(
@@ -415,7 +458,7 @@ test('recording deferral names the reason and recovery instead of skipped phrase
 
   expect(
     await screen.findByText(
-      /deferred while recording is active.*Retry after recording stops/,
+      /preparation was interrupted because recording became ready or started.*Retry when no other terminal/i,
     ),
   ).toBeVisible();
 });

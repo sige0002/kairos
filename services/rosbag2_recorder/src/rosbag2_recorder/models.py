@@ -213,6 +213,17 @@ class RecordPrepareResponse(BaseModel):
     disarm_at: str | None = None
 
 
+class RecordDisarmRequest(BaseModel):
+    """Body of ``POST /record/disarm``.
+
+    This is a compare-and-disarm command for a two-phase ``armed`` session.
+    The recorder changes state only when this id still names its current armed
+    session; a session that has started or been replaced is left untouched.
+    """
+
+    expected_capture_id: str = Field(min_length=1)
+
+
 class RecordStartResponse(BaseModel):
     """Body of a successful ``POST /record/start`` (201)."""
 
@@ -274,3 +285,14 @@ class RecordStatusResponse(BaseModel):
     # "ok" (no overflow) | "dropped" (cache lost messages) | "failed" | "unknown".
     dropped_messages: int | None = None
     integrity: str = "unknown"
+
+
+class RecordDisarmResponse(RecordStatusResponse):
+    """Result of an atomic conditional armed-session disarm.
+
+    ``disarmed`` is false when the expected capture was no longer the current
+    armed session.  In that case the included status is observational only and
+    no recorder state was changed.
+    """
+
+    disarmed: bool

@@ -124,6 +124,9 @@ export function AudioSection() {
     () => phrasesFor(settings, failureReasons),
     [failureReasons, settings],
   );
+  const readyAssetCount = phrases.filter(
+    (phrase) => settings.assets[phrase.key],
+  ).length;
   const prepare = useMutation({
     mutationFn: (request: {
       language: typeof settings.language;
@@ -162,9 +165,7 @@ export function AudioSection() {
       });
       setMessage(
         result.deferred
-          ? t('audio.prepareDeferred', {
-              reason: result.errors[0] ?? t('audio.prepareDeferredDefault'),
-            })
+          ? t('audio.prepareInterrupted')
           : phraseSetChanged
             ? acceptedAssets.length
               ? t('audio.assetsReadyReasonsChanged', {
@@ -179,7 +180,10 @@ export function AudioSection() {
                       count: result.errors.length,
                     })
                   : `${result.errors[0] ?? t('audio.noAssets')}`
-                : t('audio.ready')
+                : t('audio.assetsReady', {
+                    ready: String(acceptedAssets.length),
+                    total: String(request.phrases.length),
+                  })
               : t('audio.engineUnavailable'),
       );
     },
@@ -471,6 +475,23 @@ export function AudioSection() {
                 voice: VOICE_LABELS[settings.voiceName] ?? settings.voiceName,
               })}
             </span>
+          ) : null}
+        </div>
+        <div
+          data-testid="audio-asset-readiness"
+          className={cn(
+            'rounded-control border px-3 py-2 text-[12px]',
+            readyAssetCount === phrases.length
+              ? 'border-accent bg-interaction-selected text-accent'
+              : 'border-status-warning-border bg-status-warning-bg text-status-warning-text',
+          )}
+        >
+          {t('audio.assetReadiness', {
+            ready: String(readyAssetCount),
+            total: String(phrases.length),
+          })}
+          {readyAssetCount < phrases.length ? (
+            <span className="mt-1 block">{t('audio.assetReadinessHelp')}</span>
           ) : null}
         </div>
       </div>

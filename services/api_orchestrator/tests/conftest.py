@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -133,6 +133,11 @@ class FakeRecorder:
         # ids were fixed at first arm time.
         self.prepare_extend_run_id: str | None = None
         self.stop_call_count: int = 0
+        self.conditional_disarm_call_count: int = 0
+        # Optional deterministic interleaving just before the recorder checks
+        # the expected armed capture. Tests use it to model a concurrent start
+        # without relying on scheduler timing.
+        self.before_conditional_disarm: Callable[[], None] | None = None
 
     # ---- dispatch ----------------------------------------------------------
 
@@ -148,6 +153,8 @@ class FakeRecorder:
             return self._start(request)
         if path == "/record/stop" and request.method == "POST":
             return self._stop()
+        if path == "/record/disarm" and request.method == "POST":
+            return self._conditional_disarm(request)
         if path == "/record/status":
             return self._status()
         if path == "/record/preflight":
@@ -292,6 +299,25 @@ class FakeRecorder:
             body["disarmed_capture_id"] = disarmed
         if self.die_after_stop:
             self.transport_down = True
+        return httpx.Response(200, json=body)
+
+    def _conditional_disarm(self, request: httpx.Request) -> httpx.Response:
+        self.conditional_disarm_call_count += 1
+        expected_capture_id = json.loads(request.content)["expected_capture_id"]
+        if self.before_conditional_disarm is not None:
+            self.before_conditional_disarm()
+
+        disarmed = (
+            self.state == "armed" and self.prepared_capture_id == expected_capture_id
+        )
+        if disarmed:
+            self.prepared_capture_id = None
+            self.prepared_run_id = None
+            self.state = "idle"
+        body = self._status().json()
+        body["disarmed"] = disarmed
+        if disarmed:
+            body["disarmed_capture_id"] = expected_capture_id
         return httpx.Response(200, json=body)
 
     def _finalize(self) -> None:

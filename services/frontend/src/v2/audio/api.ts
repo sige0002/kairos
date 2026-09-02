@@ -33,5 +33,9 @@ export function prepareAudioAssets(
     speed: number;
   }[],
 ): Promise<PreparedAudioAssets> {
-  return apiPost('/audio/assets', { phrases }, { timeoutMs: 600_000 });
+  return apiPost(
+    '/audio/assets',
+    { phrases, release_prearm: true },
+    { timeoutMs: 600_000 },
+  );
 }

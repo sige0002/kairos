@@ -66,6 +66,18 @@ const STORAGE_KEY = 'kairos.audio-feedback.v2';
 let snapshot = load();
 const listeners = new Set<() => void>();
 
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (event) => {
+    if (event.key !== STORAGE_KEY || event.storageArea !== window.localStorage) return;
+    try {
+      snapshot = normalizeSettings(JSON.parse(event.newValue ?? 'null'));
+    } catch {
+      snapshot = structuredClone(DEFAULT_AUDIO_SETTINGS);
+    }
+    listeners.forEach((listener) => listener());
+  });
+}
+
 function clampVolume(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value)
     ? Math.max(0, Math.min(1, value))
@@ -134,11 +146,7 @@ function normalizeSettings(value: unknown): AudioSettings {
     speechRate: clampSpeechRate(raw.speechRate),
     language,
     voiceName:
-      rawVoice && !legacyVoice
-        ? rawVoice
-        : language === 'ja'
-          ? 'jf_alpha'
-          : 'af_heart',
+      rawVoice && !legacyVoice ? rawVoice : language === 'ja' ? 'jf_alpha' : 'af_heart',
     preparedEngine:
       typeof raw.preparedEngine === 'string' && !legacyEngine
         ? raw.preparedEngine

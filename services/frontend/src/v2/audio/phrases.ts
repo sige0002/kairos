@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 Sadasue Yuki
 
-import type { AudioFeedbackEvent, AudioLanguage } from './settings';
+import {
+  AUDIO_EVENTS,
+  type AudioFeedbackEvent,
+  type AudioLanguage,
+  type AudioSettings,
+} from './settings';
 
 const PHRASES: Record<
   AudioLanguage,
@@ -41,4 +46,17 @@ export function assetKey(event: AudioFeedbackEvent, phrase: string): string {
   let hash = 2166136261;
   for (const char of phrase) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
   return `${event}:${(hash >>> 0).toString(16)}`;
+}
+
+export function requiredVoiceAssetKeys(
+  settings: AudioSettings,
+  failureReasons: string[],
+): string[] {
+  if (!settings.voice) return [];
+  return AUDIO_EVENTS.flatMap((event) => {
+    if (!settings.events[event].voice) return [];
+    if (event === 'failure_reason')
+      return failureReasons.map((reason) => assetKey(event, reason));
+    return [assetKey(event, phraseFor(event, settings.language))];
+  });
 }

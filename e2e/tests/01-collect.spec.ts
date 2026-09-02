@@ -63,7 +63,14 @@ test('§13-1 Collect: recording sounds are explicit, opt-in and browser-local', 
   await expect(menu.getByRole('button', { name: 'Warning' })).toBeEnabled();
 
   await page.reload();
-  await expect(toggle).toHaveAttribute('aria-label', 'Recording sounds on');
+  await expect(toggle).toHaveAttribute(
+    'aria-label',
+    'Recording sounds incomplete',
+  );
+  await toggle.click();
+  await expect(page.getByTestId('recording-sounds-menu')).toContainText(
+    'Some voice cues are not prepared. Open Settings > Audio and prepare voice assets.',
+  );
 });
 
 test('§13-1 Collect: a recording made in the UI appears in the UI and its digest completes', async ({

@@ -745,6 +745,22 @@ class RecordService:
         """Stop exactly ``capture_id`` or fail before touching the recorder."""
         return await self._stop(expected_capture_id=capture_id)
 
+    async def disarm_prepared(self, capture_id: str) -> bool:
+        """Release exactly one unstarted armed session.
+
+        Audio preparation uses this narrow system boundary after an explicit
+        operator request.  It can never stop a recording: if the recorder has
+        moved past ``armed`` or its capture changed, the caller gets ``False``
+        and must defer its lower-priority work.
+        """
+        async with self._lifecycle_lock:
+            result = await self._recorder.disarm_if_armed(capture_id)
+            if result.get("disarmed") is not True:
+                return False
+            if self._prepared is not None and self._prepared.capture_id == capture_id:
+                self._prepared = None
+            return True
+
     async def ensure_active_capture(self, capture_id: str) -> None:
         """Verify takeover targets the live recorder session, not stale UI."""
         async with self._lifecycle_lock:

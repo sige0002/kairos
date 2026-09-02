@@ -2367,6 +2367,51 @@ def test_stop_while_armed_disarms(
     assert stopped.live_capture_ids == []
 
 
+def test_conditional_disarm_releases_only_the_exact_armed_session(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    session = _make_session(settings, fake_process, write_metadata)
+    prepared = session.prepare(_start_req("run_conditional"))
+
+    result = session.disarm_if_armed(prepared.capture_id)
+
+    assert result.disarmed is True
+    assert result.disarmed_capture_id == prepared.capture_id
+    assert result.state is RunState.created
+    assert not capture_dir(settings.data_dir, prepared.capture_id).exists()
+
+
+def test_conditional_disarm_never_stops_a_same_capture_that_started(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    session = _make_session(settings, fake_process, write_metadata)
+    prepared = session.prepare(_start_req("run_advanced"))
+    started = session.start(_start_req("run_advanced"))
+
+    result = session.disarm_if_armed(prepared.capture_id)
+
+    assert result.disarmed is False
+    assert result.state is RunState.recording
+    assert result.capture_id == started.capture_id == prepared.capture_id
+    assert capture_dir(settings.data_dir, prepared.capture_id).exists()
+
+
+def test_conditional_disarm_never_stops_a_changed_capture(
+    settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
+) -> None:
+    session = _make_session(settings, fake_process, write_metadata)
+    prepared = session.prepare(_start_req("run_old", topics=["/old"]))
+    started = session.start(_start_req("run_new", topics=["/new"]))
+
+    result = session.disarm_if_armed(prepared.capture_id)
+
+    assert result.disarmed is False
+    assert result.state is RunState.recording
+    assert result.capture_id == started.capture_id
+    assert started.capture_id != prepared.capture_id
+    assert capture_dir(settings.data_dir, started.capture_id).exists()
+
+
 def test_stop_while_armed_restores_previous_completed_status(
     settings: Settings, fake_process: type, write_metadata: Callable[..., Path]
 ) -> None:

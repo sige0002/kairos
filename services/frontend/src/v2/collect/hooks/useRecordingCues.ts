@@ -12,7 +12,8 @@ import {
   type RecordingCueKind,
   type RecordingCuePlayer,
 } from '../recordingCues';
-import { assetKey, phraseFor } from '../../audio/phrases';
+import { assetKey, phraseFor, requiredVoiceAssetKeys } from '../../audio/phrases';
+import { useFailReasons } from '../../plans';
 import {
   getAudioSettings,
   setAudioSettings,
@@ -31,6 +32,7 @@ const DEFAULT_VOLUME = 0.45;
 export type RecordingCuePlaybackState =
   | 'disabled'
   | 'ready'
+  | 'incomplete'
   | 'blocked'
   | 'unsupported';
 
@@ -96,16 +98,27 @@ export function useRecordingCues({
   player?: RecordingCuePlayer;
 }) {
   const audioSettings = useAudioSettings();
+  const failureReasons = useFailReasons();
   const playerRef = useRef<RecordingCuePlayer | null>(null);
   playerRef.current ??= suppliedPlayer ?? createRecordingCuePlayer();
   const player = playerRef.current;
   const initialRef = useRef<StoredSettings | null>(null);
   initialRef.current ??= readSettings();
   const enabled = player.supported && audioSettings.master;
+  const voiceAssetsMissing = requiredVoiceAssetKeys(audioSettings, failureReasons).some(
+    (key) => !audioSettings.assets[key],
+  );
+  const voiceAssetsIncomplete = enabled && voiceAssetsMissing;
   const volume =
     audioSettings.version === 2 ? audioSettings.volume : initialRef.current.volume;
   const [playbackState, setPlaybackState] = useState<RecordingCuePlaybackState>(
-    !player.supported ? 'unsupported' : enabled ? 'ready' : 'disabled',
+    !player.supported
+      ? 'unsupported'
+      : enabled
+        ? voiceAssetsIncomplete
+          ? 'incomplete'
+          : 'ready'
+        : 'disabled',
   );
   const mountedRef = useRef(true);
 
@@ -118,13 +131,24 @@ export function useRecordingCues({
 
   useEffect(() => () => player.dispose?.(), [player]);
 
+  useEffect(() => {
+    setPlaybackState((current) => {
+      if (!player.supported) return 'unsupported';
+      if (!enabled) return 'disabled';
+      if (current === 'blocked') return current;
+      return voiceAssetsIncomplete ? 'incomplete' : 'ready';
+    });
+  }, [enabled, player.supported, voiceAssetsIncomplete]);
+
   const play = useCallback(
     async (kind: RecordingCueKind) => {
       if (!enabled || !player.supported) return;
       const played = await player.play(kind, volume);
-      setPlaybackState(played ? 'ready' : 'blocked');
+      setPlaybackState(
+        played ? (voiceAssetsIncomplete ? 'incomplete' : 'ready') : 'blocked',
+      );
     },
-    [enabled, player, volume],
+    [enabled, player, voiceAssetsIncomplete, volume],
   );
 
   const setEnabled = useCallback(
@@ -145,10 +169,14 @@ export function useRecordingCues({
       }
       void player
         .unlock()
-        .then((unlocked) => setPlaybackState(unlocked ? 'ready' : 'blocked'));
+        .then((unlocked) =>
+          setPlaybackState(
+            unlocked ? (voiceAssetsMissing ? 'incomplete' : 'ready') : 'blocked',
+          ),
+        );
       void unlockVoicePlayer();
     },
-    [player, volume],
+    [player, voiceAssetsMissing, volume],
   );
 
   const setVolume = useCallback(
@@ -215,13 +243,20 @@ export function useRecordingCues({
           void player
             .play(cue, live.volume)
             .then((played) => {
-              if (mountedRef.current) setPlaybackState(played ? 'ready' : 'blocked');
+              if (!mountedRef.current) return;
+              const missing = requiredVoiceAssetKeys(live, failureReasons).some(
+                (key) => !live.assets[key],
+              );
+              setPlaybackState(played ? (missing ? 'incomplete' : 'ready') : 'blocked');
             })
             .catch(() => {});
         if (!live.voice || !eventSettings.voice) return;
         const phrase = phraseFor(event, live.language, detail);
         const url = live.assets[assetKey(event, phrase)];
-        if (!url) return;
+        if (!url) {
+          setPlaybackState('incomplete');
+          return;
+        }
         if (priority[event] <= voicePriorityRef.current) return;
         voicePriorityRef.current = priority[event];
         void playVoiceAsset(url, live.volume, () => {
@@ -236,7 +271,7 @@ export function useRecordingCues({
         if (mountedRef.current) setPlaybackState('blocked');
       }
     },
-    [player],
+    [failureReasons, player],
   );
 
   const preview = useCallback(

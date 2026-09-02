@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
@@ -15,6 +15,8 @@ from api_orchestrator.audio_feedback import (
     GenerationDeferred,
     TtsProvider,
 )
+from api_orchestrator.deps import get_record_service
+from api_orchestrator.record_service import RecordService
 
 router = APIRouter(prefix="/api/v1/audio", tags=["audio"])
 
@@ -29,6 +31,7 @@ class PhraseRequest(BaseModel):
 
 class PrepareRequest(BaseModel):
     phrases: list[PhraseRequest] = Field(min_length=1, max_length=64)
+    release_prearm: bool = False
 
 
 @router.get("/status")
@@ -44,7 +47,11 @@ async def get_status(request: Request) -> dict[str, object]:
 
 
 @router.post("/assets")
-async def prepare_assets(body: PrepareRequest, request: Request) -> dict[str, object]:
+async def prepare_assets(
+    body: PrepareRequest,
+    request: Request,
+    record_service: RecordService = Depends(get_record_service),
+) -> dict[str, object]:
     service = request.app.state.audio_feedback
     provider = await asyncio.to_thread(service.ensure_provider)
     if provider is None:
@@ -57,7 +64,9 @@ async def prepare_assets(body: PrepareRequest, request: Request) -> dict[str, ob
             "deferred": False,
         }
     async with request.app.state.audio_request_lock:
-        return await _prepare_assets_serially(body, request, service, provider)
+        return await _prepare_assets_serially(
+            body, request, service, provider, record_service
+        )
 
 
 async def _prepare_assets_serially(
@@ -65,10 +74,12 @@ async def _prepare_assets_serially(
     request: Request,
     service: AudioFeedbackService,
     provider: TtsProvider,
+    record_service: RecordService,
 ) -> dict[str, object]:
     """Serialize only audio work and recheck recorder state after any wait."""
     assets: list[dict[str, str]] = []
     errors: list[str] = []
+    released_prearm = False
     for phrase in body.phrases:
         admission_token = service.admission_token()
         try:
@@ -84,7 +95,15 @@ async def _prepare_assets_serially(
                 ],
                 "deferred": True,
             }
-        if recorder_status.get("state") in {"armed", "recording", "stopping"}:
+        recorder_state = recorder_status.get("state")
+        if recorder_state == "armed" and body.release_prearm and not released_prearm:
+            capture_id = recorder_status.get("capture_id")
+            if isinstance(capture_id, str) and await record_service.disarm_prepared(
+                capture_id
+            ):
+                released_prearm = True
+                recorder_state = "created"
+        if recorder_state in {"armed", "recording", "stopping"}:
             return {
                 "available": True,
                 "engine": provider.name,

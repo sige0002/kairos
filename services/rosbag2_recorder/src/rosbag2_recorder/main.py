@@ -23,6 +23,8 @@ from kairos_common import (
 )
 
 from rosbag2_recorder.models import (
+    RecordDisarmRequest,
+    RecordDisarmResponse,
     RecordPrepareRequest,
     RecordPrepareResponse,
     RecordStartRequest,
@@ -92,6 +94,11 @@ def create_recorder_app() -> FastAPI:
     @app.post("/record/stop", response_model=RecordStatusResponse)
     def record_stop() -> RecordStatusResponse:
         return session.stop()
+
+    @app.post("/record/disarm", response_model=RecordDisarmResponse)
+    def record_disarm(request: RecordDisarmRequest) -> RecordDisarmResponse:
+        """Conditionally release an exact unstarted armed session."""
+        return session.disarm_if_armed(request.expected_capture_id)
 
     @app.get("/record/status", response_model=RecordStatusResponse)
     def record_status() -> RecordStatusResponse:

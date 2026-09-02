@@ -257,6 +257,35 @@ test('master off and per-event sound controls suppress playback', async () => {
   expect(played).toEqual([]);
 });
 
+test('enabled voice with missing assets is exposed as incomplete', () => {
+  setAudioSettings({
+    ...structuredClone(DEFAULT_AUDIO_SETTINGS),
+    master: true,
+    soundEffects: false,
+    voice: true,
+    assets: {},
+  });
+  const { player } = fakePlayer();
+  const { result } = renderHook(() => useRecordingCues({ ...baseSignals, player }));
+
+  expect(result.current.settings.playbackState).toBe('incomplete');
+});
+
+test('a successful sound cue does not hide missing voice assets', async () => {
+  setAudioSettings({
+    ...structuredClone(DEFAULT_AUDIO_SETTINGS),
+    master: true,
+    voice: true,
+    assets: {},
+  });
+  const { player } = fakePlayer();
+  const { result } = renderHook(() => useRecordingCues({ ...baseSignals, player }));
+
+  await act(async () => result.current.emit('success'));
+
+  expect(result.current.settings.playbackState).toBe('incomplete');
+});
+
 test('higher-priority voice interrupts and stale lower-priority voice is dropped', () => {
   const instances: FakeAudio[] = [];
   const playedSources: string[] = [];

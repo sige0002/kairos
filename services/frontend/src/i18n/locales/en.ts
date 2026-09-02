@@ -397,6 +397,8 @@ export const en = {
     soundWarning: 'Warning',
     soundUnsupported: 'Audio is not supported by this browser.',
     soundBlocked: 'The browser blocked audio. Press a Test button to allow it.',
+    soundIncomplete:
+      'Some voice cues are not prepared. Open Settings > Audio and prepare voice assets.',
     soundOn: 'On for this browser.',
     soundOff: 'Off — no recording cues will play.',
     recordingSoundsState: 'Recording sounds {{state}}',
@@ -2393,6 +2395,12 @@ export const en = {
         'Voice selection changed while preparing. Prepare the current voice again.',
       prepareDeferredDefault: 'Voice preparation was deferred.',
       prepareDeferred: '{{reason}} Retry after recording stops.',
+      prepareInterrupted:
+        'Voice preparation was interrupted because recording became ready or started. Retry when no other terminal is preparing or recording.',
+      assetsReady: '{{ready}} of {{total}} voice assets ready.',
+      assetReadiness: '{{ready}} of {{total}} voice assets ready',
+      assetReadinessHelp:
+        'Missing events will not speak. Prepare voice assets again before collection.',
       assetsReadyReasonsChanged:
         'Voice assets ready ({{count}}); failure reasons changed during preparation. Prepare again for the current reasons.',
       assetsReadyPartial_one:

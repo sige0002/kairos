@@ -64,21 +64,26 @@ export function RecordingSoundControl({
   }, [open, unavailable]);
 
   const blocked = settings.playbackState === 'blocked';
+  const incomplete = settings.playbackState === 'incomplete';
   const buttonState = unavailable
     ? 'unavailable'
     : blocked
       ? 'blocked'
-      : settings.enabled
-        ? 'on'
-        : 'off';
+      : incomplete
+        ? 'incomplete'
+        : settings.enabled
+          ? 'on'
+          : 'off';
   const status =
     settings.playbackState === 'unsupported'
       ? t('soundUnsupported')
       : settings.playbackState === 'blocked'
         ? t('soundBlocked')
-        : settings.enabled
-          ? t('soundOn')
-          : t('soundOff');
+        : settings.playbackState === 'incomplete'
+          ? t('soundIncomplete')
+          : settings.enabled
+            ? t('soundOn')
+            : t('soundOff');
 
   return (
     <div className="relative mr-2">
@@ -96,7 +101,7 @@ export function RecordingSoundControl({
         title={t('recordingSoundsTitle', { state: buttonState })}
         className={cn(
           'inline-flex h-8 w-8 items-center justify-center rounded-control border transition-colors',
-          blocked
+          blocked || incomplete
             ? 'border-status-warning-border bg-status-warning-bg text-status-warning-text hover:bg-status-warning-bg'
             : settings.enabled && !unavailable
               ? 'border-accent bg-interaction-selected text-accent hover:bg-interaction-selected'
@@ -211,6 +216,7 @@ export function RecordingSoundControl({
             className={cn(
               'text-[11px] leading-relaxed',
               settings.playbackState === 'blocked' ||
+                settings.playbackState === 'incomplete' ||
                 settings.playbackState === 'unsupported'
                 ? 'font-medium text-status-warning-text'
                 : 'text-text-muted',

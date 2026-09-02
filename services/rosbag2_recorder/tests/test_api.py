@@ -79,6 +79,7 @@ def test_record_routes_are_sync_offloaded(client: TestClient) -> None:
         "/record/preflight",
         "/record/start",
         "/record/stop",
+        "/record/disarm",
         "/record/status",
         "/record/metadata",
         "/readyz",
@@ -165,6 +166,40 @@ def test_stop_while_armed_reports_the_cancelled_capture(client: TestClient) -> N
     # An ordinary stop leaves the field null.
     client.post("/record/start", json={"topics": ["/a"], "run_id": "run_plain"})
     assert client.post("/record/stop").json()["disarmed_capture_id"] is None
+
+
+def test_disarm_only_releases_the_exact_armed_capture(client: TestClient) -> None:
+    armed = client.post(
+        "/record/prepare", json={"topics": ["/a"], "run_id": "run_conditional"}
+    ).json()
+
+    released = client.post(
+        "/record/disarm", json={"expected_capture_id": armed["capture_id"]}
+    )
+
+    assert released.status_code == 200
+    assert released.json()["disarmed"] is True
+    assert released.json()["disarmed_capture_id"] == armed["capture_id"]
+    assert released.json()["live_capture_ids"] == []
+
+
+def test_disarm_never_stops_a_capture_that_already_started(client: TestClient) -> None:
+    armed = client.post(
+        "/record/prepare", json={"topics": ["/a"], "run_id": "run_started"}
+    ).json()
+    started = client.post(
+        "/record/start", json={"topics": ["/a"], "run_id": "run_started"}
+    ).json()
+
+    response = client.post(
+        "/record/disarm", json={"expected_capture_id": armed["capture_id"]}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["disarmed"] is False
+    assert response.json()["state"] == "recording"
+    assert response.json()["capture_id"] == started["capture_id"]
+    assert client.get("/record/status").json()["state"] == "recording"
 
 
 def test_start_all_topics(client: TestClient) -> None:

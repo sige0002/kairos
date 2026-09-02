@@ -103,6 +103,27 @@ def test_preflight_calls_read_only_recorder_endpoint() -> None:
     assert seen == [("GET", "/record/preflight")]
 
 
+def test_conditional_disarm_sends_the_expected_capture_id() -> None:
+    seen: list[tuple[str, str, bytes]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append((request.method, request.url.path, request.content))
+        return httpx.Response(200, json={"disarmed": False, "state": "recording"})
+
+    capture_id = "01983367-c1f6-7000-8000-000000000000"
+    assert asyncio.run(_with_client(handler, "disarm_if_armed", capture_id)) == {
+        "disarmed": False,
+        "state": "recording",
+    }
+    assert seen == [
+        (
+            "POST",
+            "/record/disarm",
+            b'{"expected_capture_id":"01983367-c1f6-7000-8000-000000000000"}',
+        )
+    ]
+
+
 def _captured_read_timeout(call: str, *args: object) -> float | None:
     """Drive one client call and return the read timeout httpx used for it."""
     captured: dict[str, float | None] = {}
@@ -133,6 +154,12 @@ def test_stop_uses_longer_timeout_than_status() -> None:
     assert STOP_TIMEOUT_S > 30  # must exceed the recorder's ~30s STOP_TIMEOUT_S
     assert START_TIMEOUT_S > DEFAULT_TIMEOUT_S  # covers start delay + arming
     assert _captured_read_timeout("stop") == STOP_TIMEOUT_S
+    assert (
+        _captured_read_timeout(
+            "disarm_if_armed", "01983367-c1f6-7000-8000-000000000000"
+        )
+        == STOP_TIMEOUT_S
+    )
     assert _captured_read_timeout("status") == DEFAULT_TIMEOUT_S
     assert _captured_read_timeout("start", {"run_id": "r", "topics": []}) == (
         START_TIMEOUT_S
@@ -217,3 +244,24 @@ def test_stop_does_not_retry_transport_failure() -> None:
 
     assert exc_info.value.status_code == 503
     assert attempts["n"] == 1  # one attempt only (retries=0 for stop)
+
+
+def test_conditional_disarm_does_not_retry_transport_failure() -> None:
+    """A lost response must not repeat a process-termination command."""
+    attempts = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts["n"] += 1
+        raise httpx.ReadTimeout("conditional disarm took too long")
+
+    with pytest.raises(ApiError) as exc_info:
+        asyncio.run(
+            _with_client(
+                handler,
+                "disarm_if_armed",
+                "01983367-c1f6-7000-8000-000000000000",
+            )
+        )
+
+    assert exc_info.value.status_code == 503
+    assert attempts["n"] == 1

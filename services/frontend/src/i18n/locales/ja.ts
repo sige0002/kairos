@@ -405,6 +405,8 @@ export const ja = {
     soundUnsupported: 'このブラウザーは音声をサポートしていません。',
     soundBlocked:
       'ブラウザーが音声をブロックしました。許可するにはテストボタンを押してください。',
+    soundIncomplete:
+      '準備されていない音声があります。設定 > 音声で音声アセットを準備してください。',
     soundOn: 'このブラウザーではオンです。',
     soundOff: 'オフ — 録画キューは再生されません。',
     recordingSoundsState: '録画音 {{state}}',
@@ -2425,6 +2427,12 @@ export const ja = {
         '準備中に話者設定が変わりました。現在の話者でもう一度準備してください。',
       prepareDeferredDefault: '音声アセットの準備は延期されました。',
       prepareDeferred: '{{reason}} 録画が停止してから再試行してください。',
+      prepareInterrupted:
+        '録画の準備または開始が優先されたため、音声準備を中断しました。他の端末が録画準備・録画をしていないときに再試行してください。',
+      assetsReady: '音声アセットを {{ready}} / {{total}} 件準備しました。',
+      assetReadiness: '音声アセット準備状況: {{ready}} / {{total}} 件',
+      assetReadinessHelp:
+        '不足しているイベントは読み上げられません。収録前に音声アセットをもう一度準備してください。',
       assetsReadyReasonsChanged:
         '音声アセットを {{count}} 件準備しました。準備中に失敗理由が変更されました。現在の理由でもう一度準備してください。',
       assetsReadyPartial_one:

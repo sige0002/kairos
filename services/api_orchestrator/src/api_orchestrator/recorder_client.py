@@ -3,7 +3,8 @@
 """Internal HTTP client for the rosbag2_recorder service.
 
 The orchestrator drives the recorder over its internal API (``/record/start``,
-``/record/stop``, ``/record/status``, ``/record/metadata``, ``/healthz``). On
+``/record/stop``, ``/record/disarm``, ``/record/status``, ``/record/metadata``,
+``/healthz``). On
 host networking the recorder binds the host, so the base URL is
 ``http://localhost:{recorder_port}`` (see ``config.md``).
 
@@ -177,6 +178,21 @@ class RecorderClient(BaseServiceClient):
         """
         return await self._request(
             "POST", "/record/stop", timeout=STOP_TIMEOUT_S, retries=0
+        )
+
+    async def disarm_if_armed(self, expected_capture_id: str) -> dict[str, Any]:
+        """Atomically disarm one exact unstarted recorder session.
+
+        The recorder returns ``disarmed: false`` with its current status when
+        the expected capture already started or changed; it never routes that
+        outcome through the broad recording stop operation.
+        """
+        return await self._request(
+            "POST",
+            "/record/disarm",
+            json={"expected_capture_id": expected_capture_id},
+            timeout=STOP_TIMEOUT_S,
+            retries=0,
         )
 
     async def status(self) -> dict[str, Any]:

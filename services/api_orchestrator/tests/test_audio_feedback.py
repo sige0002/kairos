@@ -403,6 +403,174 @@ def test_voice_generation_is_deferred_during_recording(
     assert provider.calls == []
 
 
+def test_voice_generation_can_explicitly_release_prearm(
+    client: TestClient, fake_recorder
+) -> None:
+    provider = FakeTtsProvider()
+    client.app.state.audio_feedback.provider = provider
+    prepared = client.post("/api/v1/record/prepare", json={"topics": ["/joint_states"]})
+    assert prepared.status_code == 200
+    assert fake_recorder.state == "armed"
+
+    response = client.post(
+        "/api/v1/audio/assets",
+        json={
+            "release_prearm": True,
+            "phrases": [
+                {
+                    "key": "success",
+                    "text": "Success",
+                    "language": "en",
+                    "voice": "test-en",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["deferred"] is False
+    assert len(response.json()["assets"]) == 1
+    assert fake_recorder.conditional_disarm_call_count == 1
+    assert fake_recorder.stop_call_count == 0
+    assert provider.calls
+
+
+def test_voice_generation_does_not_release_prearm_without_explicit_request(
+    client: TestClient, fake_recorder
+) -> None:
+    provider = FakeTtsProvider()
+    client.app.state.audio_feedback.provider = provider
+    prepared = client.post("/api/v1/record/prepare", json={"topics": ["/joint_states"]})
+    assert prepared.status_code == 200
+
+    response = client.post(
+        "/api/v1/audio/assets",
+        json={
+            "phrases": [
+                {
+                    "key": "success",
+                    "text": "Success",
+                    "language": "en",
+                    "voice": "test-en",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["deferred"] is True
+    assert fake_recorder.stop_call_count == 0
+    assert provider.calls == []
+
+
+def test_voice_generation_defers_when_prearm_started_before_atomic_disarm(
+    client: TestClient, fake_recorder
+) -> None:
+    provider = FakeTtsProvider()
+    client.app.state.audio_feedback.provider = provider
+    prepared = client.post("/api/v1/record/prepare", json={"topics": ["/joint_states"]})
+    assert prepared.status_code == 200
+    prepared_capture_id = prepared.json()["capture_id"]
+
+    def start_same_capture() -> None:
+        fake_recorder.capture_id = prepared_capture_id
+        fake_recorder.prepared_capture_id = None
+        fake_recorder.prepared_run_id = None
+        fake_recorder.state = "recording"
+
+    fake_recorder.before_conditional_disarm = start_same_capture
+    response = client.post(
+        "/api/v1/audio/assets",
+        json={
+            "release_prearm": True,
+            "phrases": [
+                {
+                    "key": "success",
+                    "text": "Success",
+                    "language": "en",
+                    "voice": "test-en",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["deferred"] is True
+    assert fake_recorder.state == "recording"
+    assert fake_recorder.capture_id == prepared_capture_id
+    assert fake_recorder.stop_call_count == 0
+    assert provider.calls == []
+
+
+def test_voice_generation_defers_when_prearm_changed_before_atomic_disarm(
+    client: TestClient, fake_recorder
+) -> None:
+    provider = FakeTtsProvider()
+    client.app.state.audio_feedback.provider = provider
+    prepared = client.post("/api/v1/record/prepare", json={"topics": ["/joint_states"]})
+    assert prepared.status_code == 200
+    previous_capture_id = prepared.json()["capture_id"]
+    changed_capture_id = "01983367-c1f6-7000-8000-000000000000"
+
+    def start_changed_capture() -> None:
+        fake_recorder.capture_id = changed_capture_id
+        fake_recorder.prepared_capture_id = None
+        fake_recorder.prepared_run_id = None
+        fake_recorder.state = "recording"
+
+    fake_recorder.before_conditional_disarm = start_changed_capture
+    response = client.post(
+        "/api/v1/audio/assets",
+        json={
+            "release_prearm": True,
+            "phrases": [
+                {
+                    "key": "success",
+                    "text": "Success",
+                    "language": "en",
+                    "voice": "test-en",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["deferred"] is True
+    assert fake_recorder.state == "recording"
+    assert fake_recorder.capture_id == changed_capture_id
+    assert fake_recorder.capture_id != previous_capture_id
+    assert fake_recorder.stop_call_count == 0
+    assert provider.calls == []
+
+
+def test_voice_generation_never_releases_an_active_recording(
+    client: TestClient, fake_recorder
+) -> None:
+    provider = FakeTtsProvider()
+    client.app.state.audio_feedback.provider = provider
+    fake_recorder.state = "recording"
+
+    response = client.post(
+        "/api/v1/audio/assets",
+        json={
+            "release_prearm": True,
+            "phrases": [
+                {
+                    "key": "success",
+                    "text": "Success",
+                    "language": "en",
+                    "voice": "test-en",
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["deferred"] is True
+    assert fake_recorder.stop_call_count == 0
+    assert provider.calls == []
+
+
 def test_voice_generation_is_deferred_when_recorder_status_is_unknown(
     client: TestClient, fake_recorder
 ) -> None:

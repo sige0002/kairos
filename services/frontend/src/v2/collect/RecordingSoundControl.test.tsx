@@ -86,7 +86,7 @@ test('the dialog takes focus, closes with Escape and returns focus', () => {
   expect(screen.getByTestId('recording-sounds-toggle')).toHaveFocus();
 });
 
-test('blocked and unsupported playback are not presented as sound-on', () => {
+test('blocked, incomplete, and unsupported playback are not presented as sound-on', () => {
   const base = {
     enabled: true,
     volume: 0.45,
@@ -103,6 +103,20 @@ test('blocked and unsupported playback are not presented as sound-on', () => {
   );
   expect(screen.getByTestId('recording-sounds-toggle')).toHaveAccessibleName(
     'Recording sounds blocked',
+  );
+
+  rerender(
+    <RecordingSoundControl
+      open
+      onToggle={vi.fn()}
+      settings={{ ...base, playbackState: 'incomplete' }}
+    />,
+  );
+  expect(screen.getByTestId('recording-sounds-toggle')).toHaveAccessibleName(
+    'Recording sounds incomplete',
+  );
+  expect(screen.getByTestId('recording-sounds-status')).toHaveTextContent(
+    /voice cues are not prepared/i,
   );
 
   rerender(
