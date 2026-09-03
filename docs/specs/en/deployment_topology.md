@@ -44,8 +44,9 @@ Divide the services into two groups along the **natural boundary** of whether or
 | `dora_runner` | ✗ (reads MCAP with the `mcap` library. CPU-heavy) | **Recording PC** | Validation/conversion is heavy. Do not run it on the robot |
 | `frontend` | ✗ (nginx static + reverse proxy) | **Recording PC** | The browser's single origin |
 
-- The **4 robot-side services** subscribe locally to the robot's DDS graph via **host-networking + ipc:host shared memory**
-  (**zero additional network egress**).
+- The **4 robot-side services** subscribe locally to the robot's DDS graph via **host-networking + ipc:host**.
+  When SHM is effective with Fast DDS, there is no additional network egress. With Cyclone DDS, the shared-LAN profile
+  described below prevents user data from multicast egress onto the physical NIC (local delivery is loopback UDP).
 - The **3 recording-PC-side services** **do not participate in DDS at all**. Therefore, even running them on a separate PC **cannot overload the robot**.
 - **Only lightweight data crosses the boundary**: the monitor's metrics/alerts (JSON/SSE, KB/s), the streamer's
   **already-encoded WebRTC preview** (low rate), and **file sync of recorded MCAP** (not DDS).
@@ -63,9 +64,64 @@ The claim above — "local subscription via ipc:host shared memory = zero additi
 
 **Mitigating while staying on Cyclone (without SHM) — possible with kairos alone:**
 
-1. **Enlarge receive buffers** (the first move against fragment loss): on the host, `sysctl -w net.core.rmem_max=67108864` (raise `rmem_default` too) + specify `<Internal><SocketReceiveBufferSize min="16MB"/></Internal>` in the `CYCLONEDDS_URI` XML (it reaches every ROS service via the `/config` mount; see `CYCLONEDDS_URI` in [config](config.md)).
-2. **Reduce concurrent readers**: while load is critical (e.g. during teleop), reduce readers other than the recorder (the monitor's `POST /metrics/pause`, close previews — they auto-stop after 60 s idle — and don't use the probe). This cuts the number of full copies itself.
-3. **Subscribe to compressed camera topics only** (the default). Don't drag in raw sibling topics via `--all` etc.
+1. **Disable user-data multicast on a shared LAN**: pass `CYCLONEDDS_URI=file:///config/cyclonedds-shared-domain.xml` to all Kairos processes participating in Cyclone. This profile sets `AllowMulticast=spdp` and `ParticipantIndex=none`, leaving participant discovery on the LAN while using unicast for endpoint discovery and user data. **Do not change Fast DDS's global default**; use this explicitly only for installations selecting Cyclone DDS.
+2. **Enlarge receive buffers** (the first move against fragment loss): on the host, `sysctl -w net.core.rmem_max=67108864` (raise `rmem_default` too) + specify `<Internal><SocketReceiveBufferSize min="16MB"/></Internal>` in the `CYCLONEDDS_URI` XML (it reaches every ROS service via the `/config` mount; see `CYCLONEDDS_URI` in [config](config.md)).
+3. **Reduce concurrent readers**: while load is critical (e.g. during teleop), reduce readers other than the recorder (the monitor's `POST /metrics/pause`, close previews — they auto-stop after 60 s idle — and don't use the probe). This cuts the number of full copies itself.
+4. **Subscribe to compressed camera topics only** (the default). Don't drag in raw sibling topics via `--all` etc.
+
+`config/cyclonedds-localhost.xml` is not an enhanced or substitute version of this shared-LAN profile. It is dedicated to the Zenoh gateway configuration in §4 and closes DDS to `lo`; it does not discover directly connected remote RViz2 / ROS subscribers.
+
+### 2.2 Verifying a Cyclone DDS shared-LAN setup on real hardware
+
+Use the same bag, topics, subscriber services, and measurement duration before and after the change. Do not consider the test complete merely because multicast on the physical NIC is zero; record physical-NIC and `lo` bandwidth, host and container CPU, and topic receive rates separately. Because user data changes from one multicast copy to per-reader unicast, loopback/kernel processing, publisher/DDS, memory-copy, and subscriber CPU may increase in exchange for physical-LAN safety. Record this increase transparently in the before/after report.
+
+On the robot, explicitly load the active env used by `make robot-up` (normally `.env.split`, or `.env` if absent), then measure using the interface actually connected to the control LAN and the user-data multicast port observed during reproduction. `make load` does not automatically load all keys from `.env.split`, so skipping this would measure a different endpoint or directory with custom `TOPIC_MONITOR_PORT` / `DATA_DIR`. Use the same active env before and after, changing only the DDS setting being compared (`tcpdump` must always be bounded with `timeout`):
+
+```bash
+export ACTIVE_ENV=.env.split           # Change to .env only for an installation started with .env
+test -r "$ACTIVE_ENV" || exit 1
+set -a
+. "./$ACTIVE_ENV"                     # Export the active env managed by the operator
+set +a
+: "${TOPIC_MONITOR_PORT:=8001}"
+: "${DATA_DIR:=./data}"
+
+export DDS_INTERFACE=enp1s0           # The physical NIC on the actual robot; do not assume eth0
+export CAPTURE_SECONDS=10
+export DDS_USERDATA_PORT=7651         # Match the target domain / packets observed in practice
+export MEASURE_LABEL=baseline          # Use another label such as shared-domain after the change
+test -e "/sys/class/net/$DDS_INTERFACE" || exit 1
+
+# Save CPU, physical NIC, DDS bandwidth, and disk output during the same workload, before and after.
+TOPIC_MONITOR_PORT="$TOPIC_MONITOR_PORT" DATA_DIR="$DATA_DIR" \
+  make load | tee "load-${MEASURE_LABEL}.txt"
+
+# Collect lo and all physical-NIC traffic in the same bounded window (sysstat sar).
+LC_ALL=C sar -n DEV 1 "$CAPTURE_SECONDS" | tee "network-${MEASURE_LABEL}.txt"
+
+# Expected: after shared-domain is applied, zero target user-data packets on the physical NIC.
+sudo timeout "$CAPTURE_SECONDS" tcpdump -i "$DDS_INTERFACE" -nn -q \
+  "udp and dst host 239.255.0.1 and dst port $DDS_USERDATA_PORT" 2>&1 \
+  | tee "multicast-${MEASURE_LABEL}.txt"
+```
+
+With `sar`, compare `$DDS_INTERFACE` and `lo`. Physical-NIC TX returning near the non-Kairos baseline while `lo` increases is expected, but CPU and receive-rate acceptability must be judged separately. A “0 packet” result obtained with the default port without verifying the port in the actual environment is not acceptance evidence.
+
+Also configure a remote host's RViz2 / ROS 2 terminal with the same `ROS_DOMAIN_ID`, `rmw_cyclonedds_cpp`, and shared-LAN profile, and verify discovery and continuous reception of a representative topic:
+
+```bash
+export ROS_DOMAIN_ID=0                # Match the robot
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file:///absolute/path/to/cyclonedds-shared-domain.xml
+export CHECK_TOPIC=/camera/image/compressed
+export CAPTURE_SECONDS=10
+
+ros2 topic list | grep -Fx "$CHECK_TOPIC"
+timeout "$CAPTURE_SECONDS" ros2 topic hz --window 50 "$CHECK_TOPIC"
+rviz2                               # Display the same representative topic and inspect it visually
+```
+
+Do not use `cyclonedds-localhost.xml` on a shared LAN where this direct subscription is required. Also confirm that service health, observability of all target topics, recording count/drop, and representative control-endpoint RTT have not worsened from before the change.
 
 **TBD**: full Cyclone + Iceoryx support (bundling iox-roudi in compose and preparing the XML; note **the robot-side nodes also need SHM enabled**, so kairos alone cannot complete it) is undecided due to the high effort. Where both sides can be unified on Fast DDS, that is the lowest-effort way to make SHM work.
 

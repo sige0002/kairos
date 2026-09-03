@@ -63,7 +63,7 @@
 | `MAX_RECORD_SECONDS` | `600` | 1 録画の wall-clock 上限（秒）。`0`=無効。孤児（zombie）録画のディスク保護バックストップ — タブを閉じても録画は止まらないため、可視の Stop UI が主たる回収で、これは無人時の保険。上限到達の自動停止は orchestrator の遅延 reconciliation により通常の completed として確定する |
 | `DATA_DIR` 直下の**予約名** | — | `objects` / `views` / `.trash` / `.incoming` / `report` / `catalog` / `lifecycle.jsonl` / `instance.json` / `kairos.db`（[capture_store](capture_store.md) §2）。これらと衝突する名前は **`POST /api/v1/datasets` の `name` / `operator` / `task`** に対してのみ `400 reserved_name` で拒否する（その 3 つだけが `views/` のパス構成要素になる）。**録画時の operator / task はパスにならないので対象外。** `objects` / `.trash` / `.incoming` は**同一ファイルシステム**上に無ければならない（起動時に検査し、違反していれば削除系 API が要求ごとに `503` を返す） |
 | `ALERT_CONFIG_PATH` | (任意・既定は空=無効) | `topic_monitor` のアラート定義ファイル（**コンテナ絶対**、規約は `/config/<robot>/monitoring/alerts.yaml`。`config/local/<robot>/...` の override が優先）。空＝アラート無効。`make` は `ROBOT` から自動導出、素の `docker compose` では手で設定 |
-| `CYCLONEDDS_URI` | (任意) | Cyclone DDS の設定ファイル URI（例 `file:///config/cyclonedds.xml`）。クロスホストで multicast discovery が通らない場合に unicast peer を明示するなどに使う。`env_file` 経由でコンテナに渡る（ROS サービスは `/config` を read-only マウント済み） |
+| `CYCLONEDDS_URI` | (任意) | Cyclone DDS の設定ファイル URI。共有 LAN では `file:///config/cyclonedds-shared-domain.xml`、Zenoh ゲートウェイ背後で DDS を localhost に閉じる場合だけ `file:///config/cyclonedds-localhost.xml` を使う。`env_file` 経由でコンテナに渡る（ROS サービスは `/config` を read-only マウント済み） |
 | `HTTP_PROXY` / `HTTPS_PROXY`（および小文字形） | (未設定) | **イメージ build 時**の corporate proxy。設定されていれば全 build サービスへ build arg として渡す。各 build は `network: host` を使うため、ホストから到達できる Zscaler 等の proxy/DNS に BuildKit からも到達できる。これは runtime の `network_mode` を変える設定ではない。ベースイメージの pull は Docker daemon が行うため、必要なら daemon 側にも別途 proxy を設定する。Make は proxy URL を通常出力へ表示しない |
 | `NO_PROXY` / `no_proxy` | `localhost,127.0.0.1` | build arg とコンテナ内 HTTP の両方のプロキシ除外。corporate proxy 配下のホストでは Docker が `HTTP(S)_PROXY` を全コンテナへ注入するため、これが無いとヘルスチェックやサービス間 LAN 呼び出しがプロキシへ吸われて失敗する。クロスホスト分割ではロボット IP を追加する（`.env.split.example` 参照）。orchestrator の内部 httpx クライアントはそもそも `trust_env=False` |
 | `KAIROS_DORA_MAX_CONCURRENCY` | `2` | `dora_runner` が同時実行するジョブ数の上限 |
@@ -89,11 +89,21 @@
 
 ### DDS 実装の切替（Fast DDS ↔ Cyclone DDS）
 
-ROS 2 では**両端（ロボット側と購読側）で同じ RMW 実装**でないと相互通信できない（Fast DDS と Cyclone DDS のクロスベンダ間相互運用は ROS 2 として非対応）。ロボットが Cyclone DDS で publish している場合は、Kairos 側も Cyclone DDS に合わせる。
+Fast DDS と Cyclone DDS は DDS/RTPS レベルで相互運用する場合があるが、discovery、QoS、locator 選択、
+vendor 固有 transport の挙動は構成に依存する。実際のロボット graph で疎通と負荷を確認し、Kairos に Cyclone DDS を
+選ぶ場合は次の安全プロファイルも同時に適用する。
 
-- 3 つの ROS サービス（recorder / monitor / streamer）のイメージには Fast DDS と Cyclone DDS の**両 RMW を同梱**済み。`.env` で `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` を指定して**リビルド不要で切替**できる（既定は `rmw_fastrtps_cpp`）。
+- 4 つの ROS サービス（recorder / monitor / streamer / probe）のイメージには Fast DDS と Cyclone DDS の**両 RMW を同梱**済み。`.env` で切替できるが、**グローバル既定は変更しない**。通常構成は引き続き `RMW_IMPLEMENTATION=rmw_fastrtps_cpp`（Fast DDS）である。
 - 併せて **`ROS_DOMAIN_ID` をロボットと一致**させること（既定 `0`）。
-- 同一ホスト / 同一 LAN で multicast discovery が通る環境なら追加設定は不要。別ホストで discovery が通らない場合は `CYCLONEDDS_URI` で unicast peer を指定する（上表）。
+- Cyclone DDS を通常の共有 LAN で使う場合は、`RMW_IMPLEMENTATION=rmw_cyclonedds_cpp` と
+  `CYCLONEDDS_URI=file:///config/cyclonedds-shared-domain.xml` を**全 Kairos Cyclone 参加プロセス**に設定する。このプロファイルは
+  `AllowMulticast=spdp` で participant discovery の multicast だけを残し、endpoint discovery と user data は
+  unicast にする。`ParticipantIndex=none` により、同一ホスト・同一 domain の多数プロセスで有限の participant-index
+  port 割当も避ける。
+- `config/cyclonedds-localhost.xml` は Zenoh ゲートウェイ構成専用で、DDS を `lo` に固定する。共有 LAN 用プロファイルと
+  置き換えてはいけない。localhost 固定ではリモート RViz2 や素の ROS subscriber は DDS に直接参加できず、ゲートウェイを
+  経由する。一方、共有 LAN 用プロファイルは SPDP discovery を LAN に残すため、同じ `ROS_DOMAIN_ID` のリモート参加者を
+  発見し、topic data を相手ごとの unicast で配送できる。
 - ローカル検証用のテストハーネス（`deploy/test/`、bag 再生でロボット役）も同梱・`RMW_IMPLEMENTATION` で切替可能なので、Cyclone DDS 経路をサンプル bag で疎通確認できる。
 - **同一ホストの共有メモリ（SHM）はベンダ依存**: Fast DDS は `ipc: host`（設定済み）で既定有効。**Cyclone DDS は Iceoryx が別途必要（未同梱）**のため、同一ホストでも各リーダが loopback UDP のフルコピーを受ける。大きなメッセージ（画像）でフラグメント欠落によるエラーが出る場合は、ホスト `net.core.rmem_max` を引き上げ、`CYCLONEDDS_URI` の XML に `<Internal><SocketReceiveBufferSize min="16MB"/></Internal>` を指定して受信バッファを拡大する。詳細と実測確認手順は [deployment_topology](deployment_topology.md) の「単一ホスト SHM の成立条件」。
 

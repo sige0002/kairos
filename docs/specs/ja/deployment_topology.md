@@ -43,8 +43,9 @@ sample あたり 1 回で、ローカル記録と同じ）。**重いデータ�
 | `dora_runner` | ✗（MCAP を `mcap` ライブラリで読む。CPU 重い） | **録画 PC** | 検証/変換は重い。ロボットでは回さない |
 | `frontend` | ✗（nginx 静的 + リバプロ） | **録画 PC** | ブラウザの単一オリジン |
 
-- **ロボット側 4 サービス**は、ロボットの DDS グラフを **host-networking + ipc:host の共有メモリ**で
-  ローカル購読する（**追加の network 流出ゼロ**）。
+- **ロボット側 4 サービス**は、ロボットの DDS グラフを **host-networking + ipc:host** でローカル購読する。
+  Fast DDS で SHM が成立すれば追加の network 流出はない。Cyclone DDS では後述の共有 LAN 用プロファイルで
+  user data の物理 NIC への multicast 流出を防ぐ（ローカル配送は loopback UDP となる）。
 - **録画 PC 側 3 サービス**は **DDS に一切参加しない**。よって別 PC で動かしても**ロボットを圧迫し得ない**。
 - **境界を越えるのは軽量データだけ**: monitor のメトリクス/アラート（JSON/SSE, KB/s）、streamer の
   **既にエンコード済みの WebRTC プレビュー**（低レート）、記録済み **MCAP のファイル同期**（DDS ではない）。
@@ -62,9 +63,79 @@ sample あたり 1 回で、ローカル記録と同じ）。**重いデータ�
 
 **Cyclone のまま（SHM なしで）緩和する — kairos 単独で可能:**
 
-1. **受信バッファの拡大**（フラグメント欠落対策の第一手）: ホストで `sysctl -w net.core.rmem_max=67108864`（`rmem_default` も引き上げ）＋ `CYCLONEDDS_URI` の XML で `<Internal><SocketReceiveBufferSize min="16MB"/></Internal>` を指定（`/config` マウント経由で全 ROS サービスに届く。[config](config.md) の `CYCLONEDDS_URI`）。
-2. **同時リーダの削減**: teleop など負荷が厳しい間は recorder 以外のリーダを減らす（monitor の `POST /metrics/pause`・プレビューを閉じる〔60s idle で自動停止〕・probe を使わない）。フルコピーの本数そのものを減らす。
-3. **カメラは compressed のみ購読**（既定どおり）。raw の兄弟トピックを `--all` 等で巻き込まない。
+1. **共有 LAN で user-data multicast を禁止**: 全 Kairos Cyclone 参加プロセスに
+   `CYCLONEDDS_URI=file:///config/cyclonedds-shared-domain.xml` を渡す。このプロファイルは
+   `AllowMulticast=spdp` と `ParticipantIndex=none` を設定し、participant discovery は LAN に残したまま、endpoint
+   discovery と user data を unicast にする。**Fast DDS のグローバル既定は変更せず**、Cyclone DDS を選んだ設置だけが
+   明示的に使う。
+2. **受信バッファの拡大**（フラグメント欠落対策の第一手）: ホストで `sysctl -w net.core.rmem_max=67108864`（`rmem_default` も引き上げ）＋ `CYCLONEDDS_URI` の XML で `<Internal><SocketReceiveBufferSize min="16MB"/></Internal>` を指定（`/config` マウント経由で全 ROS サービスに届く。[config](config.md) の `CYCLONEDDS_URI`）。
+3. **同時リーダの削減**: teleop など負荷が厳しい間は recorder 以外のリーダを減らす（monitor の `POST /metrics/pause`・プレビューを閉じる〔60s idle で自動停止〕・probe を使わない）。フルコピーの本数そのものを減らす。
+4. **カメラは compressed のみ購読**（既定どおり）。raw の兄弟トピックを `--all` 等で巻き込まない。
+
+`config/cyclonedds-localhost.xml` は、この共有 LAN 用プロファイルの強化版や代替ではない。これは §4 の Zenoh
+ゲートウェイ構成で DDS を `lo` に閉じる専用設定であり、直接接続するリモート RViz2 / ROS subscriber を発見しない。
+
+### 2.2 Cyclone DDS 共有 LAN 構成の実機確認
+
+変更前後で同じ bag、topic、購読サービス、計測時間を使う。物理 NIC の multicast が 0 になったことだけで完了とせず、
+物理 NIC と `lo` の帯域、ホストおよびコンテナ CPU、topic の受信率を別々に記録する。user data が multicast 1 コピーから
+reader ごとの unicast に変わるため、物理 LAN の安全性と引き換えに loopback/kernel 処理、publisher/DDS、memory copy、
+subscriber の CPU が増える場合がある。この増分は隠さず、変更前後レポートに残す。
+
+ロボット上で、`make robot-up` が使った active env（通常は `.env.split`、無ければ `.env`）を明示的に読み込んでから、
+実際に制御 LAN へ接続されたインタフェースと再現時に確認した user-data multicast port を指定して測る。`make load` は
+`.env.split` の全キーを自動では読み込まないため、この手順を省くと custom `TOPIC_MONITOR_PORT` / `DATA_DIR` では別の
+endpoint や directory を測ってしまう。変更前後は同じ active env を使い、比較対象の DDS 設定だけを変更する
+（`tcpdump` は `timeout` で必ず有界にする）:
+
+```bash
+export ACTIVE_ENV=.env.split           # .env で起動した設置だけ .env に変更
+test -r "$ACTIVE_ENV" || exit 1
+set -a
+. "./$ACTIVE_ENV"                     # operator 管理下の active env を export
+set +a
+: "${TOPIC_MONITOR_PORT:=8001}"
+: "${DATA_DIR:=./data}"
+
+export DDS_INTERFACE=enp1s0           # 実機の物理 NIC。eth0 と決め打ちしない
+export CAPTURE_SECONDS=10
+export DDS_USERDATA_PORT=7651         # 対象 domain / 実測パケットに合わせる
+export MEASURE_LABEL=baseline          # 変更後は shared-domain など別名にする
+test -e "/sys/class/net/$DDS_INTERFACE" || exit 1
+
+# 同一 workload 中の CPU、物理 NIC、DDS 帯域、disk。変更前後で出力を保存する。
+TOPIC_MONITOR_PORT="$TOPIC_MONITOR_PORT" DATA_DIR="$DATA_DIR" \
+  make load | tee "load-${MEASURE_LABEL}.txt"
+
+# lo と全物理 NIC の転送量を同じ有界窓で採取する（sysstat の sar）。
+LC_ALL=C sar -n DEV 1 "$CAPTURE_SECONDS" | tee "network-${MEASURE_LABEL}.txt"
+
+# 期待値: shared-domain 適用後は対象 user-data packet が物理 NIC で 0 件。
+sudo timeout "$CAPTURE_SECONDS" tcpdump -i "$DDS_INTERFACE" -nn -q \
+  "udp and dst host 239.255.0.1 and dst port $DDS_USERDATA_PORT" 2>&1 \
+  | tee "multicast-${MEASURE_LABEL}.txt"
+```
+
+`sar` では `$DDS_INTERFACE` と `lo` を比較する。物理 NIC TX が非 Kairos baseline 付近へ戻り、`lo` が増えるのは想定内だが、
+CPU と受信率が受入可能かは別に判定する。port を実環境で確認せず既定値のまま使った「0 packet」は合格根拠にしない。
+
+さらに別ホストの RViz2 / ROS 2 端末にも同じ `ROS_DOMAIN_ID`、`rmw_cyclonedds_cpp`、共有 LAN 用プロファイルを設定し、
+代表 topic の discovery と継続受信を確認する:
+
+```bash
+export ROS_DOMAIN_ID=0                # ロボット側と一致させる
+export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+export CYCLONEDDS_URI=file:///absolute/path/to/cyclonedds-shared-domain.xml
+export CHECK_TOPIC=/camera/image/compressed
+export CAPTURE_SECONDS=10
+
+ros2 topic list | grep -Fx "$CHECK_TOPIC"
+timeout "$CAPTURE_SECONDS" ros2 topic hz --window 50 "$CHECK_TOPIC"
+rviz2                               # 同じ代表 topic を表示して目視確認
+```
+
+この直接購読が必要な共有 LAN では `cyclonedds-localhost.xml` を使わない。サービス health、全対象 topic の observable、
+録画件数・drop、代表制御 endpoint の RTT も変更前から悪化していないことを併せて確認する。
 
 **TBD**: Cyclone + Iceoryx の正式対応（iox-roudi の compose 同梱・XML 整備。ただし**ロボット側ノードにも SHM 有効化が必要**で kairos 単独では完結しない）は高工数のため未定。両側を Fast DDS に統一できる環境では、それが最小工数で SHM を成立させる。
 

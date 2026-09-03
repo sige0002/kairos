@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  kairos — CycloneDDS profile for a normal shared ROS LAN.
+
+  SPDP participant discovery remains multicast so ROS nodes on other hosts can
+  discover this participant. Endpoint discovery and user data use unicast,
+  preventing high-bandwidth ROS payloads from being emitted as multicast onto
+  a shared robot-control LAN.
+
+  This profile intentionally does not select a network interface. CycloneDDS
+  may therefore use routable interfaces and remote ROS/RViz peers. For the
+  gateway topology that must bind DDS exclusively to loopback, use the separate
+  cyclonedds-localhost.xml profile instead.
+-->
+<CycloneDDS xmlns="https://cdds.io/config">
+  <Domain id="any">
+    <General>
+      <AllowMulticast>spdp</AllowMulticast>
+    </General>
+    <Discovery>
+      <ParticipantIndex>none</ParticipantIndex>
+    </Discovery>
+  </Domain>
+</CycloneDDS>
