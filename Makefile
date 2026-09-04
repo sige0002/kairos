@@ -99,6 +99,17 @@ export TZ
 # supply the default (compose resolves the relative path and the fallback).
 BAG ?=
 
+# Read-only live-load benchmark. Results stay under ignored data/ by default;
+# use distinct paths for the before/after runs that perf-compare consumes.
+PERF_SCENARIO ?= deploy/perf/scenarios/replay-monitor-control.json
+PERF_OUTPUT ?= data/perf/result-$(shell date -u +%Y%m%dT%H%M%SZ).json
+PERF_TCPDUMP ?=
+PERF_TCPDUMP_FLAG := $(if $(filter 1 true yes,$(strip $(PERF_TCPDUMP))),--tcpdump,)
+PERF_BASELINE ?=
+PERF_CANDIDATE ?=
+PERF_REPORT ?=
+PERF_REPORT_FLAG := $(if $(strip $(PERF_REPORT)),--output "$(PERF_REPORT)",)
+
 # Ports the access banner advertises (host networking -> these bind on the host).
 # Single source of truth = the pydantic defaults in libs/kairos_common/settings.py,
 # overridable per key via .env — the SAME keys compose interpolates (FRONTEND_PORT
@@ -516,7 +527,7 @@ backup: ## consistent snapshot -> backups/<ts>.tar.gz: DB (.backup) + recordings
 	echo "backup: wrote $$out (restore: docs/specs/en/config.md 'Operations')"
 
 # ---- test-data replay harness ----------------------------------------------
-.PHONY: rosbag rosbag-loop table load smoke smoke-record
+.PHONY: rosbag rosbag-loop table load perf-run perf-compare smoke smoke-record
 rosbag: ## replay a bag under data/ ONCE (BAG=airoa-moma-mcap/000730 to pick another)
 	$(if $(BAG),BAG="$(BAG)") $(TEST_COMPOSE) run --rm rosbag_player
 
@@ -531,6 +542,15 @@ table: ## live table of every topic's Hz/bandwidth (the observable view)
 # the machine, and a NIC's MB/s means nothing without the link speed beside it.
 load: ## load overview: CPU (%/core AND %/machine) + NIC throughput/util + live DDS bandwidth + disk
 	@bash deploy/load.sh
+
+perf-run: ## bounded read-only benchmark (PERF_SCENARIO=... PERF_OUTPUT=... PERF_TCPDUMP=1)
+	python3 deploy/perf/perf_collect.py collect \
+		--scenario "$(PERF_SCENARIO)" --output "$(PERF_OUTPUT)" $(PERF_TCPDUMP_FLAG)
+
+perf-compare: ## compare like-for-like results (PERF_BASELINE=... PERF_CANDIDATE=... PERF_REPORT=...)
+	@test -n "$(PERF_BASELINE)" || { echo "perf-compare: PERF_BASELINE is required" >&2; exit 2; }
+	@test -n "$(PERF_CANDIDATE)" || { echo "perf-compare: PERF_CANDIDATE is required" >&2; exit 2; }
+	python3 deploy/perf/perf_compare.py "$(PERF_BASELINE)" "$(PERF_CANDIDATE)" $(PERF_REPORT_FLAG)
 
 smoke: ## end-to-end smoke test (health -> config -> discovery -> metrics)
 	bash deploy/test/smoke.sh
@@ -549,7 +569,9 @@ test-py: ## run the Python unit-test loop (all services + libs)
 		(cd "$$d" && uv run --extra test pytest -q); \
 	done; \
 	printf '\n### %s\n' "deploy/sync"; \
-	(cd services/api_orchestrator && uv run --extra test pytest -q ../../deploy/sync/tests)
+	(cd services/api_orchestrator && uv run --extra test pytest -q ../../deploy/sync/tests); \
+	printf '\n### %s\n' "deploy/perf"; \
+	(cd services/api_orchestrator && uv run --extra test pytest -q ../../deploy/perf/tests)
 
 test-fe: ## frontend build + test + lint
 	cd services/frontend && npm run build && npm test && npm run lint
@@ -599,10 +621,10 @@ test-e2e-down: ## stop the e2e stack
 	@bash e2e/scripts/stack.sh down
 
 lint: ## ruff check (Python)
-	uvx ruff check libs services
+	uvx ruff check libs services deploy/perf
 
 fmt: ## ruff format (Python)
-	uvx ruff format libs services
+	uvx ruff format libs services deploy/perf
 
 # ---- help -------------------------------------------------------------------
 .PHONY: help
