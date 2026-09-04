@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "scenario_name": "replay-monitor-control",
+  "duration_s": 30.0,
+  "warmup_s": 5.0,
+  "sample_interval_s": 1.0,
+  "services": {
+    "monitor": "running",
+    "streamer": "stopped",
+    "recorder": "stopped",
+    "probe": "stopped"
+  },
+  "monitor_topic_set": "control",
+  "camera_count": 0,
+  "camera_topics": [],
+  "connected_clients": 0,
+  "selected_topics": [
+    "/example/control"
+  ],
+  "preview_layout": "none",
+  "preview_caps": {
+    "max_fps": null,
+    "max_width": null,
+    "max_height": null
+  },
+  "recorder_state": "unavailable",
+  "probe_state": "unavailable",
+  "probe_topic": null,
+  "probe_field": null,
+  "robot_motion": "fixed-replay",
+  "rmw": "rmw_fastrtps_cpp",
+  "transport_evidence": {
+    "cyclonedds_safe_profile": false,
+    "fastdds_shm_verified": false,
+    "reason": "Transport proof must be collected on the measurement host."
+  },
+  "collection": {
+    "mode": "read-only",
+    "containers": [
+      "monitor"
+    ],
+    "service_urls": {
+      "monitor": "http://127.0.0.1:28001/metrics",
+      "recorder": "http://127.0.0.1:28010/record/status"
+    },
+    "tcpdump": {
+      "enabled": false,
+      "interface": null,
+      "multicast_host": null,
+      "port": null
+    }
+  }
+}

@@ -1,0 +1,211 @@
+{
+  "schema_version": "kairos.perf.scenario-matrix/v1",
+  "description": "Copy one row into a local scenario file, fill in local topics and interfaces, establish the state manually, then run the read-only collector.",
+  "safety": {
+    "collector_changes_state": false,
+    "manual_state_transitions_required": true,
+    "tcpdump_is_optional_and_bounded": true,
+    "local_scenarios_may_contain_site_topics": true,
+    "committed_examples_use_generic_names_only": true
+  },
+  "defaults": {
+    "duration_s": 30.0,
+    "warmup_s": 5.0,
+    "sample_interval_s": 1.0,
+    "robot_motion": "fixed-replay",
+    "preview_caps": {
+      "max_fps": 15,
+      "max_width": 854,
+      "max_height": 480
+    },
+    "selected_topics": [
+      "/example/control"
+    ]
+  },
+  "scenarios": [
+    {
+      "scenario_name": "ros-services-stopped",
+      "services": {
+        "monitor": "stopped",
+        "streamer": "stopped",
+        "recorder": "stopped",
+        "probe": "stopped"
+      },
+      "camera_count": 0,
+      "preview_layout": "none",
+      "recorder_state": "unavailable",
+      "probe_state": "unavailable"
+    },
+    {
+      "scenario_name": "monitor-control",
+      "services": {
+        "monitor": "running",
+        "streamer": "stopped",
+        "recorder": "stopped",
+        "probe": "stopped"
+      },
+      "monitor_topic_set": "control",
+      "camera_count": 0,
+      "preview_layout": "none",
+      "recorder_state": "unavailable",
+      "probe_state": "unavailable"
+    },
+    {
+      "scenario_name": "monitor-control-plus-bulk",
+      "services": {
+        "monitor": "running",
+        "streamer": "stopped",
+        "recorder": "stopped",
+        "probe": "stopped"
+      },
+      "monitor_topic_set": "control-plus-bulk",
+      "selected_topics": [
+        "/example/control",
+        "/example/camera/compressed"
+      ],
+      "camera_count": 0,
+      "preview_layout": "none",
+      "recorder_state": "unavailable",
+      "probe_state": "unavailable"
+    },
+    {
+      "scenario_name": "streamer-one-no-client",
+      "services": {
+        "monitor": "stopped",
+        "streamer": "running",
+        "recorder": "stopped",
+        "probe": "stopped"
+      },
+      "camera_count": 1,
+      "camera_topics": [
+        "/example/camera/compressed"
+      ],
+      "connected_clients": 0,
+      "preview_layout": "main-only",
+      "recorder_state": "unavailable",
+      "probe_state": "unavailable"
+    },
+    {
+      "scenario_name": "streamer-wall-no-client",
+      "services": {
+        "monitor": "stopped",
+        "streamer": "running",
+        "recorder": "stopped",
+        "probe": "stopped"
+      },
+      "camera_count": 4,
+      "camera_topics": [
+        "/example/camera/front/compressed",
+        "/example/camera/rear/compressed",
+        "/example/camera/left/compressed",
+        "/example/camera/right/compressed"
+      ],
+      "connected_clients": 0,
+      "preview_layout": "wall",
+      "recorder_state": "unavailable",
+      "probe_state": "unavailable"
+    },
+    {
+      "scenario_name": "streamer-one-client",
+      "extends": "streamer-one-no-client",
+      "connected_clients": 1
+    },
+    {
+      "scenario_name": "streamer-wall-client",
+      "extends": "streamer-wall-no-client",
+      "connected_clients": 1
+    },
+    {
+      "scenario_name": "preview-main-only",
+      "extends": "streamer-one-client",
+      "preview_layout": "main-only"
+    },
+    {
+      "scenario_name": "preview-main-plus-subtiles",
+      "extends": "streamer-wall-client",
+      "preview_layout": "main-plus-subtiles",
+      "preview_caps": {
+        "main": {
+          "max_fps": 15,
+          "max_width": 854,
+          "max_height": 480
+        },
+        "subtiles": {
+          "max_fps": 15,
+          "max_width": 426,
+          "max_height": 240
+        }
+      }
+    },
+    {
+      "scenario_name": "recorder-created",
+      "services": {
+        "monitor": "running",
+        "streamer": "stopped",
+        "recorder": "running",
+        "probe": "stopped"
+      },
+      "camera_count": 0,
+      "preview_layout": "none",
+      "recorder_state": "created",
+      "probe_state": "unavailable"
+    },
+    {
+      "scenario_name": "recorder-armed",
+      "extends": "recorder-created",
+      "recorder_state": "armed"
+    },
+    {
+      "scenario_name": "recorder-recording",
+      "extends": "recorder-created",
+      "recorder_state": "recording"
+    },
+    {
+      "scenario_name": "probe-idle",
+      "services": {
+        "monitor": "stopped",
+        "streamer": "stopped",
+        "recorder": "stopped",
+        "probe": "running"
+      },
+      "camera_count": 0,
+      "preview_layout": "none",
+      "recorder_state": "unavailable",
+      "probe_state": "idle"
+    },
+    {
+      "scenario_name": "probe-one-small-topic",
+      "extends": "probe-idle",
+      "probe_state": "active",
+      "probe_topic": "/example/state",
+      "probe_field": "value"
+    },
+    {
+      "scenario_name": "normal-collection-workflow",
+      "services": {
+        "monitor": "running",
+        "streamer": "running",
+        "recorder": "running",
+        "probe": "running"
+      },
+      "camera_count": 1,
+      "camera_topics": [
+        "/example/camera/compressed"
+      ],
+      "connected_clients": 1,
+      "preview_layout": "main-only",
+      "recorder_state": "recording",
+      "probe_state": "idle"
+    }
+  ],
+  "transport_repetitions": [
+    {
+      "rmw": "rmw_cyclonedds_cpp",
+      "required_evidence": "shared-LAN profile hash and bounded multicast count"
+    },
+    {
+      "rmw": "rmw_fastrtps_cpp",
+      "required_evidence": "same-host shared-memory transport proven, not inferred"
+    }
+  ]
+}

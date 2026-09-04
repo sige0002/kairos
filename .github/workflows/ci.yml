@@ -54,6 +54,10 @@ jobs:
         if: matrix.dir == 'services/api_orchestrator'
         working-directory: services/api_orchestrator
         run: uv run --extra test pytest -q ../../deploy/sync/tests
+      - name: deploy/perf tests
+        if: matrix.dir == 'services/api_orchestrator'
+        working-directory: services/api_orchestrator
+        run: uv run --extra test pytest -q ../../deploy/perf/tests
 
   # ---- Frontend: build + unit tests + lint (mirrors `make test-fe`) ---------
   frontend:
@@ -84,8 +88,8 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           version: "0.10.0"
-      - run: uvx ruff check libs services
-      - run: uvx ruff format --check libs services
+      - run: uvx ruff check libs services deploy/perf
+      - run: uvx ruff format --check libs services deploy/perf
 
   # ---- Vendored Rust validation engine ------------------------------------
   bagflow:

@@ -36,15 +36,25 @@ services:
     extends:
       file: compose/compose.yaml
       service: recorder
+    volumes:
+      # The inherited relative bind resolves from compose/, so override it from
+      # this top-level layout with the repository-root profile directory.
+      - ./config:/config:ro
   monitor:
     extends:
       file: compose/compose.yaml
       service: monitor
+    volumes:
+      - ./config:/config:ro
   streamer:
     extends:
       file: compose/compose.yaml
       service: streamer
+    volumes:
+      - ./config:/config:ro
   probe:
     extends:
       file: compose/compose.yaml
       service: probe
+    volumes:
+      - ./config:/config:ro
