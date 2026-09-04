@@ -129,7 +129,12 @@ class TestScenarioValidation:
         monkeypatch.setattr(
             perf_collect,
             "_git_identity",
-            lambda _: {"sha": "abc", "dirty": False, "dirty_hash": None},
+            lambda _: {
+                "sha": "abc",
+                "dirty": False,
+                "workspace_fingerprint": "0" * 64,
+                "untracked_count": 0,
+            },
         )
         monkeypatch.setattr(
             perf_collect, "_config_hashes", lambda *_: {"recording": "abc"}
@@ -147,6 +152,57 @@ class TestScenarioValidation:
                 root=tmp_path,
                 collection={},
             )
+
+    def test_dirty_workspace_fails_before_collector_starts(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        monkeypatch.setattr(perf_collect, "_container_inventory", lambda _: ([], []))
+        monkeypatch.setattr(perf_collect, "_physical_interfaces", lambda _: set())
+        monkeypatch.setattr(
+            perf_collect,
+            "_git_identity",
+            lambda _: {
+                "sha": "abc",
+                "dirty": True,
+                "workspace_fingerprint": "1" * 64,
+                "untracked_count": 1,
+            },
+        )
+
+        with pytest.raises(CollectionError, match="working tree must be clean"):
+            perf_collect.collect_scenario(
+                _scenario(), root=tmp_path, tcpdump_enabled=False
+            )
+
+    def test_git_identity_fingerprint_changes_for_untracked_bytes(
+        self, tmp_path: Path
+    ) -> None:
+        def git(*args: str) -> None:
+            subprocess.run(
+                ["git", *args], cwd=tmp_path, check=True, capture_output=True
+            )
+
+        git("init", "-q")
+        (tmp_path / "tracked.txt").write_text("tracked\n", encoding="utf-8")
+        git("add", "tracked.txt")
+        git(
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.invalid",
+            "commit",
+            "-qm",
+            "base",
+        )
+        clean = perf_collect._git_identity(tmp_path)
+        (tmp_path / "untracked.txt").write_text("one\n", encoding="utf-8")
+        first = perf_collect._git_identity(tmp_path)
+        (tmp_path / "untracked.txt").write_text("two\n", encoding="utf-8")
+        second = perf_collect._git_identity(tmp_path)
+
+        assert clean["dirty"] is False
+        assert first["dirty"] is True
+        assert first["workspace_fingerprint"] != second["workspace_fingerprint"]
 
 
 class TestContainerSelection:
@@ -347,6 +403,60 @@ class TestServiceFailures:
 
 
 class TestCollectorCli:
+    def test_workspace_change_during_measurement_discards_result(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        identities = iter(
+            [
+                {
+                    "sha": "before",
+                    "dirty": False,
+                    "workspace_fingerprint": "0" * 64,
+                    "untracked_count": 0,
+                },
+                {
+                    "sha": "after",
+                    "dirty": False,
+                    "workspace_fingerprint": "1" * 64,
+                    "untracked_count": 0,
+                },
+            ]
+        )
+
+        class FakeCollector:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                pass
+
+            def collect(self) -> dict[str, Any]:
+                return {"host": {"cpu_busy_pct_machine": 10.0}}
+
+        usage = SimpleNamespace(ru_utime=0.0, ru_stime=0.0, ru_maxrss=1)
+        monkeypatch.setattr(perf_collect, "_git_identity", lambda _: next(identities))
+        monkeypatch.setattr(perf_collect, "_container_inventory", lambda _: ([], []))
+        monkeypatch.setattr(perf_collect, "_physical_interfaces", lambda _: set())
+        monkeypatch.setattr(perf_collect, "LiveCollector", FakeCollector)
+        monkeypatch.setattr(
+            perf_collect,
+            "collect_fixed_window",
+            lambda **kwargs: [
+                {**kwargs["collect"](), "elapsed_s": kwargs["duration_s"]}
+            ],
+        )
+        monkeypatch.setattr(
+            perf_collect, "_capture_tcpdump", lambda *args: unavailable("disabled")
+        )
+        monkeypatch.setattr(perf_collect.resource, "getrusage", lambda _: usage)
+        monkeypatch.setattr(perf_collect.time, "monotonic", lambda: 1.0)
+
+        with pytest.raises(
+            CollectionError, match="workspace changed during measurement"
+        ):
+            perf_collect.collect_scenario(
+                _scenario(duration_s=1.0, warmup_s=0.0),
+                root=tmp_path,
+                tcpdump_enabled=False,
+            )
+
     def test_collect_scenario_has_top_level_result_schema_version(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -365,11 +475,23 @@ class TestCollectorCli:
             "_build_runtime_manifest",
             lambda *args, **kwargs: {"schema_version": 1, "environment": {}},
         )
+        monkeypatch.setattr(
+            perf_collect,
+            "_git_identity",
+            lambda _: {
+                "sha": "abc",
+                "dirty": False,
+                "workspace_fingerprint": "0" * 64,
+                "untracked_count": 0,
+            },
+        )
         monkeypatch.setattr(perf_collect, "LiveCollector", FakeCollector)
         monkeypatch.setattr(
             perf_collect,
             "collect_fixed_window",
-            lambda **kwargs: [kwargs["collect"]()],
+            lambda **kwargs: [
+                {**kwargs["collect"](), "elapsed_s": kwargs["duration_s"]}
+            ],
         )
         monkeypatch.setattr(
             perf_collect, "_capture_tcpdump", lambda *args: unavailable("disabled")
@@ -383,7 +505,7 @@ class TestCollectorCli:
             tcpdump_enabled=False,
         )
 
-        assert result["schema_version"] == "kairos.perf.result/v1"
+        assert result["schema_version"] == "kairos.perf.result/v2"
 
     def test_invalid_scenario_returns_two_without_starting_collection(
         self, tmp_path: Path, capsys: Any, monkeypatch: pytest.MonkeyPatch

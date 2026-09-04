@@ -114,8 +114,11 @@ python3 deploy/perf/perf_compare.py \
 ```
 
 In one before/after pair, set the same `scenario_name` in both manifests and limit
-the intentional change to one variable. Normal source revision comparisons allow
-only a `git_sha` difference. If the logical `workload.services` axis is allowed,
+the intentional change to one variable. By default, the collector accepts only a
+clean workspace with neither tracked differences nor untracked files, and source
+revision comparisons allow only a `git_sha` difference. A differing workspace
+fingerprint or a dirty artifact produces `INVALID COMPARISON`. If the logical
+`workload.services` axis is allowed,
 its derived runtime field `environment.included_container_services` is included in
 the same change. If `environment.rmw` is allowed, only its derived
 `environment.runtime_rmw` is treated as part of that change. Other derived fields
@@ -164,7 +167,8 @@ functionality is missing even if CPU is lower.
 
 ## result JSON and denominators
 
-The result top-level `schema_version` is `kairos.perf.result/v1`. `manifest` has
+The result top-level `schema_version` is `kairos.perf.result/v2`. `compare` explicitly
+accepts only v2 and does not ambiguously compare legacy v1. `manifest` has
 its own `schema_version: 1` and is a self-describing record in which the collector
 complements scenario input with runtime facts. It fixes the
 scenario/workload/environment, config hash, git identity, CPU count, detected
@@ -175,6 +179,18 @@ unreadable, the hash is not omitted: it is explicitly retained as
 `started_at` / `completed_at`, collector and child-process `observer_overhead`,
 `raw_samples` including warm-up, exclusion and accepted counts, and a `summary`
 with `count/min/mean/max` for numeric leaves.
+`cadence` contains expected/actual sample counts, each monotonic interval,
+expected deadlines, deadline errors, the maximum gap/overrun, and final elapsed
+time. To ensure counter deltas cover the entire window, the collector sleeps
+until the end deadline of each interval before sampling. For example, `3/1` is
+`[1,2,3]`, `2.5/1` is `[1,2,2.5]`, and `0.5/1` is `[0.5]` seconds. Each
+deadline's scheduler tolerance is explicitly
+`min(250 ms, max(50 ms, 25% of the interval))`; the collector fails closed on
+too few/many samples, deadline deviations, and zero-sleep catch-up bursts.
+`compare` also revalidates cadence evidence from raw samples and rejects
+artifacts with invalid timing, warm-up, or counts. After collection, the
+collector verifies that the clean workspace SHA/fingerprint still matches the
+initial value and discards the result if it changed during collection.
 Missing data is never converted to 0 and is always retained in this form:
 
 ```json

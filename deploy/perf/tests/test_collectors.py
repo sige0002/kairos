@@ -5,7 +5,13 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from perf_harness import collect_fixed_window, fetch_json, unavailable
+import pytest
+from perf_harness import (
+    collect_fixed_window,
+    fetch_json,
+    fixed_window_evidence,
+    unavailable,
+)
 
 
 class FakeClock:
@@ -39,11 +45,117 @@ def test_fixed_window_uses_injected_clock_and_keeps_sample_times() -> None:
     )
 
     assert samples == [
-        {"sequence": 1, "elapsed_s": 0.0},
-        {"sequence": 2, "elapsed_s": 1.0},
-        {"sequence": 3, "elapsed_s": 2.0},
+        {"sequence": 1, "elapsed_s": 1.0},
+        {"sequence": 2, "elapsed_s": 2.0},
+        {"sequence": 3, "elapsed_s": 3.0},
     ]
     assert clock.sleeps == [1.0, 1.0, 1.0]
+
+
+def test_fixed_window_uses_ceil_count_for_a_partial_final_interval() -> None:
+    clock = FakeClock()
+
+    samples = collect_fixed_window(
+        duration_s=2.5,
+        interval_s=1.0,
+        collect=lambda: {},
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert [sample["elapsed_s"] for sample in samples] == [1.0, 2.0, 2.5]
+    assert clock.sleeps == [1.0, 1.0, 0.5]
+
+
+def test_fixed_window_collects_once_at_duration_when_duration_is_shorter() -> None:
+    clock = FakeClock()
+
+    samples = collect_fixed_window(
+        duration_s=0.5,
+        interval_s=1.0,
+        collect=lambda: {},
+        monotonic=clock.monotonic,
+        sleep=clock.sleep,
+    )
+
+    assert samples == [{"elapsed_s": 0.5}]
+    assert clock.sleeps == [0.5]
+
+
+def test_fixed_window_evidence_records_exact_cadence() -> None:
+    evidence = fixed_window_evidence(
+        [
+            {"elapsed_s": 1.02},
+            {"elapsed_s": 2.01},
+            {"elapsed_s": 3.03},
+        ],
+        duration_s=3.0,
+        interval_s=1.0,
+    )
+
+    assert evidence == {
+        "status": "valid",
+        "expected_sample_count": 3,
+        "actual_sample_count": 3,
+        "interval_s": 1.0,
+        "tolerance_s": 0.25,
+        "expected_deadlines_s": [1.0, 2.0, 3.0],
+        "deadline_errors_s": pytest.approx([0.02, 0.01, 0.03]),
+        "elapsed_s": 3.03,
+        "intervals_s": pytest.approx([0.99, 1.02]),
+        "max_gap_s": pytest.approx(1.02),
+        "max_overrun_s": pytest.approx(0.03),
+    }
+
+
+def test_fixed_window_evidence_rejects_under_run() -> None:
+    with pytest.raises(ValueError, match="sample count"):
+        fixed_window_evidence(
+            [{"elapsed_s": 1.0}, {"elapsed_s": 2.0}],
+            duration_s=3.0,
+            interval_s=1.0,
+        )
+
+
+def test_fixed_window_evidence_rejects_overrun_gap() -> None:
+    with pytest.raises(ValueError, match="deadline"):
+        fixed_window_evidence(
+            [
+                {"elapsed_s": 1.0},
+                {"elapsed_s": 2.3},
+                {"elapsed_s": 3.3},
+            ],
+            duration_s=3.0,
+            interval_s=1.0,
+        )
+
+
+def test_fixed_window_evidence_rejects_zero_sleep_burst() -> None:
+    with pytest.raises(ValueError, match="deadline"):
+        fixed_window_evidence(
+            [
+                {"elapsed_s": 1.0},
+                {"elapsed_s": 2.0},
+                {"elapsed_s": 1.001},
+            ],
+            duration_s=3.0,
+            interval_s=1.0,
+        )
+
+
+def test_fixed_window_evidence_allows_partial_final_interval() -> None:
+    evidence = fixed_window_evidence(
+        [
+            {"elapsed_s": 1.01},
+            {"elapsed_s": 2.02},
+            {"elapsed_s": 2.52},
+        ],
+        duration_s=2.5,
+        interval_s=1.0,
+    )
+
+    assert evidence["expected_deadlines_s"] == [1.0, 2.0, 2.5]
+    assert evidence["intervals_s"] == pytest.approx([1.01, 0.5])
 
 
 class FakeResponse:

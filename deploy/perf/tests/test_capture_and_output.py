@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+import pytest
 from perf_harness import (
     capture_multicast_packets,
     render_comparison_markdown,
@@ -79,6 +81,27 @@ class TestOutput:
         write_json_result(result, output)
 
         assert json.loads(output.read_text(encoding="utf-8")) == result
+
+    def test_parallel_writers_use_independent_temps_and_leave_valid_json(
+        self, tmp_path: Path
+    ) -> None:
+        output = tmp_path / "result.json"
+        values = [{"writer": index} for index in range(16)]
+
+        with ThreadPoolExecutor(max_workers=16) as executor:
+            list(executor.map(lambda value: write_json_result(value, output), values))
+
+        assert json.loads(output.read_text(encoding="utf-8")) in values
+        assert list(tmp_path.glob(".result.json.*.tmp")) == []
+
+    def test_json_write_failure_removes_unique_temp(self, tmp_path: Path) -> None:
+        output = tmp_path / "result.json"
+
+        with pytest.raises(TypeError):
+            write_json_result({"not_json": object()}, output)
+
+        assert not output.exists()
+        assert list(tmp_path.glob(".result.json.*.tmp")) == []
 
     def test_markdown_has_before_after_deltas_and_denominators(self) -> None:
         baseline = {

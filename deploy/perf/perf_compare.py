@@ -12,7 +12,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from perf_harness import comparison_mismatches, render_comparison_markdown
+from perf_harness import (
+    comparison_mismatches,
+    render_comparison_markdown,
+    validate_result_artifact,
+)
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -43,9 +47,17 @@ def _load_result(path: Path) -> dict[str, Any]:
         raise ValueError(f"invalid JSON in {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise ValueError(f"result must be a JSON object: {path}")
+    if value.get("schema_version") != "kairos.perf.result/v2":
+        raise ValueError(
+            f"unsupported result schema in {path}; expected kairos.perf.result/v2"
+        )
     manifest = value.get("manifest")
     if not isinstance(manifest, dict):
         raise ValueError(f"result has no object manifest: {path}")
+    try:
+        validate_result_artifact(value)
+    except ValueError as exc:
+        raise ValueError(f"invalid cadence evidence in {path}: {exc}") from exc
     return value
 
 

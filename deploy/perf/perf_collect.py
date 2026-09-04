@@ -11,6 +11,7 @@ import math
 import os
 import re
 import resource
+import stat
 import subprocess
 import sys
 import time
@@ -29,6 +30,7 @@ from perf_harness import (
     cpu_delta,
     extract_service_metrics,
     fetch_json,
+    fixed_window_evidence,
     network_delta,
     normalize_container_cpu,
     parse_net_dev,
@@ -503,14 +505,76 @@ def _git_identity(root: Path) -> dict[str, Any]:
         sha = run("rev-parse", "HEAD").decode().strip()
         status = run("status", "--porcelain=v1", "-z")
         diff = run("diff", "--binary", "HEAD")
+        untracked = run("ls-files", "--others", "--exclude-standard", "-z")
     except (
         FileNotFoundError,
         subprocess.CalledProcessError,
         subprocess.TimeoutExpired,
     ):
-        return {"sha": "unknown", "dirty": unavailable("git identity unavailable")}
-    digest = hashlib.sha256(status + b"\0" + diff).hexdigest() if status else None
-    return {"sha": sha, "dirty": bool(status), "dirty_hash": digest}
+        return {
+            "sha": "unknown",
+            "dirty": unavailable("git identity unavailable"),
+            "workspace_fingerprint": unavailable("git identity unavailable"),
+        }
+    digest = hashlib.sha256()
+    digest.update(b"kairos.perf.workspace/v1\0")
+    digest.update(status)
+    digest.update(b"\0tracked-diff\0")
+    digest.update(diff)
+    untracked_count = 0
+    for raw_path in untracked.split(b"\0"):
+        if not raw_path:
+            continue
+        relative = os.fsdecode(raw_path)
+        path = root / relative
+        metadata = path.lstat()
+        digest.update(b"\0untracked\0")
+        digest.update(raw_path)
+        digest.update(b"\0")
+        if stat.S_ISREG(metadata.st_mode):
+            digest.update(b"regular\0")
+            with path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        elif stat.S_ISLNK(metadata.st_mode):
+            digest.update(b"symlink\0")
+            digest.update(os.fsencode(os.readlink(path)))
+        else:
+            digest.update(f"mode:{metadata.st_mode:o}".encode())
+        untracked_count += 1
+    return {
+        "sha": sha,
+        "dirty": bool(status),
+        "workspace_fingerprint": digest.hexdigest(),
+        "untracked_count": untracked_count,
+    }
+
+
+def _require_clean_workspace(root: Path) -> dict[str, Any]:
+    """Return a stable clean workspace identity or fail before accepting data."""
+
+    identity = _git_identity(root)
+    if identity.get("dirty") is not False:
+        raise CollectionError(
+            "working tree must be clean; commit, stash, or remove untracked changes"
+        )
+    fingerprint = identity.get("workspace_fingerprint")
+    if not isinstance(fingerprint, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", fingerprint
+    ):
+        raise CollectionError(
+            "could not establish a reproducible workspace fingerprint"
+        )
+    return identity
+
+
+def _workspace_changed(before: Mapping[str, Any], after: Mapping[str, Any]) -> bool:
+    """Return whether code identity changed while one measurement was running."""
+
+    return any(
+        before.get(field) != after.get(field)
+        for field in ("sha", "dirty", "workspace_fingerprint")
+    )
 
 
 def _config_hashes(scenario: Mapping[str, Any], root: Path) -> dict[str, Any]:
@@ -627,8 +691,10 @@ def _build_runtime_manifest(
     interfaces: set[str],
     root: Path,
     collection: Mapping[str, Any],
+    git: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    git = _git_identity(root)
+    git = _require_clean_workspace(root) if git is None else dict(git)
+    fingerprint = git["workspace_fingerprint"]
     hashes = _config_hashes(scenario, root)
     selected_topics = _required(scenario, "selected_topics", list)
     if not all(isinstance(topic, str) and topic for topic in selected_topics):
@@ -662,7 +728,8 @@ def _build_runtime_manifest(
     manifest["environment"].update(
         {
             "git_dirty": git.get("dirty"),
-            "git_dirty_hash": git.get("dirty_hash"),
+            "workspace_fingerprint": fingerprint,
+            "untracked_count": git.get("untracked_count"),
             "cpu_count": os.cpu_count() or 1,
             "cgroup_version": 2,
             "physical_interfaces": sorted(interfaces),
@@ -773,6 +840,7 @@ def collect_scenario(
     ):
         raise CollectionError("collection.http_timeout_s must be positive")
     service_urls = _service_urls(collection)
+    workspace_before = _require_clean_workspace(root)
     containers, excluded = _container_inventory(collection)
     interfaces = _physical_interfaces(collection)
     manifest = _build_runtime_manifest(
@@ -785,6 +853,7 @@ def collect_scenario(
         interfaces=interfaces,
         root=root,
         collection=collection,
+        git=workspace_before,
     )
     collector = LiveCollector(
         containers,
@@ -806,6 +875,15 @@ def collect_scenario(
             collect=collector.collect,
         )
         multicast = multicast_future.result()
+    try:
+        cadence = fixed_window_evidence(
+            samples, duration_s=duration_s, interval_s=interval_s
+        )
+    except ValueError as exc:
+        raise CollectionError(f"fixed-window contract failed: {exc}") from exc
+    workspace_after = _require_clean_workspace(root)
+    if _workspace_changed(workspace_before, workspace_after):
+        raise CollectionError("workspace changed during measurement; result discarded")
     wall_s = time.monotonic() - wall_start
     tcpdump_manifest = _tcpdump_manifest(tcpdump_enabled, collection, multicast)
     environment = manifest.setdefault("environment", {})
@@ -818,7 +896,7 @@ def collect_scenario(
         sample["multicast"] = multicast
     aggregated = aggregate_samples(samples, warmup_samples=warmup_samples)
     return {
-        "schema_version": "kairos.perf.result/v1",
+        "schema_version": "kairos.perf.result/v2",
         "manifest": manifest,
         "started_at": started_at,
         "completed_at": datetime.now(UTC).isoformat(),
@@ -830,6 +908,7 @@ def collect_scenario(
             "child_system_cpu_s": children_after.ru_stime - children_before.ru_stime,
             "max_rss_kib": usage_after.ru_maxrss,
         },
+        "cadence": cadence,
         **aggregated,
     }
 

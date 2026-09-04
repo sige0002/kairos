@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -186,13 +187,26 @@ def _patch_collection_runtime(
     monkeypatch.setattr(
         perf_collect,
         "_git_identity",
-        lambda _: {"sha": "abc", "dirty": False, "dirty_hash": None},
+        lambda _: {
+            "sha": "abc",
+            "dirty": False,
+            "workspace_fingerprint": "0" * 64,
+            "untracked_count": 0,
+        },
     )
     monkeypatch.setattr(perf_collect, "LiveCollector", FakeCollector)
     monkeypatch.setattr(
         perf_collect,
         "collect_fixed_window",
-        lambda **kwargs: [kwargs["collect"]()],
+        lambda **kwargs: [
+            {
+                **kwargs["collect"](),
+                "elapsed_s": min(
+                    (index + 1) * kwargs["interval_s"], kwargs["duration_s"]
+                ),
+            }
+            for index in range(math.ceil(kwargs["duration_s"] / kwargs["interval_s"]))
+        ],
     )
     monkeypatch.setattr(
         perf_collect,

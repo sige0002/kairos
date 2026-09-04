@@ -106,8 +106,10 @@ python3 deploy/perf/perf_compare.py \
 ```
 
 1 つの before/after pair では、両方の manifest に同じ `scenario_name` を設定し、
-意図した変更を 1 変数に限定する。通常の source revision 比較では `git_sha` の違い
-だけを許容する。論理軸 `workload.services` を許可する場合は、その派生 runtime
+意図した変更を 1 変数に限定する。collector は既定で tracked 差分と untracked file
+の両方が無い clean workspace だけを受理し、source revision 比較では `git_sha` の違い
+だけを許容する。workspace fingerprint が異なる、または dirty な artifact は
+`INVALID COMPARISON` になる。論理軸 `workload.services` を許可する場合は、その派生 runtime
 field `environment.included_container_services` も同じ変更に含める。`environment.rmw`
 を許可する場合も、派生した `environment.runtime_rmw` だけを同じ変更として扱う。
 それ以外の派生 field は自動的に許可しない。RMW を比較するなら、両方の
@@ -149,7 +151,8 @@ cap、recorder/probe state、計測時間が同じことを確認する。replay
 
 ## result JSON と分母
 
-result の top-level `schema_version` は `kairos.perf.result/v1`。`manifest` は別に
+result の top-level `schema_version` は `kairos.perf.result/v2`。compare は v2 だけを
+明示的に受理し、legacy v1 を曖昧に比較しない。`manifest` は別に
 `schema_version: 1` を持ち、collector が scenario の入力を runtime の事実で補完した
 self-describing な記録である。scenario/workload/environment、config hash、git
 identity、CPU 数、検出した物理 NIC、included/excluded container の identity と
@@ -158,7 +161,15 @@ allowlist env、採取 endpoint の有無を固定する。設定が指定され
 明示する。
 ほかに `started_at` / `completed_at`、collector 自身と child process の
 `observer_overhead`、warm-up を含む `raw_samples`、除外数と採用数、数値 leaf の
-`count/min/mean/max` を持つ `summary` がある。欠測は 0 にせず、常に次の形で残る。
+`count/min/mean/max` を持つ `summary` がある。`cadence` は expected/actual sample 数、
+各 monotonic 間隔、expected deadline、deadline error、最大 gap/overrun、最終 elapsed を持つ。
+counter delta が window 全体を被覆するよう collector は各 interval の終端 deadline まで sleep して
+から採取する。例えば `3/1` は `[1,2,3]`、`2.5/1` は `[1,2,2.5]`、`0.5/1` は `[0.5]` 秒である。
+各 deadline の scheduler 許容値は `min(250 ms, max(50 ms, interval の 25%))` と明示し、sample の
+不足/過剰、deadline 逸脱、zero-sleep catch-up burst は collector が fail-close する。compare も
+cadence evidence を raw sample から再検証し、timing/warm-up/件数が不正な artifact を拒否する。
+collector は採取後にも clean workspace の SHA/fingerprint が開始時と一致することを確認し、途中変更が
+あれば結果を破棄する。欠測は 0 にせず、常に次の形で残る。
 
 ```json
 {"status": "unavailable", "reason": "field absent"}

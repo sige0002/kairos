@@ -11,13 +11,15 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import signal
 import subprocess
+import tempfile
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +27,9 @@ Unavailable = dict[str, Any]
 Runner = Callable[..., Any]
 
 _MISSING = object()
+_CADENCE_TOLERANCE_FRACTION = 0.25
+_CADENCE_TOLERANCE_MIN_S = 0.05
+_CADENCE_TOLERANCE_MAX_S = 0.25
 _COMPARISON_PATHS = (
     "scenario.name",
     "scenario.duration_s",
@@ -251,6 +256,170 @@ def aggregate_samples(
     }
 
 
+def fixed_window_evidence(
+    samples: Sequence[Mapping[str, Any]], *, duration_s: float, interval_s: float
+) -> dict[str, Any]:
+    """Validate and describe one fixed monotonic sampling window.
+
+    A window starts with sample zero and must contain exactly
+    ``ceil(duration / interval)`` samples.  The permitted scheduler jitter is
+    explicit and bounded to 25% of one interval (at least 50 ms, at most 250
+    ms).  A missed deadline or a catch-up burst is invalid rather than silently
+    being summarized as a like-for-like benchmark result.
+    """
+
+    deadlines = _fixed_window_deadlines(duration_s, interval_s)
+    expected_count = len(deadlines)
+    actual_count = len(samples)
+    if actual_count != expected_count:
+        raise ValueError(
+            f"fixed-window sample count {actual_count} does not equal expected "
+            f"{expected_count}"
+        )
+    elapsed: list[float] = []
+    for sample in samples:
+        value = sample.get("elapsed_s")
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError("fixed-window sample is missing numeric elapsed_s")
+        value = float(value)
+        if not math.isfinite(value) or value < 0:
+            raise ValueError("fixed-window elapsed_s must be finite and non-negative")
+        elapsed.append(value)
+
+    interval_s = float(interval_s)
+    tolerance_s = _cadence_tolerance_s(interval_s)
+    deadline_errors = [
+        actual - expected for actual, expected in zip(elapsed, deadlines, strict=True)
+    ]
+    if any(abs(error) > tolerance_s for error in deadline_errors):
+        raise ValueError("fixed-window deadline exceeded its tolerance")
+    intervals = [
+        after - before for before, after in zip(elapsed, elapsed[1:], strict=False)
+    ]
+
+    max_gap_s = max(intervals, default=0.0)
+    return {
+        "status": "valid",
+        "expected_sample_count": expected_count,
+        "actual_sample_count": actual_count,
+        "interval_s": interval_s,
+        "tolerance_s": tolerance_s,
+        "expected_deadlines_s": deadlines,
+        "deadline_errors_s": deadline_errors,
+        "intervals_s": intervals,
+        "max_gap_s": max_gap_s,
+        "max_overrun_s": max(0.0, max(deadline_errors, default=0.0)),
+        "elapsed_s": elapsed[-1],
+    }
+
+
+def _fixed_window_deadlines(duration_s: float, interval_s: float) -> list[float]:
+    """Return the monotonic end-of-interval deadlines for one fixed window."""
+
+    duration = _finite_positive_float(duration_s, "duration_s")
+    interval = _finite_positive_float(interval_s, "interval_s")
+    return [
+        min((index + 1) * interval, duration)
+        for index in range(math.ceil(duration / interval))
+    ]
+
+
+def _finite_positive_float(value: object, name: str) -> float:
+    """Return a finite positive float or raise a stable artifact error."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite positive number")
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise ValueError(f"{name} must be a finite positive number") from exc
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(f"{name} must be a finite positive number")
+    return number
+
+
+def _finite_nonnegative_float(value: object, name: str) -> float:
+    """Return a finite non-negative float or raise a stable artifact error."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a finite non-negative number")
+    try:
+        number = float(value)
+    except OverflowError as exc:
+        raise ValueError(f"{name} must be a finite non-negative number") from exc
+    if not math.isfinite(number) or number < 0:
+        raise ValueError(f"{name} must be a finite non-negative number")
+    return number
+
+
+def _cadence_tolerance_s(interval_s: float) -> float:
+    """Return the documented bounded scheduler allowance for one interval."""
+
+    return max(
+        _CADENCE_TOLERANCE_MIN_S,
+        min(_CADENCE_TOLERANCE_MAX_S, interval_s * _CADENCE_TOLERANCE_FRACTION),
+    )
+
+
+def validate_result_artifact(result: Mapping[str, Any]) -> None:
+    """Reject a result that lacks or contradicts fixed-window evidence."""
+
+    if result.get("schema_version") != "kairos.perf.result/v2":
+        raise ValueError("unsupported result schema; expected kairos.perf.result/v2")
+    manifest = result.get("manifest")
+    if not isinstance(manifest, Mapping):
+        raise ValueError("result has no object manifest")
+    scenario = manifest.get("scenario")
+    if not isinstance(scenario, Mapping):
+        raise ValueError("result has no object scenario manifest")
+    duration_s = scenario.get("duration_s")
+    warmup_s = scenario.get("warmup_s")
+    interval_s = scenario.get("sample_interval_s")
+    try:
+        duration = _finite_positive_float(duration_s, "duration_s")
+        interval = _finite_positive_float(interval_s, "sample_interval_s")
+        warmup = _finite_nonnegative_float(warmup_s, "warmup_s")
+    except ValueError as exc:
+        raise ValueError("result has invalid scenario timing") from exc
+    if warmup >= duration:
+        raise ValueError("result has invalid scenario timing")
+    samples = result.get("raw_samples")
+    if not isinstance(samples, list) or not all(
+        isinstance(item, Mapping) for item in samples
+    ):
+        raise ValueError("result has no raw fixed-window samples")
+    expected = fixed_window_evidence(samples, duration_s=duration, interval_s=interval)
+    recorded = result.get("cadence")
+    if not isinstance(recorded, Mapping) or any(
+        recorded.get(key) != value for key, value in expected.items()
+    ):
+        raise ValueError("result has invalid cadence evidence")
+    warmup_samples = result.get("warmup_samples")
+    measurement_count = result.get("measurement_sample_count")
+    if (
+        isinstance(warmup_samples, bool)
+        or not isinstance(warmup_samples, int)
+        or warmup_samples < 0
+        or warmup_samples >= len(samples)
+        or isinstance(measurement_count, bool)
+        or not isinstance(measurement_count, int)
+        or measurement_count < 1
+        or measurement_count != len(samples) - warmup_samples
+        or warmup_samples != math.ceil(warmup / interval)
+    ):
+        raise ValueError("result has invalid warm-up sample accounting")
+    environment = manifest.get("environment")
+    fingerprint = (
+        environment.get("workspace_fingerprint")
+        if isinstance(environment, Mapping)
+        else None
+    )
+    if not isinstance(fingerprint, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", fingerprint
+    ):
+        raise ValueError("result has no reproducible workspace fingerprint")
+
+
 def _flatten(value: Any, prefix: str = "") -> dict[str, Any]:
     if isinstance(value, Mapping) and not _is_unavailable(value):
         flattened: dict[str, Any] = {}
@@ -377,6 +546,8 @@ def comparison_mismatches(
     mismatches = [
         *_runtime_rmw_consistency_mismatches("baseline", baseline),
         *_runtime_rmw_consistency_mismatches("candidate", candidate),
+        *_workspace_consistency_mismatches("baseline", baseline),
+        *_workspace_consistency_mismatches("candidate", candidate),
     ]
     allowed_axes, declaration_mismatch = _shared_allowed_axes(baseline, candidate)
     if declaration_mismatch:
@@ -391,7 +562,36 @@ def comparison_mismatches(
             continue
         if before != after and path not in allowed_axes:
             mismatches.append(path)
+    baseline_fingerprint = _nested_value(baseline, "environment.workspace_fingerprint")
+    candidate_fingerprint = _nested_value(
+        candidate, "environment.workspace_fingerprint"
+    )
+    if (
+        baseline_fingerprint is not _MISSING
+        and candidate_fingerprint is not _MISSING
+        and baseline_fingerprint != candidate_fingerprint
+    ):
+        mismatches.append("environment.workspace_fingerprint")
     return mismatches
+
+
+def _workspace_consistency_mismatches(
+    label: str, manifest: Mapping[str, Any]
+) -> list[str]:
+    """Require a clean, reproducible workspace when the evidence is present."""
+
+    dirty = _nested_value(manifest, "environment.git_dirty")
+    fingerprint = _nested_value(manifest, "environment.workspace_fingerprint")
+    if dirty is _MISSING and fingerprint is _MISSING:
+        return []
+    errors: list[str] = []
+    if dirty is not False:
+        errors.append(f"{label}.environment.git_dirty")
+    if not isinstance(fingerprint, str) or not re.fullmatch(
+        r"[0-9a-f]{64}", fingerprint
+    ):
+        errors.append(f"{label}.environment.workspace_fingerprint")
+    return errors
 
 
 def _runtime_rmw_consistency_mismatches(
@@ -632,17 +832,15 @@ def collect_fixed_window(
 ) -> list[dict[str, Any]]:
     """Collect samples at fixed deadlines without depending on wall-clock time."""
 
-    if duration_s <= 0 or interval_s <= 0:
-        raise ValueError("duration_s and interval_s must be positive")
+    deadlines = _fixed_window_deadlines(duration_s, interval_s)
     start = monotonic()
-    deadline = start
     samples: list[dict[str, Any]] = []
-    while monotonic() - start < duration_s:
+    for deadline in deadlines:
+        sleep(max(0.0, start + deadline - monotonic()))
+        sampled_at = monotonic()
         sample = dict(collect())
-        sample["elapsed_s"] = monotonic() - start
+        sample["elapsed_s"] = sampled_at - start
         samples.append(sample)
-        deadline += interval_s
-        sleep(max(0.0, min(deadline - monotonic(), start + duration_s - monotonic())))
     return samples
 
 
@@ -665,16 +863,31 @@ def fetch_json(
 
 
 def write_json_result(result: Mapping[str, Any], path: str | Path) -> None:
-    """Write one complete result atomically enough for local benchmark use."""
+    """Write one complete result with a unique same-directory atomic replace."""
 
     output = Path(path)
     output.parent.mkdir(parents=True, exist_ok=True)
-    temporary = output.with_name(f".{output.name}.tmp")
-    temporary.write_text(
-        json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False) + "\n",
-        encoding="utf-8",
+    fd, temporary = tempfile.mkstemp(
+        dir=output.parent,
+        prefix=f".{output.name}.",
+        suffix=".tmp",
+        text=True,
     )
-    temporary.replace(output)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(
+                json.dumps(result, indent=2, sort_keys=True, ensure_ascii=False)
+            )
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, output)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def render_comparison_markdown(
