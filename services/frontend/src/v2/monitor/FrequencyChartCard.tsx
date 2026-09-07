@@ -14,7 +14,8 @@
 // TopicsView toolbar — this card only receives the shared history / clock / markers
 // (accumulated once by the parent) plus its own metric + topics.
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
+import { TopicSearch } from './TopicSearch';
 import { formatBaseline, type MonitorRow } from '../../features/monitor/useMonitorRows';
 import { DEFAULT_WARN_SHORTFALL_PCT } from '../../features/monitor/thresholds';
 import type { MetricSample } from '../../features/graph/useMetricHistory';
@@ -182,6 +183,11 @@ export function FrequencyChartCard({
   // Non-primary add-topic control: currently-flowing topics not already charted,
   // hidden once the panel hits the MAX_SERIES overlay cap.
   const addable = availableTopics.filter((t) => !topics.includes(t));
+  const [topicQuery, setTopicQuery] = useState('');
+  const normalizedQuery = topicQuery.trim().toLowerCase();
+  const filteredAddable = addable.filter((topic) =>
+    topic.toLowerCase().includes(normalizedQuery),
+  );
   const atCap = topics.length >= MAX_SERIES;
 
   return (
@@ -303,25 +309,42 @@ export function FrequencyChartCard({
               })}
             </span>
           ) : (
-            <select
-              data-testid={`freq-add-topic${sfx}`}
-              aria-label={t('charts.addTopicLabel')}
-              value=""
-              onChange={(e) => {
-                if (e.target.value) onToggleTopic(e.target.value);
-              }}
-              disabled={addable.length === 0}
-              className="rounded-control border border-border px-2 py-0.5 text-[11px] font-medium text-text-secondary focus:border-accent focus:outline-none disabled:text-text-muted"
-            >
-              <option value="">
-                {addable.length === 0 ? t('charts.noMoreTopics') : t('charts.addTopic')}
-              </option>
-              {addable.map((t) => (
-                <option key={t} value={t}>
-                  {labelFor(t)}
+            <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">
+              <TopicSearch
+                query={topicQuery}
+                onChange={setTopicQuery}
+                testId={`freq-topic-search${sfx}`}
+              />
+              <select
+                data-testid={`freq-add-topic${sfx}`}
+                aria-label={t('charts.addTopicLabel')}
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) onToggleTopic(e.target.value);
+                }}
+                disabled={filteredAddable.length === 0}
+                className="min-w-0 max-w-full rounded-control border border-border px-2 py-0.5 text-[11px] font-medium text-text-secondary focus:border-accent focus:outline-none disabled:text-text-muted"
+              >
+                <option value="">
+                  {addable.length === 0
+                    ? t('charts.noMoreTopics')
+                    : t('charts.addTopic')}
                 </option>
-              ))}
-            </select>
+                {filteredAddable.map((t) => (
+                  <option key={t} value={t}>
+                    {labelFor(t)}
+                  </option>
+                ))}
+              </select>
+              {normalizedQuery && filteredAddable.length === 0 && (
+                <p
+                  role="status"
+                  className="max-w-xs break-words text-xs text-text-muted"
+                >
+                  {t('topics.noMatch', { query: topicQuery.trim() })}
+                </p>
+              )}
+            </div>
           )}
         </div>
       )}

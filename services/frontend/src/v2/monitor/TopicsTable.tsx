@@ -24,6 +24,7 @@ import { Badge, Card, cn } from '../../components/ui';
 import { useUiStore } from '../../store/uiStore';
 import { MAX_SERIES, paletteColor } from './chartSeries';
 import { useTranslation } from 'react-i18next';
+import { TopicSearch } from './TopicSearch';
 
 // Rec checkbox + the original six metric columns (leading 34px is the Rec cell).
 const GRID_COLS = 'grid-cols-[34px_1fr_84px_84px_96px_84px_96px]';
@@ -83,15 +84,7 @@ export function TopicsTable({
       className="flex max-h-[270px] shrink-0 flex-col lg:min-h-[270px] lg:max-h-none lg:flex-[1_1_0%]"
     >
       <div className="border-b border-border px-[18px] py-2">
-        <input
-          type="search"
-          aria-label={t('topics.searchLabel')}
-          data-testid="topics-search"
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          placeholder={t('topics.searchPlaceholder')}
-          className="h-8 w-full rounded-control border border-border bg-surface px-3 font-mono text-[12px] text-text-primary outline-none placeholder:font-sans placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-focus"
-        />
+        <TopicSearch query={query} onChange={setQuery} testId="topics-search" />
       </div>
       <div
         className={cn(

@@ -177,6 +177,7 @@ v1 の Graph / Probe / Live 健全性パネルの統合先。サブナビは **O
 
 - **コンテキスト帯**: 録画中は REC・run_id・経過時間、それ以外は STANDBY（`record_status` 由来の実表示）。
 - **Overview ビュー**（診断ランディング・既定）: 録画コンテキスト、トピック健全性の集計（`ok`/`warning`/`danger`/`inactive` 件数＋要注意トピック名 → クリックで Topics にチャート）、発火中インシデント要約（実 alert バッファ）、`GET /api/v1/system` の簡易スナップショット、Topics/Signals へのジャンプ。
+- **トピック検索**: Topics のトピック表・追加チャートのトピック選択・Signals のトピック選択に検索欄を置く。トピック名の部分一致（大文字小文字を区別せず、前後の空白を除去）で候補を絞り込む。検索は録画対象・描画中の系列・選択済みのトピックとフィールドを変更しない。一致なしを明示し、「検索をクリア」で候補一覧を戻して検索欄へフォーカスを戻す。
 - **Topics ビュー**:
   - **チャートパネルの追加 / 削除（上限 4）**。パネル毎にメトリクス（**Frequency / Bandwidth / Max gap / Rate vs expected**）とトピック重畳（上限 6）を選択。時間窓（30s / 1m / 5m）と **Freeze charts / Live**（旧 Pause）はグローバル — 凍結はチャート限定（`Charts frozen · table still live.` を明示。テーブルは意図的に live 継続）。窓は開いてからの蓄積なので、蓄積が窓未満の間は `{window} window (n so far)` と正直に表示。チャート高さは**実測スロット追従**（固定高が overflow-hidden な親にクリップされ低値域が見えなくなる不具合の根治）。**録画の REC / STOP マーカー**を全パネルに重畳。Frequency には expected_hz の参照線。**latency / loss はメニューに置かない** — 非破壊 monitor では測れない（per-run の loss は Review の事後解析で提供）。
   - **トピック表**: discovery の全トピック＋live metrics（Hz / 帯域 / gap、status ドット `inactive`/`danger`/`warning`/`ok`/`unknown`、閾値超過時の shortfall バッジ＋理由 tooltip。shortfall は observed であり真の loss ではない）。**Rec チェックボックス列** = 次回録画の対象選択（記録途中の変更ではない）。設定済みトピックは事前チェック。機体切替で config 既定に再シード。チャートの系列選択とは独立。

@@ -7,7 +7,7 @@
 // the module panel store, TopicsView, and FrequencyChartCard are exercised
 // together. The panel store is module-level, so reset it between tests.
 
-import { fireEvent, screen, waitFor } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { setApiBase } from '../../api/client';
 import { jsonResponse, renderWithClient } from '../../test/renderWithClient';
@@ -64,6 +64,30 @@ beforeEach(() => {
   });
 });
 afterEach(() => vi.restoreAllMocks());
+
+test('each chart filters addable topics without changing plotted or recording selections', async () => {
+  mockFetch();
+  renderWithClient(<MonitorScreen />);
+  fireEvent.click(await screen.findByTestId('mon-nav-Topics'));
+  await screen.findByTestId('topic-row-/hsrb/odom');
+  fireEvent.click(screen.getByTestId('add-chart'));
+  const search = screen.getByTestId('freq-topic-search-1');
+  const select = screen.getByTestId('freq-add-topic-1');
+  const recording = useUiStore.getState().recordSelected;
+  fireEvent.change(search, { target: { value: '  ODOM  ' } });
+  expect(within(select).getByRole('option', { name: /odom/ })).toHaveValue(
+    '/hsrb/odom',
+  );
+  expect(screen.getByTestId('topics-search')).toHaveValue('');
+  fireEvent.change(select, { target: { value: '/hsrb/odom' } });
+  expect(screen.getByTestId('freq-legend-1-/hsrb/odom')).toBeInTheDocument();
+  expect(select).toBeDisabled();
+  expect(screen.getByText('No topics match “ODOM”.')).toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: 'Clear search' }));
+  expect(search).toHaveFocus();
+  expect(screen.getByTestId('freq-legend-1-/hsrb/odom')).toBeInTheDocument();
+  expect(useUiStore.getState().recordSelected).toEqual(recording);
+});
 
 test('Topics splits desktop height evenly between charts and the table', async () => {
   mockFetch();

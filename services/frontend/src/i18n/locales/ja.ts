@@ -1712,6 +1712,7 @@ export const ja = {
     topics: {
       searchLabel: 'トピックを検索',
       searchPlaceholder: 'トピックを検索…',
+      clearSearch: '検索をクリア',
       includeNext: '次の録画に含める',
       rec: '録画',
       topic: 'トピック',

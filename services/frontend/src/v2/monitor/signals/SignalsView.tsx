@@ -25,6 +25,7 @@ import {
   type UplotSeriesConf,
 } from '../../../features/probe/UplotChart';
 import { useTranslation } from 'react-i18next';
+import { TopicSearch } from '../TopicSearch';
 
 const HZ_OPTIONS = [1, 5, 10, 30];
 const WINDOWS: { id: ProbeWindowId; label: string; sec: number }[] = [
@@ -52,6 +53,11 @@ export function SignalsView() {
   const { t } = useTranslation('monitor');
   const topicsQuery = useProbeTopics();
   const topics = topicsQuery.data ?? [];
+  const [topicQuery, setTopicQuery] = useState('');
+  const normalizedQuery = topicQuery.trim().toLowerCase();
+  const filteredTopics = topics.filter((topic) =>
+    topic.name.toLowerCase().includes(normalizedQuery),
+  );
 
   // Add-series form: pick a topic, then one of its numeric fields, then "Add".
   const [addTopic, setAddTopic] = useState<string | null>(null);
@@ -96,32 +102,56 @@ export function SignalsView() {
     <div className="flex flex-1 flex-col gap-2.5 lg:min-h-0">
       <Card className="flex shrink-0 flex-col">
         <div className="flex flex-wrap items-end gap-3 px-[18px] py-3.5">
-          <label className="flex flex-col gap-1">
-            <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
-              {t('signals.topic')}
-            </span>
-            <select
-              data-testid="signals-topic"
-              aria-label={t('signals.topicLabel')}
-              value={addTopic ?? ''}
-              onChange={(e) => {
-                setAddTopic(e.target.value || null);
-                setAddField(null);
-              }}
-              className="min-w-[15rem] rounded-control border border-border px-2 py-1 text-[12.5px] font-medium text-text-primary focus:border-accent focus:outline-none"
-            >
-              <option value="">
-                {topicsQuery.isPending
-                  ? t('signals.loadingTopics')
-                  : t('signals.selectTopic')}
-              </option>
-              {topics.map((t) => (
-                <option key={t.name} value={t.name}>
-                  {t.name}
+          <div className="flex min-w-0 max-w-full flex-col gap-1">
+            <TopicSearch
+              query={topicQuery}
+              onChange={setTopicQuery}
+              testId="signals-topic-search"
+            />
+            <label className="flex min-w-0 flex-col gap-1">
+              <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">
+                {t('signals.topic')}
+              </span>
+              <select
+                data-testid="signals-topic"
+                aria-label={t('signals.topicLabel')}
+                value={addTopic ?? ''}
+                onChange={(e) => {
+                  setAddTopic(e.target.value || null);
+                  setAddField(null);
+                }}
+                className="w-full min-w-0 max-w-full rounded-control border border-border px-2 py-1 text-[12.5px] font-medium text-text-primary focus:border-accent focus:outline-none"
+              >
+                <option value="">
+                  {topicsQuery.isPending
+                    ? t('signals.loadingTopics')
+                    : t('signals.selectTopic')}
                 </option>
-              ))}
-            </select>
-          </label>
+                {addTopic &&
+                  !filteredTopics.some((topic) => topic.name === addTopic) && (
+                    <option value={addTopic} hidden>
+                      {addTopic}
+                    </option>
+                  )}
+                {filteredTopics.map((t) => (
+                  <option key={t.name} value={t.name}>
+                    {t.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {!topicsQuery.isPending &&
+              !topicsQuery.isError &&
+              normalizedQuery &&
+              filteredTopics.length === 0 && (
+                <p
+                  role="status"
+                  className="max-w-xs break-words text-xs text-text-muted"
+                >
+                  {t('topics.noMatch', { query: topicQuery.trim() })}
+                </p>
+              )}
+          </div>
 
           <label className="flex flex-col gap-1">
             <span className="text-[10.5px] font-semibold uppercase tracking-[0.05em] text-text-muted">

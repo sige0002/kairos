@@ -1694,6 +1694,7 @@ export const en = {
     topics: {
       searchLabel: 'Search topics',
       searchPlaceholder: 'Search topics…',
+      clearSearch: 'Clear search',
       includeNext: 'Include in the next recording',
       rec: 'Rec',
       topic: 'Topic',
