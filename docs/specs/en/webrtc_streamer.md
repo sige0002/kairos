@@ -50,6 +50,13 @@ Serialize each stream's start as one lifecycle transaction. A duplicate start re
 - By default the frontend signals through the same-origin path `/webrtc` (the frontend's nginx reverse-proxies it to the streamer), without going through the orchestrator. Setting `WEBRTC_PUBLIC_URL` to an absolute URL switches to the legacy mode of connecting to the streamer directly. Note that even when signaling is same-origin, the WebRTC media (ICE/SRTP) flows over UDP between the browser and the streamer. On a directly reachable path (same LAN, Tailscale) `ice_servers` is not needed (the v4-only + packet cap above apply by default). Across NAT / WiFi client-isolation / a network where UDP cannot pass, set `WEBRTC_ICE_SERVERS` (STUN, and a TURN relay if needed).
 - Multiple clients: each stream shares a single video source (the latest frame), and a **PeerConnection is created per client**. The corresponding PC is destroyed on client disconnect.
 
+### Retaining the Latest Image Before Decoding
+
+- The ROS image callback retains only the latest `Image` / `CompressedImage` message. JPEG/PNG decoding, color conversion, and resizing are performed in a worker thread when the WebRTC track requests an image at its send cadence. Image conversion is not placed in the ROS executor or the web event loop. Deserialization of the ROS message itself and DDS reception remain as before.
+- An unprocessed image is replaced when a newer one is received. At most one image can be in conversion and one can be waiting; the prepared image is shared through the existing latest-frame buffer. The same input is not decoded again even when multiple clients request it. If client send phases differ, a new input that arrives in the meantime may be converted additionally, so this is not a mechanism that strictly limits the aggregate across all clients to `max_fps` times.
+- The `fps` in `/stream/status` is the ROS callback reception rate; it is not proof of successful conversion, sending, or browser-display FPS. Conversion failures for invalid images are logged, and the last valid image is retained until recovery on the next input. On stop, waiting input is discarded, conversion in progress is awaited, and image publication after stopping is prevented.
+- Waiting for the first real image, output resolution, send `max_fps`, codec, per-connection encoder, and recording path are unchanged. This is not a change intended to reduce bandwidth or enable GPU processing.
+
 ## Design Points
 
 - Low-latency first, preview-only. Low quality is acceptable.

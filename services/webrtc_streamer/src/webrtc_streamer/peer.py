@@ -21,6 +21,7 @@ import fractions
 import logging
 import threading
 import time
+from collections.abc import Callable
 from typing import Any, Protocol, runtime_checkable
 
 from webrtc_streamer.frame_queue import LatestFrame
@@ -166,7 +167,11 @@ class _BgrVideoTrack:
     pass
 
 
-def _make_track(frames: LatestFrame[Any], max_fps: int) -> Any:
+def _make_track(
+    frames: LatestFrame[Any],
+    max_fps: int,
+    prepare_frame: Callable[[], None] | None = None,
+) -> Any:
     """Build a live aiortc video track over *frames* (aiortc imported here)."""
     import av
     from aiortc import VideoStreamTrack
@@ -190,6 +195,8 @@ def _make_track(frames: LatestFrame[Any], max_fps: int) -> Any:
             the real resolution instead of a placeholder size that later resizes."""
             deadline = time.monotonic() + _FIRST_FRAME_WAIT_S
             while True:
+                if prepare_frame is not None:
+                    await asyncio.to_thread(prepare_frame)
                 bgr = self._frames.latest_nowait()
                 if bgr is not None or time.monotonic() >= deadline:
                     return bgr
@@ -203,6 +210,8 @@ def _make_track(frames: LatestFrame[Any], max_fps: int) -> Any:
                 await asyncio.sleep(target - now)
             self._count += 1
 
+            if prepare_frame is not None:
+                await asyncio.to_thread(prepare_frame)
             bgr = self._frames.latest_nowait()
             if bgr is None and self._last is None:
                 # First frame not seen yet: wait so we never emit a placeholder
@@ -242,11 +251,13 @@ class AiortcPeerManager:
         *,
         encoding: Encoding = Encoding.vp8,
         max_fps: int = 15,
+        prepare_frame: Callable[[], None] | None = None,
         ice_servers: list[dict[str, Any]] | None = None,
     ) -> None:
         self._frames = frames
         self._encoding = encoding
         self._max_fps = max_fps
+        self._prepare_frame = prepare_frame
         # RTCIceServer JSON dicts (from WEBRTC_ICE_SERVERS via config). Empty =
         # LAN/direct, host candidates only. Kept raw; turned into RTCIceServer
         # objects lazily in handle_offer so this module imports without aiortc.
@@ -303,7 +314,9 @@ class AiortcPeerManager:
                     # discard, or a momentary blip would end the preview for good.
                     logger.info("peer transiently disconnected; awaiting ICE recovery")
 
-            sender = pc.addTrack(_make_track(self._frames, self._max_fps))
+            sender = pc.addTrack(
+                _make_track(self._frames, self._max_fps, self._prepare_frame)
+            )
             self._force_codec(pc, sender)
 
             await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))

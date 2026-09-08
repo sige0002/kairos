@@ -48,6 +48,13 @@ ROS 2 の image トピックをブラウザへ低遅延配信する**プレビ�
 - frontend は既定で同一オリジンの `/webrtc`（frontend の nginx が streamer にリバースプロキシ）経由で signaling する（orchestrator は経由しない）。`WEBRTC_PUBLIC_URL` に絶対 URL を設定すると streamer へ直接接続する旧方式になる。なお signaling が同一オリジンでも、WebRTC メディア（ICE/SRTP）はブラウザ ↔ streamer 間を UDP で流れる。同一 LAN・Tailscale など直接到達できる経路なら `ice_servers` は不要（上記の v4 固定＋パケット上限が既定で効く）。NAT 越え・WiFi クライアント分離・UDP が通らない環境では `WEBRTC_ICE_SERVERS`（STUN、必要なら TURN リレー）を設定する。
 - 複数 client: stream ごとに 1 つの映像ソース（最新フレーム）を共有し、**client ごとに PeerConnection** を作る。client 切断で当該 PC を破棄する。
 
+### デコード前の最新画像保持
+
+- ROS の画像 callback は `Image` / `CompressedImage` の最新メッセージを1件だけ保持する。JPEG/PNG のデコード・色変換・縮小は、WebRTC track が送信周期に画像を要求した時に worker thread で行う。ROS executor と Web のイベントループには画像変換を置かない。ROS メッセージ自体のデシリアライズと DDS 受信は従来どおり。
+- 未処理画像は新しい受信で置換する。変換中の1件と待機中の1件が上限で、準備済み画像は既存の最新フレームバッファで共有する。同じ入力を複数 client が要求しても再デコードしない。client の送信位相が異なれば、その間に到着した新しい入力を追加で変換する場合があるため、全 client 合算で必ず `max_fps` 回に制限する仕組みではない。
+- `/stream/status` の `fps` は ROS callback の受信レートであり、変換成功・送信・ブラウザ表示 FPS の証明ではない。不正画像の変換はログに残し、最後の正常画像を維持して次の入力で復旧する。停止は待機入力を破棄し、進行中の変換完了を待って、停止後の画像公開を防ぐ。
+- 初回の実画像待ち、出力解像度、送信 `max_fps`、codec、接続単位の encoder、録画経路は変更しない。帯域削減やGPU化を目的とする変更ではない。
+
 ## 設計ポイント
 
 - 低遅延優先・プレビュー専用。低画質を許容する。

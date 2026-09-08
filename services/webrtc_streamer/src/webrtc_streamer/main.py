@@ -110,6 +110,7 @@ def _real_peer_factory(request: StreamStartRequest, source: FrameSource) -> Peer
         source.frames,
         encoding=request.encoding,
         max_fps=request.max_fps,
+        prepare_frame=source.prepare_frame,
         ice_servers=settings.webrtc_ice_servers,
     )
 

@@ -7,13 +7,11 @@ buffer. The registry depends only on this Protocol, so its start/stop/idle and
 status logic is unit-testable with a :class:`FakeFrameSource` — no live DDS
 graph or image codec required.
 
-The real :class:`RosImageSource` runs an rclpy node on a background thread (the
-pattern from the ros2-web-integration skill: executor spins off-thread, frames
-land in lock-protected shared state). It subscribes to ``sensor_msgs/Image`` or
-``sensor_msgs/CompressedImage``, converts each message to a BGR ``numpy`` array
-via OpenCV, optionally downscales it (preview is lossy), and pushes it into the
-buffer. rclpy / cv2 are imported lazily so this module imports cleanly in the
-unit-test environment, where neither is installed.
+The real :class:`RosImageSource` runs an rclpy node on a background thread and
+retains only the latest Image/CompressedImage message. A media consumer calls
+prepare_frame on a worker thread to decode and downscale that pending message
+via OpenCV. Input arriving during conversion replaces a separate pending slot;
+clients share the last prepared BGR frame. rclpy / cv2 remain lazy imports.
 """
 
 from __future__ import annotations
@@ -22,6 +20,7 @@ import logging
 import threading
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from webrtc_streamer.frame_decoder import FrameDecoder
 from webrtc_streamer.frame_queue import LatestFrame
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -54,6 +53,10 @@ class FrameSource(Protocol):
 
     def stop(self) -> None:
         """Stop producing frames and release resources (idempotent)."""
+        ...
+
+    def prepare_frame(self) -> None:
+        """Prepare the latest input on a worker thread for a media consumer."""
         ...
 
     @property
@@ -128,14 +131,17 @@ class FakeFrameSource:
         """Push one frame into the buffer (no-op once stopped/closed)."""
         self._frames.put(frame)
 
+    def prepare_frame(self) -> None:
+        """Fake frames are already prepared by emit()."""
+
 
 class RosImageSource:
     """rclpy-backed :class:`FrameSource` for one image topic.
 
     Subscribes with best-effort / keep-last-1 QoS (preview wants the freshest
-    frame, not reliable delivery), decodes each message to BGR via OpenCV, and
-    pushes it into :attr:`frames`. The executor spins on a background thread so
-    it never blocks the asyncio web server.
+    frame, not reliable delivery). Callbacks only retain the latest message;
+    media consumers request BGR conversion on a worker thread. Neither the ROS
+    executor nor the asyncio web server performs the image conversion.
 
     rclpy and OpenCV are imported inside :meth:`start` so importing this module
     (and unit-testing the registry against a fake source) needs neither.
@@ -154,6 +160,7 @@ class RosImageSource:
         self._max_height = max_height
         self._node_name = node_name
         self._frames: LatestFrame[Frame] = LatestFrame()
+        self._decoder = FrameDecoder(self._frames.put)
         self._meter = _RateMeter()
         self._lock = threading.Lock()
         self._started = False
@@ -177,6 +184,8 @@ class RosImageSource:
             with self._lock:
                 if self._started:
                     return
+                self._decoder.close()
+                self._decoder = FrameDecoder(self._frames.put)
                 self._spin_up()
                 self._started = True
         except BaseException:
@@ -190,6 +199,8 @@ class RosImageSource:
             node, executor, thread = self._node, self._executor, self._thread
             self._node = self._executor = self._thread = None
         self._teardown(node, executor, thread)
+        self._decoder.close()
+        self._decoder = FrameDecoder(self._frames.put)
 
     def _spin_up(self) -> None:
         """Create the rclpy node + subscription and spin it off-thread."""
@@ -242,34 +253,35 @@ class RosImageSource:
         )
 
     def _on_image(self, msg: Any) -> None:
+        self._meter.tick()
+        self._decoder.offer(msg, self._decode_image)
+
+    def _decode_image(self, msg: Any) -> Frame:
         from webrtc_streamer.convert import image_to_bgr
 
-        try:
-            frame = image_to_bgr(msg)
-        except Exception:  # noqa: BLE001 - a bad frame must not kill the source
-            logger.exception("failed to decode Image message")
-            return
-        self._publish(frame)
+        return self._downscale(image_to_bgr(msg))
 
     def _on_compressed(self, msg: Any) -> None:
+        self._meter.tick()
+        self._decoder.offer(msg, self._decode_compressed)
+
+    def _decode_compressed(self, msg: Any) -> Frame:
         from webrtc_streamer.convert import compressed_image_to_bgr
 
-        try:
-            frame = compressed_image_to_bgr(msg)
-        except Exception:  # noqa: BLE001
-            logger.exception("failed to decode CompressedImage message")
-            return
-        self._publish(frame)
+        return self._downscale(compressed_image_to_bgr(msg))
 
-    def _publish(self, frame: Frame) -> None:
+    def prepare_frame(self) -> None:
+        """Decode the latest received image, at most once across consumers."""
+        self._decoder.prepare()
+
+    def _downscale(self, frame: Frame) -> Frame:
         from webrtc_streamer.convert import downscale_bgr
 
-        frame = downscale_bgr(frame, self._max_width, self._max_height)
-        self._meter.tick()
-        self._frames.put(frame)
+        return downscale_bgr(frame, self._max_width, self._max_height)
 
     def stop(self) -> None:
         with self._lock:
+            self._decoder.close()
             if (
                 not self._started
                 and self._node is None
