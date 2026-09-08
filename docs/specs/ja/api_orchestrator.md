@@ -371,6 +371,7 @@ capture を保持する運用でも増え続ける `report/<pipeline>/<capture_i
 ## SSE イベント契約（`GET /api/v1/events`）
 
 - 形式: `id:`（単調増加の整数）/ `event:`（種別）/ `data:`（JSON）。
+- 配信済みイベントは不変として扱い、SSE 文字列を初回配信時に 1 回だけ生成して購読者と再送で共有する。キャッシュはイベント自身に保持し、既存の件数・時間上限付きリングと購読者キューでイベントが保持されている間だけ生存する。複数接続での JSON 変換 CPU を減らす代わりに、保持イベントごとに文字列分のメモリを追加使用する。イベント形式・頻度・再同期条件は変えない。
 - 種別と payload:
   - `record_status`: `{ capture_id, run_id, state, message_count, bytes, started_at }`（`started_at` は additive — start 遷移を見逃したページも進行中録画の経過を描ける）。**受信側は同一 capture 内の巻き戻しを破棄すること**: 1 つの capture の状態は `created → armed → recording → stopping → 終端` としか進まないので、遅れて届いた低位イベントは新情報ではなく古い情報である。`recording` への巻き戻しはコンソールに「この画面が駆動していない録画が走っている」と誤認させ、停止済みのテイクの上に takeover カードを出す。`capture_id` が異なる場合は巻き戻しではない（前の capture の終端直後に新しい capture が `recording` になるのは正常）。
   - `metrics`: `topic_monitor` の周期 snapshot（[topic_monitor](topic_monitor.md) の出力スキーマ）

@@ -34,6 +34,11 @@ Core concept: **recording quality and task result are separate axes** (a failed 
 - Live video: **WebRTC** (connects to `webrtc_streamer`'s `/stream/offer`).
 - Tests: **Vitest + Testing Library**.
 
+### Initial loading and high-frequency display
+
+- Keep Collect in the initial bundle because it includes recording operations, and load Review / Datasets / Validation / Monitor / Settings by screen when needed. The first display of a tab entails an additional JavaScript fetch. Keep navigation in place while loading and show translated `role="status"` text. Notify fetch failures in an in-screen error boundary and provide navigation to another tab and page reload (a solo window offers reload only).
+- Signals retains received samples within the existing time window and maximum of 3,600 points, and batches only the copy of the arrays for drawing and the React update to at most once per `requestAnimationFrame`. Pause also applies the tail received before the next frame. Pending frames are canceled when the series changes or the view is left. Recording, server sampling frequency, and alert notifications do not change.
+
 ## Inputs
 
 - WebRTC video (`webrtc_streamer`; by default same-origin via `/webrtc`, reverse-proxied by the frontend's nginx; override with `WEBRTC_PUBLIC_URL`)

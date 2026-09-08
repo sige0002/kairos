@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
 import { setApiBase } from './api/client';
@@ -8,11 +8,6 @@ import { useEventStream } from './sse/useEventStream';
 import { useUiStore } from './store/uiStore';
 import { useOperators } from './v2/plans';
 import { CollectScreen } from './v2/collect/CollectScreen';
-import { ReviewScreen } from './v2/review/ReviewScreen';
-import { DatasetsScreen } from './v2/datasets/DatasetsScreen';
-import { ValidationScreen } from './v2/validation/ValidationScreen';
-import { MonitorScreen } from './v2/monitor/MonitorScreen';
-import { SettingsScreen } from './v2/settings/SettingsScreen';
 import { resolveTabId, V2_TABS, type V2TabId } from './v2/tabs';
 import { useOnPopState } from './v2/shared/useOnPopState';
 import { HIT_AREA_CHIP, HIT_AREA_TAB } from './v2/shared/hitArea';
@@ -21,6 +16,25 @@ import { Hexagon, StatusDot, cn } from './components/ui';
 import { OPERATOR_STORAGE_KEY, type SseStatus } from './store/uiStore';
 import { StoreHealthBanner } from './v2/store/StoreHealthBanner';
 import { useLocale } from './i18n';
+
+// Keep recording controls in the entry bundle; load other screens on demand.
+const ReviewScreen = lazy(() =>
+  import('./v2/review/ReviewScreen').then((m) => ({ default: m.ReviewScreen })),
+);
+const DatasetsScreen = lazy(() =>
+  import('./v2/datasets/DatasetsScreen').then((m) => ({ default: m.DatasetsScreen })),
+);
+const ValidationScreen = lazy(() =>
+  import('./v2/validation/ValidationScreen').then((m) => ({
+    default: m.ValidationScreen,
+  })),
+);
+const MonitorScreen = lazy(() =>
+  import('./v2/monitor/MonitorScreen').then((m) => ({ default: m.MonitorScreen })),
+);
+const SettingsScreen = lazy(() =>
+  import('./v2/settings/SettingsScreen').then((m) => ({ default: m.SettingsScreen })),
+);
 
 // ---- per-tab pages (deep link + pop-out) ------------------------------------
 // Each tab is addressable by URL (`?tab=<id>`); `?tab=<id>&solo=1` renders ONLY
@@ -46,6 +60,26 @@ function openTabWindow(id: string): void {
 
 /** Render the screen for a given v2 tab id. */
 function TabContent({ tabId }: { tabId: V2TabId }) {
+  const { t } = useTranslation('common');
+  return (
+    <Suspense
+      key={tabId}
+      fallback={
+        <p
+          role="status"
+          data-testid="screen-loading"
+          className="p-4 text-sm text-text-muted"
+        >
+          {t('shell.loadingScreen')}
+        </p>
+      }
+    >
+      <ScreenContent tabId={tabId} />
+    </Suspense>
+  );
+}
+
+function ScreenContent({ tabId }: { tabId: V2TabId }) {
   const { t } = useTranslation('common');
   switch (tabId) {
     case 'collect':

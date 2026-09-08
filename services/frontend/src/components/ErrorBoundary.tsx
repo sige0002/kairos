@@ -127,6 +127,13 @@ export class PanelBoundary extends Component<
               {error.message}
             </pre>
           )}
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-5 rounded-control bg-accent px-4 py-2 text-sm font-semibold text-text-inverse hover:bg-accent-strong"
+          >
+            {i18n.t('common:actions.reload')}
+          </button>
         </div>
       </div>
     );

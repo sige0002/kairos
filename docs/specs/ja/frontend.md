@@ -33,6 +33,11 @@ backend-driven な軽量 Web UI（Vite + React + TypeScript）。タブは技術
 - ライブ映像: **WebRTC**（`webrtc_streamer` の `/stream/offer` に接続）。
 - テスト: **Vitest + Testing Library**。
 
+### 初回読み込みと高頻度表示
+
+- Collect は収録操作を含むため初期バンドルに保持し、Review / Datasets / Validation / Monitor / Settings は画面単位で必要時に読み込む。初回のタブ表示は追加の JavaScript 取得を伴う。読み込み中もナビゲーションを残し、翻訳済みの `role="status"` を表示する。取得失敗は画面内のエラー境界で通知し、別タブへの移動とページ再読み込みを提供する（単独ウィンドウは再読み込みのみ）。
+- Signals は受信サンプルを従来の時間窓・最大 3,600 点の範囲で保持し、描画用配列のコピーと React への反映だけを `requestAnimationFrame` ごとに最大 1 回へ集約する。Pause は次のフレーム前に受信した末尾も反映し、系列変更・離脱時は未実行のフレームを取り消す。収録・サーバのサンプリング頻度・アラート通知は変更しない。
+
 ## 入力
 
 - WebRTC 映像（`webrtc_streamer`。既定は同一オリジン `/webrtc` 経由で frontend の nginx がリバースプロキシ。`WEBRTC_PUBLIC_URL` で上書き可）

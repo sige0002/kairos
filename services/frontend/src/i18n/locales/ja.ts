@@ -48,6 +48,7 @@ export const ja = {
     shell: {
       home: 'kairos — 録画コンソール（ホーム）',
       loadingConsole: 'kairos を読み込み中…',
+      loadingScreen: '画面を読み込み中…',
       loadingOperator: '担当者情報を読み込み中…',
       configurationFailed: '設定の読み込みに失敗しました: {{error}}',
       tabsLabel: 'kairos タブ',
@@ -85,7 +86,8 @@ export const ja = {
       unexpectedBody:
         '画面で予期しないエラーが発生し、表示を停止しました。通常は再読み込みで復旧します。',
       panelTitle: 'この画面の表示を停止しました',
-      panelBody: '別のタブに移動してから、この画面をもう一度開いてください。',
+      panelBody:
+        '別のタブに移動するか、このページを再読み込みしてもう一度試してください。',
       panelSoloBody:
         'このウィンドウにはこの画面だけが表示されています。再読み込みしてもう一度試してください。',
     },

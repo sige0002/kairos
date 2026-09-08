@@ -35,6 +35,7 @@ import time
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from functools import cached_property
 from typing import Any
 
 from api_orchestrator.monitor_client import MonitorClient
@@ -73,6 +74,15 @@ class Event:
 
     def encode(self) -> str:
         """Render this event in the SSE wire format (id / event / data)."""
+        return self._wire
+
+    @cached_property
+    def _wire(self) -> str:
+        """Share one serialization across subscribers and replay.
+
+        Events are immutable once published. The cached frame lives only as
+        long as its event in the bounded replay ring/subscriber queues.
+        """
         payload = json.dumps(self.data, separators=(",", ":"))
         return f"id: {self.id}\nevent: {self.event}\ndata: {payload}\n\n"
 

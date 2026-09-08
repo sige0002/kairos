@@ -376,6 +376,7 @@ Analyze and manually delete the ever-growing `report/<pipeline>/<capture_id>/` t
 ## SSE event contract (`GET /api/v1/events`)
 
 - Format: `id:` (monotonically increasing integer) / `event:` (kind) / `data:` (JSON).
+- Treat delivered events as immutable: generate the SSE string once, on first delivery, and share it between subscribers and replays. Keep the cache on the event itself, and keep it alive only while the event is retained by the existing count- and time-bounded ring and subscriber queues. This uses additional string-sized memory per retained event in exchange for reducing JSON conversion CPU across multiple connections. The event format, frequency, and resynchronization conditions do not change.
 - Kinds and payloads:
   - `record_status`: `{ capture_id, run_id, state, message_count, bytes, started_at }` (`started_at` is additive — a page that missed the start transition can still render the elapsed time of an in-progress recording). **Receivers must drop a rewind within the same capture**: one capture's state only moves `created → armed → recording → stopping → terminal`, so a lower state arriving late is old information, not news. A rewind to `recording` makes the console believe a recording it is not driving is running, and it puts the takeover card over an already-stopped take. A differing `capture_id` is not a rewind (a new capture legitimately goes `recording` right after the previous one reached a terminal state).
   - `metrics`: `topic_monitor`'s periodic snapshot (the output schema of [topic_monitor](topic_monitor.md))

@@ -79,6 +79,11 @@ export function useProbeSeries(
 
   useEffect(() => {
     if (!live || series.length === 0) {
+      // Include the last samples received before Pause, even if the next
+      // animation frame has not run yet. Unmount never publishes a snapshot.
+      if (!live && series.length > 0) {
+        setData([[...xsRef.current], ...ysRef.current.map((y) => [...y])]);
+      }
       setStatus('idle');
       return;
     }
@@ -94,12 +99,24 @@ export function useProbeSeries(
 
     setStatus('connecting');
     const sources: EventSource[] = [];
+    let active = true;
+    let frame: number | null = null;
+    const scheduleSnapshot = () => {
+      if (frame !== null) return;
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        if (active) {
+          setData([[...xsRef.current], ...ysRef.current.map((y) => [...y])]);
+        }
+      });
+    };
     byTopic.forEach((fields, topic) => {
       const es = new EventSource(probeStreamUrl(topic, fields, hz));
       es.onopen = () => setStatus('open');
       es.onerror = () =>
         setStatus(es.readyState === EventSource.CLOSED ? 'closed' : 'connecting');
       es.onmessage = (ev: MessageEvent<string>) => {
+        if (!active) return;
         let m: ProbeMultiSample;
         try {
           m = JSON.parse(ev.data) as ProbeMultiSample;
@@ -127,12 +144,16 @@ export function useProbeSeries(
           xs.splice(0, drop);
           ysRef.current.forEach((y) => y.splice(0, drop));
         }
-        setData([[...xs], ...ysRef.current.map((y) => [...y])]);
+        // Retain every received sample within the existing window/cap, but
+        // copy the history and notify React at most once per display frame.
+        scheduleSnapshot();
       };
       sources.push(es);
     });
 
     return () => {
+      active = false;
+      if (frame !== null) cancelAnimationFrame(frame);
       sources.forEach((es) => es.close());
       setStatus('closed');
     };

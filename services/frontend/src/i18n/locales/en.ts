@@ -42,6 +42,7 @@ export const en = {
     shell: {
       home: 'kairos — recording console (home)',
       loadingConsole: 'Loading kairos…',
+      loadingScreen: 'Loading screen…',
       loadingOperator: 'Loading operator context…',
       configurationFailed: 'Failed to load configuration: {{error}}',
       tabsLabel: 'kairos tabs',
@@ -79,8 +80,7 @@ export const en = {
       unexpectedBody:
         'The interface hit an unexpected error and stopped rendering. Reloading usually recovers it.',
       panelTitle: 'This screen stopped rendering',
-      panelBody:
-        'The rest of the console is unaffected — switching tabs and coming back reloads this screen.',
+      panelBody: 'You can switch to another tab, or reload this page to try again.',
       panelSoloBody:
         'This window shows only this screen, so reloading it is the way back.',
     },

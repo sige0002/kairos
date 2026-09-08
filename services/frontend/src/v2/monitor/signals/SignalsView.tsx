@@ -34,6 +34,7 @@ const WINDOWS: { id: ProbeWindowId; label: string; sec: number }[] = [
   { id: '1m', label: '1m', sec: 60 },
 ];
 const TOPIC_WARN = 6;
+const EMPTY_TOPICS: NonNullable<ReturnType<typeof useProbeTopics>['data']> = [];
 
 const STATUS_DOT: Record<ProbeStreamStatus, string> = {
   idle: 'bg-surface-muted',
@@ -52,11 +53,15 @@ function seriesLabel(s: ProbeSeries): string {
 export function SignalsView() {
   const { t } = useTranslation('monitor');
   const topicsQuery = useProbeTopics();
-  const topics = topicsQuery.data ?? [];
+  const topics = topicsQuery.data ?? EMPTY_TOPICS;
   const [topicQuery, setTopicQuery] = useState('');
   const normalizedQuery = topicQuery.trim().toLowerCase();
-  const filteredTopics = topics.filter((topic) =>
-    topic.name.toLowerCase().includes(normalizedQuery),
+  const filteredTopics = useMemo(
+    () =>
+      normalizedQuery
+        ? topics.filter((topic) => topic.name.toLowerCase().includes(normalizedQuery))
+        : topics,
+    [topics, normalizedQuery],
   );
 
   // Add-series form: pick a topic, then one of its numeric fields, then "Add".

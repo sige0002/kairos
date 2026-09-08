@@ -600,7 +600,10 @@ test('the panel error offers the recovery that exists where it is shown', () => 
       <Boom />
     </PanelBoundary>,
   );
-  expect(screen.getByTestId('panel-error')).toHaveTextContent(/switching tabs/);
+  expect(screen.getByTestId('panel-error')).toHaveTextContent(
+    /switch to another tab, or reload this page/,
+  );
+  expect(screen.getByRole('button', { name: 'Reload' })).toBeVisible();
   unmount();
 
   render(
@@ -611,7 +614,8 @@ test('the panel error offers the recovery that exists where it is shown', () => 
   expect(screen.getByTestId('panel-error')).toHaveTextContent(
     /reloading it is the way back/,
   );
-  expect(screen.getByTestId('panel-error')).not.toHaveTextContent(/switching tabs/);
+  expect(screen.getByTestId('panel-error')).not.toHaveTextContent(/another tab/);
+  expect(screen.getByRole('button', { name: 'Reload' })).toBeVisible();
 });
 
 test('a direct-open Solo Collect hydrates its saved operator before Start is offered', async () => {
