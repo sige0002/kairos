@@ -17,7 +17,7 @@ ROS 2 のロボットデータを **収録・監視・検証・変換** する�
 flowchart TB
   ROBOT["ROS 2 Robot / Sim"] --> TOPICS(["ROS 2 Topics (DDS)"])
 
-  subgraph live["ライブ経路 — ROS 2 コンテナ (rclpy)"]
+  subgraph live["ライブ経路 — ROS 2 コンテナ (rclpy / rclcpp)"]
     REC["rosbag2_recorder<br/>選択トピック → MCAP"]
     MON["topic_monitor<br/>Hz/遅延/ロス/帯域<br/>（デコードしない）"]
     PROBE["topic_probe<br/>数値フィールドのプロット<br/>（decode はここに隔離）"]

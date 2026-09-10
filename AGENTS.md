@@ -31,7 +31,7 @@
 
 ## 規約
 
-- ディレクトリ構成は **1 フォルダ = 1 コンテナ**（下記）。バックエンドは **Python**、frontend は **TS**（→ スタック）。コード規約・テスト方針もベースライン確定済み（下記）。
+- ディレクトリ構成は **1 フォルダ = 1 コンテナ**（下記）。バックエンドは **Python**（Monitorの受信・集計のみC++）、frontend は **TS**（→ スタック）。コード規約・テスト方針もベースライン確定済み（下記）。
 - API 契約・各サービスの内部詳細・ビルド/実行コマンドは実装済み。詳細は `docs/specs/ja/<service>.md` を参照。
 
 ## サンプルデータ（ローカル動作確認用）
@@ -105,8 +105,9 @@ kairos/
 
 > 確定済み。サービスごとの詳細は `docs/specs/ja/<service>.md` を参照。
 
-- **バックエンドは Python。**
+- **バックエンドは Python。Monitorのserialized受信・窓集計のみC++。**
   - ROS 2 ノード（`rosbag2_recorder` / `topic_monitor` / `webrtc_streamer` / `topic_probe`）: **rclpy**。
+    `topic_monitor`はgraph/QoS/APIをPythonに保ち、既定の受信・集計を同梱rclcppライブラリで行う。`make build monitor`で一緒にビルドする。
   - `api_orchestrator` / `dora_runner`: Python（FastAPI）。
 - **frontend**: Vite + React + TypeScript（確定）。
 - ROS 2 ディストロ: テストハーネスの既定は **Jazzy**（`ROS_DISTRO` で変更可）。

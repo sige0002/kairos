@@ -19,7 +19,7 @@ organized around this "source of truth."
 flowchart TB
   ROBOT["ROS 2 Robot / Sim"] --> TOPICS(["ROS 2 Topics (DDS)"])
 
-  subgraph live["live path — ROS 2 containers (rclpy)"]
+  subgraph live["live path — ROS 2 containers (rclpy / rclcpp)"]
     REC["rosbag2_recorder<br/>selected topics → MCAP"]
     MON["topic_monitor<br/>Hz / latency / loss / bandwidth<br/>(never decodes)"]
     PROBE["topic_probe<br/>numeric-field plots<br/>(decoding is isolated here)"]

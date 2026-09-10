@@ -1,0 +1,11 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>kairos_monitor_native</name>
+  <version>0.1.0</version>
+  <description>Serialized topic receive and sliding-window aggregation.</description>
+  <maintainer email="dev@example.com">Kairos contributors</maintainer>
+  <license>Apache-2.0</license>
+  <buildtool_depend>ament_cmake</buildtool_depend>
+  <depend>rclcpp</depend>
+  <export><build_type>ament_cmake</build_type></export>
+</package>

@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
@@ -34,6 +35,7 @@ from kairos_common import (
     utc_now_iso8601,
 )
 from kairos_common.monitoring.alert_config import load_alert_rules, load_derived_config
+from kairos_common.monitoring.metrics import MetricsRegistry
 from kairos_common.monitoring.models import (
     AlertsResponse,
     IncidentsResponse,
@@ -56,8 +58,15 @@ _STREAM_INTERVAL_S = 1.0
 
 
 def _build_subscriber(config: RecordingConfig | None) -> TopicSubscriber:
-    """Build the rclpy-backed subscriber over the config allowlist."""
+    """Build the configured receive backend over the existing topic allowlist."""
     allowlist = list(config.default_topics) if config is not None else []
+    backend = os.environ.get("KAIROS_MONITOR_BACKEND", "native")
+    if backend == "native":
+        from topic_monitor.native_backend import NativeTopicSubscriber
+
+        return NativeTopicSubscriber(allowlist, config=config)
+    if backend != "python":
+        raise ValueError(f"unknown monitor backend: {backend}")
     return RosTopicSubscriber(allowlist, config=config)
 
 
@@ -86,7 +95,11 @@ def create_monitor_app(*, subscriber: TopicSubscriber | None = None) -> FastAPI:
     # feature is on with its defaults (see DerivedRulesConfig).
     derived_config = load_derived_config(alert_config_path)
     service = MonitorService(
-        sub, config=config, alert_rules=alert_rules, derived_config=derived_config
+        sub,
+        config=config,
+        alert_rules=alert_rules,
+        derived_config=derived_config,
+        registry_factory=getattr(sub, "registry_factory", MetricsRegistry),
     )
 
     @asynccontextmanager

@@ -77,6 +77,7 @@ class MonitorService:
         clock: Callable[[], float] = time.monotonic,
         perf_clock: Callable[[], float] = time.perf_counter,
         wall_clock_ns: Callable[[], int] = time.time_ns,
+        registry_factory: Callable[..., MetricsRegistry] = MetricsRegistry,
     ) -> None:
         self._subscriber = subscriber
         self._config = config
@@ -114,7 +115,7 @@ class MonitorService:
                 "baseline_stable_cv": m.baseline_stable_cv,
                 "baseline_min_samples": m.baseline_min_samples,
             }
-        self._registry = MetricsRegistry(
+        self._registry = registry_factory(
             windows,
             expected_hz_for=make_expected_hz_resolver(config),
             **reg_kwargs,

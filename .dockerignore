@@ -11,6 +11,7 @@
 **/.pytest_cache
 **/.ruff_cache
 **/.mypy_cache
+services/topic_monitor/native/build
 
 .git
 data

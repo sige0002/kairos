@@ -23,11 +23,21 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
 
 ## 構成コンポーネント
 
-- **ROS2 Subscribers** — rclpy ノードの監視スレッドで購読。**allowlist のみ** subscribe（全 topic 一括 subscribe はしない）。
+- **ROS2 Subscribers** — 既定は rclcpp の serialized subscription。Pythonへpayloadを渡さず、到着時刻・バイト数・DDS lostをC++で保持する。**allowlist のみ** subscribe（全 topic 一括 subscribe はしない）。graph discoveryとQoS解決は既存のrclpyノードが担当する。
 - **Window Stats** — スライディングウィンドウ（既定 `1s` / `5s`、設定可）で集計。
 - **Alert Rules** — 閾値判定。ヒステリシス（`cooldown_s`、`clear_after_s`）。
 - **Sensor Preview** — **decode allowlist（既定 無効）。** UI で有効化した小型・固定型（`std_msgs/*` 数値、`sensor_msgs/Imu`・`NavSatFix`・`BatteryState` 等）のみ軽量 decode。
 - **Metrics Publisher** — SSE / JSON で配信。
+
+## ビルドと受信バックエンド
+
+- `make build monitor` がC++共有ライブラリもビルドして同じimageへ同梱する。起動時のコンパイルや追加ダウンロードはない。
+- 通常運用はC++受信・集計を既定とし、利用者が低負荷モードを選ぶ必要はない。監視対象・受信件数・約1秒のSSE更新周期を削減しない。
+- トピック名や機体名を固定しない。`default_topics`の具体名・globに一致する追加トピックは既存の約2秒のdiscovery周期で検出し、型・QoSに応じて購読する。
+- 独自メッセージは、従来の`make msgs-build`で生成した`install/`をそのまま既存overlayとして使用する。通常のメッセージビルドでC++側の生成物も含まれるため、別のメッセージビルド操作は不要。
+- 保守用に`.env`の`KAIROS_MONITOR_BACKEND=python`で従来実装へ戻せる（コンテナ再作成で反映）。既定は`native`。native初期化失敗をPythonへ黙ってフォールバックせず、ログと`/readyz`のnot-readyで示す。
+- C++とPythonのABI版・snapshot構造サイズを起動時に照合する。異なる版の共有ライブラリを混ぜない。
+- native経路ではPythonのsample callbackを通らないため、`self_load.callback_lag_ms` / `callback_lag_p95_ms`は`null`。測っていない処理時間を0msとは表示しない。payloadのstamp decodeは行わず、`stamp_delay_ms`と`sensor_preview`も`null`。
 
 ## QoS 自動マッチ
 

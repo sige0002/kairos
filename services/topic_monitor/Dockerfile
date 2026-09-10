@@ -41,6 +41,16 @@ COPY services/topic_monitor /app/services/topic_monitor
 RUN cd /app/services/topic_monitor \
     && uv sync --frozen --no-editable --no-dev
 
+# Compile against the same ROS underlay as runtime. Only the shared library is
+# delivered: startup never needs a compiler, network access or robot-specific
+# rebuild. Custom interfaces continue to come from the existing message overlay.
+RUN . "/opt/ros/${ROS_DISTRO}/setup.sh" \
+    && cmake -S /app/services/topic_monitor/native -B /tmp/monitor-native-build \
+        -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+        -DCMAKE_INSTALL_PREFIX=/opt/native \
+    && cmake --build /tmp/monitor-native-build --parallel 2 \
+    && cmake --install /tmp/monitor-native-build
+
 # ---- runtime ----------------------------------------------------------------
 FROM ${ROS_BASE_IMAGE} AS runtime
 ARG ROS_DISTRO
@@ -48,6 +58,8 @@ RUN test -d "/opt/ros/${ROS_DISTRO}" || { echo "ROS_BASE_IMAGE does not provide 
 ENV VENV=/opt/venv
 ENV PATH="$VENV/bin:$PATH"
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/native/lib/libkairos_monitor_native.so /opt/kairos/lib/libkairos_monitor_native.so
+ENV KAIROS_MONITOR_NATIVE_LIBRARY=/opt/kairos/lib/libkairos_monitor_native.so
 
 # Bundle the Cyclone DDS RMW so the image can talk to either Fast DDS (default)
 # or Cyclone DDS robots by switching RMW_IMPLEMENTATION at deploy time (ROS 2
