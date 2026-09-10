@@ -293,6 +293,12 @@ class AiortcPeerManager:
         with self._lock:
             return len(self._pcs)
 
+    def _make_media_track(self) -> Any:
+        return _make_track(self._frames, self._max_fps, self._prepare_frame)
+
+    def _configure_sender(self, sender: Any) -> None:
+        """Backend-specific sender setup; ordinary BGR tracks need none."""
+
     async def handle_offer(self, sdp: str, sdp_type: str) -> tuple[str, str]:
         from aiortc import RTCConfiguration, RTCPeerConnection, RTCSessionDescription
 
@@ -314,9 +320,8 @@ class AiortcPeerManager:
                     # discard, or a momentary blip would end the preview for good.
                     logger.info("peer transiently disconnected; awaiting ICE recovery")
 
-            sender = pc.addTrack(
-                _make_track(self._frames, self._max_fps, self._prepare_frame)
-            )
+            sender = pc.addTrack(self._make_media_track())
+            self._configure_sender(sender)
             self._force_codec(pc, sender)
 
             await pc.setRemoteDescription(RTCSessionDescription(sdp=sdp, type=sdp_type))

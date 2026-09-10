@@ -82,6 +82,7 @@ class StreamInfo(BaseModel):
     clients: int = 0
     fps: float = 0.0
     encoding: Encoding = Encoding.vp8
+    processing: dict[str, int | float] | None = None
 
 
 class Capabilities(BaseModel):

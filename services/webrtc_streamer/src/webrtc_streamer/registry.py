@@ -305,6 +305,7 @@ class StreamRegistry:
             clients=stream.peers.client_count(),
             fps=stream.source.fps,
             encoding=stream.encoding,
+            processing=getattr(stream.source, "processing", None),
         )
 
     def reap_idle(self) -> list[str]:

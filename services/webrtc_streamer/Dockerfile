@@ -7,6 +7,19 @@
 ARG ROS_DISTRO=jazzy
 ARG ROS_BASE_IMAGE=ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5c1f9b045b87a9fe3b0b9e03e7c2a9
 
+FROM ${ROS_BASE_IMAGE} AS native-builder
+ARG ROS_DISTRO
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    cmake g++ pkg-config libavcodec-dev libavutil-dev libswscale-dev \
+    libopencv-core-dev libopencv-imgproc-dev libopencv-imgcodecs-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY services/webrtc_streamer/native /native
+RUN . /opt/ros/${ROS_DISTRO}/setup.sh \
+    && cmake -S /native -B /native/build -DCMAKE_BUILD_TYPE=Release \
+       -DCMAKE_INSTALL_PREFIX=/opt/kairos \
+    && cmake --build /native/build -j2 \
+    && cmake --install /native/build
+
 # ---- builder ----------------------------------------------------------------
 # Uses uv rather than apt's python3-pip/python3-venv: the ros:*-ros-base images
 # only enable the Ubuntu "main" component, so that apt install 404s on mirrors
@@ -48,6 +61,7 @@ RUN test -d "/opt/ros/${ROS_DISTRO}" || { echo "ROS_BASE_IMAGE does not provide 
 ENV VENV=/opt/venv
 ENV PATH="$VENV/bin:$PATH"
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=native-builder /opt/kairos /opt/kairos
 
 # Bundle the Cyclone DDS RMW so the image can talk to either Fast DDS (default)
 # or Cyclone DDS robots by switching RMW_IMPLEMENTATION at deploy time (ROS 2
@@ -55,6 +69,8 @@ COPY --from=builder /opt/venv /opt/venv
 # See docs/specs/*/config.md.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
+        libavcodec60 libavutil58 libswscale7 \
+        libopencv-core406t64 libopencv-imgproc406t64 libopencv-imgcodecs406t64 \
     && rm -rf /var/lib/apt/lists/*
 
 # Public port from the shared .env (WEBRTC_PORT) for signaling / http.

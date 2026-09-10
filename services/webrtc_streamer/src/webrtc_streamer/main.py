@@ -92,6 +92,20 @@ def _apply_rtp_packet_max() -> None:
 
 def _real_source_factory(request: StreamStartRequest) -> FrameSource:
     """Build the rclpy-backed image source (imports rclpy inside ``start``)."""
+    backend = os.getenv("KAIROS_STREAMER_BACKEND", "python")
+    if backend == "native":
+        from webrtc_streamer.native_source import NativeImageSource
+
+        if request.encoding is not Encoding.vp8:
+            raise ValueError("native preview currently supports VP8 only")
+        return NativeImageSource(
+            request.topic,
+            max_width=request.max_width,
+            max_height=request.max_height,
+            max_fps=request.max_fps,
+        )
+    if backend != "python":
+        raise ValueError(f"unknown streamer backend: {backend}")
     from webrtc_streamer.source import RosImageSource
 
     return RosImageSource(
@@ -106,6 +120,16 @@ def _real_peer_factory(request: StreamStartRequest, source: FrameSource) -> Peer
     from webrtc_streamer.peer import AiortcPeerManager
 
     settings = get_settings()
+    from webrtc_streamer.native_source import NativeImageSource
+
+    if isinstance(source, NativeImageSource):
+        from webrtc_streamer.shared_packets import SharedPacketPeerManager
+
+        return SharedPacketPeerManager(
+            source,
+            max_fps=request.max_fps,
+            ice_servers=settings.webrtc_ice_servers,
+        )
     return AiortcPeerManager(
         source.frames,
         encoding=request.encoding,
@@ -130,7 +154,9 @@ def create_streamer_app(
     """
     _apply_rtp_packet_max()  # before any PeerConnection packetizes media
     settings = get_settings()
-    h264 = h264_available()
+    h264 = (
+        h264_available() and os.getenv("KAIROS_STREAMER_BACKEND", "python") != "native"
+    )
     registry = StreamRegistry(
         source_factory,
         peer_factory,

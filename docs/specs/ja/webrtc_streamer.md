@@ -55,6 +55,46 @@ ROS 2 の image トピックをブラウザへ低遅延配信する**プレビ�
 - `/stream/status` の `fps` は ROS callback の受信レートであり、変換成功・送信・ブラウザ表示 FPS の証明ではない。不正画像の変換はログに残し、最後の正常画像を維持して次の入力で復旧する。停止は待機入力を破棄し、進行中の変換完了を待って、停止後の画像公開を防ぐ。
 - 初回の実画像待ち、出力解像度、送信 `max_fps`、codec、接続単位の encoder、録画経路は変更しない。帯域削減やGPU化を目的とする変更ではない。
 
+## 実験用 native 共有エンコード（opt-in）
+
+`KAIROS_STREAMER_BACKEND=native` を設定して Streamer を再作成すると、同梱 C++ ライブラリを使う。
+既定は `python` で従来の配信を維持する。ライブラリ欠落・ABI 不一致・未知の backend を黙って
+Python へフォールバックしない。ビルドは通常の `make build streamer` に含まれる。
+
+- C++ が rclcpp の best-effort / keep-last-1 購読、最新画像の保持、送信周期に応じた
+  デコード・縮小・YUV 変換・VP8 エンコードを担当する。Python へ渡すのは圧縮済みパケットのみ。
+  一つの stream につきエンコーダは一つで、全 client が同じ結果を使う。入力を後から処理する
+  キューは作らず、変換中と待機中の入力、最後の正常画像、最新の圧縮済みフレームを保持する。
+- Python は API、送信周期のスケジュール、接続ごとの RTP パケット化・暗号化・再送・WebRTC
+  セッションを担当する。C++ にも送信周期の下限を設け、処理遅延後の追いつきバーストを防ぐ。
+  client がゼロの間は変換・エンコードを停止する。ROS 受信は既存の idle reaper が stream を停止するまで続く。
+- 実験版は **VP8 のみ**。native 時の H.264 capability は false。
+  `CompressedImage` の JPEG/PNG と、raw `Image` の bgr8/rgb8/bgra8/rgba8/mono8/8UC1 を対象とする。
+  raw のその他の形式・不正画像は変換エラーとしてログとカウンタに記録し、最後の正常画像を維持する。
+  出力寸法はアスペクト比を維持して cap 内へ縮小し、YUV420 用に偶数へ切り下げる。
+- 途中参加・PLI/FIR・フレームを読み飛ばした遅い client はキーフレームを要求する。遅い client のために
+  他の client を待たせず、次のキーフレームから復帰させる。停止時は進行中の native 呼び出しを join してから
+  ROS/codec を解放する。
+- REMB は接続ごとに保持し、共有 encoder には参加 client の最小値を適用する
+  （既定 500 kbps、250–1500 kbps に制限）。遅い回線の client が他の client の画質も下げ得る。
+  異なる画質を同時に提供する simulcast や、接続ごとの独立した bitrate 最適化は実装しない。
+  `bitrate_kbps` は従来どおり予約フィールドで、この実験でも適用しない。
+- aiortc の private sender 接点を局所的に使用するため、native は **aiortc 1.14.0 固定**。
+  別 version は offer 時に明示的に失敗させる。グローバルな monkeypatch は行わない。
+- `/stream/status` の native stream には `processing` を追加する。
+  `received` / `decoded` / `encoded` / `conversion_errors` はその source の累積値、
+  `input_fps` は直近の ROS 受信率。Python backend の `processing` は null。
+  `encoded` は全 client 共通のエンコード回数で、client 別の送信数・表示数ではない。
+
+配布ライブラリの実 ROS・画質・再起動・RTCP 検証は
+`services/webrtc_streamer/native/verify_native.py` を使う。Fast DDS と Cyclone DDS のそれぞれで、
+通常運用から隔離した domain / network に実行する。共有キュー・遅い client・停止時の join は
+`tests/test_shared_packets.py` が検証する。性能比較は同じ実 bag、FPS、画質、client 数を固定し、
+同じ実験 image の `python` と `native` を切り替えて行う。
+
+これは実験用バックエンドであり、CPU 削減率・長時間の安定性・全入力での画質同等性を保証しない。
+ネイティブ FFmpeg/OpenCV の追加で image サイズが増える点も採否に含める。
+
 ## 設計ポイント
 
 - 低遅延優先・プレビュー専用。低画質を許容する。

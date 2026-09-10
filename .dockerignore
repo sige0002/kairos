@@ -12,6 +12,7 @@
 **/.ruff_cache
 **/.mypy_cache
 services/topic_monitor/native/build
+services/webrtc_streamer/native/build
 
 .git
 data

@@ -57,6 +57,52 @@ Serialize each stream's start as one lifecycle transaction. A duplicate start re
 - The `fps` in `/stream/status` is the ROS callback reception rate; it is not proof of successful conversion, sending, or browser-display FPS. Conversion failures for invalid images are logged, and the last valid image is retained until recovery on the next input. On stop, waiting input is discarded, conversion in progress is awaited, and image publication after stopping is prevented.
 - Waiting for the first real image, output resolution, send `max_fps`, codec, per-connection encoder, and recording path are unchanged. This is not a change intended to reduce bandwidth or enable GPU processing.
 
+## Experimental Native Shared Encoding (opt-in)
+
+When `KAIROS_STREAMER_BACKEND=native` is set and the Streamer is recreated, it uses the bundled C++ library.
+The default is `python`, preserving the conventional delivery path. It does not silently fall back to
+Python for a missing library, ABI mismatch, or unknown backend. The build is included in the normal
+`make build streamer`.
+
+- C++ handles the rclcpp best-effort / keep-last-1 subscription, retaining the latest image, decoding,
+  resizing, YUV conversion, and VP8 encoding according to the send cadence. Only compressed packets are
+  passed to Python. There is one encoder per stream, and all clients use the same result. No queue is made
+  to process inputs later; the input being converted, the waiting input, the last valid image, and the
+  latest compressed frame are retained.
+- Python handles the API, send-cadence scheduling, per-connection RTP packetization, encryption,
+  retransmission, and WebRTC sessions. C++ also enforces a lower bound on the send cadence to prevent
+  catch-up bursts after processing delays. Conversion and encoding stop while there are zero clients.
+  ROS reception continues until the existing idle reaper stops the stream.
+- The experimental version supports **VP8 only**. H.264 capability is false in native mode.
+  It supports JPEG/PNG `CompressedImage` and bgr8/rgb8/bgra8/rgba8/mono8/8UC1 raw `Image` formats.
+  Other raw formats and invalid images are recorded as conversion errors in the logs and counters, and
+  the last valid image is retained. Output dimensions are reduced within the cap while preserving the
+  aspect ratio, then rounded down to even dimensions for YUV420.
+- A client joining mid-stream, a PLI/FIR, or a slow client that skips frames requests a keyframe. Other
+  clients are not made to wait for a slow client; it resumes from the next keyframe. On stop, the
+  in-progress native call is joined before ROS/codecs are released.
+- REMB is retained per connection, and the minimum among participating clients is applied to the shared
+  encoder (default 500 kbps, limited to 250–1500 kbps). A client on a slow link can therefore lower the
+  image quality for other clients. Simulcast for serving different qualities simultaneously and
+  connection-specific independent bitrate optimization are not implemented. `bitrate_kbps` remains a
+  reserved field as before and is not applied in this experiment either.
+- Because aiortc's private sender hooks are used locally, native is pinned to **aiortc 1.14.0**.
+  Other versions fail explicitly at offer time. No global monkeypatch is used.
+- Native streams in `/stream/status` add `processing`.
+  `received` / `decoded` / `encoded` / `conversion_errors` are cumulative values for that source, and
+  `input_fps` is the recent ROS reception rate. `processing` is null for the Python backend.
+  `encoded` is the encoding count shared by all clients, not the per-client send or display count.
+
+Use `services/webrtc_streamer/native/verify_native.py` to verify the distributed library with real ROS,
+image quality, restart, and RTCP. Run it with Fast DDS and Cyclone DDS separately, in a domain / network
+isolated from normal operation. `tests/test_shared_packets.py` verifies the shared queue, slow clients,
+and joining on stop. For performance comparisons, fix the same real bag, FPS, image quality, and client
+count, and switch between `python` and `native` using the same experimental image.
+
+This is an experimental backend and does not guarantee CPU reduction rate, long-running stability, or
+equivalent image quality for all inputs. The increase in image size caused by adding native FFmpeg/OpenCV
+is also part of the adoption decision.
+
 ## Design Points
 
 - Low-latency first, preview-only. Low quality is acceptable.
