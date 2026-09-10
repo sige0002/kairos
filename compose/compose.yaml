@@ -448,7 +448,7 @@ services:
         - -q
         - -O
         - /dev/null
-        - "http://localhost:${FRONTEND_PORT:-8080}/"
+        - "http://127.0.0.1:${FRONTEND_PORT:-8080}/"
     restart: unless-stopped
     # Wait for the orchestrator to pass its healthcheck: the SPA's first request
     # is GET /api/v1/config, which the frontend proxies to the orchestrator.
