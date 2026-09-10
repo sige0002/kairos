@@ -4,6 +4,7 @@
 #include <sensor_msgs/msg/compressed_image.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <turbojpeg.h>
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavutil/opt.h>
@@ -27,6 +28,37 @@ double now_s() {
 }
 void avcheck(int result) {
   if (result < 0) { char text[256]; av_strerror(result, text, sizeof(text)); throw std::runtime_error(text); }
+}
+cv::Size output_size(int width,int height,int max_width,int max_height) {
+  double scale=1;
+  if (max_width) scale=std::min(scale,static_cast<double>(max_width)/width);
+  if (max_height) scale=std::min(scale,static_cast<double>(max_height)/height);
+  return {std::max(2,static_cast<int>(width*scale)) & ~1,
+          std::max(2,static_cast<int>(height*scale)) & ~1};
+}
+cv::Mat decode_preview(const std::vector<uint8_t> &data,int max_width,int max_height,cv::Size &target) {
+  int flags=cv::IMREAD_COLOR;
+  // Only JPEG has reduced-resolution DCT decoding. Leave PNG and EXIF-bearing
+  // images on the existing path so OpenCV retains orientation semantics.
+  const uint8_t exif[]={'E','x','i','f',0,0};
+  if (data.size()>2 && data[0]==0xff && data[1]==0xd8 &&
+      std::search(data.begin(),data.end(),std::begin(exif),std::end(exif))==data.end()) {
+    tjhandle header=tjInitDecompress();
+    if (!header) throw std::runtime_error("JPEG header decoder allocation failed");
+    int w=0,h=0,sub=0,color=0;
+    int result=tjDecompressHeader3(header,data.data(),data.size(),&w,&h,&sub,&color);
+    tjDestroy(header);
+    if (result<0 || w<=0 || h<=0) throw std::runtime_error("invalid JPEG header");
+    target=output_size(w,h,max_width,max_height);
+    for (int factor: {8,4,2}) {
+      if ((w+factor-1)/factor>=target.width && (h+factor-1)/factor>=target.height) {
+        flags=factor==8?cv::IMREAD_REDUCED_COLOR_8:
+              factor==4?cv::IMREAD_REDUCED_COLOR_4:cv::IMREAD_REDUCED_COLOR_2;
+        break;
+      }
+    }
+  }
+  return cv::imdecode(data,flags);
 }
 struct Engine {
   int max_width, max_height, fps, current_bitrate = 0;
@@ -118,7 +150,8 @@ struct Engine {
     if (!r && !c) return;
     try {
       cv::Mat bgr;
-      if (c) bgr=cv::imdecode(c->data,cv::IMREAD_COLOR);
+      cv::Size target;
+      if (c) bgr=decode_preview(c->data,max_width,max_height,target);
       else {
         int channels;
         if (r->encoding=="bgr8" || r->encoding=="rgb8") channels=3;
@@ -136,11 +169,8 @@ struct Engine {
         else bgr=view.clone();
       }
       if (bgr.empty()) throw std::runtime_error("invalid compressed preview image");
-      double scale=1;
-      if (max_width) scale=std::min(scale,static_cast<double>(max_width)/bgr.cols);
-      if (max_height) scale=std::min(scale,static_cast<double>(max_height)/bgr.rows);
-      int w=std::max(2,static_cast<int>(bgr.cols*scale)) & ~1;
-      int h=std::max(2,static_cast<int>(bgr.rows*scale)) & ~1;
+      if (target.empty()) target=output_size(bgr.cols,bgr.rows,max_width,max_height);
+      int w=target.width, h=target.height;
       if (w!=bgr.cols || h!=bgr.rows) cv::resize(bgr,last,cv::Size(w,h),0,0,cv::INTER_AREA);
       else last=bgr;
       ++decoded;

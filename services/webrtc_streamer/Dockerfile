@@ -10,7 +10,7 @@ ARG ROS_BASE_IMAGE=ros:jazzy-ros-base@sha256:6513503d0b10e919fbe8134981d4f9d19b5
 FROM ${ROS_BASE_IMAGE} AS native-builder
 ARG ROS_DISTRO
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cmake g++ pkg-config libavcodec-dev libavutil-dev libswscale-dev \
+    cmake g++ pkg-config libavcodec-dev libavutil-dev libswscale-dev libturbojpeg0-dev \
     libopencv-core-dev libopencv-imgproc-dev libopencv-imgcodecs-dev \
     && rm -rf /var/lib/apt/lists/*
 COPY services/webrtc_streamer/native /native
@@ -69,7 +69,7 @@ COPY --from=native-builder /opt/kairos /opt/kairos
 # See docs/specs/*/config.md.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-rmw-cyclonedds-cpp \
-        libavcodec60 libavutil58 libswscale7 \
+        libavcodec60 libavutil58 libswscale7 libturbojpeg \
         libopencv-core406t64 libopencv-imgproc406t64 libopencv-imgcodecs406t64 \
     && rm -rf /var/lib/apt/lists/*
 

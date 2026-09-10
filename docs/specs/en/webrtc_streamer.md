@@ -103,6 +103,20 @@ This is an experimental backend and does not guarantee CPU reduction rate, long-
 equivalent image quality for all inputs. The increase in image size caused by adding native FFmpeg/OpenCV
 is also part of the adoption decision.
 
+### Experiment: Reduced-Scale JPEG Decoding
+
+The native backend calculates the same final output dimensions as before from the original dimensions in the
+JPEG header, then applies to OpenCV JPEG decoding the largest reduction scale (1/2, 1/4, or 1/8) that does not
+fall below those dimensions. If necessary, it then downsizes to the exact output dimensions with `INTER_AREA`
+as before. Even when the original dimensions are odd, output dimensions are not recalculated from the rounded
+decoded dimensions. TurboJPEG is used to inspect the header. Images containing PNG, raw, or EXIF retain the
+existing path. An invalid JPEG header is treated as a conversion error, and the last valid image is retained.
+
+Send FPS, shared encoding, and WebRTC behavior are unchanged. Because reduced-scale decoding and downscaling
+after full-resolution decoding produce different pixel values, identical image quality is not guaranteed.
+`native/verify_scaled.py` compares the dimensions and differences of the final VP8 image against a separate
+baseline library (specified with `BASELINE_LIBRARY`).
+
 ## Design Points
 
 - Low-latency first, preview-only. Low quality is acceptable.
