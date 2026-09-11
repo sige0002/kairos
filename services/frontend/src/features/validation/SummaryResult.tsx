@@ -152,7 +152,7 @@ export function SummaryResult({
   );
 
   return (
-    <Card className="overflow-hidden">
+    <Card className="shrink-0 overflow-hidden">
       <div className="flex flex-wrap items-center gap-2.5 border-b border-border px-[18px] py-4">
         <SectionLabel>Result</SectionLabel>
         <span className="font-mono text-[11.5px] text-text-muted">

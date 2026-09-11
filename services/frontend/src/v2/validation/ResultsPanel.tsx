@@ -251,7 +251,7 @@ export function ResultsPanel({
   const { t } = useTranslation('validation');
   if (!active) {
     return (
-      <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
+      <div data-testid="validation-results" className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
         <Card className="p-8 text-center text-sm text-text-muted">
           {t('runPipelineHint')}
         </Card>
@@ -261,7 +261,7 @@ export function ResultsPanel({
 
   if (!active.allSettled) {
     return (
-      <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
+      <div data-testid="validation-results" className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
         <Card className="p-8 text-center text-sm text-text-muted">{t('running')}</Card>
         <RunningJobs
           jobs={runJobs}
@@ -282,7 +282,7 @@ export function ResultsPanel({
     // stopped it themselves and nothing was checked.
     if (outcome?.canceled) {
       return (
-        <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
+        <div data-testid="validation-results" className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
           <Card
             className="flex flex-col gap-1 p-8 text-center text-sm text-text-muted"
             data-testid="run-canceled"
@@ -297,7 +297,7 @@ export function ResultsPanel({
     }
     if (!outcome || !outcome.summary) {
       return (
-        <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
+        <div data-testid="validation-results" className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
           <Card className="p-8 text-center text-sm text-text-muted">
             {t('nothingToRun')}
           </Card>
@@ -305,7 +305,7 @@ export function ResultsPanel({
       );
     }
     return (
-      <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
+      <div data-testid="validation-results" className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
         <div className="flex items-center gap-2">
           <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
             {t('latestRun')}
@@ -336,7 +336,7 @@ export function ResultsPanel({
   );
 
   return (
-    <div className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
+    <div data-testid="validation-results" className="flex min-h-0 flex-col gap-3 overflow-auto p-[18px]">
       <div className="flex items-center gap-2">
         <h3 className="text-[11px] font-semibold uppercase tracking-[0.05em] text-text-muted">
           {t('latestRun')}
