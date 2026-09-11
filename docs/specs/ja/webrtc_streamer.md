@@ -43,10 +43,18 @@ ROS 2 の image トピックをブラウザへ低遅延配信する**プレビ�
   - answer SDP から **IPv6 候補を既定で除外**する（`WEBRTC_KEEP_IPV6=1` で無効化）。断片化した IPv6 データグラムは WireGuard/Tailscale でブラックホール化されるため、ICE が v6 ペアを選ぶとメディアが届かずプレビューが黒くなる。到達可能な経路（LAN の v4 host 候補・Tailscale の `100.x`）はすべて v4 なので候補集合が空になることはない。
   - RTP ペイロード上限を `WEBRTC_PACKET_MAX`（既定 `1150`）で縮小する。aiortc は 1300B 固定で ~1350B(v4)/~1370B(v6) のデータグラムを作り、MTU 1280 のトンネル（Tailscale/WireGuard）では毎パケットが断片化する。1150 なら RTP/SRTP/UDP/IP ヘッダ込みで 1280 に収まり断片化しない。MTU 1500 の同一 LAN では 1300 に戻して overhead を減らしてもよい。
 - CORS: 既定（`WEBRTC_PUBLIC_URL=/webrtc`）では frontend の nginx 経由の同一オリジンになるため CORS は不要。絶対 URL を設定してブラウザから直接 offer する旧方式の場合のみ `CORS_ORIGINS`（[config](config.md)）を streamer に適用する。
-- `stream_id` は topic から決定的に生成し、同一 topic への重複 start は既存 stream を返す。
+- `stream_id` は topic・encoding・max_fps・max_width・max_height・bitrate_kbps の組から決定的に生成する。省略値は API の既定値で正規化し、同一設定の重複 start は既存の source / encoder を共有する。異なる設定は同じ topic でも別 stream として共存する（bitrate_kbps は引き続き未適用）。
+- UI の解像度変更・カメラ切り替えでは、その client の PeerConnection だけを閉じて新しい設定で start する。共有 stream の stop は呼ばず、他のタイル・ウィンドウを切断しない。未使用になった設定は既存の idle timeout で回収する。
 - 無参照ストリームは `idle_timeout_s`（既定 `60`）で自動停止。client disconnect 時に cleanup。
 - frontend は既定で同一オリジンの `/webrtc`（frontend の nginx が streamer にリバースプロキシ）経由で signaling する（orchestrator は経由しない）。`WEBRTC_PUBLIC_URL` に絶対 URL を設定すると streamer へ直接接続する旧方式になる。なお signaling が同一オリジンでも、WebRTC メディア（ICE/SRTP）はブラウザ ↔ streamer 間を UDP で流れる。同一 LAN・Tailscale など直接到達できる経路なら `ice_servers` は不要（上記の v4 固定＋パケット上限が既定で効く）。NAT 越え・WiFi クライアント分離・UDP が通らない環境では `WEBRTC_ICE_SERVERS`（STUN、必要なら TURN リレー）を設定する。
 - 複数 client: stream ごとに 1 つの映像ソース（最新フレーム）を共有し、**client ごとに PeerConnection** を作る。client 切断で当該 PC を破棄する。
+
+品質設定のウィンドウ間独立性は `node e2e/tools/camera-profile-probe.mjs` で実ブラウザ検証する。
+最新の frontend / streamer とカメラ bag のループ再生が必要。既定接続先は隔離 E2E UI
+（`http://127.0.0.1:28080`、streamer は `E2E_WITH_STREAMER=1` で起動）。別の検証環境では
+`KAIROS_CAMERA_UI` で UI の URL を指定する。2 つのブラウザ context で、片方の解像度変更が
+他方の MediaStream・実映像寸法・フレーム受信を変えないことと、共有 stop・JS 例外・HTTP エラーが無いことを検査する。
+録画・保存・削除の操作は行わないが、Collect 標準のバックグラウンド pre-arm は動作する。
 
 ### デコード前の最新画像保持
 

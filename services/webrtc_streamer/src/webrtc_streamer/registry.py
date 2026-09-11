@@ -1,13 +1,14 @@
 # SPDX-License-Identifier: Apache-2.0
 # Copyright 2026 Sadasue Yuki
-"""The stream registry: one source + peer manager per previewed topic.
+"""The stream registry: one source + peer manager per preview profile.
 
 :class:`StreamRegistry` is the streamer's coordinator. It owns the live streams
-(at most one per topic), each pairing a :class:`~webrtc_streamer.source.FrameSource`
+(at most one per topic and quality profile), each pairing a
+:class:`~webrtc_streamer.source.FrameSource`
 (the ROS image -> latest-frame buffer) with a
 :class:`~webrtc_streamer.peer.PeerManager` (per-client PeerConnections sharing
 that buffer). It enforces the spec's behaviour: deterministic ``stream_id`` per
-topic (a duplicate start returns the existing stream), and idle auto-stop of an
+profile (a duplicate start returns the existing stream), and idle auto-stop of an
 unreferenced stream after ``idle_timeout_s``.
 
 It depends only on the :class:`FrameSource` / :class:`PeerManager` Protocols via
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import threading
 import time
@@ -47,14 +49,25 @@ SourceFactory = Callable[[StreamStartRequest], FrameSource]
 PeerFactory = Callable[[StreamStartRequest, FrameSource], PeerManager]
 
 
-def stream_id_for(topic: str, encoding: Encoding) -> str:
-    """Derive a deterministic ``stream_id`` from *topic* (+ *encoding*).
+def stream_id_for(
+    topic: str,
+    encoding: Encoding,
+    *,
+    max_fps: int = 15,
+    max_width: int | None = None,
+    max_height: int | None = None,
+    bitrate_kbps: int | None = None,
+) -> str:
+    """Derive a deterministic id for a topic and its complete quality profile.
 
-    Deterministic so a duplicate start for the same topic/encoding maps to the
-    same stream (and is deduplicated). A short hash keeps it URL-safe and avoids
-    leaking the raw topic path into the id.
+    Equal profiles share a source/encoder; different profiles coexist without
+    changing another client's quality. Preserve ids for default requests.
     """
-    digest = hashlib.sha1(f"{topic}|{encoding.value}".encode()).hexdigest()
+    key = f"{topic}|{encoding.value}"
+    profile = (max_fps, max_width, max_height, bitrate_kbps)
+    if profile != (15, None, None, None):
+        key = json.dumps((topic, encoding.value, *profile), separators=(",", ":"))
+    digest = hashlib.sha1(key.encode()).hexdigest()
     return f"s_{digest[:12]}"
 
 
@@ -106,10 +119,17 @@ class StreamRegistry:
     async def start(self, request: StreamStartRequest) -> str:
         """Start a stream for ``request.topic`` (or return the existing one).
 
-        Idempotent per topic/encoding: a duplicate start returns the existing
+        Idempotent per topic/quality profile: a duplicate start returns the existing
         ``stream_id`` without creating a second source or peer manager.
         """
-        sid = stream_id_for(request.topic, request.encoding)
+        sid = stream_id_for(
+            request.topic,
+            request.encoding,
+            max_fps=request.max_fps,
+            max_width=request.max_width,
+            max_height=request.max_height,
+            bitrate_kbps=request.bitrate_kbps,
+        )
         owner = False
         waiting_for_start = False
         with self._lock:

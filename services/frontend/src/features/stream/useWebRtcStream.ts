@@ -159,10 +159,6 @@ export function useWebRtcStream({
   const [attempt, setAttempt] = useState(0);
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const autoRetriesRef = useRef(0);
-  // The stream this hook last started (id + its resolution cap), so a resolution
-  // change on the SAME topic can stop the shared stream before re-starting — the
-  // streamer keys a stream by (topic, encoding) and ignores new caps otherwise.
-  const activeStreamRef = useRef<{ id: string; topic: string; capsKey: string } | null>(null);
 
   // Stabilize iceServers so an inline-array prop doesn't re-trigger negotiation
   // every render. Identity follows content, not reference.
@@ -214,26 +210,9 @@ export function useWebRtcStream({
     async function negotiate(): Promise<void> {
       try {
         setPhase('starting');
-        const capsKey = `${maxWidth ?? ''}|${maxHeight ?? ''}`;
-        // A duplicate /stream/start for the same (topic, encoding) returns the
-        // existing stream and ignores new caps (registry.start). So when only the
-        // resolution changed on THIS topic, stop the shared stream first so the
-        // next start recreates its source at the new cap. A plain retry (same
-        // caps) skips this and re-attaches to the warm stream — no source churn.
-        const prev = activeStreamRef.current;
-        if (prev && prev.topic === topic && prev.capsKey !== capsKey) {
-          try {
-            await fetch(joinBase(webrtcBase, '/stream/stop'), {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ stream_id: prev.id }),
-            });
-          } catch {
-            // Best-effort: a now-orphaned stream idle-reaps server-side anyway.
-          }
-          activeStreamRef.current = null;
-          if (cancelled) return;
-        }
+        // The registry shares identical profiles and separates different caps.
+        // Close only our peer on changes; stopping a shared stream would also
+        // disconnect other tiles/windows. Unused profiles idle-reap server-side.
         const startBody: Record<string, unknown> = { topic };
         if (maxWidth != null) startBody.max_width = maxWidth;
         if (maxHeight != null) startBody.max_height = maxHeight;
@@ -245,7 +224,6 @@ export function useWebRtcStream({
         if (!startResp.ok)
           throw new Error(`stream/start failed: HTTP ${startResp.status}`);
         const { stream_id } = (await startResp.json()) as StreamStartResponse;
-        activeStreamRef.current = { id: stream_id, topic, capsKey };
         if (cancelled) return;
 
         pc.addTransceiver('video', { direction: 'recvonly' });
@@ -363,7 +341,10 @@ export function useWebRtcStream({
         const now = nowTs;
         if (framesDecoded != null && framesDecoded === lastDecoded) {
           if (stallSince == null) stallSince = now;
-          else if (now - stallSince >= STALL_MS && autoRetriesRef.current < AUTO_RETRY_MAX) {
+          else if (
+            now - stallSince >= STALL_MS &&
+            autoRetriesRef.current < AUTO_RETRY_MAX
+          ) {
             autoRetriesRef.current += 1;
             stallSince = null;
             setError(null);

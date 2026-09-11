@@ -49,8 +49,8 @@ class StreamStartRequest(BaseModel):
     ``topic`` is the ROS image topic to preview. The remaining fields are
     preview-quality hints: this is a lossy, low-latency path, so they cap
     resource use rather than guarantee exact output. ``stream_id`` is derived
-    deterministically from ``topic`` (+ encoding), so a duplicate start for the
-    same topic returns the existing stream instead of creating a second one.
+    deterministically from ``topic`` and all quality hints, so a duplicate start
+    with the same profile reuses the stream; different profiles coexist.
     """
 
     topic: str = Field(min_length=1)

@@ -79,6 +79,63 @@ def test_duplicate_start_returns_existing_stream() -> None:
     assert len(reg.stream_ids()) == 1
 
 
+@pytest.mark.parametrize(
+    "hint",
+    [
+        dict(max_fps=30),
+        dict(max_width=640),
+        dict(max_height=360),
+        dict(bitrate_kbps=500),
+    ],
+)
+def test_quality_profiles_are_independent_and_identical_requests_share(
+    hint: dict[str, int],
+) -> None:
+    sources: list[FakeFrameSource] = []
+    peers: list[FakePeerManager] = []
+    requests: list[StreamStartRequest] = []
+    clock = FakeClock()
+
+    def source_factory(request: StreamStartRequest) -> FakeFrameSource:
+        requests.append(request)
+        sources.append(FakeFrameSource())
+        return sources[-1]
+
+    def peer_factory(
+        request: StreamStartRequest, source: FakeFrameSource
+    ) -> FakePeerManager:
+        peers.append(FakePeerManager())
+        return peers[-1]
+
+    reg = StreamRegistry(source_factory, peer_factory, clock=clock)
+
+    async def exercise() -> None:
+        original = StreamStartRequest(topic="/cam/front")
+        changed = StreamStartRequest(topic="/cam/front", **hint)
+        first = await reg.start(original)
+        second = await reg.start(changed)
+        assert first != second
+        assert (
+            await reg.start(StreamStartRequest(topic="/cam/front", max_fps=15)) == first
+        )
+        assert await reg.start(changed) == second
+        assert requests == [original, changed]
+        assert len(sources) == len(peers) == 2
+        await reg.handle_offer(first, "first", "offer")
+        await reg.handle_offer(second, "second", "offer")
+        clock.t = 61
+        assert reg.reap_idle() == []
+        await reg.stop(second)
+        assert sources[0].started
+        assert peers[0].client_count() == 1
+        assert not sources[1].started
+        assert reg.stream_ids() == [first]
+        assert await reg.start(original) == first
+        await reg.stop_all()
+
+    asyncio.run(exercise())
+
+
 def test_handle_offer_delegates_to_peer_manager() -> None:
     reg, peers, _sources = _registry()
     sid = asyncio.run(reg.start(StreamStartRequest(topic="/cam/front")))

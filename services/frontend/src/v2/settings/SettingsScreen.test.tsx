@@ -805,7 +805,9 @@ test('saving the recording editor PUTs the edited config', async () => {
     expected_hz_patterns: [],
   };
   fireEvent.change(editor, { target: { value: JSON.stringify(edited, null, 2) } });
-  fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+  const save = screen.getByRole('button', { name: 'Save' });
+  await waitFor(() => expect(save).toBeEnabled());
+  fireEvent.click(save);
 
   await waitFor(() => {
     const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
@@ -833,7 +835,9 @@ test('saving the stream editor PUTs the edited layout and reports immediate appl
 
   const edited = { columns: 3, panes: [{ topic: '/cam/a' }] };
   fireEvent.change(editor, { target: { value: JSON.stringify(edited, null, 2) } });
-  fireEvent.click(screen.getByTestId('stream-config-save'));
+  const save = screen.getByTestId('stream-config-save');
+  await waitFor(() => expect(save).toBeEnabled());
+  fireEvent.click(save);
 
   await waitFor(() => {
     const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
@@ -862,8 +866,13 @@ test('invalid JSON in the stream editor disables Save before the server sees it'
   await waitFor(() => expect(editor.value).toContain('"/cam/a"'));
 
   fireEvent.change(editor, { target: { value: '{ not json' } });
-  expect(await screen.findByText(/Invalid JSON/)).toBeInTheDocument();
-  expect(screen.getByTestId('stream-config-save')).toBeDisabled();
+  // Other JSON editors can report their own validation errors. Wait for this
+  // editor's debounced validation, not an unrelated page-wide error message.
+  await waitFor(() => {
+    expect(editor).toHaveValue('{ not json');
+    expect(screen.getByTestId('stream-config-save')).toBeDisabled();
+  });
+  expect(within(editor.parentElement!).getByText(/Invalid JSON/)).toBeInTheDocument();
   // No PUT went out.
   const calls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls;
   const put = calls.find(

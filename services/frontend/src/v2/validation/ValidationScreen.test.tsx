@@ -833,7 +833,9 @@ test("video_check's topic param is a picker seeded from the target capture's cam
 
   // The x-suggest select appears once GET /captures/{id} resolves the target's
   // topics, pre-seeded with its first camera topic — no hand-typing.
-  const select = (await screen.findByLabelText('topic')) as HTMLSelectElement;
+  const select = (await screen.findByRole('combobox', {
+    name: 'topic',
+  })) as HTMLSelectElement;
   await waitFor(() =>
     expect(select.value).toBe('/hsrb/head_rgbd_sensor/rgb/image_rect_color/compressed'),
   );

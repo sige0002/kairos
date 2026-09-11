@@ -45,10 +45,19 @@ Serialize each stream's start as one lifecycle transaction. A duplicate start re
   - The answer SDP **drops IPv6 candidates by default** (disable with `WEBRTC_KEEP_IPV6=1`). Fragmented IPv6 datagrams are black-holed over WireGuard/Tailscale, so if ICE nominates the v6 pair the media never arrives and the preview goes black. Every reachable path (the LAN v4 host candidates, the Tailscale `100.x`) is v4, so the candidate set is never emptied.
   - The RTP payload is capped via `WEBRTC_PACKET_MAX` (default `1150`). aiortc hardcodes 1300 B, producing ~1350 B (v4) / ~1370 B (v6) datagrams that fragment on every packet over a reduced-MTU tunnel (Tailscale/WireGuard = MTU 1280). 1150 keeps the whole datagram (RTP/SRTP/UDP/IP headers included) under 1280 with no fragmentation. On a same-LAN MTU 1500 deployment you may restore 1300 to cut overhead.
 - CORS: with the default (`WEBRTC_PUBLIC_URL=/webrtc`) the request is same-origin through the frontend's nginx, so CORS is not needed. Only in the legacy mode — an absolute URL where the browser offers directly — apply `CORS_ORIGINS` ([config](config.md)) to the streamer.
-- `stream_id` is generated deterministically from the topic, and a duplicate start for the same topic returns the existing stream.
+- `stream_id` is generated deterministically from the combination of topic, encoding, max_fps, max_width, max_height, and bitrate_kbps. Omitted values are normalized to the API defaults, and duplicate starts with the same settings share the existing source / encoder. Different settings coexist as separate streams even for the same topic (bitrate_kbps remains unapplied).
+- When the UI changes resolution or switches cameras, close only that client's PeerConnection and start with the new settings. Do not stop the shared stream or disconnect other tiles/windows. Settings that are no longer used are reclaimed by the existing idle timeout.
 - Unreferenced streams are stopped automatically after `idle_timeout_s` (default `60`). Cleanup happens on client disconnect.
 - By default the frontend signals through the same-origin path `/webrtc` (the frontend's nginx reverse-proxies it to the streamer), without going through the orchestrator. Setting `WEBRTC_PUBLIC_URL` to an absolute URL switches to the legacy mode of connecting to the streamer directly. Note that even when signaling is same-origin, the WebRTC media (ICE/SRTP) flows over UDP between the browser and the streamer. On a directly reachable path (same LAN, Tailscale) `ice_servers` is not needed (the v4-only + packet cap above apply by default). Across NAT / WiFi client-isolation / a network where UDP cannot pass, set `WEBRTC_ICE_SERVERS` (STUN, and a TURN relay if needed).
 - Multiple clients: each stream shares a single video source (the latest frame), and a **PeerConnection is created per client**. The corresponding PC is destroyed on client disconnect.
+
+The independence of quality settings between windows is verified in a real browser with `node e2e/tools/camera-profile-probe.mjs`.
+It requires the latest frontend / streamer and looped playback of a camera bag. The default endpoint is the isolated E2E UI
+(`http://127.0.0.1:28080`, with the streamer started using `E2E_WITH_STREAMER=1`). In another verification environment,
+specify the UI URL with `KAIROS_CAMERA_UI`. In two browser contexts, it checks that changing the resolution in one does not
+change the other’s MediaStream, actual video dimensions, or received frames, and that there is no shared stop, JS exception,
+or HTTP error.
+It performs no recording, saving, or deletion operations, but Collect's standard background pre-arm does run.
 
 ### Retaining the Latest Image Before Decoding
 

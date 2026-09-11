@@ -122,6 +122,9 @@ test('main banner opens the shared Store Health query in Monitor Store', async (
   renderWithClient(<App />);
 
   fireEvent.click(await screen.findByTestId('store-health-banner-monitor'));
+  // Monitor is lazy-loaded. Await module loading separately from the DOM/query
+  // assertion so cold transforms on a busy host do not exhaust its 1s budget.
+  await act(() => vi.dynamicImportSettled());
   expect(await screen.findByTestId('store-health-panel')).toBeInTheDocument();
   expect(screen.getByTestId('mon-nav-Store')).toHaveAttribute('aria-pressed', 'true');
   expect(new URLSearchParams(window.location.search).get('view')).toBe('store');
@@ -141,6 +144,7 @@ test('solo banner preserves solo routing while opening Monitor Store', async () 
   renderWithClient(<App />);
 
   fireEvent.click(await screen.findByTestId('store-health-banner-monitor'));
+  await act(() => vi.dynamicImportSettled());
   expect(await screen.findByTestId('store-health-panel')).toBeInTheDocument();
   expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
   const route = new URLSearchParams(window.location.search);
@@ -154,6 +158,7 @@ test('clicking a tab switches the active panel', async () => {
   await waitFor(() => screen.getByRole('tab', { name: 'Collect' }));
 
   fireEvent.click(screen.getByRole('tab', { name: 'Review' }));
+  await act(() => vi.dynamicImportSettled());
   await waitFor(() =>
     expect(screen.getByRole('tab', { name: 'Review' })).toHaveAttribute(
       'aria-selected',
@@ -182,6 +187,7 @@ test('the mounted screen titles the document, and switching tabs retitles it', a
   expect(h1s[0]).toHaveTextContent('Collect');
 
   fireEvent.click(screen.getByRole('tab', { name: 'Review' }));
+  await act(() => vi.dynamicImportSettled());
   await waitFor(() => {
     const next = screen.getAllByRole('heading', { level: 1 });
     expect(next).toHaveLength(1);
@@ -303,6 +309,7 @@ test('a legacy solo deep link (?tab=probe&solo=1) redirects and rewrites the URL
   // header's label and this heading — so the assertion names which one it
   // means, and in doing so proves the redirect landed on the Monitor SCREEN
   // rather than merely rewriting the URL.
+  await act(() => vi.dynamicImportSettled());
   expect(
     screen.getByRole('heading', { level: 1, name: 'Monitor' }),
   ).toBeInTheDocument();

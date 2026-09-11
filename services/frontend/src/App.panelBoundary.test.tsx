@@ -11,7 +11,7 @@
 // asserted, the HOOK-UP was not. So this test throws from inside a real tab and
 // asserts what the operator would still have.
 
-import { screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import type { RuntimeConfig } from './config';
 import { useUiStore } from './store/uiStore';
@@ -27,7 +27,11 @@ vi.mock('./v2/monitor/MonitorScreen', () => ({
 }));
 
 const STUB_CONFIG: RuntimeConfig = {
-  endpoints: { api: '/api/v1', events: '/api/v1/events', webrtc: 'http://localhost:8002' },
+  endpoints: {
+    api: '/api/v1',
+    events: '/api/v1/events',
+    webrtc: 'http://localhost:8002',
+  },
   tabs: [],
   defaults: { ros_domain_id: 42 },
   schemas: {},
@@ -50,7 +54,8 @@ beforeEach(() => {
   vi.stubGlobal('EventSource', FakeEventSource);
   vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
     const url = String(input);
-    if (url.includes('/config')) return Promise.resolve(jsonResponse(STUB_CONFIG)) as Promise<Response>;
+    if (url.includes('/config'))
+      return Promise.resolve(jsonResponse(STUB_CONFIG)) as Promise<Response>;
     return Promise.resolve(jsonResponse({})) as Promise<Response>;
   });
   useUiStore.setState({ activeTab: '', sseStatus: 'closed' });
@@ -69,8 +74,14 @@ test('a throwing screen costs the panel; the tab bar and the other tabs survive'
   const { App } = await import('./App');
   renderWithClient(<App />);
 
+  // Wait for config and the lazy screen module before testing the boundary.
+  await screen.findByRole('tablist');
+  await act(() => vi.dynamicImportSettled());
+
   // The panel took it...
-  expect(await screen.findByTestId('panel-error')).toHaveTextContent(/malformed payload/);
+  expect(await screen.findByTestId('panel-error')).toHaveTextContent(
+    /malformed payload/,
+  );
   // ...and the console did not. This is the assertion that fails if the shell
   // stops wrapping TabContent: the throw would reach the ROOT boundary, which
   // replaces the whole document — measured in chromium as the tab bar
@@ -83,6 +94,8 @@ test('a throwing screen costs the panel; the tab bar and the other tabs survive'
 test('leaving the broken tab clears it — recovery costs a click, not a reload', async () => {
   const { App } = await import('./App');
   renderWithClient(<App />);
+  await screen.findByRole('tablist');
+  await act(() => vi.dynamicImportSettled());
   await screen.findByTestId('panel-error');
 
   screen.getByRole('tab', { name: 'Collect' }).click();
