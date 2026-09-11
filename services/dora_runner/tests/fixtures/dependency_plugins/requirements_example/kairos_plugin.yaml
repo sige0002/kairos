@@ -1,0 +1,8 @@
+apiVersion: kairos.plugin/v1
+id: requirements_example
+name: Requirements dependency example
+executor: dora
+entrypoint:
+  dataflow: dataflow.yml
+requires:
+  apt: [libmagic1]

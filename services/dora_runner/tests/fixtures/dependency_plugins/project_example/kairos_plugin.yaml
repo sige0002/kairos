@@ -1,0 +1,6 @@
+apiVersion: kairos.plugin/v1
+id: project_example
+name: Packaged callable dependency example
+executor: in_process
+entrypoint:
+  callable: handler:run

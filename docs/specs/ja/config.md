@@ -68,6 +68,9 @@
 | `NO_PROXY` / `no_proxy` | `localhost,127.0.0.1` | build arg とコンテナ内 HTTP の両方のプロキシ除外。corporate proxy 配下のホストでは Docker が `HTTP(S)_PROXY` を全コンテナへ注入するため、これが無いとヘルスチェックやサービス間 LAN 呼び出しがプロキシへ吸われて失敗する。クロスホスト分割ではロボット IP を追加する（`.env.split.example` 参照）。orchestrator の内部 httpx クライアントはそもそも `trust_env=False` |
 | `KAIROS_DORA_MAX_CONCURRENCY` | `2` | `dora_runner` が同時実行するジョブ数の上限 |
 | `KAIROS_DORA_JOB_TIMEOUT_S` | `900` | `dora_runner` の 1 ジョブあたりの wall-clock 上限（秒） |
+| `PLUGIN_GPU` | `0` | MakeのGPU opt-in。`1`なら`compose/plugins.gpu.yaml`をbuildとupへ追加。GPUプラグインのビルド許可と実行時GPU割当を行う。NVIDIA GPU／ドライバ／Container Toolkitが前提 |
+
+プラグインの追加先は`services/dora_runner/plugins/<name>/`。依存はマニフェスト・requirements.txt等に記述し、`make build dora_runner` → `make up dora_runner`で取り込む。Dockerイメージ内の`KAIROS_PLUGINS_DIR=/app/plugins`と`KAIROS_PLUGIN_ENVS_DIR=/opt/plugin-envs`は通常変更しない。パス変数を変えただけでは依存のビルドは行われない。詳細は[プラグイン仕様](dora_plugins.md)。
 
 **クロスホスト分割用の `*_HOST`**（[deployment_topology](deployment_topology.md) Option A）。単一ホストでは既定のままでよい:
 

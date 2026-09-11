@@ -2,25 +2,21 @@
 
 > ステータス: 設計確定（**v2 = capture store 対応**）。`fig_const/dora.png` を基に、未記載事項を推奨設計として確定。日本語が正本（これを正とする）。英語版 `docs/specs/en/dora_runner.md` は自動生成ミラー（直接編集しない）。**認証は不要。**
 
-記録後の **検証・変換・拡張処理パイプライン**コンテナ（**dora** ベース）。記録済み MCAP を入力に、検証・変換・**AI 処理**を非同期ジョブで実行する。重い処理はすべてここに集約し、`rosbag2_recorder` / `topic_monitor` は軽量に保つ。**dora の拡張性と AI 連携を最大限活かす**ことを設計の中心に置く。
+記録後の **検証・変換・拡張処理パイプライン**コンテナ（**dora** ベース）。記録済み MCAP を入力に、組み込み検証やユーザーが追加した処理を非同期ジョブで実行する。重い処理はすべてここに集約し、`rosbag2_recorder` / `topic_monitor` は軽量に保つ。**dora の拡張性と AI 連携を最大限活かす**ことを設計の中心に置く。
 
 ## 役割
 
 - 記録済み MCAP に対して、検証 / 変換 / 拡張（AI 含む）を行う。
 - 各処理を差し替え・連結可能な部品として組み立てられるようにする。
 
-## 設計の中心: dora 拡張性 & AI 連携
+## 実行方式と拡張
 
-- 各処理（validator / converter / **AI node**）は **dora node（プラグイン）**として実装し、**dora dataflow（YAML）**で接続する。
-- **Plugin Registry** が node を登録し、**Pipeline Registry** が dataflow（= pipeline）を管理する。**pipeline 追加 = dataflow YAML + node 追加**で済み、コア改修は不要。
-- node の **I/O は契約（contract）**として固定する:
-  - 入力: `capture`（`objects/<capture_id>` のパス / metadata / `object_manifest.json`）、MCAP メッセージ反復子（topic フィルタ・時間範囲指定可）、`params`。
-  - 出力: `metrics`（dict）、`artifacts`（生成物パスのリスト）、`report` 断片。
-  - これにより node を自由に差し替え・連結できる。
-- **AI 連携を一級市民にする**: 推論 / 自動アノテーション / 埋め込み・検索インデックス / 品質スコアリング / 学習用データセット変換（例: **LeRobot** 形式）を **AI dora node** として差し込める。
-  - node I/F はモデル差し替え前提（`params.model` 等）。GPU 利用可（`--gpus` / 環境変数）。メッセージはバッチ処理可。
-  - 再現性のため、report に pipeline / node / モデルのバージョンを記録する。
-- dora dataflow なので、ストリーミング / 分散実行 / node 再利用が効く。
+- `fast_validation` / `full_validation` は同梱bagflowのRustノードを、専用dora coordinator/daemonで実行する。
+- `loss_report` / `clock_check` / `video_check` / `signal_report` はPython実装の組み込みpipeline。
+- 独自プラグインはマニフェストからpipeline単位で登録する。`executor: dora`のローカルカスタムノードグラフと、`executor: in_process`のcallableに対応する。レジストリが任意のdoraノードを個別に自動発見するわけではない。
+- ノードにはcapture ID・データルート・レポート出力先・paramsを環境変数で渡す。MCAPの読み込みとノード間のデータ形式は作者が実装し、終端で`summary.json`を出力する。入出力契約と作者・導入担当者の作業は[プラグイン仕様](dora_plugins.md)を参照。
+- AI処理もこのプラグイン契約で追加できる。モデル・依存・入力処理は作者が用意し、GPUは`requires.gpu`と`PLUGIN_GPU=1`で明示する。モデルの自動取得や独立コンテナへの自動配置は行わない。
+- 組み込みの`dataset_convert` / `dataset_validation`は未実装。別サービスの任意LeRobot exporterとは異なる（[デプロイ構成](deployment_topology.md)）。
 
 ## 入力
 
@@ -39,14 +35,14 @@
 ## 構成コンポーネント
 
 - **MCAP Loader** — `mcap` + `mcap-ros2-support` で読込（**rclpy 不要**、ファイル反復）。topic / 型 / 時刻 / サイズを取得し、必要時のみ decode。
-- **Plugin Registry** — dora node（validator / converter / AI）の登録・発見。
-- **Pipeline Executor** — dora dataflow の実行・順序制御。job ごとに timeout / リソース上限。
+- **Pipeline Registry / Plugin Loader** — 組み込みpipelineと、manifestを持つ独自pipelineの登録・発見。
+- **Pipeline Executor** — 各runnerへの実行委譲、ジョブ並行度・timeoutの管理。プラグインごとのCPU／メモリ割当は行わない。
 - **Result Writer** — レポート / 変換物の出力。
 - **Job Status / Logs** — 状態・進捗・ログ（`api_orchestrator` へ SSE）。
 
 ## 実行可能パイプライン（図）
 
-- `fast_validation` / `full_validation` / `dataset_convert` / `dataset_validation`
+図にある`dataset_convert` / `dataset_validation`は設計上の枠であり、実行可能かどうかは以下の実装状況と`GET /pipelines`で確認する。
 - **実装済み（`enabled=true`）**: `fast_validation` / `full_validation` / `loss_report` / `clock_check` / `video_check` / `signal_report`（下記）の 6 本。`dataset_convert` / `dataset_validation` は I/F とプラグイン枠のみ（`enabled=false`）。
 - **`dataset_export` / `dataset_archive` は廃止**（v2）。dataset は物理移動を伴わない DB 行になり（[capture_store](capture_store.md) §6）、archive は orchestrator の capture 単位エンドポイント（`POST /api/v1/captures/{id}/archive`）が担う。ファイルを動かす仕事は dora_runner から無くなった。
 - **検証 2 本（`fast_validation` / `full_validation`）は同梱バイナリ依存**（bagflow + dora CLI）。イメージ以外の環境（ソースチェックアウト / CI）では `enabled=false` の**プレースホルダに落ちる**（理由を description に出す）＝実行できないものを実行できると宣伝しない。
@@ -235,7 +231,7 @@ bagflow は「事実」だけを報告する（ノードごとの `ok`・エッ�
 ## 永続化と再起動リコンサイル
 
 - **job / validation template を SQLite に永続化**する（`store.py`。既定 `<data_dir>/dora_runner.db`＝`report/` ツリーと同じデータディレクトリ直下。`api_orchestrator.store` と同じ規約: `threading.RLock` でコネクションを直列化し、`PRAGMA user_version` でスキーマ版を記録）。以前は in-memory で、プロセス再起動で job/template が消えていた（release-readiness の F4/MS-6）。
-- **実行系は in-process のまま**（分散キューではなく、永続化するのは**状態**）。実行中の job は `asyncio.Task` を持つ live な `JobRecord` として保持し、状態遷移（queued → running → 終端）ごとに行へ**チェックポイント**する（ログ 1 行ごとには書かない）。`logs_tail` は終端行にそのまま保存される。
+- **ジョブ管理はサービスプロセス内**（分散キューではなく、永続化するのは**状態**。実作業はpipelineに応じてスレッド／サブプロセス／doraノードへ渡す）。実行中の job は `asyncio.Task` を持つ live な `JobRecord` として保持し、状態遷移（queued → running → 終端）ごとに行へ**チェックポイント**する（ログ 1 行ごとには書かない）。`logs_tail` は終端行にそのまま保存される。
 - **再起動リコンサイル**: 起動時（`create_dora_app`）に `queued` / `running` のまま残った job を終端の `failed` へ確定し、理由を `summary` に載せる（`{result:"fail", reason:"interrupted", error:{code:"job_interrupted", message:"dora_runner restarted while the job was in flight."}}`）＋ `logs_tail` に注記を追記する。`JobState` に `interrupted` 値は無く、全消費側が終端とみなすのは succeeded/failed/canceled のみなので、**interrupted は `failed` に集約し理由を summary に持たせる**（timeout と同じ表現）。これにより `datasets._job_failure_reason` と Validation タブの汎用レンダラがそのままユーザーへ提示でき、orchestrator / frontend の改修は不要。
 - `GET /jobs/{id}/status` / `GET /jobs/{id}/result` は live な `JobRecord` を優先し、無ければ SQLite の行から応答する（再起動後に worker が消えた job も終端状態・結果を返せる）。
 
@@ -291,7 +287,7 @@ flowchart LR
 
 ## 設計ポイント
 
-- validator / converter / AI は dora node（プラグイン）。I/O は契約。
+- 独自validator / converter / AIはプラグインとして追加し、定められた入出力契約を守る。
 - 重い処理は非同期ジョブ。進捗は SSE で `api_orchestrator` → frontend。
 - dora dataflow として拡張（node 追加・差し替え・連結）。**AI node を一級市民**として扱う。
 - backend-driven: pipeline 定義・フォーム schema は `api_orchestrator` が frontend に配布する（Validation タブ等の実行フォーム）。
@@ -299,20 +295,16 @@ flowchart LR
 
 ## 実装状況と開発ガイド
 
-本書は**設計の正本（将来像を含む）**。**現状の有効 pipeline は `fast_validation` / `full_validation` /
+本書は実装済みの契約と未実装の範囲を記す。**現状の有効 pipeline は `fast_validation` / `full_validation` /
 `loss_report` / `clock_check` / `video_check` / `signal_report`** の 6 本（上記「実装済みパイプライン」参照）。
 `dataset_convert` / `dataset_validation` は I/F だけ（`enabled=false`。`POST /jobs` は
 `pipeline_unavailable` で拒否）。
 
-**実装済み**: **Plugin/Pipeline Registry**（`registry.py` の `build_default_registry()` が同梱 5 本を登録し、
-`plugin_loader.discover_plugins()` が `KAIROS_PLUGINS_DIR`（既定 `services/dora_runner/plugins/`）配下の
-manifest をスキャンして自動登録する。例として `hello_dora` プラグインを同梱）、**dora dataflow の
-in-process インタプリタ**（プラグインの `executor: dora` は下記の理由で in-process 実行）、
-**ジョブの並行度上限・per-job timeout**（`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`）、
-**job/template の SQLite 永続化と再起動リコンサイル**（上記「永続化と再起動リコンサイル」）。
-各パイプラインの重い読込・エンコードは worker スレッドに退避する
-（`POST /validation/templates/generate` の MCAP summary 読みも `to_thread` — event loop 上での同期読みは
-実行中の全 endpoint を止めていた。2026-08-11, sweep S4）。
+**実装済み**: `registry.py`の`build_default_registry()`が組み込みpipelineを登録し、`plugin_loader.discover_plugins()`が`KAIROS_PLUGINS_DIR`配下のmanifestを自動登録する。同梱例は`hello_dora`と`hello_kairos`。Dockerでは`/app/plugins`、ソース実行では`services/dora_runner/plugins/`が既定。
+
+プラグインのPython依存はビルド時に専用venvへ組み込む。OS依存もマニフェストで宣言できる。依存解決に失敗したらビルドを止め、起動時に必要な環境がないプラグインは登録しない。ユーザーの導入手順は[プラグインREADME](../../../services/dora_runner/plugins/README.ja.md)を参照。
+
+ジョブ並行度上限・timeout（`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`）、job/templateのSQLite永続化と再起動リコンサイルを実装済み。重い読込・エンコードはスレッドまたは別プロセスへ渡す。
 
 **per-job timeout は作業を実際に止める**（2026-08-11, sweep S2-4）。期限超過は cancel と同じ協調機構
 （`cancel_event` → worker のチェックポイントで subprocess kill / デコード停止）を発火し、猶予 30 秒
@@ -323,19 +315,10 @@ in-process インタプリタ**（プラグインの `executor: dora` は下記�
 保持 — 従来はこれが唯一の挙動で、全編エンコードの長尺 bag が偽 failed＋スロット死蔵になっていた）。
 API cancel が先に要求していた場合は `canceled` が勝つ（BUG-D と同じ規則）。
 
-**dora の同梱状況（2026-07-26 更新）**: **dora CLI（0.5.0）と同梱 bagflow の Rust ノードは dora_runner
-イメージに入っている**。実 dora で動くのは **検証 2 本（`fast_validation` / `full_validation`）**で、
-プラグインの `executor: dora` は従来どおり in-process インタプリタで実行する（プラグインの dataflow を
-実 dora へ載せ替えるのは別作業）。したがって `/readyz` は 2 成分を誠実に返す: `components.dora`（`dora` バイナリの
-有無 = `available` / `in-process`）と `components.bagflow`（bagflow バイナリの有無 = `available` /
-`unavailable`）。`/pipelines` の各 `PipelineDefinition` も宣言上の `executor` とは別に
-`effective_executor`（実際にどう動くか）を返す。イメージ以外（ソース実行 / CI）では bagflow が無いので
-`fast_validation` / `full_validation` はどちらも `enabled=false` に落ちる。**AI node（推論・LeRobot 変換）**は未実装。
+**doraの同梱と実行状況**: dora CLI 0.5.0、Pythonバインディング、bagflowのRustノードをイメージに同梱する。検証2本に加え、`executor: dora`の独自プラグインも専用coordinator/daemonで実行し、完了を待つ。依存付きPythonノードはそのプラグインのvenvを選択する。依存付きcallableは専用Pythonプロセスで実行し、キャンセル時には子プロセス群も止める。
 
-validation チェックの追加方法・単体試験・ローカル CLI（`python -m dora_runner.cli`）でのデバッグ手順は、
-開発者ガイド [docs/dora/README.ja.md](../../dora/README.ja.md) を参照。
+ソース環境でdora CLIがない場合、または`KAIROS_DORA_INPROCESS`を設定した場合、プラグインのグラフは`process(inputs, ctx)`を呼ぶ互換インタプリタで動く。任意のdoraグラフを再現するものではない。bagflowバイナリがなければ`fast_validation` / `full_validation`は`enabled=false`になる。
 
-**dora dataflow 化 & プラグインシステムの実装方針**（将来像）は [dora_plugins.md](dora_plugins.md) に確定
-（全 pipeline の dataflow 化・`plugins/<name>` の manifest scan 自動登録・段階移行プラン）。現状のプラグインは
-**in-tree**（submodule ではなく `services/dora_runner/plugins/` に直置き）で、dora daemon は将来の投資として
-枠だけ用意している。
+`/readyz`は`components.dora`と`components.bagflow`を返す。`/pipelines`は宣言上の`executor`に加えて`effective_executor`を返す。後者の`in-process`はdora daemonへ委譲しない実行のAPI表記であり、依存付きcallableがサービス本体にimportされるという意味ではない。
+
+チェック追加・単体試験・CLIでのデバッグは[validation開発ガイド](../../dora/README.ja.md)、プラグイン作者の必須作業・依存・GPU・入出力は[プラグイン仕様](dora_plugins.md)を参照。

@@ -126,3 +126,61 @@ def test_plugin_cli_timeout_and_cancel_clean_up_only_its_flow(
 
     asyncio.run(exercise())
     assert cleaned == [("only-this-job", endpoint)]
+
+
+def test_isolated_worker_cancel_stops_its_children(tmp_path: Path, monkeypatch) -> None:
+    import os
+
+    from dora_runner.bagflow_runtime import run_plugin_process
+
+    pid_file = tmp_path / "child.pid"
+    code = (
+        "import subprocess,time,pathlib; "
+        "p=subprocess.Popen(['sleep','120']); "
+        f"pathlib.Path({str(pid_file)!r}).write_text(str(p.pid)); time.sleep(120)"
+    )
+    event = threading.Event()
+
+    async def forbidden_cleanup(*args):
+        raise AssertionError("an isolated Python worker must not stop any dora flow")
+
+    monkeypatch.setattr(bagflow_runtime, "cleanup_flow", forbidden_cleanup)
+
+    async def exercise():
+        task = asyncio.create_task(
+            run_plugin_process(
+                [sys.executable, "-c", code],
+                cwd=tmp_path,
+                cancel_event=event,
+            )
+        )
+        try:
+            for _ in range(200):
+                if pid_file.exists():
+                    break
+                await asyncio.sleep(0.01)
+            assert pid_file.exists(), "worker did not start its child"
+            event.set()
+            with pytest.raises(JobCanceled):
+                await task
+            pid = int(pid_file.read_text())
+            for _ in range(200):
+                stat = Path(f"/proc/{pid}/stat")
+                if not stat.exists() or stat.read_text().split()[2] == "Z":
+                    return
+                await asyncio.sleep(0.01)
+            raise AssertionError("worker left an executing child behind")
+        finally:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            if pid_file.exists():
+                try:
+                    os.kill(int(pid_file.read_text()), 9)
+                except ProcessLookupError:
+                    pass
+
+    asyncio.run(exercise())

@@ -1,73 +1,46 @@
-# dora_runner plugins
+<!-- AUTO-GENERATED from services/dora_runner/plugins/README.ja.md. Do not edit by hand — edit the Japanese source and run /sync-docs. -->
 
-Drop-in pipelines for `dora_runner`. Each subdirectory here is one plugin: a
-[dora](https://dora-rs.ai/) dataflow plus a manifest. At startup
-`dora_runner.plugin_loader.discover_plugins()` scans every
-`*/kairos_plugin.yaml`, validates it, and registers it as a pipeline — so it
-shows up in `GET /pipelines` and `POST /jobs` with **no core code change** and
-**no frontend change**. The Validation tab is pipeline-agnostic: it renders the
-job form from the manifest's `params_schema` **and** renders the result from the
-job's `summary.json` generically, so a plugin author never edits the UI (see
-[`docs/specs/ja/dora_plugins.md` §2.5](../../../docs/specs/ja/dora_plugins.md)).
+# Adding dora_runner plugins
 
-Design spec: [`docs/specs/ja/dora_plugins.md`](../../../docs/specs/ja/dora_plugins.md).
+Place a custom plugin's definition, implementation, and dependency declarations in a child folder of this directory, then rebuild the image. The Validation screen's form and result display are generated automatically.
 
-## Layout
+## What the author provides
 
-```
-plugins/
-├─ hello_dora/                 # example: count messages per topic in an MCAP
-│  ├─ kairos_plugin.yaml       #   manifest (required) — id / params_schema / entrypoint
-│  ├─ dataflow.yml             #   dora dataflow: mcap_loader -> summarize -> result_writer
-│  └─ nodes/                   #   dora nodes (one file per node)
-│     ├─ loader.py
-│     ├─ summarize.py
-│     └─ writer.py
-└─ hello_kairos/               # template: take an input, emit "hello kairos!"
-   ├─ kairos_plugin.yaml       #   copy-me starting point for a new plugin
-   ├─ dataflow.yml             #   dora dataflow: greet -> result_writer
-   └─ nodes/                   #   decode-free — ignores the MCAP, just greets
-      ├─ greet.py
-      └─ writer.py
+- `kairos_plugin.yaml`: a unique id, display name, version, entrypoint, and `params_schema`.
+- For dora form, `dataflow.yml` and all nodes, with a `dora.Node` event loop that terminates as a finite batch. For callable form, a `module:function` implementation.
+- A terminal step that writes `summary.json` to the designated report directory.
+- Additional Python dependencies in `requirements.txt` or an installable `pyproject.toml`; keep `uv.lock` consistent with pyproject when used.
+- OS dependencies in `requires.apt`, build-only dependencies in `requires.build_apt`, and required model, dictionary, or local wheel files.
+
+The baseline environment is Python 3.12. Additional Python dependencies go into a plugin-specific venv, while the OS and data area are shared. Do not modify the input capture; write outputs to `KAIROS_REPORT_DIR`.
+
+## What the installer does
+
+Run from the repository root. Replace `my_plugin` with an unused name.
+
+```bash
+cp -R services/dora_runner/plugins/hello_kairos services/dora_runner/plugins/my_plugin
 ```
 
-## How a plugin runs
+After copying, change the id, version, and outputs in `kairos_plugin.yaml`, and `PIPELINE_ID` and `VERSION` in `nodes/greet.py`. Edit the form, verdict handling, and dependency declarations, then build. The build rejects a duplicate id.
 
-The same `dataflow.yml` drives two execution paths:
-
-- **With the `dora` CLI/daemon installed** — the runner shells out to
-  `dora start dataflow.yml`, passing the job context via `KAIROS_*` env vars that
-  each node's `main()` reads. (Needs `dora up`; the `dora` CLI is the Rust binary,
-  *not* the `dora-rs` Python wheel.)
-- **Without it** — a tiny in-process interpreter (`plugin_loader.run_dataflow_in_process`)
-  topologically orders the nodes from `dataflow.yml` and calls each node module's
-  `process(inputs, ctx)`. This is the path unit tests use, and it runs on a
-  CPU-only host with only the `dora-rs` Python bindings (or none at all).
-
-So each node module is **dual-mode**:
-
-```python
-def process(inputs, ctx):  # pure logic — in-process interpreter
-    ...
-def main():  # dora event loop — `dora start`
-    from dora import Node
-
-    ...
+```bash
+make build dora_runner
+make up dora_runner
+make logs dora_runner
 ```
 
-`ctx` is a `NodeContext(plugin_id, capture_id, data_dir, params, report_dir)`. The
-terminal node must write `report_dir/summary.json`; the runner reads it back and
-collects every file under `report_dir` as the job's `artifacts`.
+The build environment needs access to dependency sources and an environment matching the target CPU architecture. Installing dependencies with pip on the host does not affect the image. Runtime downloads are unnecessary.
 
-## Writing a new plugin
+For GPU use, set `requires.gpu: true`, prepare an NVIDIA GPU, driver, and Container Toolkit on the host, and pass `PLUGIN_GPU=1` to both build and up.
 
-1. Create `plugins/<id>/` with a `kairos_plugin.yaml` (`id` must match
-   `^[a-z0-9_]+$` and be unique across pipelines).
-2. Add a `dataflow.yml` and `nodes/` (each node exposing `process()` + `main()`).
-   The terminal node writes `summary.json` in the
-   `{pipeline, version, result, metrics, ...}` shape.
-3. Rebuild the image (`make rebuild dora`). Plugins are baked into the image
-   (`KAIROS_PLUGINS_DIR=/app/plugins`), so adding one = adding a folder + rebuild.
+## Confirming completion
 
-A broken plugin is skipped with a warning at startup — it never takes the service
-or the other plugins down.
+1. Your pipeline and input form appear in the Validation screen.
+2. Select a test capture and run it with inputs whose expected values are known. Hello examples also require selecting a capture.
+3. The job finishes and the summary verdict, metrics, and artifacts match expectations.
+4. Rebuild and recreate after changing code or dependencies.
+
+`make test-plugin-dependencies` checks the bundled dependency test fixtures. Test your own plugin separately using the procedure above.
+
+See the [plugin specification](../../../docs/specs/en/dora_plugins.md) for required files, node I/O, dependency isolation, unsupported forms, and error diagnostics.

@@ -1,0 +1,7 @@
+# Test-only image. No user plugins, data mounts, host ports or GPU devices.
+services:
+  dora_runner:
+    image: kairos-dora-runner:plugin-dependency-test
+    build:
+      args:
+        KAIROS_PLUGINS_SOURCE: services/dora_runner/tests/fixtures/dependency_plugins

@@ -41,6 +41,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import threading
@@ -430,6 +431,7 @@ async def _run_flow_process(
     endpoint: DoraEndpoint,
     budget: float,
     cancel_event: threading.Event | None,
+    cleanup_dora: bool = True,
 ) -> FlowRun:
     """Share bounded subprocess waiting and targeted cleanup across executors."""
     started = time.monotonic()
@@ -439,7 +441,20 @@ async def _run_flow_process(
         env=endpoint.child_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        start_new_session=not cleanup_dora,
     )
+
+    def kill_process() -> None:
+        try:
+            if cleanup_dora:
+                proc.kill()
+            else:
+                # Callable plugins may spawn children. Their entire process
+                # group must stop before the capture lease can be released.
+                os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
     timed_out = False
     communicate = asyncio.ensure_future(proc.communicate())
     deadline = started + budget + _SUBPROCESS_GRACE_S
@@ -448,7 +463,7 @@ async def _run_flow_process(
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 timed_out = True
-                proc.kill()
+                kill_process()
                 stdout, _ = await communicate
                 output = stdout.decode(errors="replace")
                 break
@@ -461,21 +476,26 @@ async def _run_flow_process(
                 output = stdout.decode(errors="replace")
                 break
             if cancel_event is not None and cancel_event.is_set():
-                proc.kill()
+                kill_process()
                 await communicate
-                await cleanup_flow(name, endpoint)
+                if cleanup_dora:
+                    await cleanup_flow(name, endpoint)
                 raise JobCanceled
     except asyncio.CancelledError:
         # The awaiting task itself was cancelled: kill the CLI, then sweep the
         # dataflow so no orphaned node keeps holding shared memory.
-        proc.kill()
+        kill_process()
         communicate.cancel()
         await proc.wait()
-        await cleanup_flow(name, endpoint)
+        if cleanup_dora:
+            await cleanup_flow(name, endpoint)
         raise
+    finally:
+        if not cleanup_dora:
+            kill_process()
     wall = time.monotonic() - started
     ok = not timed_out and proc.returncode == 0
-    if not ok:
+    if not ok and cleanup_dora:
         await cleanup_flow(name, endpoint)
     return FlowRun(
         ok=ok,
@@ -483,6 +503,24 @@ async def _run_flow_process(
         output=output,
         timed_out=timed_out,
         wall_s=wall,
+    )
+
+
+async def run_plugin_process(
+    argv: list[str],
+    *,
+    cwd: Path,
+    cancel_event: threading.Event | None = None,
+) -> FlowRun:
+    """Run an isolated Python worker with the same bounded wait, without dora."""
+    return await _run_flow_process(
+        argv,
+        cwd / "worker",
+        "plugin-worker",
+        DoraEndpoint.from_env(),
+        flow_timeout_s(),
+        cancel_event,
+        cleanup_dora=False,
     )
 
 

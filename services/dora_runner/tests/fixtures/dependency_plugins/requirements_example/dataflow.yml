@@ -1,0 +1,5 @@
+nodes:
+  - id: report
+    path: nodes/report.py
+    inputs:
+      tick: dora/timer/millis/100

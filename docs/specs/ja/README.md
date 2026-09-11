@@ -12,5 +12,8 @@
 | [topic_probe](topic_probe.md) | 数値フィールドのライブプロット（decode を隔離。異トピック重畳） |
 | [webrtc_streamer](webrtc_streamer.md) | カメラ映像の低遅延配信（プレビュー） |
 | [api_orchestrator](api_orchestrator.md) | ジョブ管理 / 状態管理 / API ハブ（単一入口 `/api/v1`） |
-| [dora_runner](dora_runner.md) | 記録後の検証・変換・AI 処理（dora 拡張、stage3。検証 v1 = 必須トピック + テンプレ） |
+| [dora_runner](dora_runner.md) | 収録後の組み込み検証・ジョブ管理・専用dora実行と拡張処理 |
+| [dora_plugins](dora_plugins.md) | 独自プラグイン作者・導入担当者の必須作業、Python／OS依存、GPU、入出力・実行確認 |
 | [frontend](frontend.md) | 役割タブ Web UI（Console v2: Collect / Review / Datasets / Validation / Monitor / Settings） |
+
+導入全体は[ルートREADME](../../../README.ja.md)、プラグイン追加は[利用者向け手順](../../../services/dora_runner/plugins/README.ja.md)、組み込みチェックの変更は[dora開発ガイド](../../dora/README.ja.md)から始める。

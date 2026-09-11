@@ -71,6 +71,9 @@ The single source of configuration shared across services, and the rules for ext
 | `NO_PROXY` / `no_proxy` | `localhost,127.0.0.1` | Proxy exemptions for both build args and in-container HTTP. On a host behind a corporate proxy, Docker injects `HTTP(S)_PROXY` into every container; without this, healthchecks and service-to-service LAN calls get sucked into the proxy and fail. On the cross-host split add the robot IP (see `.env.split.example`). The orchestrator's internal httpx client is `trust_env=False` to begin with |
 | `KAIROS_DORA_MAX_CONCURRENCY` | `2` | The cap on the number of jobs `dora_runner` runs concurrently |
 | `KAIROS_DORA_JOB_TIMEOUT_S` | `900` | The wall-clock cap (seconds) per `dora_runner` job |
+| `PLUGIN_GPU` | `0` | Make GPU opt-in. When `1`, adds `compose/plugins.gpu.yaml` to build and up, enabling GPU plugin builds and runtime GPU allocation. Requires an NVIDIA GPU, driver, and Container Toolkit |
+
+Place custom plugins under `services/dora_runner/plugins/<name>/`. Declare dependencies in the manifest, `requirements.txt`, and so on, then include them with `make build dora_runner` → `make up dora_runner`. Usually leave `KAIROS_PLUGINS_DIR=/app/plugins` and `KAIROS_PLUGIN_ENVS_DIR=/opt/plugin-envs` unchanged. Changing path variables alone does not build dependencies. See the [plugin spec](dora_plugins.md) for details.
 
 **`*_HOST` for cross-host split** ([deployment_topology](deployment_topology.md) Option A). Leave at the defaults on a single host:
 

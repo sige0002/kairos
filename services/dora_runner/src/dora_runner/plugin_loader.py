@@ -28,6 +28,7 @@ import importlib.util
 import json
 import logging
 import os
+import shlex
 import shutil
 import sys
 import tempfile
@@ -39,8 +40,13 @@ import yaml
 from kairos_common import ApiError
 from pydantic import BaseModel, ConfigDict, Field
 
-from dora_runner.bagflow_runtime import DoraEndpoint, run_dora_flow
+from dora_runner.bagflow_runtime import (
+    DoraEndpoint,
+    run_dora_flow,
+    run_plugin_process,
+)
 from dora_runner.mcap_utils import resolve_source_dir
+from dora_runner.plugin_dependencies import PluginRequirements, environment_python
 from dora_runner.store import JobRecord, RunnerStore
 
 if TYPE_CHECKING:
@@ -88,7 +94,7 @@ class PluginManifest(BaseModel):
     # entrypoint.dataflow (relative path) for executor=dora; entrypoint.callable
     # ("module:function") for a pure-python in_process plugin.
     entrypoint: dict[str, str] = Field(default_factory=dict)
-    requires: dict[str, Any] = Field(default_factory=dict)
+    requires: PluginRequirements = Field(default_factory=PluginRequirements)
 
 
 @dataclass(frozen=True)
@@ -166,8 +172,13 @@ def _load_manifest(manifest_path: Path) -> PluginManifest:
 
 def _build_runner(manifest: PluginManifest, plugin_dir: Path) -> Runner:
     """Pick a runner from the manifest entrypoint (dataflow or pure callable)."""
+    if manifest.requires.gpu and os.environ.get("KAIROS_PLUGIN_GPU_ENABLED") != "1":
+        raise ValueError(f"plugin '{manifest.id}' requires the PLUGIN_GPU=1 deployment")
+    python = environment_python(plugin_dir, manifest.id)
     if manifest.entrypoint.get("dataflow"):
         return _make_dataflow_runner(manifest, plugin_dir)
+    if manifest.entrypoint.get("callable") and python is not None:
+        return _make_isolated_runner(manifest, plugin_dir, python)
     if manifest.entrypoint.get("callable"):
         return _make_callable_runner(manifest, plugin_dir)
     raise ValueError("entrypoint must set 'dataflow' or 'callable'")
@@ -210,14 +221,68 @@ def _make_dataflow_runner(manifest: PluginManifest, plugin_dir: Path) -> Runner:
         )
         job.progress = 0.4
         if dora_cli_available():
-            await _run_via_dora_cli(dataflow_yml, ctx, job)
+            await _run_via_dora_cli(dataflow_yml, ctx, job, plugin_dir=plugin_dir)
         else:
-            await asyncio.to_thread(
-                run_dataflow_in_process, dataflow_yml, plugin_dir, ctx
-            )
+            python = environment_python(plugin_dir, manifest.id)
+            if python is not None:
+                await _run_isolated(manifest, plugin_dir, python, ctx, job)
+            else:
+                await asyncio.to_thread(
+                    run_dataflow_in_process, dataflow_yml, plugin_dir, ctx
+                )
         return _collect_result(manifest.id, report_dir)
 
     return _run
+
+
+def _make_isolated_runner(
+    manifest: PluginManifest, plugin_dir: Path, python: Path
+) -> Runner:
+    async def _run(job: JobRecord, store: RunnerStore, data_dir: Path) -> dict:
+        report_dir = _prepare_report_dir(manifest, job, data_dir)
+        ctx = NodeContext(manifest.id, job.capture_id, data_dir, job.params, report_dir)
+        await _run_isolated(manifest, plugin_dir, python, ctx, job)
+        return _collect_result(manifest.id, report_dir)
+
+    return _run
+
+
+async def _run_isolated(
+    manifest: PluginManifest,
+    plugin_dir: Path,
+    python: Path,
+    ctx: NodeContext,
+    job: JobRecord,
+) -> None:
+    context = {
+        "plugin_id": manifest.id,
+        "capture_id": ctx.capture_id,
+        "data_dir": str(ctx.data_dir.resolve()),
+        "params": ctx.params,
+        "report_dir": str(ctx.report_dir.resolve()),
+    }
+    run = await run_plugin_process(
+        [
+            str(python),
+            "-m",
+            "dora_runner.plugin_worker",
+            str(plugin_dir.resolve()),
+            json.dumps(context),
+        ],
+        cwd=ctx.report_dir.resolve(),
+        cancel_event=job.cancel_event,
+    )
+    job.logs_tail.extend(run.log_tail)
+    if not run.ok:
+        raise ApiError(
+            status_code=500,
+            code="pipeline_failed",
+            message=(
+                f"plugin '{manifest.id}' worker timed out"
+                if run.timed_out
+                else f"plugin '{manifest.id}' worker failed (exit {run.exit_code})"
+            ),
+        )
 
 
 def _make_callable_runner(manifest: PluginManifest, plugin_dir: Path) -> Runner:
@@ -280,7 +345,11 @@ def _collect_result(plugin_id: str, report_dir: Path) -> dict:
 
 
 async def _run_via_dora_cli(
-    dataflow_yml: Path, ctx: NodeContext, job: JobRecord
+    dataflow_yml: Path,
+    ctx: NodeContext,
+    job: JobRecord,
+    *,
+    plugin_dir: Path | None = None,
 ) -> None:
     """Materialize a writable job graph and await our private dora daemon.
 
@@ -304,6 +373,26 @@ async def _run_via_dora_cli(
     with tempfile.TemporaryDirectory(
         prefix="plugin-flow-", dir=ctx.report_dir.resolve()
     ) as workdir:
+        python = environment_python(plugin_dir or dataflow_yml.parent, ctx.plugin_id)
+        if python is not None:
+            for node in graph["nodes"]:
+                path = node.get("path", "")
+                node["env"]["VIRTUAL_ENV"] = str(python.parent.parent)
+                node["env"]["PATH"] = (
+                    str(python.parent) + os.pathsep + os.environ.get("PATH", "")
+                )
+                if path.endswith(".py") or path in ("python", "python3"):
+                    # dora chooses Python before applying node env. Its shell
+                    # node selects our interpreter without executing files on
+                    # a potentially noexec data volume. Quote every argument.
+                    argv = [str(python), "-u"]
+                    if path.endswith(".py"):
+                        argv.append(path)
+                    argv.extend(str(node.get("args", "")).split())
+                    node["path"] = "shell"
+                    node["args"] = "exec " + shlex.join(argv)
+                elif path and (python.parent / path).is_file():
+                    node["path"] = str(python.parent / path)
         flow_file = Path(workdir) / "dataflow.yml"
         flow_file.write_text(yaml.safe_dump(graph), encoding="utf-8")
         run = await run_dora_flow(

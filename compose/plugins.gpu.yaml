@@ -1,0 +1,10 @@
+# Opt-in only: make build dora_runner PLUGIN_GPU=1; make up dora_runner PLUGIN_GPU=1.
+# Requires an NVIDIA GPU and NVIDIA Container Toolkit on the deployment host.
+services:
+  dora_runner:
+    build:
+      args:
+        KAIROS_PLUGIN_GPU_ENABLED: "1"
+    environment:
+      KAIROS_PLUGIN_GPU_ENABLED: "1"
+    gpus: all

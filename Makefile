@@ -161,7 +161,9 @@ ARCHIVE_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*A
 EXPORTS_DIR_LOCAL := $(if $(wildcard .env),$(shell grep -E '^[[:space:]]*EXPORTS_DIR=' .env 2>/dev/null | tail -1 | cut -d= -f2-),)
 LEROBOT_OVERRIDE_LOCAL := $(if $(wildcard .env),$(shell grep -qE '^[[:space:]]*LEROBOT_EXPORTER=' .env 2>/dev/null && echo -f compose/lerobot.yaml),)
 LEROBOT_OVERRIDE_LOCAL += $(if $(and $(LEROBOT_OVERRIDE_LOCAL),$(EXPORTS_DIR_LOCAL)),-f compose/lerobot-exports.yaml,)
-COMPOSE      := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(LEROBOT_OVERRIDE_LOCAL)
+PLUGIN_GPU := $(call _prefer_env,PLUGIN_GPU,0)
+PLUGIN_GPU_OVERRIDE := $(if $(filter 1,$(PLUGIN_GPU)),-f compose/plugins.gpu.yaml,)
+COMPOSE      := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(LEROBOT_OVERRIDE_LOCAL) $(PLUGIN_GPU_OVERRIDE)
 # The lerobot-exporter image installs a SITE-PROVIDED converter from
 # deploy/lerobot/converter (gitignored, optional — see deploy/lerobot/README.md).
 # For BUILD ONLY, drop the lerobot overlay when that tree is absent, so a build
@@ -170,7 +172,7 @@ COMPOSE      := docker compose --project-directory . -f compose/compose.yaml $(A
 # exporter image still runs regardless.
 _CONVERTER_PRESENT := $(wildcard deploy/lerobot/converter/pyproject.toml)
 BUILD_LEROBOT_OVERLAY := $(if $(_CONVERTER_PRESENT),$(LEROBOT_OVERRIDE_LOCAL),)
-BUILD_COMPOSE := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(BUILD_LEROBOT_OVERLAY)
+BUILD_COMPOSE := docker compose --project-directory . -f compose/compose.yaml $(ARCHIVE_OVERRIDE_LOCAL) $(BUILD_LEROBOT_OVERLAY) $(PLUGIN_GPU_OVERRIDE)
 # Let the replay harness read the root .env too (so BAG / ROS_DISTRO / RMW set
 # there drive `make rosbag`), when a .env exists.
 TEST_COMPOSE := docker compose $(if $(wildcard .env),--env-file .env,) -f deploy/test/compose.yaml
@@ -559,7 +561,11 @@ smoke-record: ## smoke test incl. record start/stop
 	RECORD=1 bash deploy/test/smoke.sh
 
 # ---- tests / lint -----------------------------------------------------------
-.PHONY: test test-py test-fe lint fmt
+.PHONY: test test-py test-fe test-plugin-dependencies lint fmt
+test-plugin-dependencies: ## build and verify isolated plugin dependencies (no user data)
+	docker compose --project-directory . -f compose/compose.yaml -f deploy/test/compose.plugin-dependencies.yaml build dora_runner
+	python3 deploy/test/verify_plugin_dependencies.py
+
 test: test-py test-fe ## run all unit tests (Python + frontend)
 
 test-py: ## run the Python unit-test loop (all services + libs)

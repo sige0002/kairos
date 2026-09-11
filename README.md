@@ -55,9 +55,7 @@ flowchart TB
   WEB -.->|"media goes direct"| FE
 ```
 
-Post-recording validation is contained **entirely inside the dora_runner container** (a bundled
-bagflow flow run on its own dora coordinator; see the
-[dora_runner spec](docs/specs/en/dora_runner.md)):
+Post-recording validation runs **inside the dora_runner container**. The following are the bagflow paths for `fast_validation` / `full_validation`. Python-implemented validation and custom plugins are also available (see the [dora_runner spec](docs/specs/en/dora_runner.md)).
 
 ```mermaid
 flowchart LR
@@ -78,7 +76,7 @@ flowchart LR
 | [topic_probe](docs/specs/en/topic_probe.md) | A generic probe that live-plots **numeric fields** of selected topics. Decoding is **isolated** to this service so it doesn't affect recording or monitoring. |
 | [webrtc_streamer](docs/specs/en/webrtc_streamer.md) | Low-latency camera **preview** (ROS 2 image → browser). Not a recording path. |
 | [api_orchestrator](docs/specs/en/api_orchestrator.md) | The single API hub. Handles job lifecycle, state, configuration, and result aggregation. |
-| [dora_runner](docs/specs/en/dora_runner.md) | Post-recording **validation & conversion** pipeline. Validation runs as a bundled **bagflow flow on real dora**. Enabled: `fast_validation` / `full_validation` / `loss_report` / `video_check` / `signal_report`. |
+| [dora_runner](docs/specs/en/dora_runner.md) | Post-recording **validation & conversion** pipeline. `fast_validation` / `full_validation` run as bagflow on real dora; `loss_report` / `clock_check` / `video_check` / `signal_report` are Python implementations. Custom plugins are registered automatically. |
 | [frontend](docs/specs/en/frontend.md) | A backend-driven Web UI (UI labels in English). Role tabs (Console v2): Collect / Review / Datasets / Validation / Monitor / Settings. |
 | kokoro | Offline CPU English/Japanese TTS sidecar using Kokoro 82M. Settings prepares audio in advance; it never gates the recording path. |
 
@@ -98,7 +96,7 @@ For the detailed spec of each service, see [docs/specs/en/](docs/specs/en/README
 
 | Item | Support range |
 |---|---|
-| Host | Linux x86_64 (CI uses an Ubuntu runner). Docker Desktop on macOS / Windows and arm64 are unverified. |
+| Host | Linux x86_64 (CI uses an Ubuntu runner). Local builds and Validation E2E have also been confirmed on Linux arm64. This does not guarantee all arm64 devices; Docker Desktop on macOS / Windows is unverified. |
 | ROS 2 | **Jazzy**. To change `ROS_DISTRO`, also provide a digest-pinned `ROS_BASE_IMAGE` containing that distribution. A mismatched default Jazzy image stops the build explicitly. |
 | RMW | `rmw_fastrtps_cpp` is covered by the acceptance gate. `rmw_cyclonedds_cpp` is bundled, but the robot, replay, and every service must switch together and release CI does not cover it. |
 | Docker | Docker Engine 24 or later and Docker Compose 2.24 or later (`env_file.required` is used). |
@@ -151,14 +149,13 @@ Run `make table` in another terminal to inspect every topic's Hz / bandwidth / c
 ### Start all services (Docker)
 
 ```bash
-make build                    # build the images (first time and after code changes; needs network)
-make up                       # start (detached). Robot selected via ROBOT (default airoa_hsr)
-# or with plain docker compose (compose files live under compose/;
-# --project-directory pins relative paths to the repo root):
-cp .env.example .env          # edit as needed
-docker compose --project-directory . -f compose/compose.yaml build
-docker compose --project-directory . -f compose/compose.yaml up
+cp .env.example .env          # first time only; do not overwrite an existing .env
+# edit ROBOT and other settings in .env as needed
+make build                    # first time and after code or dependency changes
+make up                       # start; derives robot-specific config paths from ROBOT
 ```
+
+Use Make for normal setup. With plain Compose, the path derivation from `ROBOT` and additional settings such as GPU configuration are not applied automatically.
 
 On a PC that also uses Settings Voice/TTS, enable `COMPOSE_PROFILES=audio` in `.env`
 before running the same `make build` and `make up`. Kokoro is off by default because it
@@ -171,7 +168,7 @@ uses about 1.5 GiB of memory.
 > [Running on an offline machine](#running-on-an-offline-machine-carrying-the-images-in).
 
 All services start with host networking. The ROS 2 services (`recorder` / `monitor` / `streamer`)
-share the host DDS graph (`ROS_DOMAIN_ID=0`), and the pure-Python services (`orchestrator` / `dora_runner`)
+share the selected `ROS_DOMAIN_ID` DDS graph (default `0`), and the services that do not require ROS (`orchestrator` / `dora_runner`)
 and the frontend reach each other at `localhost:<port>` (no authentication; LAN assumed).
 
 ### Which `.env` file do I use? (for first-time users)
@@ -350,6 +347,19 @@ Steps to add a new robot. A robot with only standard message types can skip the 
    Note that `make table` (topic_table) does not load the overlay, so an added robot's custom-type Hz is
    not shown. Use the monitor's `GET /metrics`, or the `ros2 bag info` printed at playback.
 
+### Adding a custom plugin
+
+Plugin authors provide a manifest, a node or callable, additional dependencies, and summary output handling. Integrators place it under `services/dora_runner/plugins/<name>/` and run:
+
+```bash
+make build dora_runner
+make up dora_runner
+```
+
+Python dependencies are installed into a plugin-specific venv at build time. OS dependencies are installed into the same container as declared. Users provide required files such as models, validation captures, and the host environment when using a GPU. Runtime auto-installation and hot reload are not performed.
+
+The [plugin addition procedure](services/dora_runner/plugins/README.md) covers what to prepare, what to change after copying, installation, and success checks. See the [plugin spec](docs/specs/en/dora_plugins.md) for supported formats, Python 3.12 constraints, explicit GPU configuration, and troubleshooting.
+
 ### Main endpoints (default ports)
 
 | Service | Port | Examples |
@@ -369,14 +379,10 @@ Collect / Review / Datasets / Validation / Monitor / Settings).
 
 1. **Stream topics**: connect a real robot/simulator, or replay a sample bag.
    ```bash
-   # "see" the flowing topics (periodically show every topic's Hz/bandwidth/count)
-   docker compose -f deploy/test/compose.yaml run --rm topic_table
-   # replay a sample bag onto the ROS 2 graph (separate terminal; single playback)
-   docker compose -f deploy/test/compose.yaml run --rm rosbag_player
-   # loop playback (keep streaming continuously)
-   LOOP=--loop docker compose -f deploy/test/compose.yaml run --rm rosbag_player
-   # specify a different bag
-   BAG=/data/airoa-moma-mcap/000730 docker compose -f deploy/test/compose.yaml run --rm rosbag_player
+   make table
+   make rosbag BAG=airoa-moma-mcap/000730
+   # loop playback in a separate terminal
+   make rosbag-loop BAG=airoa-moma-mcap/000730
    ```
 2. **Record**: start from the UI (Collect tab) or `POST /api/v1/record/start {"topics":"all"}` → an MCAP is
    created under `/data/objects/<capture_id>/` (stop with `POST /api/v1/record/stop`). The `capture_id` is a
@@ -404,6 +410,7 @@ Collect / Review / Datasets / Validation / Monitor / Settings).
 
 ### Tests / integration tests
 
+- **Plugin dependency integration check**: `make test-plugin-dependencies`. It checks the bundled dependency-test cases in a temporary container without network access. Validate your own plugin separately from the Validation screen.
 - **Unit tests**: `make test` (= each Python service `uv run --extra test pytest` + frontend `npm run build && npm test && npm run lint`).
 - **Acceptance tests (from the UI, against a real stack)**: `make test-e2e`. It brings up a real stack on
   dedicated ports and a dedicated data dir and drives the frontend in a real browser (Playwright) against a
@@ -417,7 +424,7 @@ Collect / Review / Datasets / Validation / Monitor / Settings).
   prints the result (`make smoke-record` also runs record start/stop). This is the entry point for resolving "I tested it but nothing comes out."
 - **Playback with visualization**: `make table` (periodically show Hz/bandwidth for all topics) and `make rosbag` / `make rosbag-loop` (playback).
 
-For detailed commands and verified recipes, see "ビルド / テスト / 実行コマンド" in [AGENTS.md](AGENTS.md) (Japanese).
+See [e2e/README.md](e2e/README.md) for E2E preparation and isolation conditions, and [AGENTS.md](AGENTS.md) for shared development rules.
 
 ## Releases
 

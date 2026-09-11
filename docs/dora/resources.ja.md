@@ -30,7 +30,7 @@
 
 | リソース | URL | kairos での使いどころ |
 | --- | --- | --- |
-| dora-hub（コミュニティ node 集） | https://github.com/dora-rs/dora-hub | 既製 node を 1 行 YAML（`hub: <node>@<version>`）で取り込む仕組み。dora 本体とは別リポジトリ。kairos の Plugin Registry が参照しうる「外部 node の供給元」。 |
+| dora-hub（コミュニティ node 集） | https://github.com/dora-rs/dora-hub | 既製 node を 1 行 YAML（`hub: <node>@<version>`）で取り込む仕組み。dora 本体とは別リポジトリ。外部nodeの参考。kairosがHubから自動取得する機能はなく、対応するローカルpath形式へ組み込む必要がある。 |
 | Dora Hub 概要（Book） | https://dora-rs.ai/dora/hub/overview | Node Hub の使い方・node manifest・再現ビルド・publish 手順。kairos が独自 node を配布形態に乗せる場合の設計参照。 |
 
 主な既製 node（dora-hub で確認、kairos の AI node 候補として有用）:
@@ -50,13 +50,13 @@
 | 旧 dora-ros2-bridge リポジトリ（archived） | https://github.com/dora-rs/dora-ros2-bridge | 上記に統合・アーカイブ済み。歴史的経緯の参照のみ。新規参照は本体内の方を見ること。 |
 | ROS2 Bridge 解説（discussion） | https://github.com/orgs/dora-rs/discussions/306 | bridge の設計意図・DDS 経由の受信方針などの背景。 |
 
-> 重要: **dora の ROS2 bridge は「ライブの ROS2 トピック」を対象**であり、**記録済み MCAP ファイルを読む機能ではない**。kairos の `dora_runner` は仕様どおり、ブリッジを使わず **`mcap` + `mcap-ros2-support` でファイルを直接読む**（`rclpy` 不要）。本ブリッジは kairos では「将来ライブ取り込みを足す場合の選択肢」に留まる。
+> 重要: **dora の ROS2 bridge は「ライブの ROS2 トピック」を対象**であり、**記録済み MCAP ファイルを読む機能ではない**。kairosの収録後処理はブリッジを使わずファイルを読む。PythonでMCAPを読むプラグインは`mcap` + `mcap-ros2-support`を利用できる（`rclpy`不要）。組み込みのfast/full検証はbagflowのRustノードを使い、fastはmetadataだけを照合する。本ブリッジは kairos では「将来ライブ取り込みを足す場合の選択肢」に留まる。
 
 ## 5. MCAP 読み込み（kairos の MCAP Loader が直接使うライブラリ）
 
 | リソース | URL | kairos での使いどころ |
 | --- | --- | --- |
-| MCAP Python リーダー（汎用） | https://mcap.dev/docs/python/mcap-apidoc/mcap.reader | `mcap` パッケージの低レベルリーダー。topic / 型 / 時刻 / サイズの取得など、decode 不要のメタ走査に使う（`fast_validation` の土台）。 |
+| MCAP Python リーダー（汎用） | https://mcap.dev/docs/python/mcap-apidoc/mcap.reader | `mcap` パッケージの低レベルリーダー。topic / 型 / 時刻 / サイズの取得など、decode 不要のメタ走査に使う（Pythonプラグインの読込実装向け。組み込みfast検証はmetadataを使う）。 |
 | mcap-ros2-support リーダー | https://mcap.dev/docs/python/mcap-ros2-apidoc/mcap_ros2.reader | `read_ros2_messages(source, topics=..., start_time=..., end_time=...)` で ROS2 メッセージを decode しつつ反復。topic フィルタ・時間範囲指定が引数で可能 = kairos の node I/O 契約「MCAP メッセージ反復子（topic フィルタ・時間範囲指定可）」をそのまま満たす。 |
 
 > dora 自体の記録/再生は **`.drec` 形式**（dora 独自の record/replay node）であり、**MCAP ではない**。kairos は正本記録を MCAP に固定しているため、dora の record/replay には依存せず、上記 `mcap` 系ライブラリで読む。
@@ -69,7 +69,7 @@
 | HuggingFace LeRobot 本体 | https://github.com/huggingface/lerobot | LeRobot dataset 形式・学習（ACT 等）・推論の本家。kairos が出力する「学習用データセット形式」の正本仕様。 |
 | dora-record → LeRobot 変換 PR（#197, **closed**） | https://github.com/huggingface/lerobot/pull/197 | dora-record データを LeRobot 形式へ変換するスクリプトの初期 PR。**マージされず #201 に置き換え**。当時の変換アプローチの参考（実装そのものは追従先を確認すること）。 |
 
-> kairos での位置づけ: `dataset_convert` パイプラインは「MCAP（正本） → LeRobot 形式」を担う。LeRobot 形式の正は HuggingFace 本家、変換の dora 実装パターンは dora-lerobot を参照する。`params.model` 差し替え・GPU 利用・report へのバージョン記録という kairos の AI node 契約に合わせて作る。
+> kairos での位置づけ: 組み込み`dataset_convert`は未実装で、「MCAP（正本） → LeRobot形式」は拡張時の用途。任意のLeRobot exporterは別サービス。LeRobot 形式の正は HuggingFace 本家、変換の dora 実装パターンは dora-lerobot を参照する。`params.model` 差し替え・GPU 利用・report へのバージョン記録という kairos の AI node 契約に合わせて作る。
 
 ## 7. 補助・コミュニティ資料（一次情報ではないが理解の助け）
 
@@ -83,7 +83,7 @@
 
 ## kairos `dora_runner` への対応まとめ
 
-- **node 雛形** → `examples/python-dataflow` をベースに、入力（run パス / MCAP 反復子 / params）→ 出力（metrics / artifacts / report）の契約を被せる。
+- **node 雛形** → `examples/python-dataflow` をベースに、[現在のプラグイン契約](../specs/ja/dora_plugins.md)に沿ってcapture ID・パス・paramsを受け、作者が読込・通信とsummary出力を実装する。
 - **MCAP 読み込み** → dora 機能ではなく `mcap` + `mcap-ros2-support`（[セクション 5](#5-mcap-読み込みkairos-の-mcap-loader-が直接使うライブラリ)）。ROS2 bridge は使わない。
 - **AI node** → dora-hub の推論 node（`dora-yolo` 等）と `python-yolo-detection` 例を手本に、`params.model` 差し替え可能な node として実装。
 - **dataset_convert** → dora-lerobot + HuggingFace LeRobot を参照。

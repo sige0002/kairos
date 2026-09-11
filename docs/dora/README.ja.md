@@ -7,19 +7,19 @@
 > 関連: dora そのものの入門は [getting-started.ja.md](getting-started.ja.md)、参考リソース集は
 > [resources.ja.md](resources.ja.md)。
 
-## 現状（実装の実態・2026-07-26 更新）
-- 有効な pipeline は **`fast_validation` / `full_validation` / `loss_report` /
-  `video_check` / `signal_report` の 5 本**（`dataset_convert` / `dataset_validation` は
+## 現在の実行構成
+- 組み込みの有効なpipelineは **`fast_validation` / `full_validation` / `loss_report` /
+  `clock_check` / `video_check` / `signal_report` の 6 本**（`dataset_convert` / `dataset_validation` は
   `enabled=false` のプレースホルダ。`POST /jobs` は `pipeline_unavailable` で拒否）。
-- レジストリは **実装済み**: `registry.py` の `build_default_registry()` が同梱 5 本を登録し、
+- レジストリは **実装済み**: `registry.py` の `build_default_registry()` が組み込みpipelineを登録し、
   `plugin_loader.discover_plugins()` が `KAIROS_PLUGINS_DIR`（既定 `services/dora_runner/plugins/`）配下の
-  manifest をスキャンして自動登録する（例プラグイン `hello_dora` を同梱）。
+  manifest をスキャンして自動登録する（例プラグイン `hello_dora` / `hello_kairos` を同梱）。
 - **検証 2 本は実 dora 上の bagflow フロー**（`fast_validation` / `full_validation`）。dora CLI（0.5.0）と
   同梱 bagflow の Rust ノードは **dora_runner イメージに入っている**が、ソースチェックアウト / CI には
   無いので、その環境では 2 本とも `enabled=false` に落ちる（理由は description に出る）。
-  プラグインの `executor: dora` は従来どおり **in-process インタプリタ**で実行される
-  （`/readyz` の `components.dora` / `components.bagflow` と `/pipelines` の `effective_executor` が
-  実行系を誠実に表示する）。
+  プラグインの`executor: dora`も同じ専用doraで実行する。Python依存のあるプラグインは専用venvを使う。
+  doraなしのソース環境では`process(inputs, ctx)`による互換実行となる。
+  `/readyz`と`/pipelines`の`effective_executor`で実行系を確認できる。
 - **`fast_validation` の中身**（`fast_validation.py` + `flows/fast_validation.yml`）:
   - フローは**サービス同梱**（イメージ内 `/opt/kairos/flows/fast_validation.yml`）。
     `config/<robot>/flows/fast_validation.yml` を置けばそちらが優先される。
@@ -35,7 +35,7 @@
   **job / template ストアは SQLite 永続化**（`store.py`。再起動時に in-flight ジョブを終端へ確定）。
 
 ## validation チェックの追加方法
-現状はレジストリが無いので「**関数とモデルを足す**」手順。
+既存チェックの設定変更、bagflowノードの追加、独自pipelineの追加で手順が異なる。独自プラグインの利用者は[追加手順](../../services/dora_runner/plugins/README.ja.md)から始める。
 
 ### A. 必須トピックの条件を増やすだけ（コード不要）
 テンプレに足すだけ。`required_topics` は **glob 名 + 任意 type**:
@@ -69,12 +69,11 @@ required_topics:
 2. **プラグインとして足す**（コア改修不要）: `KAIROS_PLUGINS_DIR` 配下に manifest（`kairos_plugin.yaml`）と
    実装を置く。`discover_plugins()` が起動時に自動登録する（`hello_dora` を参照）。
 3. summary には再現性のため `pipeline` / `version` を含める（同梱パイプラインと同じ規約）。
-4. dora daemon 上で実行する dataflow 化は将来像（[dora_plugins.md](../specs/ja/dora_plugins.md)）。現状は
-   in-process インタプリタで動く。
+4. 追加依存をrequirements.txt／pyproject.tomlとrequires.apt等に宣言し、`make build dora_runner` → `make up dora_runner`で反映する。dora形式は専用daemonで実行する。作者が用意するもの・GPU・実ジョブの確認は[プラグイン仕様](../specs/ja/dora_plugins.md)を参照。
 
 ## 単体試験の方法
 ```bash
-cd services/dora_runner && uv run --extra test pytest -q          # Python 側
+(cd services/dora_runner && uv run --extra test pytest -q)          # Python 側
 # Rust ノード（同梱 bagflow）— ホストに rust が無ければコンテナで
 cargo test -p bagflow-checks --manifest-path services/dora_runner/bagflow/Cargo.toml
 ```
@@ -85,16 +84,16 @@ cargo test -p bagflow-checks --manifest-path services/dora_runner/bagflow/Cargo.
 - **フローの実体化** — `tests/test_bagflow_flow.py`（`${KAIROS_*}` 展開・path 解決・探索順・同梱フロー）。
 - **実 MCAP のフロー試験** — `tests/test_fast_validation.py`。`data/objects/<CAPTURE_ID>` の実収録
   **と bagflow/dora バイナリ**に依存し、どちらか欠ければ自動 skip（＝イメージ内でのみ走る）。
-  収録の作り方は [AGENTS.md](../../AGENTS.md) の統合レシピを参照。
+  実ブラウザ・実bagの検証は[E2Eガイド](../../e2e/README.md)、依存環境の統合検証は`make test-plugin-dependencies`を使う。
 
-## デバッグ / 反復（でバックしやすい使い方）
+## デバッグ / 反復
 - **ローカル CLI**（HTTP サーバ不要で即実行）。実 dora を使うので**イメージの中で**動かす:
   ```bash
   # テンプレ自動生成して実行（capture の topic から雛形を作り照合）
-  docker compose exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data
+  docker compose --project-directory . -f compose/compose.yaml exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data
   # テンプレやフローを差し替えて何度も試す
-  docker compose exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data --template my.yaml
-  docker compose exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data --json  # 生 summary
+  docker compose --project-directory . -f compose/compose.yaml exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data --template my.yaml
+  docker compose --project-directory . -f compose/compose.yaml exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data --json  # 生 summary
   ```
   - pass/fail を **exit code（0/1）** に反映。出力は `/data/report/fast_validation/<capture_id>/summary.json`。
   - バイナリが無いホストで実行すると**その旨を出して exit 2**（黙って別実装に落ちない）。
@@ -103,7 +102,7 @@ cargo test -p bagflow-checks --manifest-path services/dora_runner/bagflow/Cargo.
   実際に走ったフローは同じディレクトリの `flow/flow.yml`（`${KAIROS_*}` 展開後）。
 - **bagflow を直接叩く**（kairos を挟まない最小再現）:
   ```bash
-  docker compose exec dora_runner bagflow run --no-attach \
+  docker compose --project-directory . -f compose/compose.yaml exec dora_runner bagflow run --no-attach \
     --bag /data/objects/<capture_id> --report /tmp/report.json /opt/kairos/flows/fast_validation.yml
   ```
 - **注意**: dora_runner は自前の coordinator/daemon（既定 127.0.0.1:6112）を持つ。`dora list` などを
@@ -111,10 +110,8 @@ cargo test -p bagflow-checks --manifest-path services/dora_runner/bagflow/Cargo.
   dora のために意図的に空けてある）。
 
 ## 未実装 / 仕様との差分
-- **プラグインの `executor: dora` は依然 in-process インタプリタ**。実 dora を使うのは検証 2 本だけで、
-  プラグインの dataflow を載せ替えるのは別作業。
 - **bagflow の Python チェックノードと CUDA デコーダは同梱しない**（理由は
   `services/dora_runner/bagflow/VENDOR.md`）＝フローで使えるのは同梱 Rust バイナリか、
   運用者が別途入れたものの絶対パスのみ。
 - `dataset_convert` / `dataset_validation` は I/F だけ（`enabled=false`）。
-- AI node / LeRobot 変換は未実装。
+- 同梱の汎用AI推論pipelineはない。独自AI処理はプラグインとして追加する。任意のLeRobot exporterは別サービスであり、dora_runnerの`dataset_convert`ではない。

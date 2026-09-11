@@ -1,298 +1,203 @@
-# dora_runner プラグインシステム / dora dataflow 化 設計
+# dora_runner プラグイン
 
-> ステータス: **設計方針（v1）＋実装状況の注記**。日本語が正本（英語ミラー `docs/specs/en/dora_plugins.md` は `/sync-docs` で自動生成、直接編集しない）。
-> 親仕様: [dora_runner.md](dora_runner.md)。本書はその「Plugin/Pipeline Registry・dora dataflow」将来像の**実装方針**を確定する。**認証は不要**（trusted LAN 前提）。
->
-> **実装状況（現状）**: Plugin/Pipeline Registry（`registry.py` + `plugin_loader.discover_plugins()`）と
-> **dora dataflow の in-process インタプリタ**は実装済み。ただし本書が前提とする **dora coordinator/daemon（Rust CLI）は未同梱**で、
-> `executor: dora` のプラグインも当面 in-process で実行される。プラグインは当初案の **git submodule ではなく in-tree**
-> （`services/dora_runner/plugins/<name>` 直置き）で配布し、manifest scan で自動登録する（同梱例:
-> `hello_dora`＝MCAP のトピック件数集計、`hello_kairos`＝入力を受け取り `hello kairos!` を返す **copy-me な最小テンプレート**）。以下の
-> daemon 常駐・submodule ワークフローは**将来像**として読むこと。
 
-## 決定事項（オーナー方針）
+## 利用者が用意するもの
 
-1. **実行モデル: 全 pipeline を dora dataflow 化する**（coordinator/daemon 常駐の統一モデル）。`executor="in_process"` は移行完了後に廃止候補とし、当面は移行期の互換として残す。
-2. **プラグイン配布・発見: manifest scan**。プラグインは `services/dora_runner/plugins/<name>` に置き、起動時に `kairos_plugin.yaml` をスキャンして Pipeline Registry に自動登録する。**pipeline 追加 = プラグイン追加（コア改修不要）**。〔実装注記: 当初案の git submodule ではなく **in-tree 直置き**で実装済み。submodule 化は将来の選択肢。〕
-3. GPU を使う node（自動アノテーション等）は dora node として `--gpus` 付きで実行し、CPU-only 既定から **profile 分離**する（検収レビュー（`dev_docs/arch_review.md`・ローカル作業ドラフト） A3）。
+プラグイン作者は以下の定義・コード・依存を用意し、導入担当者はイメージをビルドして実行環境へ反映する。同じ人が両方を担当してもよい。ホストにpipで入れたパッケージは、コンテナへ自動的には引き継がれない。
 
-## 全体像
+| 担当 | 必須／条件付き | 用意・確認するもの |
+| --- | --- | --- |
+| 作者 | 必須 | `kairos_plugin.yaml`。一意なid、表示名、entrypoint、入力フォームの`params_schema`、versionを記載する |
+| 作者 | 必須 | dora形式なら`dataflow.yml`と全ノード、callable形式なら`module:function`の実装。ノードは有限バッチとして終了する |
+| 作者 | 必須 | 終端で`KAIROS_REPORT_DIR/summary.json`を出力する。pipeline名・version・判定・metricsを自分の実装に合わせる |
+| 作者 | 追加Python依存がある場合 | `requirements.txt`またはインストール可能な`pyproject.toml`。ローカルwheelやヘルパーパッケージも同梱する。固定に使う`uv.lock`はpyprojectと同期する |
+| 作者 | OS依存がある場合 | マニフェストの`requires.apt`／`requires.build_apt`。実行時に必要なライブラリをbuild_aptだけに書かない |
+| 作者 | モデル・辞書などを読む場合 | 必要なファイルを同梱し、コードから参照する。モデルの取得・配置は依存インストーラが自動では行わない |
+| 作者 | GPUを使う場合 | `requires.gpu: true`と、利用するCUDA対応パッケージ等の依存宣言 |
+| 導入担当者 | 必須 | 対象CPUアーキテクチャに合ったビルド環境、Docker／Compose、ビルド時の依存取得先への接続、イメージ用の空き容量 |
+| 導入担当者 | GPUを使う場合 | NVIDIA GPU・ドライバ・Container Toolkit、`gpus`設定を扱えるCompose、buildとupの両方で`PLUGIN_GPU=1` |
+| 作者・導入担当者 | 必須 | kairosで利用可能な検証用captureと、期待する判定・値。実ジョブの完了と成果物を確認する |
 
-```mermaid
-flowchart TB
-  P["POST /jobs<br/>（api_orchestrator 経由）"] --> W["worker"]
-  W --> REG["Pipeline Registry（manifest scan で構築）<br/>同梱パイプライン + plugins/&lt;name&gt; を自動登録<br/>RegisteredPipeline(executor=&quot;dora&quot;,<br/>runner=make_dora_runner(dataflow, manifest))"]
-  REG -->|"dora start &lt;dataflow.yml&gt;"| EX["dora coordinator + daemon（サービス起動時に up）<br/>MCAP Loader → validator / AI node → Writer<br/>（node 間は Arrow ゼロコピー）"]
-  EX -->|"summary.json / artifacts"| OUT[("/data/report/&lt;pipeline&gt;/&lt;capture_id&gt;/")]
+`process(inputs, ctx)`だけでは実doraノードとしては動かない。dora形式では`dora.Node`のイベントループと起動入口が必要で、`process`はdoraなしの互換実行を使いたい場合に追加する。コピー元の`hello_kairos/nodes/greet.py`と`writer.py`に両方の実装がある。
+
+## 構成と利用者側の境界
+
+```text
+dora_runnerコンテナ
+├─ /opt/venv/                 サービス本体・固定済み共通ランタイム
+├─ /app/plugins/<name>/      プラグインの定義・コード・同梱ファイル
+└─ /opt/plugin-envs/<id>/    追加依存のあるプラグイン専用Python環境
 ```
 
-- **Plugin/Pipeline Registry**: `registry.py` の `PipelineRegistry` を拡張。同梱 pipeline に加え `discover_plugins()` が submodule を登録する。
-- **Pipeline Executor**: dora coordinator + daemon（dora_runner コンテナ内で常駐）。各 job は dataflow を 1 本 `dora start` して終端を待つ。
-- **node I/O 契約**: [dora_runner.md](dora_runner.md) の契約に準拠（入力 = `objects/<capture_id>` パス/MCAP 反復子/params、出力 = metrics/artifacts/report 断片）。
+Python環境は分けるが、コンテナ・OSライブラリ・データマウントは共有する。信頼できるコードを導入し、入力captureを書き換えず、出力は指定レポート領域へ書く。これはプラグインの権限を分離するサンドボックスではない。
 
-## 1. dora dataflow への移行（実行モデル）
+## 1. 対象と実行契約
 
-### 1.1 継ぎ目はすでにある
+独自pipelineは `services/dora_runner/plugins/<name>/` に配置し、`make build dora_runner` → `make up dora_runner` で組み込む。マニフェストから起動時に登録され、入力フォームと `summary.json` の結果表示は既存のValidation画面が生成する。コアやfrontendの編集は不要。
 
-現 `registry.py` は pipeline ごとに `runner: async (job, store, data_dir) -> {"summary":…, "artifacts":[…]}` を持ち、`executor` フィールドを差し替え点として用意済み。`fast_validation` も既に **dora 風ノード境界**（`validation.py`: `mcap_loader → validator → result_writer`）で書かれている。したがって移行は **`runner` を「dora dataflow を起動するアダプタ」に差し替える**だけで、`/jobs` 呼び出し側・frontend フォーム（`params_schema` 駆動）は無改修。
+これは **ビルド時に依存を組み込む方式**。実行時のpipインストール、外部リポジトリからのダウンロード、プラグインディレクトリのホットリロードは行わない。ネット接続できるビルド環境でイメージを作り、オフラインの実行環境へ搬入できる。
 
-### 1.2 汎用 dora ランナー（executor="dora"）
+対応する実行形式:
 
-```python
-def make_dora_runner(dataflow_yml: Path, manifest: PluginManifest) -> Runner:
-    async def _run(job: JobRecord, store: RunnerStore, data_dir: Path) -> dict:
-        report_dir = data_dir / "report" / manifest.id / job.capture_id
-        report_dir.mkdir(parents=True, exist_ok=True)
-        env = {
-            **os.environ,
-            "KAIROS_CAPTURE_ID": job.capture_id,
-            "KAIROS_DATA_DIR": str(data_dir),
-            "KAIROS_REPORT_DIR": str(report_dir),
-            "KAIROS_PARAMS_JSON": json.dumps(job.params),
-        }
-        proc = await asyncio.create_subprocess_exec(
-            "dora", "start", str(dataflow_yml), "--name", job.job_id,
-            env=env, stdout=PIPE, stderr=STDOUT,
-        )
-        # 進捗/ログは stdout を読みつつ store に流す（SSE へ）
-        rc = await _pump_logs_and_wait(proc, job, store)
-        if rc != 0:
-            raise ApiError(status_code=500, code="pipeline_failed",
-                           message=f"dora dataflow exited {rc}", details={"pipeline": manifest.id})
-        summary = json.loads((report_dir / "summary.json").read_text())
-        artifacts = [str(p) for p in sorted(report_dir.glob("**/*")) if p.is_file()]
-        return {"summary": summary, "artifacts": artifacts}
-    return _run
+- `executor: dora` と `entrypoint.dataflow`: Pythonスクリプト／実行ファイルのカスタムノードからなるdoraグラフ。実イメージはdora 0.5の専用coordinator/daemonへ接続して完了を待つ。
+- `executor: in_process` と `entrypoint.callable`: `module:function`。Python依存を宣言した場合は専用Pythonプロセスで呼び出し、サービス本体にimportしない。
+- dora CLIがないソース環境では、グラフをトポロジカル順に実行する互換インタプリタを使用する。依存環境がある場合、この互換処理もその環境の別プロセスで動く。
+
+このプラグイン契約はローカルの `path` を持つカスタムノードを対象とする。リモートURLのnodeやPython operator形式はビルド時に拒否する。実行ファイルはプラグイン内に同梱するか、宣言した依存から提供する。
+
+基準PythonはイメージのPython 3.12。別のPythonメジャー／マイナーバージョンやOSを要求するプラグインを自動的に別コンテナへ配置する機能はない。
+
+## 2. 最小構成
+
+```text
+plugins/my_validator/
+  kairos_plugin.yaml
+  dataflow.yml
+  nodes/check.py
+  requirements.txt             # Python依存を追加するとき
 ```
-
-- **有限バッチ前提**: validation/変換は終端のある dataflow なので `dora start`（非 detach）が dataflow 停止で返る。
-- **params 受け渡し**: source node が `KAIROS_*` 環境変数を読む（dataflow YAML の `env:` でも可）。動的 input が要るケースは後続課題（TBD）。
-- **timeout / リソース上限**: job ごとに `dora` プロセスへ timeout を掛ける（[dora_runner.md](dora_runner.md) §「Pipeline Executor」）。
-
-### 1.3 daemon ライフサイクル
-
-- dora_runner コンテナ entrypoint で `dora up`（coordinator+daemon をローカル起動）を 1 回。`/readyz` に daemon 死活を含める（現状 readyz は dora_runner 自体を見ていない＝検収レビュー（`dev_docs/arch_review.md`・ローカル作業ドラフト） M/論点3 を併せて解消）。
-- CPU-only 単一ホストでも daemon は 1 プロセスのみ。node はジョブ実行中だけ立ち上がる。
-
-### 1.4 dataflow / node の例（同梱 fast_validation の dataflow 版）
-
-`dataflow.yml`:
-```yaml
-nodes:
-  - id: mcap_loader
-    path: nodes/mcap_loader.py
-    env: { KAIROS_CAPTURE_ID: "${KAIROS_CAPTURE_ID}", KAIROS_DATA_DIR: "${KAIROS_DATA_DIR}" }
-    outputs: [ loaded ]
-  - id: validator
-    path: nodes/validator.py
-    env: { KAIROS_PARAMS_JSON: "${KAIROS_PARAMS_JSON}" }
-    inputs:  { loaded: mcap_loader/loaded }
-    outputs: [ summary ]
-  - id: result_writer
-    path: nodes/result_writer.py
-    env: { KAIROS_REPORT_DIR: "${KAIROS_REPORT_DIR}" }
-    inputs:  { summary: validator/summary }
-```
-
-node（Python）:
-```python
-from dora import Node
-import pyarrow as pa
-node = Node()
-for event in node:
-    if event["type"] == "INPUT" and event["id"] == "loaded":
-        summary = validate(event["value"])           # 既存 validator() 相当
-        node.send_output("summary", pa.array([json.dumps(summary)]), event["metadata"])
-```
-
-> 既存の `mcap_loader` / `validator` / `result_writer`（`validation.py`）はほぼそのまま node 本体に流用できる。これが「node 契約 → registry → dora-ready」の狙い。
-
-## 2. プラグイン契約（submodule + manifest scan）
-
-### 2.1 プラグイン・リポジトリの構成
-
-プラグイン 1 個 = 独立 git リポジトリ:
-```
-kairos-validator-<robot>/            # 例: github.com/<org>/kairos-validator-hsr
-├─ kairos_plugin.yaml                # マニフェスト（必須）
-├─ dataflow.yml                      # dora dataflow（executor: dora）
-├─ nodes/                            # dora node 群
-│  ├─ mcap_loader.py
-│  ├─ check_joint_limits.py
-│  └─ result_writer.py
-├─ pyproject.toml                    # 依存・パッケージ宣言（任意。Docker build で pip install）
-└─ tests/                            # プラグイン側の単体試験
-```
-
-kairos 側の取り込み:
-```
-services/dora_runner/plugins/
-└─ kairos-validator-hsr/             # ← git submodule（commit ピン留め）
-```
-
-### 2.2 マニフェスト `kairos_plugin.yaml`
 
 ```yaml
-apiVersion: kairos.plugin/v1          # 互換チェック用
-id: hsr_joint_validation              # ^[a-z0-9_]+$。registry / report パスのキー
-name: HSR joint validation            # UI 表示名
-description: HSR の関節角・速度の妥当性を MCAP から検証する。
-executor: dora                        # v1 は dora 固定（in_process は移行互換のみ）
-version: 1.2.0                        # report に記録（再現性）
-required_inputs: [ capture_id ]
-params_schema:                        # JSON Schema。frontend が自動フォーム化
+apiVersion: kairos.plugin/v1
+id: my_validator
+name: My validator
+description: Check one capture.
+executor: dora
+version: 0.1.0
+required_inputs: [capture_id]
+params_schema:
   type: object
   properties:
-    joint_limit_margin:
-      type: number
-      title: Joint limit margin
-      default: 0.05
-      exclusiveMinimum: 0
+    threshold: {type: number, default: 0.5}
 outputs:
-  - "report/hsr_joint_validation/<capture_id>/summary.json"
+  - "report/my_validator/<capture_id>/summary.json"
 entrypoint:
-  dataflow: dataflow.yml              # executor: dora
-  # callable: kairos_validator_hsr.run:run   # executor: in_process のとき
-requires:                             # 任意。Docker build 時の検査用
+  dataflow: dataflow.yml
+requires:
+  gpu: false
+  apt: []
+  build_apt: []
+```
+
+`id` は `^[a-z0-9_]+$` で、他のプラグインや同梱pipelineと重複させない。未認識のマニフェスト項目・依存要件はエラーにする。
+
+```yaml
+nodes:
+  - id: check
+    path: nodes/check.py
+    inputs:
+      tick: dora/timer/millis/100
+```
+
+ソースノードにはtimer等のトリガーが必要。有限バッチとして結果を書いて終了する。
+
+### ノードへの入力と出力
+
+各ノードの環境変数にジョブごとの値が渡る:
+
+| 変数 | 内容 |
+| --- | --- |
+| `KAIROS_CAPTURE_ID` | 対象のUUIDv7 |
+| `KAIROS_DATA_DIR` | データルートの絶対パス |
+| `KAIROS_REPORT_DIR` | このpipeline・captureのレポート出力先 |
+| `KAIROS_PARAMS_JSON` | 検証済みパラメータのJSON |
+
+ノードは `objects/<capture_id>/` を読み、終端ノードが `KAIROS_REPORT_DIR/summary.json` を生成する。必須の結果契約は `{pipeline, version, result, metrics, ...}`。判定の `result` は `pass` または `fail`。成果物はレポート配下のファイルとして返す。captureの存在確認はレポートディレクトリ作成より先に行い、削除済みcaptureを再作成しない。
+
+互換インタプリタ用のノード関数は `process(inputs, ctx) -> dict`。`ctx` は `plugin_id / capture_id / data_dir / params / report_dir` を持つ。callableは `(capture_id, data_dir, params, report_dir) -> None` で、同じsummaryを書き出す。
+
+インストール済みプラグインは読み取り専用。dora用descriptorとログはジョブ別の書き込み可能な一時領域へ作り、元のソースを変更しない。ノード相対パスは元のプラグイン配置から解決する。添付した読み取り用ファイルは、作業ディレクトリではなく `Path(__file__)` を基準に参照する。
+
+## 3. Python依存
+
+### requirements.txt
+
+```text
+humanize==4.10.0
+```
+
+プラグインの `requirements.txt` をビルド時に読み、専用venvへインストールする。相対パスのローカルwheel等はプラグインディレクトリを基準に解決する。再現性が必要な依存はバージョンを固定する。
+
+### pyproject.toml
+
+Pythonパッケージとして配布する場合は、ビルド可能な `pyproject.toml` を配置する。プロジェクト自体とその依存を専用venvにインストールする。
+
+```toml
+[build-system]
+requires = ["hatchling==1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "my-validator-helpers"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = ["humanize==4.10.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["my_helpers"]
+```
+
+`my_helpers/` にパッケージを置き、ノードからimportできる。`uv.lock` があれば `uv export --locked --no-dev --no-emit-project` で固定済み依存を取り出し、プロジェクトと一緒にインストールする。pyprojectとlockが不一致ならビルドを止める。requirements.txtも存在する場合は、両方を一回の解決に渡すので、不整合はエラーになる。
+
+### 環境分離と互換性
+
+- 追加依存のあるプラグインごとに `/opt/plugin-envs/<id>/` を作成する。異なるプラグインが同じライブラリの異なるバージョンを利用できる。
+- 専用venvからイメージの固定済みランタイムパッケージを参照する。追加・上書きされたPythonパッケージはそのvenvだけに入り、サービス本体と他のプラグインを書き換えない。
+- doraの通信／共通契約を保つため、`dora-rs`・`pyarrow`・`kairos-common` はランタイムのバージョンを制約として適用する。
+- 依存宣言のない同梱hello系等は、既存の共通ランタイムを使用する。
+- 解決済みバージョンは各venvの `requirements.resolved.txt` に保存する。宣言のない動的importの完全性までは自動検証できないため、実際のジョブ実行も検証する。
+- 依存宣言があるのにビルド済みvenvがないプラグインは、利用可能なpipelineとして登録しない。ソース環境の起動時にも勝手にインストールしない。
+
+## 4. OSライブラリとGPU
+
+```yaml
+requires:
+  apt: [libmagic1]          # ビルド時と実行時の両方に必要
+  build_apt: [gcc]         # Python拡張等のビルド時だけ必要
   gpu: false
 ```
 
-- `params_schema` がそのまま `GET /pipelines` 経由で frontend に届き、Validation タブ等の実行フォームになる（backend-driven。UI 改修不要）。
-- マニフェストの Pydantic モデル `PluginManifest` を `dora_runner` に追加し、**スキーマ検証する**（不正 manifest は登録せずログのみ。サービスは落とさない）。
+OS依存はDebianパッケージ名（必要ならバージョン・アーキテクチャ付き）で宣言する。インストール不能ならDocker buildを失敗させる。OSライブラリはイメージ共通であり、Pythonのvenvのようなバージョン分離はしない。競合するOS要件は同じイメージに同居できない。任意のaptリポジトリ追加やホストへのパッケージインストールは行わない。
 
-### 2.3 発見と登録 `discover_plugins()`
-
-`build_default_registry()` の末尾で呼ぶ:
-```python
-def discover_plugins(registry: PipelineRegistry, plugins_dir: Path) -> list[PluginLoadError]:
-    errors = []
-    for manifest_path in sorted(plugins_dir.glob("*/kairos_plugin.yaml")):
-        try:
-            manifest = PluginManifest.model_validate(load_yaml(manifest_path))
-            if registry.get(manifest.id) is not None:
-                raise PluginLoadError(manifest.id, "duplicate id")
-            runner = _build_runner(manifest, manifest_path.parent)   # dora / in_process
-            registry.register(RegisteredPipeline(
-                id=manifest.id, name=manifest.name, description=manifest.description,
-                params_schema=manifest.params_schema, outputs=manifest.outputs,
-                executor=manifest.executor, runner=runner,
-            ))
-        except Exception as exc:                # 1 プラグインの失敗で全体を落とさない
-            errors.append(PluginLoadError(str(manifest_path), str(exc)))
-            logger.warning("plugin load failed: %s (%s)", manifest_path, exc)
-    return errors
-```
-
-- **失敗隔離**: 壊れたプラグイン 1 個は skip + warn。健全なプラグインと同梱 pipeline は動く。
-- **id 衝突**: 同梱 pipeline / 他プラグインと重複する `id` は登録拒否（先勝ち）。
-- 起動ログとオプションで `GET /pipelines` の応答に `load_errors` を出し、検収時に「読めなかったプラグイン」を可視化する（TBD）。
-
-### 2.4 node I/O 契約（プラグイン作者向け）
-
-[dora_runner.md](dora_runner.md) の契約に従う。プラグイン側 node は:
-
-- **入力（source node が `KAIROS_*` env から得る）**: `capture_id`, `data_dir`, `params`(JSON)。MCAP は `objects/<capture_id>/` から、`kairos_common` 提供の loader（`enumerate_topics` / `find_mcap` / メッセージ反復子。topic フィルタ・時間範囲指定可）で読む。**rclpy 不要**。
-- **capture が存在することが前提**: プラグインは `objects/<capture_id>/` を**読むだけ**で、作ってはならない（tmp ファイルすら）。ディレクトリが無ければジョブを失敗させる — 作ってしまうと、削除された capture のツリーが復活し、reaper と rebuild の両方を騙すことになる（[capture_store](capture_store.md) §7.1）。書き込み先は `${KAIROS_REPORT_DIR}` 配下のみ。
-- **出力**: 最終 node（result_writer）が `${KAIROS_REPORT_DIR}/summary.json` を書く。形は `{ pipeline, version, result?: "pass"|"fail", metrics?, missing?, extra?, checked_at }`。追加生成物は同 report dir 配下に置く（`artifacts` として収集される）。
-- **再現性**: summary に `pipeline` / `version`（manifest.version）/ 主要 node・モデルの版を必ず入れる。
-
-> `kairos_common` に **plugin SDK**（loader・summary スキーマ・`send_summary()` ヘルパ）を切り出し、プラグイン作者が定型を書かなくて済むようにする（TBD: SDK の公開 API を確定）。
-
-### 2.5 UI 非依存の契約（プラグイン作者は frontend を触らない）★実装済み
-
-**プラグイン作者が書くのは manifest（`kairos_plugin.yaml`）＋ `dataflow.yml` ＋ `nodes/` だけ**で、frontend には一切触れない。
-入力フォームも結果表示も **backend-driven** で自動生成されるため、pipeline を 1 本足すのは「フォルダを置いて `make rebuild dora`」で完結する（**コア改修も UI 改修も不要**）。方向で整理すると：
-
-- **入力（実行フォーム）**: manifest の `params_schema`（JSON Schema）が `GET /pipelines` → `GET /api/v1/config` の
-  `schemas.pipeline_forms[<id>]` を経て frontend に届き、汎用フォーム `PipelineForm` がレンダリングする
-  （string / number / integer / boolean / enum / array-of-string の実用サブセット）。作者は UI コンポーネントを書かない。
-  string プロパティに **`x-suggest` 注釈**（`"camera_topics"` | `"topics"`、2026-07-15）を付けると、Validation タブで
-  選択中のターゲット run の実トピックから **選択式（先頭を自動シード）** になる — トピックパスの手打ち不要
-  （同梱 video_check の `topic` が使用例）。候補が無い状況（dataset ターゲット等）は自由入力へ正直にフォールバック。
-- **パイプライン選択**: Validation タブは `GET /pipelines` の **enabled な全 pipeline** を選択肢に出す。プラグインを追加すれば
-  そのまま選択肢に現れる（**pipeline id はハードコードしない**＝[frontend.md](frontend.md) の設計方針）。placeholder（`enabled=false`）は出さない。
-- **出力（結果表示）**: ジョブの `summary.json` を **汎用レンダラ `SummaryResult`** が shape を知らずにそのまま描く——
-  `result`（PASS/FAIL バッジ）/ `message`（見出し行）/ `metrics`・その他フィールド（key-value ツリー、ネスト・配列対応）/
-  `artifacts` / raw JSON。**新 pipeline 固有の結果ビューを frontend に足す必要はない**。
-- **出力（グラフ・画像＝JSON 以外の結果、2026-07-15）**: ノードが **report dir に画像（png/jpg/svg/gif/webp）を書くだけ**で
-  UI に出る。artifacts として収集されたパスは orchestrator がデータルート相対に正規化し（[api_orchestrator.md](api_orchestrator.md)
-  ジョブ実行）、`SummaryResult` が `GET /api/v1/files/{path}` 経由で**画像はインライン表示・その他ファイルはダウンロードリンク**として
-  レンダリングする。matplotlib 等でプロットを `${KAIROS_REPORT_DIR}/plot.png` に保存すれば、**UI 無改修でグラフ付きの結果画面**になる。
-- **唯一の例外（同梱 fast_validation のみ）**: 必須トピックの pass/fail は template の必須トピック一覧に対して見せた方が分かりやすいため、
-  fast_validation だけ専用カードを保持する。それ以外（`loss_report` / `video_check` / **全プラグイン**）は `SummaryResult` に載る。
-
-したがってプラグイン作者の責務は次の 2 点に限られる:
-
-1. **manifest の `params_schema` を書く**（＝入力 UI が生える）。
-2. **終端 node が `summary.json` を [§2.4 の contract](#24-node-io-契約プラグイン作者向け) 通りに書く**（＝結果 UI が生える）。
-   緩い規約として、`message`(str) を入れれば結果カードに見出しとして出る／`metrics`(obj) を入れれば表になる。
-
-> 実装: `services/frontend/src/features/validation/ValidationTab.tsx`（pipeline 選択＋dispatch）、
-> `SummaryResult.tsx`（汎用結果レンダラ）。契約テスト: `ValidationTab.test.tsx`
-> の "runs a plugin pipeline and renders its generic summary result"。テンプレートは同梱 `plugins/hello_kairos`。
-
-## 3. submodule ワークフロー
-
-### 3.1 追加・更新・固定
+GPUプラグインは `requires.gpu: true` とし、明示的に次を実行する:
 
 ```bash
-# 追加
-git submodule add https://github.com/<org>/kairos-validator-hsr \
-    services/dora_runner/plugins/kairos-validator-hsr
-git commit -m "feat(dora): add hsr_joint_validation plugin (pinned)"
-
-# 更新（プラグイン側の新コミットへポインタを上げる）
-git -C services/dora_runner/plugins/kairos-validator-hsr fetch
-git submodule update --remote services/dora_runner/plugins/kairos-validator-hsr
-git commit -am "chore(dora): bump hsr validator to <sha>"
-
-# クローン時
-git clone --recurse-submodules <kairos>
-# 既存 clone なら
-git submodule update --init --recursive
+make build dora_runner PLUGIN_GPU=1
+make up dora_runner PLUGIN_GPU=1
 ```
 
-- **commit ピン留め＝再現性**（spec のバージョン記録要件に直結）。private リポジトリ可。オフライン・単一ホスト納品と相性良い。
-- `.gitmodules`（committed）が submodule マッピングの正。
+Makeは `compose/plugins.gpu.yaml` を追加し、GPU依存のビルドを許可、実行時はdora_runnerに `gpus: all` を指定する。継続使用する場合は `.env` に `PLUGIN_GPU=1` を設定する。通常構成にはGPU要求を追加しない。GPUプラグインを含むビルドでopt-inがなければ、理由を示して止める。
 
-### 3.2 ビルド（イメージに焼く）
+これはNVIDIA GPUとNVIDIA Container Toolkitがホストに導入済みであることを前提とする。CUDA対応のPythonパッケージ等はプラグイン側で宣言する。GPUハードウェア・ドライバの導入やGPUモデル間の互換性を自動解決するものではない。
 
-`services/dora_runner/Dockerfile`:
-```dockerfile
-# build context に submodule が checkout 済みであること（CI/make で submodule update --init）
-COPY services/dora_runner/plugins/ /app/plugins/
-# 各プラグインの依存と node を image に入れる（pyproject があれば）
-RUN for d in /app/plugins/*/; do \
-      [ -f "$d/pyproject.toml" ] && pip install --no-cache-dir "$d" || true; \
-    done
-ENV KAIROS_PLUGINS_DIR=/app/plugins
-```
+## 5. ビルド・実行・失敗時
 
-- **トレードオフ**: 「プラグイン追加 = イメージ再ビルド」。drop-in（再ビルド不要）が要るなら将来 mount 方式を別途検討（本 v1 は採らない）。
-- `make` に `submodule update --init` を前置して build context を保証する（`make build dora` 等）。
+1. マニフェスト、ノード、依存宣言をフォルダへ配置。
+2. `make build dora_runner`。依存のインストール、整合性チェックまで成功させる。
+3. `make up dora_runner`。Validation画面にプラグインが追加される。
+4. 検証用captureを選んで実行し、結果・入力値・成果物を確認。
 
-## 4. CPU-only / GPU profile / リソース
+エラーを `|| true` で無視するインストールは行わない。Python依存の解決失敗はプラグイン名を含むエラーでビルドを止める。実行時のプラグインプロセスにはtimeout／cancelを適用し、doraのcleanupはそのジョブ名だけを対象にする。他のプラグインや録画をまとめて停止しない。
 
-- daemon 常駐は 1 プロセス。軽量 validator dataflow は短命 node のみで CPU-only PC に収まる。
-- **GPU node**（自動アノテーション等）は manifest `requires.gpu: true` を宣言し、dora node を `--gpus` 付きで起動する別 compose profile（`profiles: [gpu]`）に隔離。**CPU-only 既定構成には GPU プラグインを含めない**。
-- 重い job（`video_check` / 将来の `dataset_convert`）を録画中に走らせない運用は検収の受け入れ条件（`dev_docs/arch_review.md`・ローカル作業ドラフト）に従う。job ごと timeout・並行度上限を Executor に持たせる。
+同梱例 `hello_kairos` は最小の挨拶、`hello_dora` はMCAPのトピック別件数集計。依存付きのテスト用例は `services/dora_runner/tests/fixtures/dependency_plugins/` に置く。通常イメージへテスト用例を含める必要はない。
 
-## 5. 段階移行プラン
+`make test-plugin-dependencies` は依存付きのテスト用イメージをビルドし、ネットワークなし・一時データ領域のコンテナで、異なるPython依存バージョン・OSライブラリ・パッケージ化したヘルパーを実行検証する。
 
-1. **executor=dora の足場**: entrypoint で `dora up`、`make_dora_runner()` と `PluginManifest` を追加。`/readyz` に daemon 死活を追加。
-2. **同梱 pipeline を 1 本 dataflow 化**: `fast_validation` を `validation.py` の node を流用して dataflow 化し、in_process 版と出力一致をテストで担保（golden summary 比較）。
-3. **残り同梱 pipeline を移行**: `loss_report` / `video_check` / `signal_report`（`dataset_export` は v2 で廃止 — dataset は物理移動を伴わない DB 行になった）。
-4. **discover_plugins() + manifest scan** を有効化し、`plugins/` 空でも回ることを確認。
-5. **サンプルプラグインを submodule 化**して E2E（discover → `/jobs` → summary.json）を通す。
-6. **placeholder（full_validation/dataset_convert/dataset_validation）** を、プラグイン or 同梱 dataflow のどちらで埋めるか決めて実装（検収レビュー（`dev_docs/arch_review.md`・ローカル作業ドラフト） M4 の方針に従い、未実装枠は既定非表示）。
+## 6. 導入後の確認とトラブル対応
 
-## 6. 未決事項（TBD）
+1. `make logs dora_runner`で起動・プラグイン登録エラーを確認する。
+2. Validation画面で自分のpipelineを選び、指定したフォーム項目が表示されることを確認する。
+3. 検証用captureへ期待値が分かる入力で実行する。hello系も有効なcaptureの選択は必要。
+4. ジョブ完了、summaryの判定・metrics、画像等の成果物を確認する。検査で異常を見つけた`result: fail`と、例外・timeoutによるジョブ自体の失敗を区別する。
+5. コードや依存を変えたら、再度`make build dora_runner` → `make up dora_runner`を行う。再起動だけではイメージに取り込まれない。
 
-- ~~**UI 非依存の実行フォーム／結果表示**~~ → **解決済み（§2.5）**。pipeline 選択（`GET /pipelines` 駆動）＋
-  汎用結果レンダラ `SummaryResult`（`summary.json` を shape 非依存で描画）を実装。プラグイン追加時に frontend を触らない。
-- **plugin SDK の公開 API**（`kairos_common` 側 loader / summary スキーマ / ヘルパの確定）。
-- **動的 params の渡し方**: 大きい params や run 中の対話が要る場合の dora dynamic node 採用可否。
-- **plugin 信頼境界**: submodule は任意コードを実行する。署名・許可リスト等を入れるか（trusted LAN 前提なら据置でも可）。
-- **drop-in（再ビルド不要）方式**の要否（本 v1 は submodule baked-in のみ）。
-- **`/pipelines` の `load_errors` 露出**と UI 表示の有無（読めなかったプラグインの可視化。結果表示の汎用化とは別課題）。
-- **in_process executor の廃止時期**（移行完了の判定基準）。
+| 症状 | 利用者が確認すること |
+| --- | --- |
+| ビルド中に依存解決が失敗 | ログのプラグイン名、パッケージ名・固定版、Python 3.12との互換性、requirementsとpyprojectの矛盾を確認する |
+| uv.lockが古い | 意図した依存変更を確認して作者の環境でlockを更新し、pyprojectと一緒に配置して再ビルドする |
+| pipelineが表示されない | 配置が直下の子フォルダか、manifestの項目・idが有効か、イメージを再ビルド・再作成したか、登録エラーがないかを確認する |
+| `ModuleNotFoundError`／共有ライブラリ不足 | Python依存の宣言漏れ、OS実行用依存の宣言漏れ、同梱ファイルの参照先を確認する |
+| summaryがない／ジョブが終了しない | doraイベントループ・timer・終端処理、出力先環境変数、ノードの例外を確認する |
+| GPUを要求するエラー | manifestだけでなくbuild／upのopt-inとホスト側のGPU準備を確認する |
+
+`make test-plugin-dependencies`は同梱の依存テスト用例を検証するコマンドであり、追加したユーザープラグインを自動で網羅するものではない。自分のプラグインは上記の実ジョブ確認を行う。

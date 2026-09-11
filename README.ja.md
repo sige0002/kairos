@@ -53,8 +53,7 @@ flowchart TB
   WEB -.->|"映像は直接"| FE
 ```
 
-収録後の検証は **dora_runner コンテナの中だけ**で完結します（同梱の bagflow フローを
-自前の dora coordinator 上で実行。詳細は [dora_runner 仕様](docs/specs/ja/dora_runner.md)）:
+収録後の検証は **dora_runner コンテナの中**で実行します。以下は`fast_validation` / `full_validation`のbagflow経路です。Python実装の検証と独自プラグインも利用できます（[dora_runner仕様](docs/specs/ja/dora_runner.md)）。
 
 ```mermaid
 flowchart LR
@@ -75,7 +74,7 @@ flowchart LR
 | [topic_probe](docs/specs/ja/topic_probe.md) | 選択トピックの**数値フィールド**をライブプロットする汎用プローブ。decode は本サービスに**隔離**し、収録・監視に波及させない。 |
 | [webrtc_streamer](docs/specs/ja/webrtc_streamer.md) | 低遅延のカメラ**プレビュー**（ROS 2 image → ブラウザ）。記録パスではない。 |
 | [api_orchestrator](docs/specs/ja/api_orchestrator.md) | 単一の API ハブ。ジョブのライフサイクル・状態・設定・結果集約を担う。 |
-| [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン。検証は**実 dora 上の bagflow フロー**（同梱）。有効: `fast_validation` / `full_validation` / `loss_report` / `video_check` / `signal_report`。 |
+| [dora_runner](docs/specs/ja/dora_runner.md) | 収録後の**検証・変換**パイプライン。`fast_validation` / `full_validation`は実dora上のbagflow、`loss_report` / `clock_check` / `video_check` / `signal_report`はPython実装。独自プラグインも自動登録。 |
 | [frontend](docs/specs/ja/frontend.md) | backend-driven な Web UI（UI 表記は英語）。役割タブ構成（Console v2）: Collect / Review / Datasets / Validation / Monitor / Settings。 |
 | kokoro | Kokoro 82M による offline CPU 英日 TTS sidecar。Settings で音声を事前生成し、録画経路は gate しない。 |
 
@@ -95,7 +94,7 @@ flowchart LR
 
 | 項目 | サポート範囲 |
 |---|---|
-| Host | Linux x86_64（CI は Ubuntu runner）。macOS / Windows の Docker Desktop と arm64 は未検証。 |
+| Host | Linux x86_64（CIはUbuntu runner）。Linux arm64でもローカルのビルド・Validation E2Eを確認済み。全arm64機種の保証ではなく、macOS / WindowsのDocker Desktopは未検証。 |
 | ROS 2 | **Jazzy**。`ROS_DISTRO` を変える場合は、その distro を含む digest 固定の `ROS_BASE_IMAGE` も指定する。既定 Jazzy image のまま別 distro を指定すると build は明示的に停止する。 |
 | RMW | `rmw_fastrtps_cpp` を acceptance gate で検証。`rmw_cyclonedds_cpp` は同梱するが、機体・再生・全サービスを同時に切り替える必要があり、release CI の対象外。 |
 | Docker | Docker Engine 24 以降、Docker Compose 2.24 以降（`env_file.required` を使用）。 |
@@ -147,14 +146,13 @@ make rosbag-loop    # Ctrl+C で停止
 ### 全サービスの起動（Docker）
 
 ```bash
-make build                    # イメージを作る（初回とコード変更時だけ。ネットが要る）
-make up                       # 起動（detached）。機体は ROBOT で選択（既定 airoa_hsr）
-# あるいは素の docker compose で（compose ファイルは compose/ 配下。
-# --project-directory で相対パスをリポジトリルートに固定する）:
-cp .env.example .env          # 必要に応じて編集
-docker compose --project-directory . -f compose/compose.yaml build
-docker compose --project-directory . -f compose/compose.yaml up
+cp .env.example .env          # 初回のみ。既存の.envがある場合は上書きしない
+# .envのROBOT等を環境に合わせて編集
+make build                    # 初回とコード・依存の変更時
+make up                       # 起動。ROBOTから機体別設定パスも導出する
 ```
+
+通常の導入はMakeを使います。素のComposeでは、Makeによる`ROBOT`からのパス導出やGPU等の追加設定が自動では適用されません。
 
 Settings の Voice/TTS も使う PC では `.env` の `COMPOSE_PROFILES=audio` を有効にしてから、
 同じ `make build` と `make up` を実行します。Kokoro は約 1.5 GiB のメモリを使うため既定では起動しません。
@@ -166,7 +164,7 @@ Settings の Voice/TTS も使う PC では `.env` の `COMPOSE_PROFILES=audio` �
 > [オフラインのマシンで動かす](#オフラインのマシンで動かすイメージの持ち込み)を参照。
 
 全サービスは host networking で起動します。ROS 2 サービス（`recorder` / `monitor` / `streamer`）は
-ホストの DDS グラフ（`ROS_DOMAIN_ID=0`）を共有し、純 Python サービス（`orchestrator` / `dora_runner`）
+選択した`ROS_DOMAIN_ID`（既定`0`）のDDSグラフを共有し、ROSを必要としないサービス（`orchestrator` / `dora_runner`）
 と frontend は `localhost:<port>` で相互に到達します（認証なし・LAN 前提）。
 
 ### 設定ファイル `.env` はどちらを使う？（初めての人向け）
@@ -343,6 +341,19 @@ recorder イメージ内で `colcon build` するだけなのでネット不要�
    なお `make table`（topic_table）は overlay を読まないので、追加ロボットのカスタム型の Hz は表示されない。
    確認は monitor の `GET /metrics`、または再生時に表示される `ros2 bag info` を使う。
 
+### 独自プラグインを追加する
+
+プラグイン作者はマニフェスト、ノードまたはcallable、追加依存、summary出力処理を用意する。導入担当者は`services/dora_runner/plugins/<name>/`へ配置し、次を実行する。
+
+```bash
+make build dora_runner
+make up dora_runner
+```
+
+Python依存はビルド時にプラグイン別venvへ入る。OS依存は宣言に従って同じコンテナへ入る。モデル等の必要ファイル、検証用capture、GPUを使う場合のホスト環境は利用者が用意する。実行時の自動インストールやホットリロードは行わない。
+
+[プラグイン追加手順](services/dora_runner/plugins/README.ja.md)に、用意するもの・コピー後の変更箇所・導入・成功確認をまとめてある。対応形式、Python 3.12の制約、GPUの明示設定、トラブル対応は[プラグイン仕様](docs/specs/ja/dora_plugins.md)を参照。
+
 ### 主なエンドポイント（既定ポート）
 
 | サービス | ポート | 例 |
@@ -361,14 +372,10 @@ backend 駆動で描画します（タブは Console v2 の役割 6 タブ = Col
 
 1. **トピックを流す**: 実ロボット/シミュレータを接続するか、サンプル bag を再生する。
    ```bash
-   # 流れている topic を“見える化”（全 topic の Hz/帯域/件数を定期表示）
-   docker compose -f deploy/test/compose.yaml run --rm topic_table
-   # サンプル bag を ROS 2 グラフへ再生（別ターミナル・単発再生）
-   docker compose -f deploy/test/compose.yaml run --rm rosbag_player
-   # 繰り返し再生（連続で流し続ける）
-   LOOP=--loop docker compose -f deploy/test/compose.yaml run --rm rosbag_player
-   # 別の bag を指定
-   BAG=/data/airoa-moma-mcap/000730 docker compose -f deploy/test/compose.yaml run --rm rosbag_player
+   make table
+   make rosbag BAG=airoa-moma-mcap/000730
+   # 連続再生は別ターミナルで
+   make rosbag-loop BAG=airoa-moma-mcap/000730
    ```
 2. **記録**: UI（Collect タブ）または `POST /api/v1/record/start {"topics":"all"}` で開始 → MCAP が
    `/data/objects/<capture_id>/` に生成される（停止は `POST /api/v1/record/stop`）。`capture_id` は
@@ -394,6 +401,7 @@ backend 駆動で描画します（タブは Console v2 の役割 6 タブ = Col
 
 ### テスト / 結合テスト
 
+- **プラグイン依存の統合検証**: `make test-plugin-dependencies`。同梱の依存テスト用例を、ネットワークなしの一時コンテナで確認する。自分のプラグインは別途Validation画面で検証する。
 - **単体テスト**: `make test`（= Python 各サービス `uv run --extra test pytest` + frontend `npm run build && npm test && npm run lint`）。
 - **受け入れテスト（UI から・実スタック）**: `make test-e2e`。専用ポート・専用 data dir の実スタックを立て、
   ループ再生した実 bag を相手に、実ブラウザ（Playwright）で frontend を駆動します。現在は 10 spec / 15 test で、
@@ -406,7 +414,7 @@ backend 駆動で描画します（タブは Console v2 の役割 6 タブ = Col
   結果を出力します（`make smoke-record` で記録 start/stop も実行）。「テストしたのに何も出ない」を解消する入口です。
 - **可視化付き再生**: `make table`（全 topic の Hz/帯域を定期表示）と `make rosbag` / `make rosbag-loop`（再生）。
 
-詳しいコマンド・確認済みレシピは [AGENTS.md](AGENTS.md) の「ビルド / テスト / 実行コマンド」を参照してください。
+E2Eの準備と隔離条件は[e2e/README.md](e2e/README.md)、開発時の共通ルールは[AGENTS.md](AGENTS.md)を参照してください。
 
 ## リリース
 

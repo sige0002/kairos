@@ -3,25 +3,22 @@
 
 > Status: design finalized (**v2 = capture store support**). Based on `fig_const/dora.png`, with unspecified items fixed as recommended designs. Japanese is the source of truth (treat it as canonical). The English version `docs/specs/en/dora_runner.md` is an auto-generated mirror (do not edit it directly). **No authentication required.**
 
-The post-recording **validation / conversion / extension processing pipeline** container (**dora**-based). Taking recorded MCAP as input, it runs validation, conversion, and **AI processing** as asynchronous jobs. All heavy processing is concentrated here, keeping `rosbag2_recorder` / `topic_monitor` lightweight. The design centers on **maximally leveraging dora's extensibility and AI integration**.
+The post-recording **validation / conversion / extension processing pipeline** container (**dora**-based). Taking recorded MCAP as input, it runs built-in validation and user-added processing as asynchronous jobs. All heavy processing is concentrated here, keeping `rosbag2_recorder` / `topic_monitor` lightweight. The design centers on **maximally leveraging dora's extensibility and AI integration**.
 
 ## Role
 
 - Perform validation / conversion / extension (including AI) on recorded MCAP.
 - Make each process assemblable as swappable, chainable parts.
 
-## Design center: dora extensibility & AI integration
+## Execution model and extensions
 
-- Each process (validator / converter / **AI node**) is implemented as a **dora node (plugin)** and connected via a **dora dataflow (YAML)**.
-- The **Plugin Registry** registers nodes, and the **Pipeline Registry** manages dataflows (= pipelines). **Adding a pipeline = adding a dataflow YAML + a node**, with no core changes needed.
-- A node's **I/O is fixed as a contract**:
-  - Input: `capture` (the `objects/<capture_id>` path / metadata / `object_manifest.json`), an MCAP message iterator (topic filter and time range can be specified), `params`.
-  - Output: `metrics` (dict), `artifacts` (a list of generated-output paths), `report` fragments.
-  - This lets nodes be freely swapped and chained.
-- **Make AI integration a first-class citizen**: inference / auto-annotation / embedding & search indexing / quality scoring / training dataset conversion (e.g. **LeRobot** format) can be plugged in as **AI dora nodes**.
-  - The node interface assumes model swapping (`params.model`, etc.). GPU usage is available (`--gpus` / environment variables). Messages can be batch-processed.
-  - For reproducibility, the report records pipeline / node / model versions.
-- Because it is a dora dataflow, streaming / distributed execution / node reuse all apply.
+- `fast_validation` / `full_validation` run bundled bagflow Rust nodes on a dedicated dora coordinator/daemon.
+- `loss_report` / `clock_check` / `video_check` / `signal_report` are Python-built-in pipelines.
+- Custom plugins are registered per pipeline from manifests. They support local custom node graphs with `executor: dora` and callables with `executor: in_process`; the registry does not individually auto-discover arbitrary dora nodes.
+- Nodes receive the capture ID, data root, report output path, and params through environment variables. Authors implement MCAP loading and inter-node data formats, and output `summary.json` at the end. See the [plugin spec](dora_plugins.md) for the I/O contract and author/integrator work.
+- AI processing can also be added under this plugin contract. Authors provide the model, dependencies, and input handling; GPU use is explicit via `requires.gpu` and `PLUGIN_GPU=1`. Models are not auto-downloaded or placed into separate containers.
+- Built-in `dataset_convert` / `dataset_validation` are unimplemented and differ from the optional LeRobot exporter in another service ([deployment topology](deployment_topology.md)).
+
 
 ## Input
 
@@ -40,14 +37,14 @@ The post-recording **validation / conversion / extension processing pipeline** c
 ## Constituent components
 
 - **MCAP Loader** — reads with `mcap` + `mcap-ros2-support` (**no rclpy required**, file iteration). Obtains topic / type / timestamp / size, and decodes only when needed.
-- **Plugin Registry** — registration and discovery of dora nodes (validator / converter / AI).
-- **Pipeline Executor** — execution and ordering control of dora dataflows. Per-job timeout / resource limits.
+- **Pipeline Registry / Plugin Loader** — registration and discovery of built-in pipelines and manifest-based custom pipelines.
+- **Pipeline Executor** — delegates execution to each runner and manages job concurrency and timeout. It does not assign CPU / memory per plugin.
 - **Result Writer** — output of reports / converted products.
 - **Job Status / Logs** — state, progress, and logs (SSE to `api_orchestrator`).
 
 ## Runnable pipelines (figure)
 
-- `fast_validation` / `full_validation` / `dataset_convert` / `dataset_validation`
+- The `dataset_convert` / `dataset_validation` shown in the figure are design slots; confirm what is runnable from the implementation status below and `GET /pipelines`.
 - **Implemented (`enabled=true`)**: these six — `fast_validation` / `full_validation` / `loss_report` / `clock_check` / `video_check` / `signal_report` (below). `dataset_convert` / `dataset_validation` are interface and plugin slots only (`enabled=false`).
 - **`dataset_export` / `dataset_archive` are retired** (v2). A dataset became a DB row with no physical move behind it ([capture_store](capture_store.md) §6), and archiving is carried by the orchestrator's per-capture endpoint (`POST /api/v1/captures/{id}/archive`). Moving files is no longer dora_runner's job.
 - **Both validation gates (`fast_validation` / `full_validation`) depend on bundled binaries** (bagflow + the dora CLI). Outside the image (a source checkout / CI) they **degrade to `enabled=false` placeholders** whose description says why — we never advertise something that cannot run as runnable.
@@ -253,7 +250,7 @@ are recorded in `VENDOR.md`.
 ## Persistence and restart reconciliation
 
 - **Jobs and validation templates are persisted in SQLite** (`store.py`; default `<data_dir>/dora_runner.db`, beside the `report/` tree in the same data directory). It follows the same conventions as `api_orchestrator.store`: a `threading.RLock` serializes connection use, and `PRAGMA user_version` records the schema version. Previously this state was in-memory and was lost on process restart (release-readiness finding F4/MS-6).
-- **Execution stays in-process** (this persists *state*, not a distributed queue). A running job is held as a live `JobRecord` (owning its `asyncio.Task`) and is **checkpointed** to its row on each state transition (queued → running → terminal); it is not written per log line. `logs_tail` is stored with the terminal row.
+- **Job management is in the service process** (this persists *state*, not a distributed queue; actual work is handed to threads / subprocesses / dora nodes according to the pipeline). A running job is held as a live `JobRecord` (owning its `asyncio.Task`) and is **checkpointed** to its row on each state transition (queued → running → terminal); it is not written per log line. `logs_tail` is stored with the terminal row.
 - **Restart reconciliation**: on startup (`create_dora_app`), any job left `queued`/`running` is resolved to a terminal `failed` state carrying the reason in its `summary` (`{result:"fail", reason:"interrupted", error:{code:"job_interrupted", message:"dora_runner restarted while the job was in flight."}}`), and an interrupted note is appended to `logs_tail`. `JobState` has no `interrupted` member, and every consumer treats only succeeded/failed/canceled as terminal — so **interrupted collapses onto `failed` with the reason in the summary** (the same representation as timeout). `datasets._job_failure_reason` and the Validation tab's generic renderer then surface it to the user with no orchestrator/frontend changes.
 - `GET /jobs/{id}/status` / `GET /jobs/{id}/result` prefer the live `JobRecord` and fall back to the SQLite row, so a job whose worker vanished with the old process still returns a terminal state and result.
 
@@ -310,7 +307,7 @@ flowchart LR
 
 ## Design points
 
-- validator / converter / AI are dora nodes (plugins). I/O is a contract.
+- Custom validators / converters / AI are added as plugins and follow the defined I/O contract.
 - Heavy processing is asynchronous jobs. Progress is delivered via SSE `api_orchestrator` → frontend.
 - Extend as a dora dataflow (add / swap / chain nodes). Treat **AI nodes as first-class citizens**.
 - backend-driven: pipeline definitions and form schemas are distributed to the frontend by `api_orchestrator` (the Validation tab's execution form, etc.).
@@ -318,21 +315,16 @@ flowchart LR
 
 ## Implementation status and development guide
 
-This document is the **source of truth for the design (including the future vision)**. **The currently enabled pipelines are these five: `fast_validation` / `full_validation` /
+This document records the implemented contracts and unimplemented scope. **The currently enabled pipelines are these six: `fast_validation` / `full_validation` /
 `loss_report` / `clock_check` / `video_check` / `signal_report`** (see "Implemented pipelines" above).
 `dataset_convert` / `dataset_validation` are interface only (`enabled=false`; `POST /jobs`
 rejects them with `pipeline_unavailable`).
 
-**Implemented**: the **Plugin/Pipeline Registry** (`registry.py`'s `build_default_registry()` registers the
-5 bundled pipelines, and `plugin_loader.discover_plugins()` scans manifests under `KAIROS_PLUGINS_DIR`
-(default `services/dora_runner/plugins/`) for automatic registration; an example `hello_dora` plugin is
-bundled), the **in-process dora dataflow interpreter** (a plugin's `executor: dora` still runs
-in-process, for the reasons below), and **job concurrency limits and per-job timeouts**
-(`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`), and **SQLite persistence of jobs/templates with
-restart reconciliation** (see "Persistence and restart reconciliation" above). Each pipeline's heavy reads and
-encoding are offloaded to worker threads
-(the MCAP summary read behind `POST /validation/templates/generate` goes through `to_thread` too — a
-synchronous read on the event loop froze every other endpoint for its duration; 2026-08-11, sweep S4).
+**Implemented**: `registry.py`'s `build_default_registry()` registers built-in pipelines, and `plugin_loader.discover_plugins()` automatically registers manifests under `KAIROS_PLUGINS_DIR`. The bundled examples are `hello_dora` and `hello_kairos`; `/app/plugins` is the Docker default and `services/dora_runner/plugins/` the source-execution default.
+
+Plugin Python dependencies are built into a dedicated venv at image build time; OS dependencies can also be declared in the manifest. A dependency-resolution failure stops the build, and a plugin missing its required environment at startup is not registered. See the [plugin README](../../../services/dora_runner/plugins/README.md) for the user procedure.
+
+Job concurrency limits and timeout (`KAIROS_DORA_MAX_CONCURRENCY` / `KAIROS_DORA_JOB_TIMEOUT_S`), plus SQLite persistence of jobs/templates and restart reconciliation, are implemented. Heavy reads and encoding are handed to threads or separate processes.
 
 **The per-job timeout actually stops the work** (2026-08-11, sweep S2-4). Passing the deadline fires the
 same cooperative machinery a cancel uses (`cancel_event` → subprocess kill / decode stop at the worker's
@@ -344,22 +336,10 @@ not stop → `failed` stating "still running; slot stays held" (the slot is held
 previously this was the only behaviour, so a long full-length encode became a false failure plus a dead
 slot). If an API cancel had requested the stop first, `canceled` wins (the same rule as BUG-D).
 
-**dora bundling status (updated 2026-07-26)**: the **dora CLI (0.5.0) and the bundled bagflow Rust nodes
-now ship in the dora_runner image**. What runs on real dora is **both validation gates
-(`fast_validation` / `full_validation`)**; a plugin's `executor: dora` still goes through the in-process
-interpreter (moving plugin dataflows onto real dora is separate work). `/readyz` therefore honestly reports two components: `components.dora` (is the `dora` binary
-present — `available` / `in-process`) and `components.bagflow` (are the bagflow binaries present —
-`available` / `unavailable`). Each `PipelineDefinition` returned by `/pipelines` also reports
-`effective_executor` (how it actually runs), distinct from the declared `executor`. Outside the image (a
-source run / CI) bagflow is absent, so both `fast_validation` and `full_validation` degrade to
-`enabled=false`. **AI nodes**
-(inference / LeRobot conversion) are not implemented.
+**dora bundling and execution status**: the dora CLI 0.5.0, Python bindings, and bagflow Rust nodes are bundled in the image. In addition to the two validation pipelines, custom plugins with `executor: dora` run through their dedicated coordinator/daemon and wait for completion. Python nodes with dependencies use that plugin's venv. Callables with dependencies run in a dedicated Python process, and cancellation also stops its child process group.
 
-For how to add validation checks, unit testing, and debugging procedures via the local CLI (`python -m dora_runner.cli`),
-see the developer guide [docs/dora/README.md](../../dora/README.md).
+When the dora CLI is unavailable in the source environment, or `KAIROS_DORA_INPROCESS` is set, plugin graphs run through a compatibility interpreter that calls `process(inputs, ctx)`. It does not reproduce arbitrary dora graphs. Without bagflow binaries, `fast_validation` / `full_validation` become `enabled=false`.
 
-The **implementation plan for the dora dataflow conversion & plugin system** (future vision) is finalized
-in [dora_plugins.md](dora_plugins.md) (dataflow conversion for all pipelines, automatic registration via
-manifest scan of `plugins/<name>`, and the phased migration plan). The current plugins are **in-tree**
-(placed directly under `services/dora_runner/plugins/` rather than as a submodule); the dora daemon is only
-a reserved slot for a future investment.
+`/readyz` returns `components.dora` and `components.bagflow`. `/pipelines` returns `effective_executor` in addition to the declared `executor`. The latter's `in-process` API label means execution was not delegated to the dora daemon; it does not mean a dependency-enabled callable was imported into the service process.
+
+For check additions, unit tests, and CLI debugging, see the [validation development guide](../../dora/README.md). For plugin author requirements, dependencies, GPU, and I/O, see the [plugin specification](dora_plugins.md).

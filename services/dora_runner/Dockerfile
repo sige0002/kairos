@@ -50,6 +50,19 @@ COPY services/dora_runner/src /app/services/dora_runner/src
 RUN cd /app/services/dora_runner \
     && uv sync --frozen --no-editable --no-dev --extra dora
 
+# ---- user plugin dependencies --------------------------------------------
+FROM builder AS plugin-builder
+ARG KAIROS_PLUGINS_SOURCE=services/dora_runner/plugins
+COPY ${KAIROS_PLUGINS_SOURCE} /app/plugins
+ARG KAIROS_PLUGIN_GPU_ENABLED=0
+ENV KAIROS_PLUGIN_GPU_ENABLED=$KAIROS_PLUGIN_GPU_ENABLED
+RUN python -m dora_runner.plugin_dependencies system-packages --kind build > /tmp/plugin-build-apt.txt \
+    && if [ -s /tmp/plugin-build-apt.txt ]; then \
+         apt-get update && xargs -r apt-get install -y --no-install-recommends < /tmp/plugin-build-apt.txt; \
+       fi \
+    && python -m dora_runner.plugin_dependencies system-packages > /tmp/plugin-runtime-apt.txt \
+    && python -m dora_runner.plugin_dependencies install
+
 # ---- bagflow builder (Rust nodes + the dora CLI) ----------------------------
 # Separate stage so a Python-only change never recompiles Rust and vice versa.
 # rustc is pinned to the version the vendored workspace was verified against.
@@ -106,6 +119,13 @@ FROM python:3.12.13-slim@sha256:423ed6ab25b1921a477529254bfeeabf5855151dc2c31416
 ENV VENV=/opt/venv
 ENV PATH="$VENV/bin:$PATH"
 COPY --from=builder /opt/venv /opt/venv
+COPY --from=plugin-builder /opt/plugin-envs /opt/plugin-envs
+COPY --from=plugin-builder /tmp/plugin-runtime-apt.txt /tmp/plugin-runtime-apt.txt
+RUN if [ -s /tmp/plugin-runtime-apt.txt ]; then \
+      apt-get update && xargs -r apt-get install -y --no-install-recommends < /tmp/plugin-runtime-apt.txt; \
+    fi \
+    && rm -rf /var/lib/apt/lists/* /tmp/plugin-runtime-apt.txt
+ENV KAIROS_PLUGIN_ENVS_DIR=/opt/plugin-envs
 
 # No extra runtime libs: libjpeg-turbo is linked statically into bagflow-decode
 # (verified with ldd — nothing jpeg-related is resolved dynamically), and the
@@ -118,7 +138,7 @@ COPY --from=bagflow-builder /out/ /usr/local/bin/
 # here + rebuild (see plugins/README.md). The source-relative default in
 # plugin_loader.default_plugins_dir() only resolves in editable/local runs, hence
 # the explicit env in the image.
-COPY services/dora_runner/plugins /app/plugins
+COPY --from=plugin-builder /app/plugins /app/plugins
 ENV KAIROS_PLUGINS_DIR=/app/plugins
 
 # Flows shipped with the service. fast_validation must work on a robot whose

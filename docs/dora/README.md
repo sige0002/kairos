@@ -2,27 +2,22 @@
 
 # dora_runner — validation dev guide (current state / adding a check / unit tests / debugging)
 
-**日本語: [README.ja.md](README.ja.md)**
+**Japanese: [README.ja.md](README.ja.md)**
 
 > The canonical design is [docs/specs/en/dora_runner.md](../specs/en/dora_runner.md). This is a
 > developer guide to the **current implementation** and the workflow (kept in sync with the code).
-> Related (Japanese): a dora intro at [getting-started.ja.md](getting-started.ja.md) and a curated
-> resource list at [resources.ja.md](resources.ja.md).
+> Related: a dora intro at [getting-started.md](getting-started.md) and a curated
+> resource list at [resources.md](resources.md).
 
-## Current state (updated 2026-07-26)
-- There are **5 enabled pipelines: `fast_validation` / `full_validation` /
-  `loss_report` / `video_check` / `signal_report`** (`dataset_convert` / `dataset_validation` are
+## Current execution configuration
+- There are **6 enabled built-in pipelines: `fast_validation` / `full_validation` / `loss_report` /
+  `clock_check` / `video_check` / `signal_report`** (`dataset_convert` / `dataset_validation` are
   `enabled=false` placeholders; `POST /jobs` rejects them with `pipeline_unavailable`).
-- The registry is **implemented**: `registry.py`'s `build_default_registry()` registers the 5 bundled
-  pipelines, and `plugin_loader.discover_plugins()` scans manifests under `KAIROS_PLUGINS_DIR`
-  (default `services/dora_runner/plugins/`) and auto-registers them (example plugin `hello_dora`
-  included).
-- **Both validation gates are bagflow flows on real dora** (`fast_validation` / `full_validation`).
-  The dora CLI (0.5.0) and the bundled bagflow Rust nodes **ship in the dora_runner image**, but a
-  source checkout / CI has neither, so there both gates degrade to `enabled=false` (with the reason
-  in their description). A plugin's `executor: dora` still runs through the **in-process
-  interpreter** (`/readyz`'s `components.dora` / `components.bagflow` and `/pipelines`'s
-  `effective_executor` faithfully report the actual execution path).
+- The registry is **implemented**: `registry.py`'s `build_default_registry()` registers built-in pipelines, and `plugin_loader.discover_plugins()` scans manifests under `KAIROS_PLUGINS_DIR` (default `services/dora_runner/plugins/`) and registers them automatically. Examples `hello_dora` / `hello_kairos` are bundled.
+- **Both validation gates are bagflow flows on real dora** (`fast_validation` / `full_validation`). The dora CLI (0.5.0) and bundled bagflow Rust nodes ship in the dora_runner image. Without those binaries in a source checkout / CI, both become `enabled=false` with the reason in their descriptions.
+  Plugins with `executor: dora` also run on the same dedicated dora. Plugins with Python dependencies use a dedicated venv.
+  In a source environment without dora, `process(inputs, ctx)` provides compatibility execution.
+  `/readyz` and `/pipelines`'s `effective_executor` report the execution mode.
 - **What `fast_validation` is made of** (`fast_validation.py` + `flows/fast_validation.yml`):
   - The flow **ships with the service** (in the image at `/opt/kairos/flows/fast_validation.yml`).
     Placing `config/<robot>/flows/fast_validation.yml` overrides it.
@@ -42,6 +37,7 @@
   terminal state on restart).
 
 ## How to add a validation check
+The procedure differs between changing an existing check’s configuration, adding a bagflow node, and adding a custom pipeline. Custom plugin users should start with the [addition procedure](../../services/dora_runner/plugins/README.md).
 
 ### A. Just tighten the required-topic rules (no code)
 Edit the template. `required_topics` is a **glob name + optional type**:
@@ -81,12 +77,11 @@ Validation IS a bagflow flow, so "add a check" means "add a node and write it in
    `hello_dora` for reference).
 3. For reproducibility, include `pipeline` / `version` in the summary (the same convention as the
    bundled pipelines).
-4. Running as a dataflow on the dora daemon is a future direction
-   ([dora_plugins.md](../specs/en/dora_plugins.md)). Today it runs via the in-process interpreter.
+4. Declare additional dependencies in requirements.txt / pyproject.toml and requires.apt, then apply them with `make build dora_runner` → `make up dora_runner`. Dora-form plugins run on the dedicated daemon. See the [plugin specification](../specs/en/dora_plugins.md) for author requirements, GPU, and real-job checks.
 
 ## How to unit test
 ```bash
-cd services/dora_runner && uv run --extra test pytest -q          # the Python side
+(cd services/dora_runner && uv run --extra test pytest -q)          # the Python side
 # The Rust nodes (bundled bagflow) — use a container if the host has no rust
 cargo test -p bagflow-checks --manifest-path services/dora_runner/bagflow/Cargo.toml
 ```
@@ -99,17 +94,16 @@ cargo test -p bagflow-checks --manifest-path services/dora_runner/bagflow/Cargo.
   resolution, search order, the bundled flow).
 - **Real-MCAP flow test** — `tests/test_fast_validation.py`. Depends on a real recording at
   `data/objects/<CAPTURE_ID>` **and** on the bagflow/dora binaries; it auto-skips when either is missing
-  (i.e. it only runs inside the image). For how to produce a recording, see the integration recipes in
-  [AGENTS.md](../../AGENTS.md).
+  (i.e. it only runs inside the image). See the [E2E guide](../../e2e/README.md) for real-browser and real-bag validation; use `make test-plugin-dependencies` for dependency-environment integration checks.
 
 ## Debugging / iteration (an easy-to-debug workflow)
 - **Local CLI** (no HTTP server needed). It uses real dora, so run it **inside the image**:
   ```bash
   # auto-generate a template and run (build a draft from the capture's topics and compare)
-  docker compose exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data
+  docker compose --project-directory . -f compose/compose.yaml exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data
   # swap the template or the flow and re-run as many times as you like
-  docker compose exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data --template my.yaml
-  docker compose exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data --json  # raw summary
+  docker compose --project-directory . -f compose/compose.yaml exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data --template my.yaml
+  docker compose --project-directory . -f compose/compose.yaml exec dora_runner python -m dora_runner.cli <capture_id> --data-dir /data --json  # raw summary
   ```
   - The pass/fail maps to the **exit code (0/1)**. Output is `/data/report/fast_validation/<capture_id>/summary.json`.
   - On a host without the binaries it **says so and exits 2** (it never silently falls back to another
@@ -119,7 +113,7 @@ cargo test -p bagflow-checks --manifest-path services/dora_runner/bagflow/Cargo.
   is `flow/flow.yml` in the same directory (after `${KAIROS_*}` substitution).
 - **Drive bagflow directly** (the smallest repro, with kairos out of the picture):
   ```bash
-  docker compose exec dora_runner bagflow run --no-attach \
+  docker compose --project-directory . -f compose/compose.yaml exec dora_runner bagflow run --no-attach \
     --bag /data/objects/<capture_id> --report /tmp/report.json /opt/kairos/flows/fast_validation.yml
   ```
 - **Note**: dora_runner owns its coordinator/daemon (127.0.0.1:6112 by default). Pass
@@ -127,10 +121,8 @@ cargo test -p bagflow-checks --manifest-path services/dora_runner/bagflow/Cargo.
   deliberately left to any other dora on the host).
 
 ## Known gaps (vs the spec / TODO)
-- **A plugin's `executor: dora` still runs through the in-process interpreter.** Real dora is used by
-  the two validation gates only; moving plugin dataflows onto it is separate work.
 - The **Python bagflow check nodes and the CUDA decoder are not bundled** (see
   `services/dora_runner/bagflow/VENDOR.md` for why) — a flow may only use the bundled Rust binaries or
   an absolute path to something the operator installed.
 - `dataset_convert` / `dataset_validation` are interface-only (`enabled=false`).
-- AI nodes / LeRobot conversion are not implemented.
+- No generic AI inference pipeline is bundled. Add custom AI processing as a plugin. The optional LeRobot exporter is a separate service, not dora_runner’s `dataset_convert`.
