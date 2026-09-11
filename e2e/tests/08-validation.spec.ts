@@ -27,6 +27,38 @@ const PIPELINE = "fast_validation";
 
 test.describe.configure({ mode: "serial" });
 
+for (const pipeline of ["hello_dora", "hello_kairos"]) {
+  test(`Validation: ${pipeline} runs through the real dora daemon`, async ({ page }) => {
+    const captureId = await recordCaptureViaApi({
+      operator: "e2e", task: pipeline, seconds: 4,
+    });
+    await until(
+      "capture to settle before plugin validation",
+      () => api.getCapture(captureId),
+      (c) => c.state === "completed" && c.digest_state === "complete",
+      180_000,
+    );
+    await openTab(page, "validation");
+    await page.getByTestId(`pipeline-card-${pipeline}`).click();
+    await page.getByLabel("target", { exact: true }).selectOption(captureId);
+    if (pipeline === "hello_kairos") {
+      await page.getByLabel("subject", { exact: true }).fill("acceptance");
+    }
+    await page.getByRole("button", { name: "Run on selection" }).click();
+    const results = page.getByTestId("validation-results");
+    await expect(results.getByText("PASS", { exact: true })).toBeVisible({ timeout: 120_000 });
+    const summary = store.reportSummary(pipeline, captureId);
+    expect(summary?.pipeline).toBe(pipeline);
+    expect(summary?.result).toBe("pass");
+    if (pipeline === "hello_kairos") {
+      await expect(results).toContainText("hello acceptance!");
+      expect(summary?.message).toBe("hello acceptance!");
+    } else {
+      expect(Number((summary?.metrics as Record<string, unknown>)?.message_count)).toBeGreaterThan(0);
+    }
+  });
+}
+
 test("Validation: full_validation results and expanded JSON scroll to the end", async ({ page }) => {
   test.setTimeout(8 * 60_000);
   const captureId = await recordCaptureViaApi({

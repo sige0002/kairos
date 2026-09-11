@@ -390,6 +390,48 @@ async def run_flow(
         str(int(budget)),
         str(flow_file),
     ]
+    return await _run_flow_process(
+        argv, flow_file, name, endpoint, budget, cancel_event
+    )
+
+
+async def run_dora_flow(
+    flow_file: Path,
+    *,
+    name: str,
+    endpoint: DoraEndpoint,
+    timeout_s: float | None = None,
+    cancel_event: threading.Event | None = None,
+) -> FlowRun:
+    """Run a plugin graph on our coordinator and wait for all nodes to finish."""
+    argv = [
+        DORA_BIN,
+        "start",
+        str(flow_file),
+        "--name",
+        name,
+        "--attach",
+        *endpoint.cli_args,
+    ]
+    return await _run_flow_process(
+        argv,
+        flow_file,
+        name,
+        endpoint,
+        timeout_s if timeout_s is not None else flow_timeout_s(),
+        cancel_event,
+    )
+
+
+async def _run_flow_process(
+    argv: list[str],
+    flow_file: Path,
+    name: str,
+    endpoint: DoraEndpoint,
+    budget: float,
+    cancel_event: threading.Event | None,
+) -> FlowRun:
+    """Share bounded subprocess waiting and targeted cleanup across executors."""
     started = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
         *argv,

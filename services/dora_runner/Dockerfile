@@ -48,7 +48,7 @@ COPY services/dora_runner/src /app/services/dora_runner/src
 # pointing back at this builder stage's /app). The lock's kairos-common path
 # source (../../libs/kairos_common) resolves from the service dir.
 RUN cd /app/services/dora_runner \
-    && uv sync --frozen --no-editable --no-dev
+    && uv sync --frozen --no-editable --no-dev --extra dora
 
 # ---- bagflow builder (Rust nodes + the dora CLI) ----------------------------
 # Separate stage so a Python-only change never recompiles Rust and vice versa.

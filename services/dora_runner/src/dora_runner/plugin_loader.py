@@ -30,6 +30,7 @@ import logging
 import os
 import shutil
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -38,6 +39,7 @@ import yaml
 from kairos_common import ApiError
 from pydantic import BaseModel, ConfigDict, Field
 
+from dora_runner.bagflow_runtime import DoraEndpoint, run_dora_flow
 from dora_runner.mcap_utils import resolve_source_dir
 from dora_runner.store import JobRecord, RunnerStore
 
@@ -280,37 +282,47 @@ def _collect_result(plugin_id: str, report_dir: Path) -> dict:
 async def _run_via_dora_cli(
     dataflow_yml: Path, ctx: NodeContext, job: JobRecord
 ) -> None:
-    """Run the dataflow under the dora daemon: ``dora start dataflow.yml``.
+    """Materialize a writable job graph and await our private dora daemon.
 
-    The nodes read their job context from ``KAIROS_*`` env (their ``main()``).
-    This path needs the Rust ``dora`` CLI + a running daemon (``dora up``); it is
-    unexercised on hosts that only have the dora Python bindings.
+    The daemon predates the job, so a CLI subprocess environment cannot carry
+    job-specific values to nodes. Put them in the graph's node environments.
     """
     env = {
-        **os.environ,
         "KAIROS_CAPTURE_ID": ctx.capture_id,
-        "KAIROS_DATA_DIR": str(ctx.data_dir),
-        "KAIROS_REPORT_DIR": str(ctx.report_dir),
+        "KAIROS_DATA_DIR": str(ctx.data_dir.resolve()),
+        "KAIROS_REPORT_DIR": str(ctx.report_dir.resolve()),
         "KAIROS_PARAMS_JSON": json.dumps(ctx.params),
     }
-    proc = await asyncio.create_subprocess_exec(
-        "dora",
-        "start",
-        str(dataflow_yml),
-        "--name",
-        job.job_id,
-        env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    out, _ = await proc.communicate()
-    if out:
-        job.logs_tail.extend(out.decode(errors="replace").splitlines()[-20:])
-    if proc.returncode != 0:
+    graph = yaml.safe_load(dataflow_yml.read_text(encoding="utf-8"))
+    for node in graph["nodes"]:
+        node["env"] = {**node.get("env", {}), **env}
+        path = node.get("path")
+        if path and (dataflow_yml.parent / path).is_file():
+            node["path"] = str((dataflow_yml.parent / path).resolve())
+    # dora creates out/ beside the descriptor. Installed plugins are read-only;
+    # each submission gets its own writable directory, never a shared source edit.
+    with tempfile.TemporaryDirectory(
+        prefix="plugin-flow-", dir=ctx.report_dir.resolve()
+    ) as workdir:
+        flow_file = Path(workdir) / "dataflow.yml"
+        flow_file.write_text(yaml.safe_dump(graph), encoding="utf-8")
+        run = await run_dora_flow(
+            flow_file,
+            name=job.job_id,
+            endpoint=DoraEndpoint.from_env(),
+            cancel_event=job.cancel_event,
+        )
+    if run.output:
+        job.logs_tail.extend(run.output.splitlines()[-20:])
+    if not run.ok:
         raise ApiError(
             status_code=500,
             code="pipeline_failed",
-            message=f"dora dataflow exited {proc.returncode}",
+            message=(
+                "dora dataflow timed out"
+                if run.timed_out
+                else f"dora dataflow exited {run.exit_code}"
+            ),
             details={"plugin": ctx.plugin_id},
         )
 
