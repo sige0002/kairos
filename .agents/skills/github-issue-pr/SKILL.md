@@ -24,6 +24,15 @@ GitHub issue を起点に PR マージまでを一気通貫でやるときの標
 
 - 基本は認証済みの **`gh` CLI**。接続済みGitHubアプリ／MCPの利用可能なツールが
   あればissue・PRの読み書きに使ってよい。特定環境のツール名は前提にしない。
+- ユーザーが `gh` を指定した場合はそれを使う。認証は対象ホストの
+  `gh auth status --hostname <remote-host>` で確認し、`git push` の失敗だけで
+  `gh` が未ログインと判断しない（Git の credential helper は別経路になり得る）。
+  github.com の HTTPS remote では、認証済みの `gh` を使って
+  `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push -u <remote> <branch>`
+  と実行できる。他の helper で認証失敗した場合、この経路での再試行は 1 回まで。
+  再失敗時はログイン状態・リポジトリ権限・Git の認証経路を区別して報告する。
+  SSH remote の変更、永続設定を変える `gh auth setup-git`、根拠のない再ログイン要求、
+  トークンの表示はしない。push の許可範囲は広げない。
 - リポジトリは **public**。issue・PR・コミットの全テキストが即座に公開される —
   **no-confidential-names を issue 本文・タイトル・PR・ブランチ名にも適用**する
   （機体は「the local robot」等の一般名で書く）。文章は英語（コード・コミット規約と同じ）。

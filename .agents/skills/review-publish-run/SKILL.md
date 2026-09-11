@@ -62,7 +62,15 @@ Before push, run the confidential-name checker with the relevant base range, nor
 bash .agents/skills/no-confidential-names/check.sh origin/develop..HEAD
 ```
 
-Confirm the current branch and upstream, then use a normal non-force push. Stop on divergence, rejection, authentication failure, or an unexpected remote; do not force-push or silently rebase. Verify the pushed commit and report its SHA and branch.
+Confirm the current branch, upstream, and intended remote before a normal non-force push. For GitHub, use `gh` for authentication checks and GitHub operations. Check `gh auth status --hostname <remote-host>`; a failed `git push` alone does not prove that `gh` is logged out, because Git may use a different credential helper.
+
+For an HTTPS remote on github.com with valid `gh` authentication, use its credentials for the authorized push without changing persistent Git configuration:
+
+```bash
+git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push <remote> <branch>
+```
+
+Do not change an SSH remote to HTTPS automatically. If an HTTPS push fails with another helper but `gh` authentication is valid, allow one retry through the command-scoped helper above. Stop on divergence, rejection, an unexpected remote, or failure after that retry; do not force-push or silently rebase. Distinguish login status, repository permissions, and Git transport/helper failures in the report. Do not request re-login unless authentication checks support it, expose tokens, or run `gh auth setup-git` without permission to change persistent configuration. Verify the pushed commit and report its SHA and branch.
 
 ## Build and start at the authorized point
 
