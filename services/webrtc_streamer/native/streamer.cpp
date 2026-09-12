@@ -166,12 +166,15 @@ struct Engine {
         else if (r->encoding=="rgba8") cv::cvtColor(view,bgr,cv::COLOR_RGBA2BGR);
         else if (r->encoding=="bgra8") cv::cvtColor(view,bgr,cv::COLOR_BGRA2BGR);
         else if (channels==1) cv::cvtColor(view,bgr,cv::COLOR_GRAY2BGR);
-        else bgr=view.clone();
+        // The ROS message owns this view until prepare() returns. Resizing
+        // reads it directly; only an unscaled retained frame needs a copy.
+        else bgr=view;
       }
       if (bgr.empty()) throw std::runtime_error("invalid compressed preview image");
       if (target.empty()) target=output_size(bgr.cols,bgr.rows,max_width,max_height);
       int w=target.width, h=target.height;
       if (w!=bgr.cols || h!=bgr.rows) cv::resize(bgr,last,cv::Size(w,h),0,0,cv::INTER_AREA);
+      else if (r && r->encoding=="bgr8") last=bgr.clone();
       else last=bgr;
       ++decoded;
     } catch (const std::exception &e) {

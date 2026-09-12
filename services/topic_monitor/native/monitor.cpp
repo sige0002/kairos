@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp/experimental/executors/events_executor/events_executor.hpp>
+#include "coalescing_events_queue.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -28,7 +30,7 @@ struct Engine {
   double horizon;
   std::shared_ptr<rclcpp::Context> context;
   rclcpp::Node::SharedPtr node;
-  std::shared_ptr<rclcpp::executors::SingleThreadedExecutor> executor;
+  std::shared_ptr<rclcpp::experimental::executors::EventsExecutor> executor;
   std::thread thread;
   std::atomic<bool> alive{false}, paused{false}, stopping{false};
   std::mutex mutex;
@@ -64,7 +66,8 @@ struct Engine {
         rclcpp::NodeOptions().context(context));
       rclcpp::ExecutorOptions options;
       options.context = context;
-      executor = std::make_shared<rclcpp::executors::SingleThreadedExecutor>(options);
+      executor = std::make_shared<rclcpp::experimental::executors::EventsExecutor>(
+        std::make_unique<kairos_monitor::CoalescingEventsQueue>(), false, options);
       executor->add_node(node);
       alive = true;
       thread = std::thread([this] {

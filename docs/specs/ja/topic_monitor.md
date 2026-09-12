@@ -36,6 +36,7 @@ ROS 2 トピックの **軽量・非破壊なリアルタイム監視**コンテ
 - トピック名や機体名を固定しない。`default_topics`の具体名・globに一致する追加トピックは既存の約2秒のdiscovery周期で検出し、型・QoSに応じて購読する。
 - 独自メッセージは、従来の`make msgs-build`で生成した`install/`をそのまま既存overlayとして使用する。通常のメッセージビルドでC++側の生成物も含まれるため、別のメッセージビルド操作は不要。
 - 保守用に`.env`の`KAIROS_MONITOR_BACKEND=python`で従来実装へ戻せる（コンテナ再作成で反映）。既定は`native`。native初期化失敗をPythonへ黙ってフォールバックせず、ログと`/readyz`のnot-readyで示す。
+- C++受信はJazzyのイベント通知型Executorを使用する。payloadを持たない通知は通知元・種類ごとに件数で保持し、1件ずつ処理する。固定した通知元集合では、通知件数に比例して待ち行列の格納要素が増えない。native Monitorはタイマーイベントを使用せず、停止フラグ確認の間の待機時間は最大100ms（処理時間を除く）。
 - C++とPythonのABI版・snapshot構造サイズを起動時に照合する。異なる版の共有ライブラリを混ぜない。
 - native経路ではPythonのsample callbackを通らないため、`self_load.callback_lag_ms` / `callback_lag_p95_ms`は`null`。測っていない処理時間を0msとは表示しない。payloadのstamp decodeは行わず、`stamp_delay_ms`と`sensor_preview`も`null`。
 
