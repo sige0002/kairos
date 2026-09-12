@@ -1,99 +1,48 @@
 ---
 name: mcap-direct-access
-description: ROS をインストールせずに MCAP rosbag を読む・検証する・別形式へ変換するときの手順と落とし穴。「ROS無しでbagを読みたい」「カスタムメッセージ型をコード生成なしで展開したい」「検証を軽量コンテナで回したい」「mcapをArrowやparquetに変換する」「bagの読み取りが遅い」ときに使用する。
+description: ROS を使わず MCAP を読解・検証・変換する。動的メッセージ復号、トピック選択、分割 bag、Arrow 変換を扱うときに使う。
 ---
 
-# MCAP を ROS 無しで読む・変換する
+# MCAP を ROS 無しで扱う
 
-MCAP はchannelからschema recordを参照でき、rosbag2のMCAPには通常
-`ros2msg` の定義が格納される。ただしschema recordは仕様上必須ではなく、収録元や
-変換方法によって欠落・未知encodingの場合がある。schema dataが揃っていれば、ROSの
-インストールやメッセージパッケージのビルドなしに動的復号できる。これを使うと以下が
-成立する：
+録画済み bag の解析をライブ ROS 接続から分離する。MCAP の schema data と対応
+decoder があればカスタム型も動的復号できるが、schema record は必須ではなく、
+欠落・未知 encoding を扱う必要がある。MCAP は入れ物であり、ROS 1 / ROS 2 は
+`ros1msg` / `ros2msg` などのスキーマから判別する。
 
-- 録画後の検証・変換を、ROS を含まない**軽量コンテナ**（数十 MB）で回せる
-- 定義を含む独自メッセージ型を、**コード生成なし**に扱える
-- CI で bag を扱うのに ROS ディストロを用意しなくてよい
+## 読み取り
 
-**ライブの ROS グラフに繋ぐ必要がある処理と、録画済み bag を読むだけの処理を分ける。**
-後者に ROS 依存を持ち込まないことが、ビルド時間とイメージサイズに効く。
-
-## Python で読む
+Python の ROS 2 例:
 
 ```python
 from mcap.reader import make_reader
-from mcap_ros2.decoder import DecoderFactory   # ROS 2 の場合
+from mcap_ros2.decoder import DecoderFactory
 
-with open("bag_0.mcap", "rb") as f:
-    reader = make_reader(f, decoder_factories=[DecoderFactory()])
+with open("bag_0.mcap", "rb") as source:
+    reader = make_reader(source, decoder_factories=[DecoderFactory()])
     for schema, channel, message, ros_msg in reader.iter_decoded_messages(
-        topics=["/camera/color/image_raw/compressed"]      # ← 先に絞る（後述）
+        topics=["/camera/color/image_raw/compressed"]
     ):
-        ros_msg.header.stamp        # 通常の ROS メッセージとして触れる
+        ...
 ```
 
-デコード不要（件数・レート・サイズだけ見たい）なら `iter_messages()` で生のまま読む。
-**復号しないだけで桁が変わる**ので、軽い検証はデコードを避けて設計する。
+必要トピックのフィルタはデコード前に掛ける。件数・レート・サイズなど復号不要の
+検査は summary/metadata または `iter_messages()` を使い、不要な展開を避ける。
 
-## 動的スキーマ解釈 vs コード生成
+期待トピックの存在と件数を `metadata.yaml` / MCAP 内容に照合し、対象がゼロ件なのに
+検証成功としない。分割 bag は複数 MCAP すべてを扱う。
+解釈不能なトピックを raw CDR bytes / Arrow LargeBinary で保持する場合、件数と
+未展開であることを結果へ明示する。復号が必要な検証を成功扱いで飛ばさない。
 
-| | 動的解釈 | コード生成 |
-|---|---|---|
-| カスタム型 | schema dataとdecoderが対応すればコード生成不要 | 型ごとに生成・ビルドが要る |
-| 速度 | 解釈のオーバーヘッドあり | 速い |
-| 未知スキーマ | フォールバックを自分で決める | 失敗する |
+## 時刻と Arrow 変換
 
-ロボットごとに独自メッセージが増える用途では、動的解釈のほうが運用が破綻しない。
+`log_time` と `publish_time` は異なる。遅延・レート・欠落を論じるときは使った時計、
+順序、分母を明示する。圧縮 chunk の解凍が必要な計測と metadata だけで済む計測を分ける。
 
-**解釈できないスキーマは raw フォールバックにする。** CDR のバイト列をそのまま
-（`bytes` / Arrow の LargeBinary 等で）通し、「その1トピックだけ未展開」で済ませる。
-1本のせいで bag 全体の処理が落ちる設計にしないこと。フォールバック件数は
-統計として出す（気づかないまま raw のまま下流に流れるのを防ぐ）。
+Arrow バッチには行数とバイト数の上限を持たせる。トピック別バッチのフラッシュ順は
+全体の時刻順を保証しないため、時刻順が必要なら目的に合う時刻列で明示的に整列する。
+ネスト値は Struct / List、バイナリは対応する Arrow 型で保持する。
 
-## トピックフィルタは必ずデコードの前に
-
-読み取りが遅いときの最頻の原因。**フィルタをデコード後に掛けると、要らない
-トピックまで復号している。**
-
-- 実測例: 29 トピックの bag から 2 トピックだけ読む場合、フィルタをデコード前に
-  置くとスキャンが 0.28 秒 → 0.076 秒（同一 bag・同一環境）
-
-自作のリーダやラッパを書くときは、この順序を API の契約として固定する。
-
-## metadata.yaml とのプリフライト
-
-rosbag2 のディレクトリには `metadata.yaml` があり、**トピック一覧と件数が
-記録されている**。処理を始める前にこれと突き合わせる：
-
-- 期待するトピックが bag に**存在するか**（無ければ即エラーで返す）
-- 記録件数と、自分が読めた件数が一致するか（取りこぼし検出）
-
-「処理は成功、ただし対象トピックが1件も無かった」を成功として返さないこと。
-検証パイプラインで最も危険な偽陽性はこれ。
-
-## Arrow へ載せる場合
-
-ゼロコピーで別プロセス／別言語へ渡すなら Arrow が扱いやすい（dora-rs などは
-Arrow がそのまま配線の通貨になる）。
-
-- バッチ粒度は行数・バイト数の両方で上限を持つ（例: 65536 行 / 64MB）。細かすぎると
-  オーバーヘッド、大きすぎるとメモリに効く
-- **トピックをまたぐと時刻順にならない。** トピック内はメッセージ順でも、トピック間は
-  フラッシュ順で混ざる。時刻順の再生が要るなら `log_time` / `publish_time` 列で並べ直す
-- ネストは Struct / List、`uint8[]` は LargeBinary に落とすのが素直
-
-## 落とし穴
-
-- **`log_time` と `publish_time` は別物。** 録画側が受信した時刻と、送信側が刻んだ時刻。
-  遅延やドロップを議論するなら、どちらで測ったかを必ず書く
-- **圧縮 chunk の解凍がボトルネックになる。** 件数だけ数えたいのに全 chunk を
-  解凍していないか確認する
-- **ROS 1 の bag と MCAP を混同しない。** MCAP は入れ物であり、中身は ROS 1 / ROS 2 の
-  どちらもありうる。スキーマ種別（`ros1msg` / `ros2msg`）で分岐する
-- 分割録画（split）の bag は**複数ファイル**になる。単一ファイル前提のコードは
-  途中で終わったように見える
-
-## 関連
-
-- 読んだ先をdora nodeに分けて処理するなら `dora-rs`
-- 記録・再生側のテストループは `rosbag-workflow`
+Kairos の capture ID・配置・削除は [capture store](../../../docs/specs/ja/capture_store.md)
+に従う。処理を dora node に分ける場合は `dora-rs`、記録/再生の実グラフ検証は
+`rosbag-workflow` を使う。

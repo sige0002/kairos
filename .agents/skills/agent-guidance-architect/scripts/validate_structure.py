@@ -9,9 +9,8 @@ validate_structure.py — リポジトリのエージェントガイダンスの
                    @import しているか（ラッパー欠落 = Claude Code が共通
                    ルールを読まない。`ln -s AGENTS.md CLAUDE.md` は配線済み扱い）
   import-targets   すべての CLAUDE.md の @import が実在ファイルへ解決するか
-  symlinks         .claude/skills/* と .agents/skills/* の symlink 検証。
-                   .agents/skills 側の symlink は Codex が follow しない
-                   既知バグ（openai/codex #8943, #11314）のため向きも検査
+  symlinks         .claude/skills/* と .agents/skills/* のリンク先を検証。
+                   Codex がサポートする正常な symlink は許容する
   skill-frontmatter  SKILL.md に name（小文字ハイフン・64字以内）と
                    description（1024字以内）があるか、本文が推奨サイズ内か
   claude-subagents .claude/agents/*.md の frontmatter に name + description
@@ -205,26 +204,33 @@ def main() -> int:
                     f"@{m.group(1)} が解決しない（探索先: {target}）")
 
     # --- スキル探索ルート配下の symlink ---
+    # Current Codex supports symlinked skill folders (official build-skills docs).
+    # Check resolution and content, rather than enforcing a direction.
+    seen_skills = {os.path.realpath(p) for p in skill_files}
     for rel in (".claude/skills", ".agents/skills"):
         droot = os.path.join(repo, rel)
+        if os.path.islink(droot) and not os.path.exists(droot):
+            add("HIGH", "symlinks", droot,
+                f"壊れた symlink -> {os.readlink(droot)}")
+            continue
         if not os.path.isdir(droot):
             continue
-        if rel == ".agents/skills" and os.path.islink(droot):
-            add("MEDIUM", "symlinks", droot,
-                ".agents/skills 自体が symlink — Codex はこれを通してスキルを"
-                "ロードしない（openai/codex #11314）。実ディレクトリにする")
         for name in sorted(os.listdir(droot)):
             p = os.path.join(droot, name)
             if os.path.islink(p) and not os.path.exists(p):
                 add("HIGH", "symlinks", p,
                     f"壊れた symlink -> {os.readlink(p)}")
-            elif rel == ".agents/skills" and os.path.islink(p):
-                add("MEDIUM", "symlinks", p,
-                    ".agents/skills 配下のスキルが symlink — Codex は symlink "
-                    "されたスキルを follow しない（openai/codex #8943, #11314）。"
-                    "実体をここに置き、.claude/skills 側から symlink する（向きが逆）")
-            elif os.path.isdir(p) and not os.path.isfile(os.path.join(p, "SKILL.md")):
+                continue
+            if not os.path.isdir(p):
+                continue
+            skill = os.path.join(p, "SKILL.md")
+            if not os.path.isfile(skill):
                 add("MEDIUM", "symlinks", p, "SKILL.md の無いスキルディレクトリ")
+            elif os.path.realpath(skill) not in seen_skills:
+                # os.walk(followlinks=False) omits linked folders; validate their
+                # entrypoints too, including links to skills outside this repo.
+                seen_skills.add(os.path.realpath(skill))
+                skill_files.append(skill)
 
     # --- SKILL.md frontmatter ---
     for skill in skill_files:

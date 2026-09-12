@@ -1,18 +1,13 @@
 ---
 name: rosbag-workflow
-description: rosbag（mcap）を使った記録・再生・ループ再生テストと、DDS/QoS 起因の疎通トラブル切り分けの定型手順。「rosbagをループ再生してテスト」「bagを流してもトピックが受信できない」「録画データの周波数がおかしい」「record開始直後のデータが欠けている」ときに使用する。
+description: rosbag の記録・再生テストと、開始時の欠落・DDS/QoS・周波数異常を切り分ける。録画済み MCAP の解析だけなら mcap-direct-access を使う。
 ---
 
-# Rosbag Workflow（記録・再生テストと DDS/QoS 切り分け）
+# rosbag の記録・再生
 
-rosbag を使った開発テストループの定型と、頻出のハマりどころ。
-
-## 再生テストループ
-
-開発中の受信側（バックエンド・可視化 UI）をテストする定番構成：
-
-kairos では `data/` に rosbag2 のbagディレクトリ（`metadata.yaml` と
-1個以上の `.mcap`）を置き、正準ターゲットを使う：
+Kairos の入力 bag は `data/` 配下の rosbag2 ディレクトリ（`metadata.yaml` と
+1 個以上の MCAP）。ランタイムの bag をコミットしない。
+再生が必要な検証では既存のターゲットを使う。
 
 ```bash
 make rosbag-loop BAG=<bag-directory>
@@ -21,51 +16,27 @@ make table
 make smoke
 ```
 
-`make rosbag-loop` はスタックと同じ `ROS_DOMAIN_ID`、`ROS_DISTRO`、RMW設定を
-再生コンテナへ渡す。個別調査で素のROSコマンドを使う場合も、MCAPファイル単体
-ではなくbagディレクトリを指定する：
+再生側と受信側の `ROS_DOMAIN_ID`、`ROS_DISTRO`、RMW を揃える。
+カスタム msg を使う bag は両側に対応する message overlay が必要。
+個別診断の `ros2 bag info` / `ros2 bag play --loop` にも bag ディレクトリを指定する。
+並列検証は稼働中グラフと分離し、起動した再生プロセスだけを片付ける。
 
-```bash
-# bag の中身を確認してから使う
-ros2 bag info data/<bag-directory>
+## 記録開始と疎通
 
-# ループ再生（テスト用に流しっぱなしにする）
-ros2 bag play data/<bag-directory> --loop
+Kairos の記録は orchestrator の record API または `make smoke-record` を使う。
+recorder は subscription match を待ってから start-paused を解除する。
+素の rosbag2 での記録でも購読確立を確認してから開始し、任意の数秒を捨てる方法を
+既定の解決にしない。記録開始成功だけでは先頭データの受信を証明できない。
 
-# 受信確認（別ターミナル/コンテナ）
-ros2 topic list
-ros2 topic hz /camera/image_raw/compressed
-```
+受信しない、またはレートが合わない場合は、症状に合う層から調べる。
 
-- コンテナ構成では、bag 再生専用コンテナを立てて `data/` を volume 共有すると再現性が高い
-- kairos 以外では、同等の再生処理をMakefileターゲットに包むと再現しやすい
-- カスタム msg を使う bag は、再生側・受信側の両方に msg パッケージのビルドが必要
+- domain と RMW: Kairos の既定は `rmw_fastrtps_cpp`。切替時は再生ハーネスも揃える。
+- QoS: `ros2 topic info <topic> -v` で reliability / durability などの互換性を確認する。
+- 古いデータ: TRANSIENT_LOCAL の履歴とライブ入力を区別し、必要なら header 時刻と
+  明示した鮮度条件で判定する。
+- ネットワーク・IPC: ホスト/コンテナの discovery と実データ経路を分けて確認する。
+- 帯域: 画像をネットワーク越しに記録する場合は実測し、記録位置や圧縮形式を判断する。
 
-## 記録（record）の注意点
-
-kairosでは `ros2 bag record` を直接起動せず、orchestratorのrecord APIまたは
-`make smoke-record` を使う。recorderはsubscription matchを待ってから
-start-pausedを解除するため、下記は一般的な素のrosbag2運用に対する注意である。
-
-- **開始直後のデータ欠け**: `ros2 bag record` は開始直後、全トピックの購読が完了するまでラグがあり、序盤のメッセージが欠ける。対策：
-  - 記録開始から数秒間のデータは使わない前提で運用する（変換時に先頭を捨てる）
-  - `--start-paused` で購読を確立してから再生/記録を始める
-- 画像トピックをロボット外のネットワーク越しに記録すると帯域圧迫で周波数が落ちる。記録はロボット側ホストで行うか compressed topic を使う
-
-## DDS/QoS トラブル切り分け
-
-「トピックは流れているはずなのに受信できない/周波数が出ない」ときの確認順：
-
-1. **`ROS_DOMAIN_ID` の一致** — 全コンテナ・ホストで同一か。既定は 0
-2. **DDS 実装の統一** — 再生側と受信側を同じRMWへ揃える。kairosの既定は
-   `rmw_fastrtps_cpp`。CycloneDDSへ切り替える場合はスタックと再生ハーネスの
-   両方を `rmw_cyclonedds_cpp` にする
-3. **QoS の不一致** — `ros2 topic info /topic -v` で配信/購読の QoS を突合。BEST_EFFORT vs RELIABLE、depth 設定を確認
-4. **TRANSIENT_LOCAL の残留** — durability が TRANSIENT_LOCAL のトピックは、購読開始時に**過去の古いメッセージが届く**。タイムスタンプ（header.stamp）で閾値フィルタして古いフレームを捨てる
-5. **コンテナ間の DDS 発見** — network_mode、`/dev/shm` 共有、マルチキャスト可否を確認
-
-## bag ファイル形式
-
-- 入力は **mcap に正規化**すると扱いやすい。ROS 1 の `.bag` や sqlite3 形式は `rosbags-convert` で事前変換する
-- Python から読む場合は `mcap` パッケージの reader を使う（トピック・時刻でフィルタしながら streaming 読みできる）
-- プレビュー動画が欲しいときは image topic を ffmpeg で mp4 化する。**一度変換した mp4 はキャッシュして再利用**する（毎回の再変換は時間の無駄）
+ROS 1 / sqlite3 からの変換は対応ツールと入力型を確認して MCAP へ正規化する。
+録画済み bag の読解・変換は `mcap-direct-access` を使い、ライブ ROS 依存を増やさない。
+動画プレビューは入力と変換条件が同じ場合にキャッシュを再利用する。

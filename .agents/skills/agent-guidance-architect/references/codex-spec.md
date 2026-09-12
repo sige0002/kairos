@@ -1,6 +1,7 @@
 # OpenAI Codex 仕様（確認済み事実）
 
-verified_date: **2026-07-31**（3か月以上経過したら公式ドキュメントで再確認してから構成判断に使うこと）
+確認日: スキル探索・symlink は **2026-09-12**、その他の節は **2026-07-31**。
+バージョン依存の構成判断では該当する現行公式資料を確認する。
 正式ドキュメント: developers.openai.com/codex/* は **learn.chatgpt.com へ 308 リダイレクト**（ドキュメント基盤移行済み）。引用時は両 URL を併記する。
 
 ## AGENTS.md の探索と結合
@@ -25,12 +26,12 @@ verified_date: **2026-07-31**（3か月以上経過したら公式ドキュメ�
   > "Codex scans `.agents/skills` in every directory from your current working directory up to the repository root."
 - `.codex/skills/` は openai/codex リポジトリ自身が使う実例があるが、一般ユーザー向けの公式探索パスは `.agents/skills/`
 - SKILL.md 必須フィールドは **name / description のみ**。**Anthropic 発のオープン標準 Agent Skills（agentskills.io）に準拠**しており、SKILL.md 自体は Claude Code と同一仕様でポータブル。探索パス・スコープ体系はクライアント固有
-- **シンボリックリンクされたスキルディレクトリには既知の不具合が複数ある**（仕様でなくバグとして報告中、2026-07-31 時点）:
-  - [#8943](https://github.com/openai/codex/issues/8943) symlink 先ディレクトリを follow しない
-  - [#8369](https://github.com/openai/codex/issues/8369) symlink されたスキルフォルダの許可要望
-  - [#11314](https://github.com/openai/codex/issues/11314) `.agents/skills` 自体が symlink だとロードされない
-  - [#9898](https://github.com/openai/codex/issues/9898) 相対パス symlink の解決不良
-  - **含意: スキル正本は Codex が直接読む実ディレクトリ（`.agents/skills/<name>/`）に置き、Claude 側（`.claude/skills/`）から symlink する**（Claude Code の symlink は公式サポート）。逆方向は避ける
+- **Codex は symlink されたスキルフォルダをサポートし、探索時にリンク先を読む。**
+  [Build skills](https://learn.chatgpt.com/docs/build-skills) を 2026-09-12 に確認。
+  旧 #8943 / #8369 / #11314 / #9898 の報告を、現行の一律非対応の根拠にしない。
+  問題を再現した場合だけ、対象 CLI 版とリンク形状を明記して回避策を検討する。
+- Kairos では保守上の正本を `.agents/skills/<name>/` に置き、`.claude/skills/<name>`
+  から symlink する既存構成を維持する。これは Codex の非対応を理由にした逆方向禁止ではない。
 - AGENTS.md 単体ファイルの symlink 挙動は公式言及なし＝未確認
 - 出典: developers.openai.com/codex/skills（→ learn.chatgpt.com/docs/build-skills）、agentskills.io
 

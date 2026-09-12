@@ -1,7 +1,8 @@
 # Claim Ledger — 取り込んだ知識の台帳
 
-記事・文書を URL のまま溜めない。**検証可能な主張（claim）へ変換して**ここに登録する。
-スキル更新時は、この台帳の `verified_date` が古い claim から再検証する。
+研究や外部知見の採否を評価するときに、検証可能な主張（claim）と確認日を記録する。
+既存エントリは当時の採否の履歴でもあり、全更新で実行すべき手順ではない。
+今回の判断で利用する claim だけを必要に応じて再検証する。
 
 ## 登録形式
 
@@ -21,8 +22,10 @@ destination: 反映先ファイル
 test_cases: evals.json のケース id
 ```
 
-評決の基準は SKILL.md の査定基準を使う。**公式仕様と矛盾する記事でも、再現可能な
-不具合回避策は CONDITIONAL で残す**（Issue 番号を evidence に必ず記録）。
+評決は ADOPT（適用）、CONDITIONAL（条件付き）、EXPERIMENT（未実証の評価候補）、
+REJECT（不採用）、OBSOLETE（現行判断には使わない）。根拠・適用条件・反証を記録し、
+一律の点数で安全性や仕様を相殺しない。再現可能な不具合回避策は Issue 番号と
+対象バージョンを示して CONDITIONAL とできる。
 
 ---
 
@@ -159,23 +162,22 @@ test_cases: []
 
 ```yaml
 claim_id: C-CODEX-002
-title: スキル正本は .agents/skills/ に置き、.claude/skills/ から symlink する（逆方向禁止）
-source_type: issue
-product: both
-source_date: 2026-01〜2026-07
-verified_date: 2026-07-31
+title: Codex は symlink されたスキルフォルダをサポートする
+source_type: official
+product: codex
+source_date: 2026-09-12 確認
+verified_date: 2026-09-12
 claim: >
-  Claude Code のスキル symlink は公式サポートだが、Codex には symlink された
-  スキルディレクトリが読まれない既知バグが複数ある。正本は Codex が直接読む
-  実ディレクトリ（.agents/skills/<name>/）に置き、.claude/skills/<name> を
-  symlink にする。
+  Codex はスキル探索時にフォルダの symlink 先をたどる。
+  .agents/skills 実体 / .claude/skills リンクという Kairos の正本配置は維持するが、
+  旧不具合を理由に逆方向を普遍的に禁止しない。
 evidence: >
-  Claude 側サポート: code.claude.com/docs/en/skills 原文引用（claude-code-spec.md）。
-  Codex 側バグ: openai/codex #8943, #8369, #11314, #9898（codex-spec.md）。
-conditions: [Claude Code と Codex でスキルを共有するリポジトリ]
-exceptions: [Windows（symlink に管理者権限が必要 → コピー運用＋同期手順）]
-verdict: CONDITIONAL   # Codex 側バグが修正されたら再評価（Issue クローズを監視）
-destination: SKILL.md Step 3, references/decision-rules.md, templates/
+  https://learn.chatgpt.com/docs/build-skills の Where Codex loads local skills。
+  旧 #8943 / #8369 / #11314 / #9898 は過去の不具合報告として扱う。
+conditions: [Codex のスキル探索対象フォルダ]
+exceptions: [特定版やリンク形状で問題を再現した場合は、その条件を分けて扱う]
+verdict: ADOPT
+destination: references/codex-spec.md, references/decision-rules.md
 test_cases: [15]
 ```
 
@@ -216,4 +218,26 @@ exceptions: []
 verdict: CONDITIONAL   # プレプリントのため。ただし本スキルの生成方針としては採用
 destination: references/decision-rules.md（作業順序）, SKILL.md Step 1
 test_cases: [1, 2]
+```
+
+
+```yaml
+claim_id: C-CODEX-003
+title: 発動条件を短くし、作業に無関係な固定手順を減らす
+source_type: official
+product: codex
+source_date: 2026-09-12 確認
+verified_date: 2026-09-12
+claim: >
+  description は用途と発動場面を短く示す。常時指示には固有の判断材料を残し、
+  長いモード別手順を必要時に読む参照へ移す。既存の認可を尊重し、依頼された終点を
+  明確にする。行数削減から成功率やコスト改善を断定しない。
+evidence: >
+  https://developers.openai.com/blog/rethinking-skills-and-prompts-for-gpt-6-astra
+  および現行 skill-creator の指針。Kairos の本文・参照・構造の前後比較を実施。
+conditions: [既存ガイダンスとスキルの整理]
+exceptions: [固有の安全条件, ユーザーの意図, 壊れやすい操作の必要な順序]
+verdict: ADOPT
+destination: SKILL.md, references/decision-rules.md, references/playbooks.md
+test_cases: []  # 行動の A/B 評価は未実施。構造確認と独立差分レビューのみ。
 ```

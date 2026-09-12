@@ -1,131 +1,42 @@
 ---
 name: github-issue-pr
-description: ユーザーが「このバグ/機能リクエスト/改善点/ドキュメント不備を issue にして対処して」と明示的に指示したときだけ発火する、GitHub issue → worktree ブランチ → 実装 → PR → 独立エージェントレビュー → squash マージ → 後始末の一気通貫フロー。種類は問わない（バグ限定ではない） — 発火条件は「issue にして」という明示指示の有無であり、種類はラベル（bug / documentation / enhancement）の判定に使う。issue には必ずラベル（bug / documentation / enhancement を軸に区別）を付ける。操作は gh CLI（認証済み）を基本とし、GitHub MCP server が接続されていればそのツールでもよい。自分がバグを見つけただけでは発動しない（報告して指示を待つ）。
+description: 明示依頼された GitHub issue の作成・対応から PR・独立レビュー・マージまでを扱う。issue だけなど限定された依頼はその工程で止める。
 ---
 
-# github-issue-pr
+# GitHub issue / PR 対応
 
-GitHub issue を起点に PR マージまでを一気通貫でやるときの標準手順。
-2026-08-12 の clock_check 出荷（issue #6 → PR #7）で確立・実証済みのフロー。
+ユーザーが issue 作成・対応を明示的に依頼したときに使う。自分で問題を見つけただけでは公開issueを作らない。依頼された工程と既存の認可を確認し、commit・push・PR・merge・サービス起動を勝手に追加しない。一気通貫の依頼では認可済み工程を繰り返し確認せず完了まで進める。
 
-## 発火条件（重要）
+認証済み`gh`または利用可能なGitHubツールを使う。認証は`gh auth status --hostname <remote-host>`で確認し、Gitの認証失敗だけで未ログインと判断しない。HTTPSのgithub.com remoteでhelperが失敗した場合は、認可済みpushに限り`gh auth git-credential`を使う一度だけの再試行をしてよい。永続的な認証設定変更、トークン表示、根拠のない再ログイン要求はしない。
 
-- **ユーザーの明示的な指示があるときだけ**発火する。例:
-  「この問題を issue にして対処して」「この機能が欲しい。issue にして実装まで」
-  「issue 作成 → PR → レビュー → マージまでやって」。
-- **種類は問わない** — バグ・機能リクエスト・改善提案・ドキュメント不備のどれでも、
-  「issue にして」という指示があれば発火する。種類は手順 1 のラベル判定にだけ使う。
-- 作業中に自分がバグや改善点を**見つけただけでは発動しない** — 見つけたものは
-  ユーザーに報告し、指示を待つ（勝手に issue を作らない。public リポジトリへの
-  書き込みは公開行為）。
-- issue 作成だけ・PR だけなど、指示が一部の工程に限られる場合はそこまでで止める。
+Kairosはpublic。本文・タイトル・ブランチ名・コミットメッセージに [no-confidential-names](../no-confidential-names/SKILL.md) を適用し、公開文章は英語で書く。複数行本文は構造化引数、または本文ファイルを`--body-file`へ渡す。
 
-## 使うツール
+## issue の分類
 
-- 基本は認証済みの **`gh` CLI**。接続済みGitHubアプリ／MCPの利用可能なツールが
-  あればissue・PRの読み書きに使ってよい。特定環境のツール名は前提にしない。
-- ユーザーが `gh` を指定した場合はそれを使う。認証は対象ホストの
-  `gh auth status --hostname <remote-host>` で確認し、`git push` の失敗だけで
-  `gh` が未ログインと判断しない（Git の credential helper は別経路になり得る）。
-  github.com の HTTPS remote では、認証済みの `gh` を使って
-  `git -c credential.helper= -c 'credential.helper=!gh auth git-credential' push -u <remote> <branch>`
-  と実行できる。他の helper で認証失敗した場合、この経路での再試行は 1 回まで。
-  再失敗時はログイン状態・リポジトリ権限・Git の認証経路を区別して報告する。
-  SSH remote の変更、永続設定を変える `gh auth setup-git`、根拠のない再ログイン要求、
-  トークンの表示はしない。push の許可範囲は広げない。
-- リポジトリは **public**。issue・PR・コミットの全テキストが即座に公開される —
-  **no-confidential-names を issue 本文・タイトル・PR・ブランチ名にも適用**する
-  （機体は「the local robot」等の一般名で書く）。文章は英語（コード・コミット規約と同じ）。
+issueには1つ以上のラベルを付ける。
 
-## 手順
+| ラベル | 意味 |
+|---|---|
+| `bug` | 実装が正しい仕様・期待と食い違う |
+| `documentation` | 実装は正しく、文書・コメントが誤りまたは欠落 |
+| `enhancement` | 新機能や既存機能の改善 |
 
-### 1. ラベルを決めてから issue を作る
+仕様と実装が違う場合、どちらを正とするか根拠を確認してラベルを選ぶ。複合なら複数ラベルを使う。既存ラベルを確認し、必要なラベルがなければissue作成の認可範囲で用意する。本文には問題の根拠、対処案、完了条件を含める。
 
-issue には**必ず 1 つ以上のラベル**を付ける。軸は次の 3 つ（GitHub 既定ラベル）:
+## 実装と PR
 
-| ラベル | 判定基準 |
-| --- | --- |
-| `bug` | 実装の動作が仕様・ユーザーの期待と食い違う（クラッシュ・誤動作・嘘の表示） |
-| `documentation` | 仕様書 / README / ミラー / コメントの欠落・誤り・陳腐化（コードの動作は正しい） |
-| `enhancement` | 新機能・新しい検証・既存機能の改善（壊れてはいない） |
+- 並列作業はworktreeで隔離し、`origin/develop`から作業ブランチを作る。prefixは`fix/`、`docs/`、`feat/`をラベルに合わせる。
+- 依頼の実装と関連ゲートを完了し、必要な日英文書を同期する。commit/push前のstaging・機密検査は [review-publish-run](../review-publish-run/SKILL.md) の該当工程を使う。
+- PRのbaseは`develop`、ラベルはissueと合わせる。`Closes #N`は残すが、`develop`へのマージでは自動closeに頼らない。
 
-- **bug と documentation は必ず区別する**。「仕様と実装が食い違う」場合は
-  どちらが正か先に裁定してからラベルを選ぶ（実装が正 → documentation、仕様が正 → bug）。
-- 複合なら複数ラベル可。`gh label list` で確認し、無いラベルは `gh label create` してから使う。
-- 本文の骨子: Problem（何がどう困るか・再現/根拠）→ Proposal（対処案）→ Acceptance（完了条件）。
+## 独立レビュー
 
-```bash
-gh issue create --title "..." --label bug --body "..."
-```
+PRの対象diffとタスクを独立したread-onlyレビュワーへ渡す。編集・commit・pushは任せず、必要な検証だけを許可する。所見は重大度順にfile:line、失敗シナリオ、実証済みか仮説かを示し、`MERGE` / `FIX-FIRST`のverdictを求める。
 
-### 2. worktree + ブランチ
+修正後は影響する検証と同じレビュワーの再確認を行う。未解決のblocking findingがある間はマージせず、証拠不足や同じ失敗で進めなくなったら理由を報告する。独立レビュー不能なら、マージゲート未完了としてその制約を明示する。
 
-並列セッションと衝突させないため、実行環境のworktree機能または
-`git worktree add` で隔離し、ブランチを **origin/developから**作る：
+## 認可されたマージと後始末
 
-```bash
-kairos_worktree_root=$(mktemp -d)
-kairos_worktree_path="$kairos_worktree_root/worktree"
-git worktree add -b <prefix>/<slug> "$kairos_worktree_path" origin/develop
-cd "$kairos_worktree_path"
-```
+`gh pr merge <N> --squash`後、`gh pr view <N> --json state,mergeCommit`で確認する。`--delete-branch`はbaseが別worktreeにあるとローカル操作だけ失敗するため、マージ成功を確認してから対象のリモートブランチを別途削除する。issueはPRとsquash SHAを示して明示的にcloseする。
 
-prefix はラベルに合わせる: `bug`→`fix/`、`documentation`→`docs/`、`enhancement`→`feat/`。
-
-### 3. 実装 + ゲート
-
-- AGENTS.md の規約どおり（テスト先行・変更最小・仕様は ja 正本 + `/sync-docs` で en ミラー）。
-- 該当パッケージの pytest / frontend gate / `uvx ruff check` + `format --check` を通す。
-- コミット前に正規ゲートを実行する。スクリプトは全worktreeからgitignoredの
-  名前候補を導出するため、リンクworktree内からそのまま実行できる：
-
-```bash
-bash .agents/skills/no-confidential-names/check.sh origin/develop..HEAD
-```
-
-### 4. PR
-
-```bash
-git push -u origin <branch>
-gh pr create --base develop --title "..." --body "... Closes #N ..."
-gh pr edit <PR> --add-label <issueと同じラベル>
-```
-
-- base は **develop**（main へは別途 promote）。
-- `Closes #N` は **develop へのマージでは auto-close されない**（後で手動 close）。
-
-### 5. 独立エージェントレビュー
-
-利用可能な協調ツールで**クリーンコンテキストのレビュワー**を起動し、敵対レビューさせる。
-プロンプトの骨子:
-
-- 「PR を**反証**しにいけ（褒めるな）」。worktree パスと `gh pr diff <N>` を渡す。
-- read-only（編集・commit・push 禁止）。テスト実行は許可。
-- 出力: severity 順の所見（file:line + 具体的な失敗シナリオ + verified/conjecture）、
-  「攻めたが破れなかった項目」、**MERGE / FIX-FIRST の明示 verdict**。
-- FIX-FIRST の間は: 修正 → 全ゲート → commit/push → **同じレビュワーに SendMessage で
-  再検証依頼**（コンテキストが残っているので独自ハーネスで再実証できる）。
-  MERGE が出るまで繰り返す。所見への対応は PR にコメントで記録する。
-
-### 6. マージ + 後始末
-
-```bash
-gh pr merge <N> --squash        # --delete-branch は付けない（下記）
-gh api -X DELETE repos/<owner>/<repo>/git/refs/heads/<branch>   # リモートブランチ削除
-gh issue close <issue> --comment "Implemented in #<PR> (squash <sha>)."
-```
-
-- `--delete-branch` は **base（develop）が別 worktree でチェックアウト済みだと
-  ローカル操作で失敗する**（リモートのマージ自体は成功している）ので、ブランチ削除は
-  API で行う。マージ状態は `gh pr view <N> --json state,mergeCommit` で確認。
-- マージ状態、push済み、worktreeがcleanであることを確認してから、実行環境の
-  worktree削除機能または `git worktree remove <path>` で作業treeを外す。
-- 本体チェックアウトで `git pull` → 必要なサービスを `make rebuild <svc>` → 可能なら
-  実データ/実 UI で 1 回動かして着地を実証する。
-- CHANGELOG（ローカル・コミットしない）の `## [Unreleased]` に追記。
-
-## しないこと
-
-- 指示なしの issue 作成・PR 作成・マージ（各工程とも Git 規則が優先）。
-- レビュワー verdict が FIX-FIRST のままのマージ。
-- ラベル無し issue。bug / documentation の未裁定のままのラベル付け。
+worktreeは対象変更がpush済み・マージ済み・cleanであることを確認してから外す。本体checkoutの更新やサービスのrebuild / 起動は、その操作も依頼されている場合だけ行う。ローカル`CHANGELOG.md`に必要な変更を記録し、完了した工程とURL / SHAを報告する。

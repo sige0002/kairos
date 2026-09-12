@@ -175,10 +175,10 @@
       "id": 15,
       "fixture": "fixtures/reverse-skill-repo",
       "prompt": "このリポジトリのスキル配置を点検して",
-      "expected_output": "スキル正本の向きが逆（.claude 実体 → .agents symlink）だと検出する",
+      "expected_output": "正常なスキル symlink を許容し、解決先の存在と SKILL.md を検証する",
       "expectations": [
-        ".agents/skills/deploy が symlink であることを検出し、Codex が follow しない既知バグ（openai/codex #8943, #11314）を指摘する",
-        "実体を .agents/skills に置き .claude/skills から symlink する正しい向きを提案する"
+        "現行公式仕様では Codex がスキル symlink をサポートするため、向きだけを理由に不具合と判定しない",
+        "リンク切れと解決先の frontmatter を検証し、正常なら配置変更を強制しない"
       ]
     },
     {
